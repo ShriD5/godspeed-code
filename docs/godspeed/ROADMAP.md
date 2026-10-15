@@ -25,7 +25,9 @@ Providers
 - [x] Claude, Codex (native), Cursor, Grok, OpenCode, Pi, Antigravity, Devin (inherited).
 - [ ] Gemini CLI via ACP registry (`gemini --acp`).
 
-T3 depth zeron lacks (check each against zeron before building)
+T3 depth zeron lacks (audited in PARITY-T3.md)
+- [ ] **Access modes + approvals** (supervised / auto-accept edits / auto / full): today every agent runs without asking. Highest priority.
+- [ ] **Git write actions**: commit, push, pull, sync, create PR with generated text (none exist today).
 - [ ] Plan mode with Implement / Refine on the proposed plan.
 - [ ] Checkpoints as hidden git refs + rewind + "edit from here" (T3: `CheckpointService.ts`).
 - [ ] Fork thread from a response, merge back to source.
