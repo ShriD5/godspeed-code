@@ -1,6 +1,6 @@
 # Godspeed handoff
 
-Written 2026-10-15. Read this first, then `ROADMAP.md`, `PARITY-T3.md` and `ISSUES-TRIAGE.md` in
+Written 2026-10-15, updated 2026-10-16 05:30 IST. Read this first, then `ROADMAP.md`, `PARITY-T3.md` and `ISSUES-TRIAGE.md` in
 this folder.
 
 ## What this is
@@ -12,9 +12,12 @@ wants it to be the fastest and best-looking option, and eventually open source.
 - Repo: `~/Developer/godspeed`, private at github.com/ShriD5/godspeed (`origin`). `upstream` is
   zeronsh/zeron, for cherry-picking fixes only. GitHub Actions is **disabled** on the repo on
   purpose (Zeron's macOS/Windows workflows would burn private-repo minutes).
-- `main` is at `6726f928` (search and resume-at-reset merged) and pushed. Parity with T3 is 54% by the latest audit.
-- Installed build: `/Applications/Godspeed.app` (release, ad-hoc signed) and the `godspeed` CLI
-  (symlink in `~/.local/bin`). It is older than `main`; repackage to pick up recent work.
+- `main` is at `3c65438c` and pushed. Parity with T3 was 54% at the last audit (before delegation, lifecycle and the leftovers landed).
+- Installed build: `/Applications/Godspeed.app` is the release of `d752f8cd` (everything except the
+  benchmarks doc), ad-hoc signed; `godspeed` CLI symlinked in `~/.local/bin`.
+- The owner's real Godspeed data (`~/.godspeed`, 874 MB) already holds 369 imported chats: 100 from
+  T3 (including the threads that built Godspeed), 35 Claude, 212 Codex, 22 Cursor. Claude and Codex
+  chats continue their original sessions.
 
 ## Owner rules (follow these)
 
@@ -70,30 +73,37 @@ Known flaky only under heavy load (pass alone): `version_probe_bounds_hangs_and_
   discovery fix (project skills first).
 - App icon: a silver low-poly speedster (`design/icon/sp-electric.jpg`).
 
-## In progress
+## Done on 2026-10-16
 
-Both earlier worktrees are merged: instant local search (`4d4eeea4`) and resume at reset
-(`34bd1382`). A Codex session is now working the "Next, in order" list on branch
-`feat/godspeed-completion` (worktree `.claude/worktrees/godspeed-completion`, plan in
-`docs/godspeed/COMPLETION-PLAN.md` on that branch). Its coordination log, briefs, benchmark audit
-and review notes live in `/Volumes/Lexar/build/godspeed-coordination/` (`progress.md` first).
-Known follow-ups it owns: three resume-at-reset robustness fixes in `resume-review.md` (marker
-cleared before the continuation is durably queued; same-account binding not enforced; Stop/archive
-after scheduling not respected).
+- Delegation that wakes the parent (`create_chat` / `create_chats` `notify`, durable outbox).
+- Resume at reset hardened: crash-safe continuation, bound to the account, cancelled by Stop/archive.
+- Thread lifecycle: settle, snooze (presets + typed times), wake, mark unread, auto-settle (off by
+  default), undo with mod+z, "Working · Nm" and +/- diff stats on rows, Snoozed/Settled shelves.
+- Leftovers: branch prefix setting, "also delete its worktree" on chat delete, unused worktrees list,
+  "Waiting on N tasks" row label, shortcuts mod+[ / mod+] (back/forward), mod+shift+t (reopen tab),
+  mod+shift+g (changes pane), mod+shift+d (settle).
+- Headless benchmarks vs T3 in `BENCHMARKS.md`: start 133 ms vs 877 ms, idle footprint 12 MiB vs
+  166 MiB, list 200 threads 0.8 ms vs 23 ms. Scripts and raw data in
+  `/Volumes/Lexar/build/godspeed-coordination/bench/`.
+- Work was split between a Codex session and Claude; the shared log is
+  `/Volumes/Lexar/build/godspeed-coordination/progress.md`.
 
 ## Next, in order
 
-1. Delegation that wakes the parent when a child chat finishes, errors or needs approval (MCP
-   `create_chat` with notify; reuse the always-on delivery path). Upstream: Zeron #768, T3 #15082.
-2. Thread lifecycle: settle, snooze (presets + custom), wake, auto-settle inactive threads, undo
-   (mod+z), working duration and diff stats on sidebar rows, mark unread.
-3. Speed and memory benchmarks vs T3 and the raw CLIs, published in the README (T3 issue #695 is
-   the headline: same task 20+ min in T3 vs 3.5 min in the CLI).
-4. Later: native PR review and merge (submit review, resolve threads, merge, auto-merge).
+1. Owner's eyeball pass on the new UI (list below); fix what looks off.
+2. Native PR review and merge (submit review, resolve threads, merge, auto-merge). Codex left a brief
+   at `/Volumes/Lexar/build/godspeed-coordination/pr-actions-brief.md`.
+3. Re-audit parity against T3 now that delegation and lifecycle landed.
+4. Rerun benchmarks on a truly idle machine (a stray `vitest` from ugc-manager was using ~115% of a
+   core during the run).
 
-Small leftovers: UI for the worktree branch prefix, a "delete worktree too?" confirm when deleting a
-chat, a visible "waiting on N tasks" label, an orphan-worktree list, PR text generation from the PR
-board, about 40 missing keyboard shortcuts versus T3.
+Eyeball list: approval card; access-mode chip; Snooze submenu and typed-time field; Snoozed/Settled
+shelves; "Working · Nm" and diff counts; Settings → General (auto-settle, worktree branch prefix,
+unused worktrees); delete-chat worktree checkbox; Cmd+F find bar; palette message search; the usage
+limit banner; Settings → Agents and Import.
+
+Known small gaps: the phone client shows no shelves and shows Limited as Failed; snoozed chats can
+still push notifications; one imported Claude "chat" is a title-generation run (archive it).
 
 ## Decisions already made
 
