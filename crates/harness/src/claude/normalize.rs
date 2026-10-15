@@ -206,6 +206,11 @@ pub(crate) struct Normalizer {
     /// Rotates at each assistant-frame close and at each steer; SessionStarted
     /// carries the first value so folds can attribute deltas from the start.
     assistant_message_id: String,
+    /// A parent text delta streamed since the last assistant frame closed.
+    /// Replies the CLI synthesizes itself (local slash commands like
+    /// `/usage` and `/context`, model `<synthetic>`) stream no deltas at
+    /// all: their only text is the assistant frame's text blocks.
+    streamed_text: bool,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
 }
@@ -219,6 +224,7 @@ impl Normalizer {
             agent_tool_spawns: std::collections::HashMap::new(),
             agent_spawn_tools: std::collections::HashSet::new(),
             assistant_message_id: new_message_id(),
+            streamed_text: false,
             session_id: None,
         }
     }
@@ -450,9 +456,12 @@ impl Normalizer {
                     };
                 }
                 match f.event.delta.kind.as_str() {
-                    "text_delta" => vec![AgentEvent::TextDelta {
-                        text: f.event.delta.text,
-                    }],
+                    "text_delta" => {
+                        self.streamed_text = true;
+                        vec![AgentEvent::TextDelta {
+                            text: f.event.delta.text,
+                        }]
+                    }
                     "thinking_delta" => vec![AgentEvent::ReasoningDelta {
                         text: f.event.delta.thinking,
                     }],
@@ -513,7 +522,24 @@ impl Normalizer {
                         self.agent_spawn_tools.insert(b.id.clone());
                     }
                 }
-                let mut out: Vec<AgentEvent> = f
+                // Text normally arrives as deltas; a reply that streamed none
+                // (a local command's synthetic answer) has only these blocks.
+                // An errored frame's text is the CLI's error wording, which
+                // the error event below already carries.
+                let mut out: Vec<AgentEvent> = Vec::new();
+                if !std::mem::take(&mut self.streamed_text) && f.error.is_none() {
+                    let text = f
+                        .message
+                        .blocks()
+                        .filter(|b: &ContentBlock| b.kind == "text" && !b.text.trim().is_empty())
+                        .map(|b| b.text.trim_end().to_owned())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if !text.is_empty() {
+                        out.push(AgentEvent::TextDelta { text });
+                    }
+                }
+                out.extend(f
                     .message
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_use")
@@ -564,9 +590,12 @@ impl Normalizer {
                             })
                             .flatten();
                         std::iter::once(call).chain(opening).chain(steer)
-                    })
-                    .collect();
-                self.last_model = f.message.model.clone().or(self.last_model.take());
+                    }));
+                // A synthetic reply names no real model: keep the last one
+                // for the result's context-window lookup.
+                if let Some(model) = f.message.model.as_ref().filter(|m| *m != "<synthetic>") {
+                    self.last_model = Some(model.clone());
+                }
                 if let Some(usage) = &f.message.usage {
                     let fields = [
                         "input_tokens",
@@ -910,6 +939,55 @@ mod tests {
             r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"abc"}}}"#,
         );
         assert!(ev.is_empty());
+    }
+
+    /// A local command (`/usage`, `/context`, …) is answered by the CLI
+    /// itself: one `<synthetic>` assistant frame, no deltas (shape from
+    /// zeronsh/zeron#734, CLI 2.1.288). Its text must still render once;
+    /// a streamed reply's closing frame must not repeat its text.
+    #[test]
+    fn synthetic_replies_without_deltas_render_their_text() {
+        let mut norm = Normalizer::new();
+        let synthetic = crate::claude::wire::parse_frame(
+            r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Current session: 50% used"}]}}"#,
+        )
+        .unwrap();
+        let events = norm.normalize(synthetic, false);
+        assert_eq!(
+            events.first(),
+            Some(&AgentEvent::TextDelta {
+                text: "Current session: 50% used".into()
+            }),
+            "{events:?}"
+        );
+        assert_eq!(norm.last_model, None, "<synthetic> is not a model");
+
+        let streamed: Vec<AgentEvent> = [
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}}"#,
+            r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"Hi"}]}}"#,
+        ]
+        .into_iter()
+        .flat_map(|raw| norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false))
+        .collect();
+        assert_eq!(
+            streamed
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::TextDelta { .. }))
+                .count(),
+            1,
+            "{streamed:?}"
+        );
+        // The flag is per message: the next unstreamed frame renders again.
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(events.contains(&AgentEvent::TextDelta {
+            text: "No response requested.".into()
+        }));
     }
 
     #[test]
