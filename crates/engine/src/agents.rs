@@ -12,7 +12,10 @@
 //!   [`schedule`] for misfire grace and backlog collapse. A fire is skipped
 //!   while the agent's previous run is active, run keys (agent + trigger +
 //!   scheduled time) make every fire idempotent, and three consecutive
-//!   failures pause the agent with the reason recorded.
+//!   failures pause the agent with the reason recorded. A run stopped on a
+//!   usage limit is Limited, not failed: it never counts toward the pause,
+//!   and the agent's fires wait until the limit resets (fires due meanwhile
+//!   run at the reset rather than being skipped as misfires).
 //! - **Approvals wait.** A run parked on an approval shows `needs-approval`
 //!   in the inbox until someone answers in the chat. Nothing here answers or
 //!   denies on the user's behalf.
@@ -67,6 +70,8 @@ const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(2);
 /// A steady stream of writes still fires at least this often.
 const MAX_DEBOUNCE: Duration = Duration::from_secs(30);
 const SUMMARY_CHARS: usize = 280;
+/// How long a limited agent waits when nothing names the reset.
+const LIMIT_WAIT_UNKNOWN: chrono::TimeDelta = chrono::TimeDelta::hours(1);
 const BUSY_SKIP: &str = "Skipped: the previous run was still active";
 /// Path segments whose churn never wakes a file-watch agent.
 const IGNORED_SEGMENTS: [&str; 4] = [".git", "node_modules", "target", ".DS_Store"];
@@ -695,6 +700,9 @@ impl Inner {
                 }
             }
         }
+        if let Some(until) = self.store.limited_until(&agent.id)?.filter(|u| *u > now) {
+            next_fire_at = next_fire_at.map(|next| next.max(until));
+        }
         let webhook_path = format!("/hooks/agents/{}/{}", agent.id, agent.webhook_token);
         Ok(AgentSummary {
             id: agent.id.clone(),
@@ -751,11 +759,20 @@ impl Inner {
             if !agent.draft.enabled || agent.paused_reason.is_some() {
                 continue;
             }
+            // Out of usage: nothing fires before the reset.
+            let limited_until = self.store.limited_until(&agent.id).ok().flatten();
+            if let Some(until) = limited_until.filter(|until| *until > now) {
+                note(Some(until));
+                continue;
+            }
             for trigger in &agent.draft.triggers {
                 let Ok(Some(schedule)) = Schedule::parse(trigger) else {
                     continue;
                 };
-                match self.tick_trigger(&agent, trigger, &schedule, now).await {
+                match self
+                    .tick_trigger(&agent, trigger, &schedule, now, limited_until)
+                    .await
+                {
                     Ok(next) => note(next),
                     Err(err) => {
                         tracing::warn!(agent = %agent.id, %err, "agents: trigger tick failed");
@@ -772,6 +789,7 @@ impl Inner {
         trigger: &AgentTrigger,
         schedule: &Schedule,
         now: DateTime<Utc>,
+        limited_until: Option<DateTime<Utc>>,
     ) -> Result<Option<DateTime<Utc>>, EngineError> {
         let key = trigger_key(trigger);
         let mut state = match self.store.trigger_state(&agent.id, &key)? {
@@ -791,10 +809,16 @@ impl Inner {
                 scheduled_at,
                 collapsed,
             } => (scheduled_at, collapsed, false),
+            // A fire that fell due while the agent waited out a usage limit
+            // was deferred, not missed: it runs now that the limit reset.
             Due::Missed {
                 scheduled_at,
                 collapsed,
-            } => (scheduled_at, collapsed, true),
+            } => (
+                scheduled_at,
+                collapsed,
+                !limited_until.is_some_and(|until| scheduled_at <= until),
+            ),
         };
         let run_key = format!("{}:{key}:{}", agent.id, scheduled_at.timestamp_millis());
         let kind = trigger_kind(trigger);
@@ -1041,6 +1065,17 @@ impl Inner {
                         seen_active = true;
                         self.set_status(&mut run, AgentRunStatus::NeedsApproval);
                     }
+                    SessionStatus::Errored
+                        if let Some(limit) = self
+                            .workspace
+                            .chat(&chat_id)
+                            .ok()
+                            .flatten()
+                            .and_then(|chat| chat.limit) =>
+                    {
+                        self.finish_limited(&mut run, &limit);
+                        return;
+                    }
                     SessionStatus::Idle | SessionStatus::Errored => {
                         let errored = session.status == SessionStatus::Errored;
                         // Watches coalesce, so a fast turn can go straight
@@ -1175,6 +1210,38 @@ impl Inner {
             Ok(_) => {}
             Err(err) => tracing::warn!(agent = %run.agent_id, %err, "agents: outcome not counted"),
         }
+        self.revision.send_modify(|rev| *rev += 1);
+        self.wake.notify_one();
+    }
+
+    /// The run stopped on a usage limit: recorded as Limited, kept out of
+    /// the failure streak, and the agent's fires wait for the reset.
+    fn finish_limited(&self, run: &mut AgentRun, limit: &zeron_proto::ChatLimit) {
+        let now = self.clock.now();
+        let until = limit
+            .reset_at
+            .filter(|at| *at > now)
+            .unwrap_or(now + LIMIT_WAIT_UNKNOWN);
+        run.status = AgentRunStatus::Limited;
+        run.summary = Some(match limit.reset_at {
+            Some(at) => format!(
+                "Usage limit reached. The next run waits for the reset at {}",
+                at.format("%Y-%m-%d %H:%M UTC")
+            ),
+            None => format!(
+                "Usage limit reached. The next run waits {} (no reset time was given)",
+                human_duration(LIMIT_WAIT_UNKNOWN)
+            ),
+        });
+        run.finished_at = Some(now);
+        run.read = false;
+        if let Err(err) = self.store.update_run(run) {
+            tracing::warn!(run = %run.id, %err, "agents: limited run not saved");
+        }
+        if let Err(err) = self.store.set_limited_until(&run.agent_id, Some(until)) {
+            tracing::warn!(agent = %run.agent_id, %err, "agents: limit wait not saved");
+        }
+        tracing::info!(agent = %run.agent_id, %until, "agents: run usage-limited; fires wait for the reset");
         self.revision.send_modify(|rev| *rev += 1);
         self.wake.notify_one();
     }

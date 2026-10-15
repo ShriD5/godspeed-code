@@ -95,6 +95,25 @@ impl Harness for ScriptedHarness {
             ];
             return Ok(futures::stream::iter(events).boxed());
         }
+        if instructions.contains("LIMIT") {
+            // Refused for the plan's usage window, reset just past two hours
+            // out (after the agent's two-hour interval slot).
+            let events = vec![
+                Ok(started),
+                Ok(AgentEvent::UsageLimit {
+                    reset_at: chrono::DateTime::from_timestamp(
+                        (Utc::now() + chrono::TimeDelta::minutes(121)).timestamp(),
+                        0,
+                    ),
+                    window: None,
+                }),
+                Ok(AgentEvent::Error {
+                    message: "You've hit your usage limit".into(),
+                }),
+                Ok(done(DoneStatus::Errored, Some("You've hit your usage limit"))),
+            ];
+            return Ok(futures::stream::iter(events).boxed());
+        }
         if instructions.contains("PARTIAL") {
             // Some text, then an error, on a turn the harness still closes
             // as completed: the transcript is the only failure signal.
@@ -735,6 +754,77 @@ async fn three_failures_in_a_row_pause_the_agent() {
     assert!(resumed.paused_reason.is_none());
     assert_eq!(resumed.consecutive_failures, 0);
     assert!(resumed.next_fire_at.is_some());
+    w.core.shutdown().await;
+}
+
+/// A run stopped on a usage limit is Limited, never Failed: limited runs
+/// don't pause the agent, and its fires wait for the reset — a slot that fell
+/// due meanwhile runs at the reset instead of being skipped as a misfire.
+#[tokio::test(flavor = "multi_thread")]
+async fn usage_limited_runs_never_auto_pause_and_fires_wait_for_the_reset() {
+    let w = world();
+    let agent = create(
+        &w.client,
+        draft(
+            "Hungry",
+            "LIMIT on purpose.",
+            json!([{ "kind": "interval", "everySecs": 3600 }]),
+        ),
+    )
+    .await;
+    let mut last = None;
+    for attempt in 1..=3 {
+        let run = w.core.agents.run_now(&agent.id).await.unwrap();
+        let limited = wait_for_run(&w, &run.id, AgentRunStatus::Limited).await;
+        assert!(
+            limited
+                .summary
+                .as_deref()
+                .is_some_and(|s| s.starts_with("Usage limit reached")),
+            "attempt {attempt}: {:?}",
+            limited.summary
+        );
+        last = Some(limited);
+    }
+    let summary = &w.core.agents.list().unwrap()[0];
+    assert_eq!(summary.consecutive_failures, 0);
+    assert!(summary.paused_reason.is_none());
+    let chat_id = last.unwrap().chat_id.unwrap();
+    let reset = w
+        .core
+        .workspace
+        .chat(&chat_id)
+        .unwrap()
+        .unwrap()
+        .limit
+        .and_then(|l| l.reset_at)
+        .expect("the run's chat names the reset");
+    assert!(summary.next_fire_at.is_some_and(|next| next >= reset));
+
+    // Slots inside the limit wait: nothing runs, nothing is skipped.
+    let before = runs_of(&w.core.agents, &agent.id).len();
+    assert_eq!(
+        w.core
+            .agents
+            .tick_at(reset - chrono::TimeDelta::minutes(1))
+            .await,
+        Some(reset)
+    );
+    assert_eq!(runs_of(&w.core.agents, &agent.id).len(), before);
+
+    // Half an hour past the reset the 2h slot is past its misfire grace,
+    // but it was deferred by the limit, so it runs.
+    w.core
+        .agents
+        .tick_at(reset + chrono::TimeDelta::minutes(30))
+        .await;
+    let latest = runs_of(&w.core.agents, &agent.id)[0].clone();
+    assert_eq!(runs_of(&w.core.agents, &agent.id).len(), before + 1);
+    assert_eq!(
+        latest.trigger,
+        zeron_proto::agents::AgentTriggerKind::Interval
+    );
+    assert_ne!(latest.status, AgentRunStatus::Skipped, "{:?}", latest.summary);
     w.core.shutdown().await;
 }
 
