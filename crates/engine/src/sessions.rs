@@ -238,10 +238,16 @@ struct Inner {
     /// dispatch or accepted steer) — the diff sync snapshots the checkout tree
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
+    /// Fired when a turn ends on a usage limit — usage-limit recovery marks
+    /// the chat Limited. Absent in bare tests.
+    limit_listener: OnceLock<LimitListener>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
 pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// Usage-limit hook: called with the chat and what the provider said.
+pub type LimitListener = Arc<dyn Fn(&str, crate::limit_recovery::LimitSignal) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -279,6 +285,7 @@ impl SessionsEngine {
                 generated_images: OnceLock::new(),
                 scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
+                limit_listener: OnceLock::new(),
             }),
         }
     }
@@ -348,6 +355,11 @@ impl SessionsEngine {
     /// Wire the turn-start listener (called once at engine assembly).
     pub fn set_turn_listener(&self, listener: TurnListener) {
         let _ = self.inner.turn_listener.set(listener);
+    }
+
+    /// Wire the usage-limit listener (called once at engine assembly).
+    pub fn set_limit_listener(&self, listener: LimitListener) {
+        let _ = self.inner.limit_listener.set(listener);
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -2486,6 +2498,11 @@ async fn drive_run(
     // stream (its token was cancelled); past it, a terminal Done is synthesized.
     let mut interrupt_deadline: Option<tokio::time::Instant> = None;
     let mut interrupted = false;
+    // This turn's usage-limit signal (the driver's structured event) and
+    // its latest error text (what the engine classifies when no driver
+    // said): read when the turn ends errored.
+    let mut turn_limit: Option<(Option<chrono::DateTime<chrono::Utc>>, Option<String>)> = None;
+    let mut turn_error: Option<String> = None;
     let mut saw_session_started = false;
     // Liveness heartbeat: this loop RUNNING is proof the harness stream is
     // open, so freshness must not depend on events arriving. Silent stretches
@@ -2861,6 +2878,25 @@ async fn drive_run(
             };
             event
         };
+
+        // ── usage limits ───────────────────────────────────────────────
+        // Engine state (the chat's Limited marker), never stream traffic:
+        // viewports can't decode it and the transcript has the error. A
+        // subagent's own limit stays its own (t3code #15665): only the
+        // parent turn's end decides the chat.
+        match &event {
+            AgentEvent::UsageLimit { reset_at, window } => {
+                turn_limit = Some((*reset_at, window.clone()));
+                continue;
+            }
+            AgentEvent::Subagent { event: nested, .. }
+                if matches!(nested.as_ref(), AgentEvent::UsageLimit { .. }) =>
+            {
+                continue;
+            }
+            AgentEvent::Error { message } => turn_error = Some(message.clone()),
+            _ => {}
+        }
 
         // ── subagent routing ───────────────────────────────────────────
         // Tagged events NEVER fold into the parent transcript: they stream
@@ -3460,6 +3496,38 @@ async fn drive_run(
                     completed_turn,
                 );
                 continue;
+            }
+            // A turn the provider refused for a usage limit: the driver's
+            // signal, else the error text read the same way (drivers with
+            // text-only failures). Reported before the Errored status
+            // publishes, so watchers see the marker with it.
+            let limit = std::mem::take(&mut turn_limit);
+            let error_text = std::mem::take(&mut turn_error);
+            if *status == DoneStatus::Errored && !interrupted {
+                let done_error = match &event {
+                    AgentEvent::Done { error, .. } => error.clone(),
+                    _ => None,
+                };
+                let now = chrono::Utc::now();
+                let limit = limit.or_else(|| {
+                    done_error
+                        .iter()
+                        .chain(error_text.iter())
+                        .find_map(|text| zeron_harness::limits::classify(text, now))
+                        .map(|hit| (hit.reset_at, None))
+                });
+                if let Some((reset_at, window)) = limit
+                    && let Some(listener) = inner.limit_listener.get()
+                {
+                    listener(
+                        &chat_id,
+                        crate::limit_recovery::LimitSignal {
+                            reset_at,
+                            window,
+                            harness: harness_id,
+                        },
+                    );
+                }
             }
             final_completed_turn = completed_turn;
             break match status {

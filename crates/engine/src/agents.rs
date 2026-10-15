@@ -430,6 +430,28 @@ impl Agents {
         self.inner.store.list_runs(filter)
     }
 
+    /// [`Self::owns_chat`] through a weak handle, for hooks that must not
+    /// keep the agents graph (and the sessions engine it holds) alive.
+    pub fn owns_chat_probe(&self) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
+        let weak = Arc::downgrade(&self.inner);
+        Arc::new(move |chat_id| {
+            weak.upgrade()
+                .is_some_and(|inner| Agents { inner }.owns_chat(chat_id))
+        })
+    }
+
+    /// The chat was created by one of this device's agent runs.
+    pub fn owns_chat(&self, chat_id: &str) -> bool {
+        self.inner
+            .store
+            .list_runs(&AgentRunFilter {
+                chat_id: Some(chat_id.to_owned()),
+                include_archived: true,
+                ..Default::default()
+            })
+            .is_ok_and(|runs| !runs.is_empty())
+    }
+
     pub fn mark_runs(
         &self,
         ids: &[String],

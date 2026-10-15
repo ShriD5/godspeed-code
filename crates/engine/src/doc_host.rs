@@ -1180,6 +1180,73 @@ impl DocHost {
         }
     }
 
+    /// A usage limit lifted: thaw the chat's queue (what it held was held
+    /// for the limit, and a restart restores queues frozen) and drain it.
+    /// Opens the chat if it went cold; a no-op for chats this device doesn't
+    /// host.
+    pub fn release_queue(&self, chat_id: &str) {
+        let Ok(handle) = self.open(chat_id) else {
+            return;
+        };
+        handle.queue_paused.store(false, Ordering::Release);
+        let host = self.clone();
+        self.spawn_worker(async move {
+            host.drain_queue(&handle).await;
+        });
+    }
+
+    /// Rows waiting in a chat's queue (0 for a chat that can't be opened).
+    pub fn queue_len(&self, chat_id: &str) -> usize {
+        self.open(chat_id)
+            .ok()
+            .and_then(|handle| handle.doc.read_queue().ok())
+            .map_or(0, |queue| queue.len())
+    }
+
+    /// The chat's usage-limit marker holds sends right now
+    /// (`ChatLimit::holds_sends`).
+    fn limit_holds(&self, chat_id: &str) -> bool {
+        self.workspace()
+            .and_then(|ws| ws.chat(chat_id).ok().flatten())
+            .and_then(|chat| chat.limit)
+            .is_some_and(|limit| limit.holds_sends(chrono::Utc::now()))
+    }
+
+    /// Put a usage-limit resume's continuation at the head of the queue —
+    /// ahead of the messages held while limited — and drain. `row_id` names
+    /// the limit it resumes: false when that continuation is already queued.
+    pub fn queue_limit_resume(
+        &self,
+        chat_id: &str,
+        row_id: &str,
+        prompt: &str,
+    ) -> Result<bool, EngineError> {
+        let handle = self.open(chat_id)?;
+        if handle.doc.read_queue()?.iter().any(|row| row.id == row_id) {
+            return Ok(false);
+        }
+        let item = QueuedMessage {
+            id: row_id.to_string(),
+            text: prompt.to_string(),
+            attachments: Vec::new(),
+            hold_for_turn_end: false,
+            issued_by: self.inner.config.device_id.clone(),
+            issued_at: now_ms(),
+            edited_at: None,
+            delivery_gate: None,
+        };
+        handle.doc.insert_queued(0, &item)?;
+        // Resuming is a deliberate send: it thaws a queue a Stop froze.
+        handle.queue_paused.store(false, Ordering::Release);
+        handle.publish_queue();
+        self.save_snapshot(&handle);
+        let host = self.clone();
+        self.spawn_worker(async move {
+            host.drain_queue(&handle).await;
+        });
+        Ok(true)
+    }
+
     /// Wire the workspace host (engine assembly) — the source of chat-ownership rows.
     pub fn set_workspace(&self, workspace: WorkspaceHost) {
         let chats = workspace.watch_chats();
@@ -4094,6 +4161,11 @@ impl DocHost {
             if sessions.turn_in_flight(&handle.chat_id) {
                 return; // All queued messages wait, including rows from older clients.
             }
+            // A usage-limited chat holds its queue until the reset (and its
+            // scheduled continuation) instead of running into the limit.
+            if self.limit_holds(&handle.chat_id) {
+                return;
+            }
             // A row from another device names its images by `pending://` ref
             // while the bytes chase it over the peer link. Hold it (in order)
             // until they land — UploadCommit re-drains — rather than handing
@@ -5453,6 +5525,22 @@ impl DocHost {
                         Some("held until the turn ends".into()),
                     ));
                 }
+                // Sent while the chat is usage-limited: it waits in the queue
+                // and goes out after the reset (behind the continuation).
+                if self.limit_holds(chat_id) {
+                    self.hold_until_turn_end(
+                        handle,
+                        message_id,
+                        &request.prompt,
+                        entry.issued_at,
+                        false,
+                        Some(&request),
+                    )?;
+                    return Ok((
+                        SessionCommandStatus::Applied,
+                        Some("held until the usage limit resets".into()),
+                    ));
+                }
                 // Timestamp canonicalization: the user message lands in
                 // history at the moment the user SENT it (the entry's
                 // issued_at, clamped against clock skew) — not whenever this
@@ -5663,6 +5751,19 @@ impl DocHost {
             return Ok((
                 SessionCommandStatus::Applied,
                 Some("held until the turn ends".into()),
+            ));
+        }
+        // No live turn to steer into a usage-limited chat: the message would
+        // start one against the limit, so it waits like a send does.
+        if !prompt.trim().is_empty()
+            && !sessions.turn_in_flight(chat_id)
+            && self.limit_holds(chat_id)
+        {
+            let id = message_id.unwrap_or_else(new_id);
+            self.hold_until_turn_end(handle, &id, &prompt, issued_at, false, None)?;
+            return Ok((
+                SessionCommandStatus::Applied,
+                Some("held until the usage limit resets".into()),
             ));
         }
         // The transcript shows the send while mailbox backpressure holds it.

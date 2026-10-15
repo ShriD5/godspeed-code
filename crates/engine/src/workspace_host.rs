@@ -1182,6 +1182,15 @@ impl WorkspaceHost {
         Ok(self.mutate(|doc| doc.set_chat_config(chat_id, config))?)
     }
 
+    /// Set or clear the chat's usage-limit marker (`limit_recovery`).
+    pub fn set_chat_limit(
+        &self,
+        chat_id: &str,
+        limit: Option<&zeron_proto::ChatLimit>,
+    ) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.set_chat_limit(chat_id, limit))?)
+    }
+
     /// Tombstone: removes the chats (and session-status) row; the per-chat session
     /// doc remains untouched.
     pub fn delete_chat(&self, chat_id: &str) -> Result<bool, EngineError> {

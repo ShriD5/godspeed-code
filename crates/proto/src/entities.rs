@@ -342,6 +342,38 @@ impl ChatLimit {
     pub fn due(&self, now: DateTime<Utc>) -> bool {
         self.reset_at.is_some_and(|at| at <= now)
     }
+
+    /// Sends wait instead of running into the limit: until the reset, and
+    /// past it while a scheduled resume has yet to send its continuation
+    /// (which goes first).
+    pub fn holds_sends(&self, now: DateTime<Utc>) -> bool {
+        !self.due(now) || self.recovery == LimitRecovery::ResumeAtReset
+    }
+}
+
+/// Device setting for chats this engine hosts (`GetLimitRecoverySettings`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitRecoverySettings {
+    /// Arm "Resume at reset" on every newly Limited chat whose reset time is
+    /// known; off, the banner asks.
+    #[serde(default)]
+    pub auto_resume: bool,
+}
+
+/// A choice from the composer's limit banner (`SetChatLimitRecovery`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LimitRecoveryAction {
+    /// Continue the session at the reset, or at the given time when no
+    /// reset is known (a time in the past retries now).
+    Resume,
+    /// Out of the way until the reset.
+    Snooze,
+    /// Cancel a scheduled resume or snooze; the chat stays Limited.
+    Ask,
+    /// Drop the Limited state now; anything held goes out.
+    Dismiss,
 }
 
 /// Display status for a chat row/tab: the four user-facing states plus a

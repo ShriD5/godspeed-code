@@ -51,6 +51,7 @@
 //! whose checkout always lives on the routed target device.
 
 mod agents;
+mod limit_recovery;
 mod git_actions;
 mod voice_chat;
 mod voice_remote;
@@ -725,6 +726,7 @@ pub struct EngineRpc {
     local_import: Option<crate::local_import::LocalImporter>,
     chat_import: Option<crate::chat_import::ChatImporter>,
     agents: Option<crate::agents::Agents>,
+    limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     engine_info: EngineInfo,
 }
 
@@ -775,6 +777,7 @@ impl EngineRpc {
             local_import: None,
             chat_import: None,
             agents: None,
+            limit_recovery: None,
             engine_info,
         }
     }
@@ -823,6 +826,14 @@ impl EngineRpc {
     }
 
     /// Attach the always-on agents service (agent RPCs + webhooks).
+    pub fn with_limit_recovery(
+        mut self,
+        recovery: crate::limit_recovery::LimitRecoveryService,
+    ) -> Self {
+        self.limit_recovery = Some(recovery);
+        self
+    }
+
     pub fn with_agents(mut self, agents: crate::agents::Agents) -> Self {
         self.agents = Some(agents);
         self
@@ -1629,7 +1640,8 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 /// list (plus [`is_stream_method`] for streams) to make more of the surface
 /// device-addressable — the handlers themselves need no changes.
 fn forwardable(method: &str) -> bool {
-    if voice_remote::handles(method) || agents::handles(method) {
+    if voice_remote::handles(method) || agents::handles(method) || limit_recovery::handles(method)
+    {
         return true;
     }
     // Git write actions run where the checkout lives.
@@ -2044,6 +2056,9 @@ impl RpcService for EngineRpc {
         }
         if agents::handles(method) {
             return self.agents_rpc(method, params).await;
+        }
+        if limit_recovery::handles(method) {
+            return self.limit_recovery_rpc(method, params);
         }
         if git_actions::handles(method) {
             return self.git_action(method, params).await;

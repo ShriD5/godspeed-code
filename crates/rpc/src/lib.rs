@@ -282,6 +282,15 @@ pub mod methods {
     /// `{ids, read?, archived?}` → `{changed}`.
     pub const MARK_AGENT_RUNS: &str = "MarkAgentRuns";
 
+    // Usage-limit recovery (`zeron_proto::ChatLimit`). Relay-forwardable: the
+    // chat's host device owns the recovery timer and its default.
+    /// `{}` → `LimitRecoverySettings`.
+    pub const GET_LIMIT_RECOVERY_SETTINGS: &str = "GetLimitRecoverySettings";
+    /// `LimitRecoverySettings` → `LimitRecoverySettings`.
+    pub const SET_LIMIT_RECOVERY_SETTINGS: &str = "SetLimitRecoverySettings";
+    /// `{chatId, action: LimitRecoveryAction, resetAt?}` → `{limit: ChatLimit | null}`.
+    pub const SET_CHAT_LIMIT_RECOVERY: &str = "SetChatLimitRecovery";
+
     // Git write actions (ControlRpc, relay-forwardable — they run on the
     // device that owns the checkout). Params carry the checkout `cwd`.
     /// Branch, upstream, ahead/behind and remote facts for one checkout.
