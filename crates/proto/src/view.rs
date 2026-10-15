@@ -96,7 +96,7 @@ pub fn display_status(chat: &Chat, session: Option<&Session>, now: DateTime<Utc>
 pub fn attention_rank(status: ChatIndicator) -> u8 {
     match status {
         ChatIndicator::AwaitingInput | ChatIndicator::AwaitingApproval => 0,
-        ChatIndicator::Errored => 1,
+        ChatIndicator::Errored | ChatIndicator::Limited => 1,
         ChatIndicator::Working => 2,
         ChatIndicator::Completed => 3,
         ChatIndicator::Idle => 4,

@@ -254,6 +254,13 @@ pub struct Chat {
     /// deleted) is tolerated rather than cascaded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_chat_id: Option<String>,
+    /// Set while the chat's last turn is stopped on a usage limit: the
+    /// sidebar's Limited status and the composer's recovery banner read it,
+    /// and the host's recovery timer acts on it. Written only through
+    /// `set_chat_limit` (never by a whole-row upsert, so a stale row can't
+    /// clear it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<ChatLimit>,
 }
 
 impl Chat {
@@ -280,8 +287,65 @@ impl Chat {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Usage-limit recovery
+// ---------------------------------------------------------------------------
+
+/// What a Limited chat does when its window resets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LimitRecovery {
+    /// Nothing scheduled: the composer banner asks.
+    #[default]
+    Ask,
+    /// Continue the same session automatically once the reset passes.
+    ResumeAtReset,
+    /// Marked out of the way until the reset; then the chat simply stops
+    /// being Limited and anything queued goes out.
+    Snoozed,
+}
+
+/// Where a Limited chat's reset time came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LimitResetSource {
+    /// The provider named it with the failure.
+    Provider,
+    /// Read from the exhausted window of the account's usage meters.
+    UsageWindow,
+    /// Picked in the banner because nobody else knew.
+    User,
+}
+
+/// A chat whose last turn the provider refused for a usage limit. Rides
+/// the chat's registry row (persisted and synced like the rest of it) until
+/// the chat resumes, a snoozed reset passes, or someone dismisses it.
+/// Recovery always continues the same chat on the same account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLimit {
+    pub limited_at: DateTime<Utc>,
+    /// When the window reopens; `None` when nothing said (the banner asks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_source: Option<LimitResetSource>,
+    /// The window that ran out, when the provider named it ("5-hour").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    #[serde(default)]
+    pub recovery: LimitRecovery,
+}
+
+impl ChatLimit {
+    /// The reset has passed (a chat with no reset time is never due).
+    pub fn due(&self, now: DateTime<Utc>) -> bool {
+        self.reset_at.is_some_and(|at| at <= now)
+    }
+}
+
 /// Display status for a chat row/tab: the four user-facing states plus a
-/// distinct Errored. Derived — never stored.
+/// distinct Errored and Limited. Derived — never stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ChatIndicator {
@@ -290,6 +354,9 @@ pub enum ChatIndicator {
     /// Waiting on a permission approval.
     AwaitingApproval,
     Errored,
+    /// Stopped on a usage limit until its window resets (`Chat::limit`).
+    /// Seen or not: the chat is waiting on something either way.
+    Limited,
     /// Finished running (or errored out) but not seen yet on any device.
     Completed,
     Idle,
@@ -304,6 +371,7 @@ pub fn chat_indicator(chat: &Chat, live: Option<&Session>) -> ChatIndicator {
             ChatIndicator::AwaitingApproval
         }
         Some(SessionStatus::AwaitingInput) => ChatIndicator::AwaitingInput,
+        _ if chat.limit.is_some() => ChatIndicator::Limited,
         Some(SessionStatus::Errored) if chat.unseen() => ChatIndicator::Errored,
         _ if chat.unseen() => ChatIndicator::Completed,
         _ => ChatIndicator::Idle,
@@ -1593,6 +1661,66 @@ pub struct ChatConnectivity {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    /// Limited outranks the seen/unseen derivations but never a live turn:
+    /// a resumed chat reads Working while its continuation runs.
+    #[test]
+    fn a_limited_chat_reads_limited_until_it_runs_again() {
+        let at = Utc.timestamp_opt(1_000, 0).unwrap();
+        let mut chat = Chat {
+            id: "c".into(),
+            device_id: "d".into(),
+            title: None,
+            archived: false,
+            cwd: None,
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: Some(at),
+            created_at: at,
+            harness_session_id: None,
+            harness_session_cwd: None,
+            space_id: None,
+            last_seen_at: Some(at),
+            room_gen: None,
+            parent_chat_id: None,
+            limit: None,
+        };
+        let session = |status| Session {
+            last_completed_turn: None,
+            chat_id: "c".into(),
+            device_id: "d".into(),
+            status,
+            started_at: None,
+            updated_at: at,
+            running_subagents: 0,
+            background_tasks: 0,
+            awaiting_approval: false,
+        };
+        assert_eq!(chat_indicator(&chat, None), ChatIndicator::Idle);
+        chat.limit = Some(ChatLimit {
+            limited_at: at,
+            reset_at: None,
+            reset_source: None,
+            window: None,
+            recovery: LimitRecovery::Ask,
+        });
+        assert_eq!(chat_indicator(&chat, None), ChatIndicator::Limited);
+        let errored = session(SessionStatus::Errored);
+        assert_eq!(chat_indicator(&chat, Some(&errored)), ChatIndicator::Limited);
+        let working = session(SessionStatus::Working);
+        assert_eq!(chat_indicator(&chat, Some(&working)), ChatIndicator::Working);
+        let limit = chat.limit.as_mut().unwrap();
+        assert!(!limit.due(at), "no reset time is never due");
+        limit.reset_at = Some(at);
+        assert!(limit.due(at));
+        assert_eq!(
+            serde_json::to_value(&*limit).unwrap(),
+            serde_json::json!({"limitedAt": "1970-01-01T00:16:40Z", "resetAt": "1970-01-01T00:16:40Z", "recovery": "ask"})
+        );
+    }
 
     #[test]
     fn outside_workspace_reads_round_trip_without_breaking_older_reasons() {

@@ -687,6 +687,9 @@ pub struct Theme {
     pub success: Hsla,
     /// Working / streaming indicator in the selected accent family.
     pub busy: Hsla,
+    /// Usage-limited: stopped until the provider's window resets. Violet, so
+    /// it reads apart from working, asking, approval, failed and done.
+    pub limited: Hsla,
     /// Three-tone animated pixel glyph palette in the selected accent family.
     pub glyph: GlyphPalette,
     /// Softer success for text on a success-tinted chip.
@@ -1181,6 +1184,7 @@ impl Theme {
             warning_muted: oklch(0.924, 0.12, 95.746), // amber-200
             success: oklch(0.765, 0.177, 163.223),     // emerald-400
             busy: accent.activity,
+            limited: oklch(0.702, 0.183, 293.541),     // violet-400
             glyph: accent.glyph,
             success_muted: oklch(0.845, 0.143, 164.978), // emerald-300
             surface_raised_hover: neutral(0.29),
@@ -1277,6 +1281,7 @@ impl Theme {
             warning_muted: oklch(0.473, 0.137, 46.201), // amber-800
             success: oklch(0.596, 0.145, 163.225),      // emerald-600
             busy: accent.activity,
+            limited: oklch(0.541, 0.281, 293.009),      // violet-600
             glyph: accent.glyph,
             success_muted: oklch(0.508, 0.118, 165.612), // emerald-700
             // Opaque pills darken on hover here rather than brighten — same
@@ -1495,6 +1500,8 @@ impl Theme {
         theme.diff_del = model_color(colors.diff_delete);
         theme.diff_hunk_bg = model_color(colors.diff_hunk);
         theme.terminal = TerminalColors::from_variant(variant);
+        // A theme's own magenta keeps Limited in its palette.
+        theme.limited = theme.terminal.ansi[5];
         if !is_curated_builtin {
             theme.terminal.foreground = model_color(harden_model_foreground(
                 variant.terminal.foreground,

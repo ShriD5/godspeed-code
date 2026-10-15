@@ -441,6 +441,7 @@ pub(crate) fn seed(
             last_seen_at: Some(ms(if demo.seen { last } else { last - MIN })),
             room_gen: Some(2),
             parent_chat_id: demo.parent.map(str::to_owned),
+            limit: None,
         };
         doc.upsert_chat(&chat)?;
         if let Some(status) = demo.status {

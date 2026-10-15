@@ -8317,6 +8317,7 @@ impl Shell {
                 zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
                 zeron_proto::ChatIndicator::AwaitingApproval => Some("Needs approval"),
                 zeron_proto::ChatIndicator::Errored => Some("Failed"),
+                zeron_proto::ChatIndicator::Limited => Some("Limited"),
                 zeron_proto::ChatIndicator::Completed => Some("Done"),
                 zeron_proto::ChatIndicator::Idle => None,
             }
@@ -14351,6 +14352,7 @@ mod tests {
             last_seen_at: None,
             room_gen: None,
             parent_chat_id: None,
+            limit: None,
         }
     }
 
@@ -17468,6 +17470,7 @@ mod exit_regressions {
                         harness_session_id: None,
                         harness_session_cwd: None,
                         parent_chat_id: None,
+                        limit: None,
                         space_id: Some("other".into()),
                         last_seen_at: None,
                         room_gen: None,
