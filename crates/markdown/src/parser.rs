@@ -770,14 +770,163 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
 /// constantly; user report: the link isn't clickable). Runs already inside a
 /// link or code span pass through untouched. Idempotent, so nested containers
 /// re-applying it on their merged output is harmless.
+///
+/// Codex file-citation directives ride the same pass: they are plain text to
+/// pulldown-cmark, and every turn shows up as raw markup with a full local path
+/// unless they become links here.
 fn autolink_runs(runs: Vec<InlineRun>) -> Vec<InlineRun> {
     let mut out = Vec::with_capacity(runs.len());
     for run in runs {
         if run.style.link.is_some() || run.style.code {
             out.push(run);
-        } else {
-            push_text_autolinked(&mut out, &run.text, &run.style);
+            continue;
         }
+        let mut rest = run.text.as_str();
+        while let Some((at, citation)) = find_file_citation(rest) {
+            push_text_autolinked(&mut out, &rest[..at], &run.style);
+            let mut linked = run.style.clone();
+            linked.link = Some(citation.target);
+            out.push(InlineRun {
+                text: citation.label,
+                style: linked,
+            });
+            rest = &rest[at + citation.len..];
+        }
+        push_text_autolinked(&mut out, rest, &run.style);
+    }
+    out
+}
+
+const FILE_CITATION: &str = ":codex-file-citation";
+
+/// A parsed `:codex-file-citation[label]{path="…" line_range_start=12 …}`.
+struct FileCitation {
+    /// Byte length of the whole directive in the text it was found in.
+    len: usize,
+    /// What the reader sees: the directive's `[label]`, else the file name
+    /// (with its line when the directive names one).
+    label: String,
+    /// A file-link destination the UI's file-link grammar resolves (`#L12`
+    /// anchors, percent-encoded so spaces and `#` stay inside the path).
+    target: String,
+}
+
+/// The first complete Codex file-citation directive in `text` (Zeron #424).
+/// Codex's skills emit these generic-directive style (`:name[label]{attrs}`);
+/// the renderer has no directive support, so the reader got the raw markup.
+/// An unclosed directive (mid-stream) or one without a `path` stays text.
+fn find_file_citation(text: &str) -> Option<(usize, FileCitation)> {
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(FILE_CITATION) {
+        let at = from + rel;
+        from = at + FILE_CITATION.len();
+        if let Some(citation) = parse_file_citation(&text[at..]) {
+            return Some((at, citation));
+        }
+    }
+    None
+}
+
+fn parse_file_citation(text: &str) -> Option<FileCitation> {
+    let mut rest = text.strip_prefix(FILE_CITATION)?;
+    let mut label = None;
+    if let Some(after) = rest.strip_prefix('[') {
+        let close = after.find(']')?;
+        label = Some(after[..close].trim().to_string()).filter(|l| !l.is_empty());
+        rest = &after[close + 1..];
+    }
+    let body = rest.strip_prefix('{')?;
+    // The closing brace is the first one outside a quoted value.
+    let mut quote = None;
+    let close = body.char_indices().find_map(|(i, c)| {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '}') => return Some(i),
+            (None, '\n') => return Some(usize::MAX),
+            _ => {}
+        }
+        None
+    })?;
+    if close == usize::MAX {
+        return None;
+    }
+    let attrs = directive_attrs(&body[..close]);
+    let attr = |names: &[&str]| {
+        names.iter().find_map(|name| {
+            attrs
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        })
+    };
+    let path = attr(&["path", "file"])
+        .filter(|p| !p.trim().is_empty())?
+        .trim();
+    let line = attr(&["line_range_start", "line_start", "start_line", "line"])
+        .and_then(|l| l.trim().parse::<u32>().ok())
+        .filter(|l| *l > 0);
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(path);
+    let label = label.unwrap_or_else(|| match line {
+        Some(line) => format!("{name}:{line}"),
+        None => name.to_string(),
+    });
+    let mut target = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            '%' => target.push_str("%25"),
+            ' ' => target.push_str("%20"),
+            '#' => target.push_str("%23"),
+            c => target.push(c),
+        }
+    }
+    if let Some(line) = line {
+        target.push_str(&format!("#L{line}"));
+    }
+    Some(FileCitation {
+        len: text.len() - body.len() + close + 1,
+        label,
+        target,
+    })
+}
+
+/// `key="value"`, `key='value'` and `key=value` pairs, whitespace separated.
+fn directive_attrs(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = body.trim_start();
+    while !rest.is_empty() {
+        let key_end = rest
+            .find(|c: char| c == '=' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let key = &rest[..key_end];
+        rest = &rest[key_end..];
+        let value = if let Some(after) = rest.strip_prefix('=') {
+            match after.chars().next() {
+                Some(q @ ('"' | '\'')) => {
+                    let inner = &after[1..];
+                    let end = inner.find(q).unwrap_or(inner.len());
+                    rest = inner.get(end + 1..).unwrap_or("");
+                    &inner[..end]
+                }
+                _ => {
+                    let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                    rest = &after[end..];
+                    &after[..end]
+                }
+            }
+        } else {
+            ""
+        };
+        if !key.is_empty() {
+            out.push((key.to_string(), value.to_string()));
+        }
+        rest = rest.trim_start();
     }
     out
 }
@@ -1350,6 +1499,50 @@ mod tests {
             .collect();
         assert!(links.len() <= 1, "expected at most one link: {links:?}");
         links.into_iter().next()
+    }
+
+    /// Zeron #424: Codex file-citation directives become file links showing
+    /// the file name instead of the raw markup and full path.
+    #[test]
+    fn codex_file_citations_become_file_links() {
+        assert_eq!(
+            only_link(
+                "Reviewed the document. :codex-file-citation{path=\"/path/to/document.pdf\" purpose=\"source\"}\n"
+            ),
+            Some(("document.pdf".into(), "/path/to/document.pdf".into()))
+        );
+        let tree = parse_full("See :codex-file-citation{path=\"/a/b.rs\"} now.\n");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!()
+        };
+        let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "See b.rs now.");
+        // Lines become `#L` anchors; spaces stay inside the path; a written
+        // label wins over the file name; `}` inside a quoted value is data.
+        assert_eq!(
+            only_link(
+                "x :codex-file-citation{path='/my docs/a}b.rs' line_range_start=12 line_range_end=20}\n"
+            ),
+            Some(("a}b.rs:12".into(), "/my%20docs/a}b.rs#L12".into()))
+        );
+        assert_eq!(
+            only_link(":codex-file-citation[the spec]{path=\"src/spec.md\"}\n"),
+            Some(("the spec".into(), "src/spec.md".into()))
+        );
+    }
+
+    /// Unfinished, pathless, or code-span directives stay as written.
+    #[test]
+    fn incomplete_file_citations_stay_text() {
+        assert_eq!(only_link(":codex-file-citation{path=\"/a/b.rs\"\n"), None);
+        assert_eq!(
+            only_link(":codex-file-citation{purpose=\"source\"}\n"),
+            None
+        );
+        assert_eq!(
+            only_link("`:codex-file-citation{path=\"/a/b.rs\"}`\n"),
+            None
+        );
     }
 
     /// Bare URLs autolink (the GFM extension pulldown-cmark lacks): the URL
