@@ -50,6 +50,7 @@
 //! handlers stay transport-agnostic. This includes the workspace file surface,
 //! whose checkout always lives on the routed target device.
 
+mod agents;
 mod voice_chat;
 mod voice_remote;
 use async_trait::async_trait;
@@ -700,6 +701,7 @@ pub struct EngineRpc {
     updater: Option<zeron_update::Updater>,
     harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
     local_import: Option<crate::local_import::LocalImporter>,
+    agents: Option<crate::agents::Agents>,
     engine_info: EngineInfo,
 }
 
@@ -748,6 +750,7 @@ impl EngineRpc {
             updater: None,
             harness_updates: None,
             local_import: None,
+            agents: None,
             engine_info,
         }
     }
@@ -786,6 +789,12 @@ impl EngineRpc {
     /// Attach the local→synced profile importer (synced runtimes only).
     pub fn with_local_import(mut self, importer: crate::local_import::LocalImporter) -> Self {
         self.local_import = Some(importer);
+        self
+    }
+
+    /// Attach the always-on agents service (agent RPCs + webhooks).
+    pub fn with_agents(mut self, agents: crate::agents::Agents) -> Self {
+        self.agents = Some(agents);
         self
     }
 
@@ -1485,7 +1494,7 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 /// list (plus [`is_stream_method`] for streams) to make more of the surface
 /// device-addressable — the handlers themselves need no changes.
 fn forwardable(method: &str) -> bool {
-    if voice_remote::handles(method) {
+    if voice_remote::handles(method) || agents::handles(method) {
         return true;
     }
     matches!(
@@ -1604,6 +1613,7 @@ fn is_stream_method(method: &str) -> bool {
         method,
         methods::WATCH_DOC_MESSAGES
             | methods::WATCH_QUEUE
+            | methods::WATCH_AGENTS
             | methods::SUBSCRIBE_TERMINAL
             | methods::WATCH_CHECKOUT_DIFFS
             | methods::WATCH_WORKSPACE_GIT_STATUS
@@ -1851,6 +1861,15 @@ impl RpcService for AuthRpc {
 
 #[async_trait]
 impl RpcService for EngineRpc {
+    async fn handle_http(&self, request: zeron_rpc::HttpRequest) -> zeron_rpc::HttpResponse {
+        match &self.agents {
+            Some(agents) => agents.handle_webhook(request).await,
+            None => {
+                zeron_rpc::HttpResponse::json(404, &serde_json::json!({ "error": "not found" }))
+            }
+        }
+    }
+
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         // Device-addressed routing: forward calls that target another device over its
         // relay. The target compares the id to its own, so forwards cannot loop.
@@ -1882,6 +1901,9 @@ impl RpcService for EngineRpc {
         }
         if voice_remote::handles(method) {
             return self.voice_remote(method, params).await;
+        }
+        if agents::handles(method) {
+            return self.agents_rpc(method, params).await;
         }
         if AuthRpc::handles(method) {
             return AuthRpc::new(self.auth()?.clone())

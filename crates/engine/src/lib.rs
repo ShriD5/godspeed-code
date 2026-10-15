@@ -16,6 +16,7 @@ use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
 use zeron_sync::DocsStore;
 
 pub mod agent_accounts;
+pub mod agents;
 pub mod auth;
 mod change_request_store;
 pub mod change_requests;
@@ -50,6 +51,7 @@ pub mod workspace_search;
 mod worktree_settings;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
+pub use agents::Agents;
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use diff_sync::{
@@ -148,6 +150,8 @@ pub struct EngineCore {
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
     pub harness_updates: harness_updates::HarnessUpdateCoordinator,
+    /// Always-on agents: device-scoped definitions + scheduler + inbox.
+    pub agents: Agents,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -327,6 +331,14 @@ impl EngineCore {
             turn_diff.note_turn_start(chat_id, cwd);
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
+        let agents = Agents::open(
+            data_dir,
+            workspace.clone(),
+            doc_host.clone(),
+            sessions.clone(),
+            registry.clone(),
+        )?;
+        agents.start();
         Ok(Self {
             sessions,
             doc_host,
@@ -343,6 +355,7 @@ impl EngineCore {
             uploads,
             agent_accounts,
             harness_updates,
+            agents,
             device_id,
             local_import,
             workspace_scope: profile.scope(),
@@ -477,7 +490,8 @@ impl EngineCore {
         )
         .with_auth(self.auth())
         .with_previews(self.previews.clone())
-        .with_harness_updates(self.harness_updates.clone());
+        .with_harness_updates(self.harness_updates.clone())
+        .with_agents(self.agents.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }
@@ -506,6 +520,8 @@ impl EngineCore {
     /// kill live PTYs, stamp our workspace `lastSeenAt`, and flush every open doc
     /// snapshot.
     pub async fn shutdown(&self) {
+        // First: no new agent run may start against a draining engine.
+        self.agents.shutdown().await;
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally
@@ -583,6 +599,10 @@ impl RpcService for HeadlessRpc {
             let _ = stop_tx.send(());
         });
         RpcReply::value(&serde_json::json!({ "ok": true }))
+    }
+
+    async fn handle_http(&self, request: zeron_rpc::HttpRequest) -> zeron_rpc::HttpResponse {
+        self.inner.handle_http(request).await
     }
 }
 

@@ -37,6 +37,9 @@ sha2.workspace = true
 reqwest.workspace = true
 ignore.workspace = true
 fff-search.workspace = true
+# Always-on agents: 5-field cron evaluated in IANA time zones (DST-aware).
+croner = "4"
+chrono-tz = "0.10"
 
 same-file = "1"
 tempfile.workspace = true
