@@ -241,6 +241,21 @@ pub(crate) struct ControlRequestBody {
     pub tool_name: String,
     #[serde(default)]
     pub input: Value,
+    /// `PermissionUpdate`s the CLI proposes for "always allow"; echoed back
+    /// (scoped to the session) for "approve for this session".
+    #[serde(default)]
+    pub permission_suggestions: Vec<Value>,
+    #[serde(default)]
+    pub blocked_path: Option<String>,
+    #[serde(default)]
+    pub decision_reason: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The CLI forbids remembering this approval.
+    #[serde(default)]
+    pub suppress_always_allow_rule: bool,
 }
 
 /// Parse one stdout JSONL line. `Err` = not JSON; unknown types = `Other`.
@@ -385,6 +400,16 @@ pub(crate) fn set_model_request_line(request_id: &str, model: Option<&str>) -> S
         "type": "control_request",
         "request_id": request_id,
         "request": { "subtype": "set_model", "model": model },
+    })
+    .to_string()
+}
+
+/// Switch the live process's permission mode (not into or out of bypass).
+pub(crate) fn set_permission_mode_line(request_id: &str, mode: &str) -> String {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "set_permission_mode", "mode": mode },
     })
     .to_string()
 }

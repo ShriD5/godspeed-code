@@ -1458,3 +1458,211 @@ async fn a_stopped_turn_keeps_the_process_and_its_background_work() {
         "closing the mailbox ends the run"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Access modes and approvals
+// ---------------------------------------------------------------------------
+
+/// Controls answering each approval with the next label from `labels`,
+/// recording every question asked.
+fn approval_controls(
+    labels: Vec<&'static str>,
+) -> (
+    RunControls,
+    mpsc::Sender<SteerMessage>,
+    Arc<Mutex<Vec<UserInputQuestion>>>,
+) {
+    let asked: Arc<Mutex<Vec<UserInputQuestion>>> = Arc::default();
+    let seen = asked.clone();
+    let labels = Arc::new(Mutex::new(std::collections::VecDeque::from(labels)));
+    let (steer_tx, steer_rx) = mpsc::channel(8);
+    let controls = RunControls {
+        realtime: None,
+        execution_lease: None,
+        request_input: Box::new(move |questions| {
+            seen.lock().unwrap().extend(questions.iter().cloned());
+            let label = labels.lock().unwrap().pop_front().unwrap_or("Decline");
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(
+                questions
+                    .iter()
+                    .map(|q| UserInputAnswer {
+                        question_id: q.id.clone(),
+                        labels: vec![label.into()],
+                    })
+                    .collect(),
+            );
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        turn: Default::default(),
+    };
+    (controls, steer_tx, asked)
+}
+
+fn read_log(dir: &std::path::Path, name: &str) -> Vec<String> {
+    std::fs::read_to_string(dir.join(name))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Run until the first turn ends, then send `follow_up` (if any) and close
+/// the mailbox: the fake reads approvals and steers from one stdin, in order.
+async fn run_turns(
+    req: RunRequest,
+    controls: RunControls,
+    steer: mpsc::Sender<SteerMessage>,
+    follow_up: Option<SteerMessage>,
+) -> Vec<AgentEvent> {
+    let mut stream = harness().run(req, controls).await.expect("run starts");
+    let mut events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = stream.next().await {
+            let event = event.expect("stream event");
+            let done = matches!(event, AgentEvent::Done { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        if let Some(msg) = follow_up {
+            steer.send(msg).await.unwrap();
+        }
+        drop(steer);
+        while let Some(event) = stream.next().await {
+            events.push(event.expect("stream event"));
+        }
+    })
+    .await
+    .expect("run finished in time");
+    events
+}
+
+fn mode_request(dir: &std::path::Path, mode: zeron_proto::AccessMode) -> RunRequest {
+    let mut req = request("scenario:approvals");
+    req.cwd = dir.display().to_string();
+    req.set_access_mode(mode);
+    req
+}
+
+#[tokio::test]
+async fn approvals_surface_the_request_and_answer_each_decision() {
+    use zeron_proto::{AccessMode, ApprovalKind};
+    let dir = tempfile::tempdir().unwrap();
+    let (controls, steer, asked) = approval_controls(vec!["Approve for this session", "Decline"]);
+    let launch = mode_request(dir.path(), AccessMode::Supervised);
+    // A follow-up in auto-accept edits switches the live process in place.
+    let mut next = launch.clone();
+    next.set_access_mode(AccessMode::AutoAcceptEdits);
+    assert!(harness().reconfigures_in_place(&launch, &next));
+    let mut bypass = launch.clone();
+    bypass.set_access_mode(AccessMode::FullAccess);
+    assert!(
+        !harness().reconfigures_in_place(&launch, &bypass),
+        "bypass needs a process launched with it"
+    );
+    let mut switched = steer_msg("switched");
+    switched.config = Some(Box::new(next));
+    let events = run_turns(launch, controls, steer, Some(switched)).await;
+    assert!(
+        matches!(
+            events.last(),
+            Some(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                ..
+            })
+        ),
+        "{events:?}"
+    );
+
+    let args = read_log(dir.path(), "args.log");
+    let mode_at = args.iter().position(|a| a == "--permission-mode").unwrap();
+    assert_eq!(args[mode_at + 1], "default");
+    assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions"));
+
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    let bash = asked[0].approval.as_ref().expect("an approval");
+    assert_eq!(bash.kind, ApprovalKind::Command);
+    assert_eq!(bash.title, "Clean the build");
+    assert_eq!(bash.command.as_deref(), Some("rm -rf build"));
+    assert_eq!(bash.cwd.as_deref(), Some(dir.path().to_str().unwrap()));
+    assert_eq!(bash.reason.as_deref(), Some("Deletes files"));
+    assert_eq!(
+        asked[0].options,
+        ["Approve", "Approve for this session", "Decline"]
+    );
+    let edit = asked[1].approval.as_ref().expect("an approval");
+    assert_eq!(edit.kind, ApprovalKind::FileChange);
+    assert_eq!(edit.paths, ["src/lib.rs"]);
+    let diff = edit.diff.as_deref().unwrap();
+    assert!(diff.contains("-fn a() {}\n+fn b() {}"), "{diff}");
+
+    let responses: Vec<serde_json::Value> = read_log(dir.path(), "responses.log")
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 3, "{responses:?}");
+    let session = &responses[0]["response"]["response"];
+    assert_eq!(responses[0]["response"]["request_id"], "cr-bash");
+    assert_eq!(session["behavior"], "allow");
+    assert_eq!(session["updatedInput"]["command"], "rm -rf build");
+    // The CLI's own suggestion, scoped to the session instead of a settings file.
+    assert_eq!(
+        session["updatedPermissions"],
+        serde_json::json!([{
+            "type": "addRules",
+            "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}],
+            "behavior": "allow",
+            "destination": "session",
+        }])
+    );
+    let declined = &responses[1]["response"]["response"];
+    assert_eq!(responses[1]["response"]["request_id"], "cr-edit");
+    assert_eq!(declined["behavior"], "deny");
+    assert!(declined.get("interrupt").is_none());
+    assert_eq!(responses[2]["request"]["subtype"], "set_permission_mode");
+    assert_eq!(responses[2]["request"]["mode"], "acceptEdits");
+}
+
+#[tokio::test]
+async fn every_access_mode_launches_with_its_permission_mode() {
+    use zeron_proto::AccessMode;
+    for (mode, flag) in [
+        (AccessMode::Supervised, "default"),
+        (AccessMode::AutoAcceptEdits, "acceptEdits"),
+        (AccessMode::Auto, "auto"),
+        (AccessMode::FullAccess, "bypassPermissions"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = mode_request(dir.path(), mode);
+        req.access.as_mut().unwrap().writable_roots = vec!["/data/agents/a1".into()];
+        let (controls, steer, asked) = approval_controls(vec![]);
+        run_turns(req, controls, steer, None).await;
+        let args = read_log(dir.path(), "args.log");
+        let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+        assert_eq!(args[at + 1], flag, "{mode:?}");
+        let root = args.iter().position(|a| a == "--add-dir").unwrap();
+        assert_eq!(args[root + 1], "/data/agents/a1");
+        let bypass = args.iter().any(|a| a == "--dangerously-skip-permissions");
+        assert_eq!(bypass, mode == AccessMode::FullAccess, "{mode:?}");
+        // Full access never asks; the rest put every request to the user
+        // (unanswered here, so declined).
+        let responses = read_log(dir.path(), "responses.log");
+        assert_eq!(responses.len(), 2, "{mode:?}: {responses:?}");
+        if mode == AccessMode::FullAccess {
+            assert!(asked.lock().unwrap().is_empty());
+            assert!(
+                responses
+                    .iter()
+                    .all(|r| r.contains(r#""behavior":"allow""#))
+            );
+        } else {
+            assert_eq!(asked.lock().unwrap().len(), 2, "{mode:?}");
+            assert!(responses.iter().all(|r| r.contains(r#""behavior":"deny""#)));
+        }
+    }
+}
