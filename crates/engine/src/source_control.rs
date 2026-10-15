@@ -1086,8 +1086,10 @@ pub enum GitHubWriteError {
         "GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run `gh auth login`."
     )]
     CliUnavailable,
-    #[error("GitHub CLI is not signed in. Run `gh auth login` in a terminal, then try again.")]
-    Authentication,
+    /// Carries gh's own words: "not signed in" has several causes (an
+    /// expired token, a missing scope, another host).
+    #[error("GitHub CLI is not signed in. Run `gh auth login` in a terminal, then try again.\ngh: {0}")]
+    Authentication(String),
     #[error("A pull request for this branch already exists: {0}")]
     PullRequestExists(String),
     #[error("GitHub did not answer in time. Check your connection and try again.")]
@@ -1235,7 +1237,9 @@ impl GitHubCli {
             return Err(GitHubWriteError::PullRequestExists(url));
         }
         Err(match classify_github_failure(&output.stderr) {
-            ChangeRequestError::Authentication => GitHubWriteError::Authentication,
+            ChangeRequestError::Authentication => {
+                GitHubWriteError::Authentication(gh_failure_detail(&stderr))
+            }
             _ => GitHubWriteError::Failed(gh_failure_detail(&stderr)),
         })
     }
@@ -1249,20 +1253,20 @@ fn first_url(bytes: &[u8]) -> Option<String> {
         .map(|url| url.trim_end_matches(['.', ',', ')']).to_string())
 }
 
-/// `gh`'s explanation: its non-empty lines, bounded for a dialog.
+/// `gh`'s explanation verbatim (line breaks kept, so a GraphQL error and the
+/// hint under it stay readable), only trimmed and bounded for a dialog.
 fn gh_failure_detail(stderr: &str) -> String {
-    let detail = stderr
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let detail: String = detail.chars().take(400).collect();
+    const MAX_CHARS: usize = 4000;
+    let detail = stderr.trim();
     if detail.is_empty() {
-        "the GitHub CLI failed without an explanation".into()
-    } else {
-        detail
+        return "the GitHub CLI failed without an explanation".into();
     }
+    if detail.chars().count() <= MAX_CHARS {
+        return detail.to_string();
+    }
+    let mut cut: String = detail.chars().take(MAX_CHARS).collect();
+    cut.push('…');
+    cut
 }
 
 /// Board requests run against GitHub.com without a checkout or interactive prompts.
@@ -4764,15 +4768,23 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
         let runner = FakeProcessRunner::with_responses([
             Err(ProcessRunError::Spawn(io::ErrorKind::NotFound)),
             command_failure("To get started with GitHub CLI, please run:  gh auth login"),
-            command_failure("pull request create failed: GraphQL: No commits between main and feature"),
+            command_failure(
+                "pull request create failed: GraphQL: No commits between main and feature\n\
+                 (createPullRequest)\n",
+            ),
             Err(ProcessRunError::Timeout),
         ]);
         let github = GitHubCli::with_runner(runner.clone());
         for expected in [
             GitHubWriteError::CliUnavailable,
-            GitHubWriteError::Authentication,
+            GitHubWriteError::Authentication(
+                "To get started with GitHub CLI, please run:  gh auth login".into(),
+            ),
+            // gh's own words, line breaks and all.
             GitHubWriteError::Failed(
-                "pull request create failed: GraphQL: No commits between main and feature".into(),
+                "pull request create failed: GraphQL: No commits between main and feature\n\
+                 (createPullRequest)"
+                    .into(),
             ),
             GitHubWriteError::Timeout,
         ] {
@@ -4781,11 +4793,8 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
                 Err(expected)
             );
         }
-        assert!(
-            GitHubWriteError::Authentication
-                .to_string()
-                .contains("gh auth login")
-        );
+        let auth = GitHubWriteError::Authentication("HTTP 401: Bad credentials".into()).to_string();
+        assert!(auth.contains("gh auth login") && auth.contains("HTTP 401: Bad credentials"));
         let request = &runner.requests()[0];
         assert_eq!(request.program, "gh");
         assert_eq!(request.stdin.as_deref(), Some(b"B".as_slice()));
