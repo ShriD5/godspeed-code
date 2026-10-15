@@ -2756,6 +2756,7 @@ mod tests {
             sidebar_show_project_filter: false,
             sidebar_show_archived: false,
             github_star_banner_dismissed: true,
+            chat_import_prompt_dismissed: true,
             last_space_id: Some("space-1".into()),
             last_project_action_by_space_id: std::collections::HashMap::from([(
                 "space-1".into(),
