@@ -14,6 +14,7 @@
 //!   reflow already-painted text; the canonical parse settles honestly on
 //!   completion.
 
+pub mod find;
 pub(crate) mod inline_code_links;
 mod link_destination;
 mod link_interaction;

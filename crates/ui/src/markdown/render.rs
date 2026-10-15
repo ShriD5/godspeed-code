@@ -1240,6 +1240,7 @@ pub(super) fn flat_text_presented_element(
                     ));
                 }
             }
+            paint_find_washes(window, surface, &sel_key, &flat_text, &layout, offsets.as_ref());
             if let Some(range) = super::selection::wash_range(surface, &sel_key) {
                 let range = offsets
                     .as_ref()
@@ -1361,6 +1362,55 @@ fn clamped_slice(text: &str, start: usize, end: usize) -> Option<&str> {
     (start <= end).then(|| &text[start..end])
 }
 
+/// Find-in-thread washes for one text element, under the selection wash.
+/// The current match is told apart by counting the occurrences of the same
+/// row's elements this surface already registered this frame.
+fn paint_find_washes(
+    window: &mut Window,
+    surface: u64,
+    key: &str,
+    text: &str,
+    layout: &gpui::TextLayout,
+    offsets: Option<&super::link_presentation::OffsetMap>,
+) {
+    let Some(highlight) = super::find::active(surface) else {
+        return;
+    };
+    let washes = super::find::washes(&highlight, key, text, |row| {
+        REGISTRY.with(|registry| {
+            registry
+                .borrow()
+                .iter()
+                .filter(|entry| {
+                    entry.surface == surface && super::find::row_of_key(&entry.key) == Some(row)
+                })
+                .map(|entry| {
+                    super::find::find_ranges(&entry.text, &highlight.needle, highlight.case_sensitive)
+                        .len()
+                })
+                .sum()
+        })
+    });
+    for (range, current) in washes {
+        let range = offsets.map_or_else(|| range.clone(), |map| map.displayed_range(range.clone()));
+        let color = if current {
+            highlight.current_wash
+        } else {
+            highlight.match_wash
+        };
+        for rect in range_rects(layout, &range, 1.0, 1.0) {
+            window.paint_quad(quad(
+                rect,
+                px(3.0),
+                color,
+                px(0.0),
+                gpui::transparent_black(),
+                BorderStyle::default(),
+            ));
+        }
+    }
+}
+
 /// Selection tint shared with native inputs and the composer.
 fn selection_wash(theme: &Theme) -> Hsla {
     theme.selection
@@ -1392,6 +1442,7 @@ fn paint_text_selection_with_wash(
     wash: Hsla,
 ) {
     let surface = PAINTING_SURFACE.with(Cell::get);
+    paint_find_washes(window, surface, key, text, layout, None);
     if let Some(range) = super::selection::wash_range(surface, key) {
         for rect in range_rects(layout, &range, 0.0, 0.0) {
             window.paint_quad(quad(
