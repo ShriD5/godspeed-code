@@ -451,6 +451,47 @@ impl Normalizer {
                         .insert(tool.to_owned(), spawn.clone());
                     return Vec::new();
                 }
+                // Compaction (manual /compact or automatic) runs for up to a
+                // minute with nothing else on the wire: `status: compacting`
+                // keeps the turn visibly alive, `compact_boundary` notes the
+                // result in the transcript (as Codex's contextCompaction item
+                // does) and resets the context measurement to what is left.
+                if f.subtype == "status" {
+                    if f.status.as_deref() == Some("compacting") {
+                        return vec![AgentEvent::ReasoningDelta {
+                            text: String::new(),
+                        }];
+                    }
+                    if f.compact_result.as_deref() == Some("failed") {
+                        let message = match f.compact_error.as_deref().map(str::trim) {
+                            Some(reason) if !reason.is_empty() => {
+                                format!("Context compaction failed: {reason}")
+                            }
+                            _ => "Context compaction failed.".to_owned(),
+                        };
+                        return vec![AgentEvent::Error { message }];
+                    }
+                    return Vec::new();
+                }
+                if f.subtype == "compact_boundary" {
+                    let meta = f.compact_metadata.unwrap_or_default();
+                    let mut out = Vec::new();
+                    if let Some(tokens) = meta.get("post_tokens").and_then(Value::as_u64) {
+                        out.push(AgentEvent::ContextUsage {
+                            tokens: Some(tokens),
+                            window: None,
+                        });
+                    }
+                    let note = if meta.get("trigger").and_then(Value::as_str) == Some("auto") {
+                        "Context compacted automatically."
+                    } else {
+                        "Context compacted."
+                    };
+                    out.push(AgentEvent::TextDelta {
+                        text: format!("\n\n{note}\n\n"),
+                    });
+                    return out;
+                }
                 if f.subtype != "init" || self.saw_init {
                     return Vec::new();
                 }
@@ -1600,6 +1641,67 @@ mod tests {
             assistant_error_message("invalid_request", "API Error: 400 bad image"),
             "API Error: 400 bad image"
         );
+    }
+
+    /// `/compact` as the 2.1.289 CLI streams it (zeronsh/zeron#801): a
+    /// status pair around the work, a second init, the boundary, the summary
+    /// as a user frame and a zero-turn result. The transcript gets a note,
+    /// the ring drops to the post-compaction size, and neither the summary
+    /// nor the replayed `<local-command-stdout>` leaks into the chat.
+    #[test]
+    fn compaction_notes_the_transcript_and_resets_context_usage() {
+        let mut norm = Normalizer::new();
+        let mut events = Vec::new();
+        for raw in [
+            r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":"compacting"}"#,
+            r#"{"type":"system","subtype":"status","status":null,"compact_result":"success"}"#,
+            r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":20544,"post_tokens":1995,"duration_ms":10996}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation. Summary: ..."}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"},"isReplay":true}"#,
+            r#"{"type":"result","subtype":"success","num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},"session_id":"s"}"#,
+        ] {
+            events.extend(norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false));
+        }
+        let visible: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| {
+                !matches!(
+                    e,
+                    AgentEvent::SessionStarted { .. } | AgentEvent::Usage { .. }
+                )
+            })
+            .collect();
+        assert!(
+            matches!(
+                visible.as_slice(),
+                [
+                    AgentEvent::ReasoningDelta { text: heartbeat },
+                    AgentEvent::ContextUsage { tokens: Some(1995), window: None },
+                    AgentEvent::TextDelta { text: note },
+                    AgentEvent::Done { status: DoneStatus::Completed, .. },
+                ] if heartbeat.is_empty() && note.trim() == "Context compacted."
+            ),
+            "{visible:?}"
+        );
+        // Automatic compaction says so; a failed one is an error.
+        let auto = normalize_one(
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":5}}"#,
+        );
+        assert!(matches!(
+            auto.as_slice(),
+            [AgentEvent::TextDelta { text }] if text.trim() == "Context compacted automatically."
+        ));
+        assert_eq!(
+            normalize_one(
+                r#"{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Prompt is too long"}"#,
+            ),
+            vec![AgentEvent::Error {
+                message: "Context compaction failed: Prompt is too long".into()
+            }]
+        );
+        assert!(normalize_one(r#"{"type":"system","subtype":"status","status":"requesting"}"#).is_empty());
     }
 
     #[test]

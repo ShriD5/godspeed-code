@@ -82,6 +82,16 @@ pub(crate) struct SystemFrame {
     /// now (agents and shells) — the authoritative set, not a delta.
     #[serde(default)]
     pub tasks: Option<Vec<Value>>,
+    /// `status` (`status: "compacting"` → null): how a compaction ended,
+    /// `success` or `failed`, with the failure's reason.
+    #[serde(default)]
+    pub compact_result: Option<String>,
+    #[serde(default)]
+    pub compact_error: Option<String>,
+    /// `compact_boundary`: `trigger` (`manual`/`auto`), `pre_tokens`,
+    /// `post_tokens`.
+    #[serde(default)]
+    pub compact_metadata: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
