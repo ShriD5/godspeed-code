@@ -44,7 +44,7 @@ fn request(prompt: &str) -> RunRequest {
         reasoning: None,
         model_options: serde_json::Map::new(),
         cwd: "/tmp".into(),
-        sandbox: SandboxLevel::WorkspaceWrite,
+        sandbox: SandboxLevel::DangerFullAccess,
         auto_approve: true,
         attachments: Vec::new(),
         worktree: None,
@@ -2505,4 +2505,84 @@ async fn a_stopped_turn_keeps_the_agent_for_the_next_prompt() {
     ));
     drop(steer);
     assert!(next_event(&mut stream).await.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Access modes and approvals
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn permission_requests_follow_the_access_mode() {
+    use std::sync::{Arc, Mutex};
+    use zeron_proto::{AccessMode, ApprovalDecision, ApprovalKind, UserInputQuestion};
+    let dir = tempfile::Builder::new()
+        .prefix("acp-modes-fixture")
+        .tempdir()
+        .unwrap();
+    let asked: Arc<Mutex<Vec<UserInputQuestion>>> = Arc::default();
+    let seen = asked.clone();
+    let labels = Arc::new(Mutex::new(std::collections::VecDeque::from([
+        "Always allow",
+        "Decline",
+    ])));
+    let (steer_tx, steer_rx) = mpsc::channel(8);
+    let _steer = steer_tx;
+    let controls = RunControls {
+        realtime: None,
+        execution_lease: None,
+        request_input: Box::new(move |questions| {
+            seen.lock().unwrap().extend(questions.iter().cloned());
+            let label = labels.lock().unwrap().pop_front().unwrap_or("Decline");
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(
+                questions
+                    .iter()
+                    .map(|q| UserInputAnswer {
+                        question_id: q.id.clone(),
+                        labels: vec![label.into()],
+                    })
+                    .collect(),
+            );
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        turn: Default::default(),
+    };
+    let mut req = request("scenario:approval");
+    req.model = None;
+    req.cwd = dir.path().display().to_string();
+    req.set_access_mode(AccessMode::AutoAcceptEdits);
+    let events = run_to_end(&harness(), req, controls).await;
+    // The fixture refuses unless every answer matched.
+    assert!(
+        events.contains(&AgentEvent::TextDelta {
+            text: "approvals done".into()
+        }),
+        "{events:?}"
+    );
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 2, "the in-workspace edit was not asked: {asked:?}");
+    let command = asked[0].approval.as_ref().unwrap();
+    assert_eq!(command.kind, ApprovalKind::Command);
+    assert_eq!(command.title, "Run tests");
+    assert_eq!(command.command.as_deref(), Some("cargo test"));
+    // The agent's own options, by its names, in its order.
+    assert_eq!(
+        asked[0].options,
+        ["Allow once", "Always allow", "Reject", "Never"]
+    );
+    let decisions: Vec<_> = command.decisions.iter().map(|d| d.decision).collect();
+    assert_eq!(
+        decisions,
+        [
+            ApprovalDecision::Approve,
+            ApprovalDecision::ApproveAlways,
+            ApprovalDecision::Decline,
+            ApprovalDecision::DeclineAlways,
+        ]
+    );
+    let outside = asked[1].approval.as_ref().unwrap();
+    assert_eq!(outside.kind, ApprovalKind::FileChange);
+    assert_eq!(outside.paths, ["/etc/hosts"]);
 }

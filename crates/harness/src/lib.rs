@@ -203,9 +203,10 @@ pub trait Harness: Send + Sync {
     /// Whether a live runtime started for `live` can take `next` as its
     /// next prompt. Only a difference that changes how the runtime was
     /// launched needs a fresh one — replacing a runtime kills its background
-    /// work. The default covers what every driver's launch reads (the
-    /// sandbox level and auto-approve are read only by drivers that
-    /// override this); drivers narrow it further to their own launch.
+    /// work. The default covers what every driver's launch reads, the
+    /// access mode included (a driver that can switch it on the live
+    /// runtime says so in [`Self::reconfigures_in_place`]); drivers narrow
+    /// it further to their own launch.
     /// Whether a live runtime started for `live` adopts `next`'s differing
     /// configuration in place, before `next`'s prompt, instead of being
     /// replaced (which kills its background work). The prompt then arrives
@@ -219,6 +220,8 @@ pub trait Harness: Send + Sync {
             && live.reasoning == next.reasoning
             && same_model_options(&live.model_options, &next.model_options)
             && live.cwd == next.cwd
+            && live.access_mode() == next.access_mode()
+            && live.writable_roots() == next.writable_roots()
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError>;
     fn model_context(&self) -> Result<Option<ModelContext>, HarnessError> {
