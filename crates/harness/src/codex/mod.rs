@@ -1956,11 +1956,9 @@ async fn run_session(session: Session) {
                 .send(Ok(AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
-                    error: Some(crate::crash_message(
-                        "codex app-server",
-                        status,
-                        &stderr_tail,
-                    )),
+                    error: Some(client.close_reason().unwrap_or_else(|| {
+                        crate::crash_message("codex app-server", status, &stderr_tail)
+                    })),
                     session_id: Some(thread_id.clone()),
                 }))
                 .await;
