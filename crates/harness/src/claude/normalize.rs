@@ -68,7 +68,7 @@ fn opt_str_field(input: &Value, key: &str) -> Option<String> {
 }
 
 /// Decode a Claude `tool_use` block (name + input) into a typed [`ToolCall`].
-pub(crate) fn decode_tool_use(name: &str, input: &Value) -> ToolCall {
+pub fn decode_tool_use(name: &str, input: &Value) -> ToolCall {
     match name {
         "Bash" => ToolCall::Exec {
             command: str_field(input, "command"),

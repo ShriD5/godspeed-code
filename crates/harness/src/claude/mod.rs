@@ -57,6 +57,9 @@ mod discovery;
 mod normalize;
 mod wire;
 
+/// Transcript importers decode Claude `tool_use` blocks exactly as live runs do.
+pub use normalize::decode_tool_use;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
