@@ -356,8 +356,9 @@ impl Inner {
         lock(&self.settings).auto_resume && self.auto_filter.get().is_none_or(|f| f(chat_id))
     }
 
-    /// Clear the marker and let anything held go out.
+    /// Clear the marker and let anything held go out, unless a Stop holds it.
     fn clear(&self, chat_id: &str) {
+        self.doc_host.freeze_if_stopped(chat_id);
         if let Err(err) = self.workspace.set_chat_limit(chat_id, None) {
             tracing::warn!(chat = %chat_id, %err, "limit recovery: marker not cleared");
             return;

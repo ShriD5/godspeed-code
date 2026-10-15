@@ -1200,14 +1200,26 @@ impl DocHost {
     /// frozen. Opens the chat if it went cold; a no-op for chats this device
     /// doesn't host.
     pub fn release_queue(&self, chat_id: &str) {
-        let Ok(handle) = self.open(chat_id) else {
-            return;
-        };
-        if explicitly_stopped(&handle) {
-            handle.queue_paused.store(true, Ordering::Release);
+        if self.freeze_if_stopped(chat_id) {
             return;
         }
-        self.thaw_and_drain(handle);
+        if let Ok(handle) = self.open(chat_id) {
+            self.thaw_and_drain(handle);
+        }
+    }
+
+    /// Freeze the chat's queue when the user's last word on it was Stop;
+    /// true when it did. Called before a usage limit lifts, so no drain in
+    /// between can send what the Stop held.
+    pub fn freeze_if_stopped(&self, chat_id: &str) -> bool {
+        let Ok(handle) = self.open(chat_id) else {
+            return false;
+        };
+        let stopped = explicitly_stopped(&handle);
+        if stopped {
+            handle.queue_paused.store(true, Ordering::Release);
+        }
+        stopped
     }
 
     /// A scheduled resume's continuation is queued and its marker cleared:
@@ -4414,6 +4426,11 @@ impl DocHost {
         if !sessions.turn_in_flight(&handle.chat_id)
             && !sessions.holds_background_work(&handle.chat_id)
         {
+            // Nothing runs, but rows still waiting (held for a usage limit)
+            // are what the Stop speaks to: they must not go out on their own.
+            if handle.doc.read_queue().is_ok_and(|queue| !queue.is_empty()) {
+                handle.queue_paused.store(true, Ordering::Release);
+            }
             return Ok(false);
         }
         handle.queue_paused.store(true, Ordering::Release);
