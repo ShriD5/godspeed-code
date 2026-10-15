@@ -501,6 +501,20 @@ impl DocsStore {
         Ok(hit.is_some())
     }
 
+    /// Every snapshot's `(doc_id, saved_at, byte length)` without reading a
+    /// blob — the message index's change detector.
+    pub fn snapshot_versions(&self) -> Result<Vec<(String, i64, i64)>, StoreError> {
+        store_blocking(|| {
+            let conn = self.conn();
+            let mut statement =
+                conn.prepare("SELECT doc_id, saved_at, length(bytes) FROM snapshots")?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+    }
+
     /// The full command ledger — profile-import reads the source's claims so
     /// imported pending commands can never re-execute under the new profile.
     pub fn processed_commands(&self) -> Result<Vec<(String, i64)>, StoreError> {
@@ -827,6 +841,23 @@ mod tests {
             store.load_snapshot("chat-1").unwrap().as_deref(),
             Some(&b"v2-longer-bytes"[..])
         );
+    }
+
+    #[test]
+    fn snapshot_versions_list_ids_times_and_lengths() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DocsStore::open(dir.path()).unwrap();
+        assert!(store.snapshot_versions().unwrap().is_empty());
+        store.save_snapshot("chat-1", b"v1").unwrap();
+        store
+            .save_snapshot_with_cursor("chat-2", b"three", 0, 2)
+            .unwrap();
+        let mut versions = store.snapshot_versions().unwrap();
+        versions.sort();
+        assert_eq!(versions.len(), 2);
+        assert_eq!((versions[0].0.as_str(), versions[0].2), ("chat-1", 2));
+        assert_eq!((versions[1].0.as_str(), versions[1].2), ("chat-2", 5));
+        assert!(versions.iter().all(|(_, saved_at, _)| *saved_at > 0));
     }
 
     #[test]

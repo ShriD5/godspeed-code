@@ -32,6 +32,7 @@ mod http_error;
 pub mod git_actions;
 pub mod instance_lock;
 pub mod local_import;
+pub mod message_index;
 mod model_catalogs;
 pub mod profile;
 pub mod project_actions;
@@ -65,6 +66,7 @@ pub use diff_sync::{
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use git_actions::{GitActionError, GitActions};
 pub use instance_lock::InstanceLock;
+pub use message_index::{MessageIndex, MessageIndexStats};
 pub use profile::EngineProfile;
 pub use project_actions::ProjectActionsStore;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
@@ -162,6 +164,8 @@ pub struct EngineCore {
     pub local_import: Option<local_import::LocalImporter>,
     /// Chat import from T3 Code / Claude Code / Codex history on this device.
     pub chat_import: chat_import::ChatImporter,
+    /// Local full-text index over this profile's transcripts.
+    pub message_index: MessageIndex,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -265,6 +269,19 @@ impl EngineCore {
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
+        // Transcript search over this profile's chats (registry rows only:
+        // rollback copies and the registry itself share the store).
+        let message_index = {
+            let workspace = workspace.clone();
+            let filter: message_index::ChatFilter =
+                Arc::new(move |id: &str| matches!(workspace.chat(id), Ok(Some(_))));
+            MessageIndex::open(
+                store_for_import.clone(),
+                Some(profile.store_root()),
+                Some(filter),
+            )
+        };
+        doc_host.set_message_index(message_index.clone());
         match sessions.recover_stale() {
             Ok(0) => {}
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
@@ -374,6 +391,7 @@ impl EngineCore {
             device_id,
             local_import,
             chat_import,
+            message_index,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -508,7 +526,8 @@ impl EngineCore {
         .with_previews(self.previews.clone())
         .with_harness_updates(self.harness_updates.clone())
         .with_agents(self.agents.clone())
-        .with_chat_import(self.chat_import.clone());
+        .with_chat_import(self.chat_import.clone())
+        .with_message_index(self.message_index.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }
@@ -574,6 +593,14 @@ impl EngineCore {
         self.spaces_sync.shutdown().await;
         self.doc_host.shutdown_workers().await;
         self.doc_host.flush_all();
+        // Persist index updates still in flight (bounded: a first-run
+        // build may still be reading history).
+        let index = self.message_index.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            index.flush(std::time::Duration::from_secs(3));
+            index.shutdown();
+        })
+        .await;
         self.workspace.shutdown();
         // Break the sessions ⇄ doc-host retain cycle so the replaced graph can
         // actually be freed once the last handle drops.
