@@ -474,7 +474,17 @@ impl Harness for OpencodeHarness {
         let initial_native_command_selected = selected_native_command(&request.prompt, self.id());
         request.prompt = zeron_proto::invocation::harness_prompt(&request.prompt, self.id());
         let cwd = (!request.cwd.is_empty()).then(|| request.cwd.clone());
-        let permission = permission_config(request.access_mode());
+        let mut permission = permission_config(request.access_mode());
+        if request.access_mode() == AccessMode::Auto
+            && let Some(rules) = permission.as_mut()
+        {
+            let inherited = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+            let configured = user_permission_actions(
+                &opencode_config_files(cwd.as_deref()),
+                inherited.as_deref(),
+            );
+            keep_user_permissions(rules, &configured);
+        }
         let server = self
             .server(cwd.as_deref(), request.mcp.as_ref(), permission.as_ref())
             .await?;
@@ -2839,6 +2849,110 @@ fn permission_config(mode: AccessMode) -> Option<Value> {
         "webfetch": "ask",
         "external_directory": "ask",
     }))
+}
+
+/// The opencode config files that may hold the user's own `permission`
+/// rules, as opencode discovers them (`packages/core/src/config/discovery.ts`,
+/// 2.0.29; same names on 1.x): the system and global directories, an
+/// explicit `OPENCODE_CONFIG`, and `opencode.json(c)` plus
+/// `.opencode/opencode.json(c)` from the project up to its git root.
+fn opencode_config_files(cwd: Option<&str>) -> Vec<PathBuf> {
+    const NAMES: [&str; 3] = ["opencode.json", "opencode.jsonc", "config.json"];
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    dirs.push(if cfg!(target_os = "macos") {
+        PathBuf::from("/Library/Application Support/opencode")
+    } else if cfg!(windows) {
+        PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into()))
+            .join("opencode")
+    } else {
+        PathBuf::from("/etc/opencode")
+    });
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::executable::home_dir().map(|h| h.join(".config")));
+    if let Some(home) = config_home {
+        dirs.push(home.join("opencode"));
+    }
+    let mut files: Vec<PathBuf> = dirs
+        .iter()
+        .flat_map(|dir| NAMES.iter().map(move |name| dir.join(name)))
+        .collect();
+    if let Some(explicit) = std::env::var_os("OPENCODE_CONFIG").filter(|v| !v.is_empty()) {
+        files.push(PathBuf::from(explicit));
+    }
+    let mut dir = cwd.map(PathBuf::from);
+    while let Some(current) = dir {
+        for base in [current.clone(), current.join(".opencode")] {
+            files.extend(NAMES[..2].iter().map(|name| base.join(name)));
+        }
+        if current.join(".git").exists() {
+            break;
+        }
+        dir = current.parent().map(PathBuf::from);
+    }
+    files
+}
+
+/// The permission actions the user configured anywhere: keys of the 1.x
+/// `permission` object (or every action when it is a single string) and the
+/// actions of 2.x `permissions` rules. Names are normalized the way 2.x
+/// migrates them (`bash` → `shell`, `write`/`patch` → `edit`).
+fn user_permission_actions(files: &[PathBuf], inherited: Option<&str>) -> std::collections::HashSet<String> {
+    let normalize = |action: &str| match action {
+        "bash" => "shell".to_owned(),
+        "write" | "patch" => "edit".to_owned(),
+        other => other.to_owned(),
+    };
+    let mut actions = std::collections::HashSet::new();
+    let sources = files
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .chain(inherited.map(str::to_owned));
+    for raw in sources {
+        let Ok(config) = deser_hjson::from_str::<Value>(&raw) else {
+            continue;
+        };
+        match config.get("permission") {
+            Some(Value::String(_)) => {
+                actions.insert("*".to_owned());
+            }
+            Some(Value::Object(rules)) => actions.extend(rules.keys().map(|k| normalize(k))),
+            _ => {}
+        }
+        for rule in config
+            .get("permissions")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if let Some(action) = rule.get("action").and_then(Value::as_str) {
+                actions.insert(normalize(action));
+            }
+        }
+    }
+    actions
+}
+
+/// Auto mode is the user's own opencode policy: drop our rule for every
+/// action the user configured (patterns like `{"*": "allow", "git push *":
+/// "ask"}` included), so ours only fill the gaps. Injected config layers
+/// over the user's files, and a flat `bash: "ask"` replaced their patterns.
+fn keep_user_permissions(rules: &mut Value, configured: &std::collections::HashSet<String>) {
+    let Some(rules) = rules.as_object_mut() else {
+        return;
+    };
+    if configured.contains("*") {
+        rules.clear();
+        return;
+    }
+    rules.retain(|action, _| {
+        let normalized = match action.as_str() {
+            "bash" => "shell",
+            other => other,
+        };
+        !configured.contains(normalized)
+    });
 }
 
 /// The key a "for this session" grant matches later requests by: the

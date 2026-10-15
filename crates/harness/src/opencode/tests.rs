@@ -2812,6 +2812,52 @@ fn a_backgrounded_spawn_is_not_its_childs_end() {
     assert_eq!(frames[0]["properties"]["part"]["state"]["metadata"]["status"], "running");
 }
 
+/// pingdotgg/t3code#11458: Auto mode's injected `bash: "ask"` replaced the
+/// user's own patterns (`{"*": "allow", "git push *": "ask"}`), so every
+/// command asked. Auto now keeps the user's rule for every action they
+/// configured, in JSONC global/project files or 2.x `permissions` rules, and
+/// only fills the gaps.
+#[test]
+fn auto_mode_keeps_the_users_opencode_permission_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    let nested = repo.join("crates/app");
+    std::fs::create_dir_all(nested.join(".opencode")).unwrap();
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::write(
+        repo.join("opencode.jsonc"),
+        r#"{
+  // the user's own policy
+  "permission": { "bash": { "*": "allow", "git push *": "ask" } }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        nested.join(".opencode/opencode.json"),
+        r#"{"permissions": [{"action": "webfetch", "resource": "*", "effect": "allow"}]}"#,
+    )
+    .unwrap();
+    // Above the git root: not this project's.
+    std::fs::write(dir.path().join("opencode.json"), r#"{"permission": "allow"}"#).unwrap();
+    let files = opencode_config_files(nested.to_str());
+    assert!(!files.contains(&dir.path().join("opencode.json")));
+    let configured = user_permission_actions(&files, Some(r#"{"permission": {"write": "ask"}}"#));
+    let mut rules = permission_config(AccessMode::Auto).unwrap();
+    keep_user_permissions(&mut rules, &configured);
+    assert_eq!(rules, json!({"external_directory": "ask"}), "{configured:?}");
+    let merged: Value =
+        serde_json::from_str(&with_permission(Some(r#"{"model": "keep"}"#), &rules).unwrap())
+            .unwrap();
+    assert_eq!(merged["permission"], json!({"external_directory": "ask"}));
+    // A single policy string covers every action; no config keeps ours.
+    let mut rules = permission_config(AccessMode::Auto).unwrap();
+    keep_user_permissions(&mut rules, &["*".to_owned()].into_iter().collect());
+    assert_eq!(rules, json!({}));
+    let mut rules = permission_config(AccessMode::Auto).unwrap();
+    keep_user_permissions(&mut rules, &Default::default());
+    assert_eq!(rules, permission_config(AccessMode::Auto).unwrap());
+}
+
 #[test]
 fn native_skill_catalog_rejects_unrepresentable_commands() {
     use zeron_proto::invocation::{Invocation, Skill, invocation_links};
