@@ -151,7 +151,140 @@ pub async fn serve_ws_listener(listener: TcpListener, service: Arc<dyn RpcServic
     }
 }
 
+/// Largest HTTP body the listener accepts (webhook payloads).
+pub const MAX_HTTP_BODY: usize = 1024 * 1024;
+/// Largest request head we wait for before deciding WebSocket vs plain HTTP.
+const MAX_HTTP_HEAD: usize = 16 * 1024;
+const HTTP_HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Peek (without consuming) until the request head is complete, so a
+/// WebSocket handshake still reaches tungstenite byte-for-byte. `None` when
+/// the peer sends no complete head in time.
+async fn peek_head(stream: &TcpStream) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; MAX_HTTP_HEAD];
+    let deadline = tokio::time::Instant::now() + HTTP_HEAD_TIMEOUT;
+    loop {
+        let n = tokio::time::timeout_at(deadline, stream.peek(&mut buf))
+            .await
+            .ok()?
+            .ok()?;
+        if n == 0 {
+            return None;
+        }
+        if let Some(end) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
+            buf.truncate(end + 4);
+            return Some(buf);
+        }
+        if n == buf.len() {
+            return None;
+        }
+        // `peek` returns the same bytes until more arrive; a handshake split
+        // across segments is rare enough that a short nap beats a reader shim.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+    }
+}
+
+fn parse_head(head: &[u8]) -> Option<crate::HttpRequest> {
+    let text = std::str::from_utf8(head).ok()?;
+    let mut lines = text.split("\r\n");
+    let mut request_line = lines.next()?.split(' ');
+    let method = request_line.next()?.to_string();
+    let path = request_line.next()?.to_string();
+    let headers = lines
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect();
+    Some(crate::HttpRequest {
+        method,
+        path,
+        headers,
+        body: Vec::new(),
+    })
+}
+
+fn is_websocket_upgrade(request: &crate::HttpRequest) -> bool {
+    request
+        .header("upgrade")
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+async fn serve_http(
+    mut stream: TcpStream,
+    head_len: usize,
+    mut request: crate::HttpRequest,
+    service: Arc<dyn RpcService>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let response = 'response: {
+        let mut head = vec![0u8; head_len];
+        if stream.read_exact(&mut head).await.is_err() {
+            return;
+        }
+        let length = request
+            .header("content-length")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        if length > MAX_HTTP_BODY {
+            break 'response crate::HttpResponse::json(
+                413,
+                &serde_json::json!({ "error": "payload too large" }),
+            );
+        }
+        // Read the body even for a request we refuse: closing with unread
+        // bytes queued makes the kernel reset the connection, and the caller
+        // would never see the status.
+        let mut body = vec![0u8; length];
+        match tokio::time::timeout(HTTP_HEAD_TIMEOUT, stream.read_exact(&mut body)).await {
+            Ok(Ok(_)) => {}
+            _ => return,
+        }
+        // Same stance as the WebSocket path: no browser page gets in.
+        if request.header("origin").is_some() {
+            break 'response crate::HttpResponse::json(
+                403,
+                &serde_json::json!({ "error": "origin not allowed on local IPC" }),
+            );
+        }
+        request.body = body;
+        service.handle_http(request).await
+    };
+    let reason = match response.status {
+        200 => "OK",
+        202 => "Accepted",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        413 => "Payload Too Large",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    let bytes = format!(
+        "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        response.status,
+        response.body.len(),
+        response.body
+    );
+    let _ = stream.write_all(bytes.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
 async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
+    // Plain HTTP (agent webhooks) shares the port: anything that doesn't ask
+    // for a WebSocket upgrade goes to `RpcService::handle_http`.
+    if let Some(head) = peek_head(&stream).await
+        && let Some(request) = parse_head(&head)
+        && !is_websocket_upgrade(&request)
+    {
+        serve_http(stream, head.len(), request, service).await;
+        return;
+    }
     // Native viewports dial this socket with a bare `connect_async` and send
     // no `Origin` header. A browser always attaches `Origin` to a WebSocket
     // handshake and cannot forge or suppress it from script, and WebSockets

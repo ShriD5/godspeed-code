@@ -28,7 +28,7 @@ pub use device_room::{
     NudgeHandler, PeerLiveness, PeerLivenessProbe, StaticToken, TokenError, TokenSource,
     decode_device_frame, device_room_ws_url, encode_device_frame,
 };
-pub use server::{serve_connection, serve_ws_listener};
+pub use server::{MAX_HTTP_BODY, serve_connection, serve_ws_listener};
 
 /// RPC method names — single source of truth for both ends.
 /// Full surface: docs/research/feature-inventory.md §2.
@@ -338,6 +338,48 @@ impl RpcReply {
 #[async_trait]
 pub trait RpcService: Send + Sync + 'static {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError>;
+
+    /// A plain HTTP request that reached the IPC listener without asking for
+    /// a WebSocket upgrade (agent webhooks). Wrappers must forward this like
+    /// `handle`; the default answers 404 so nothing is exposed by accident.
+    async fn handle_http(&self, _request: HttpRequest) -> HttpResponse {
+        HttpResponse::json(404, &serde_json::json!({ "error": "not found" }))
+    }
+}
+
+/// One HTTP/1.1 request read off the IPC listener. Header names are lowercased.
+#[derive(Debug, Clone, Default)]
+pub struct HttpRequest {
+    pub method: String,
+    /// Request target as sent, query string included.
+    pub path: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl HttpRequest {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpResponse {
+    pub status: u16,
+    /// Always JSON: these endpoints answer machines.
+    pub body: String,
+}
+
+impl HttpResponse {
+    pub fn json(status: u16, body: &serde_json::Value) -> Self {
+        Self {
+            status,
+            body: body.to_string(),
+        }
+    }
 }
 
 /// Deserialize typed params out of the envelope's `params` value.
@@ -645,6 +687,81 @@ mod tests {
 
         // A native viewport (no Origin) still connects and can call RPC — the
         // reject must not be a blanket denial.
+        let client = connect_ws(&format!("ws://127.0.0.1:{port}")).await.unwrap();
+        let echoed = client.call("Echo", serde_json::json!("ok")).await.unwrap();
+        assert_eq!(echoed, serde_json::json!("ok"));
+    }
+
+    struct HttpEcho;
+
+    #[async_trait]
+    impl RpcService for HttpEcho {
+        async fn handle(&self, _: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+            Ok(RpcReply::Value(params))
+        }
+        async fn handle_http(&self, request: HttpRequest) -> HttpResponse {
+            HttpResponse::json(
+                202,
+                &serde_json::json!({
+                    "method": request.method,
+                    "path": request.path,
+                    "event": request.header("X-Event"),
+                    "body": String::from_utf8_lossy(&request.body),
+                }),
+            )
+        }
+    }
+
+    async fn raw_http(port: u16, request: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn plain_http_shares_the_port_with_websockets() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_ws_listener(listener, Arc::new(HttpEcho)));
+
+        let body = r#"{"a":1}"#;
+        let response = raw_http(
+            port,
+            &format!(
+                "POST /hooks/x?y=1 HTTP/1.1\r\nHost: localhost\r\nX-Event: push\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        )
+        .await;
+        assert!(
+            response.starts_with("HTTP/1.1 202 Accepted\r\n"),
+            "{response}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(json["method"], "POST");
+        assert_eq!(json["path"], "/hooks/x?y=1");
+        assert_eq!(json["event"], "push");
+        assert_eq!(json["body"], body);
+
+        let response = raw_http(
+            port,
+            "POST /hooks/x HTTP/1.1\r\nOrigin: https://evil.example\r\nContent-Length: 0\r\n\r\n",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+
+        // The default service answers 404, and WebSocket RPC is unaffected.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let plain = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_ws_listener(listener, Arc::new(TestService)));
+        let response = raw_http(plain, "GET / HTTP/1.1\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
         let client = connect_ws(&format!("ws://127.0.0.1:{port}")).await.unwrap();
         let echoed = client.call("Echo", serde_json::json!("ok")).await.unwrap();
         assert_eq!(echoed, serde_json::json!("ok"));
