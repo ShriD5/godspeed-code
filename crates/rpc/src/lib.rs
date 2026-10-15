@@ -153,6 +153,10 @@ pub mod methods {
     pub const PREVIEW_CHAT_IMPORT: &str = "PreviewChatImport";
     /// `ChatImportRequest` → stream of `ChatImportProgress`, ending in `summary`.
     pub const RUN_CHAT_IMPORT: &str = "RunChatImport";
+    // Message search (ControlRpc, relay-forwardable — each engine answers
+    // from its own local message index).
+    /// `SearchMessagesRequest` → `SearchMessagesResult`.
+    pub const SEARCH_MESSAGES: &str = "SearchMessages";
     // Repos / worktrees / folders (ControlRpc, relay-forwardable).
     pub const LIST_REPOS: &str = "ListRepos";
     pub const ADD_REPO: &str = "AddRepo";
