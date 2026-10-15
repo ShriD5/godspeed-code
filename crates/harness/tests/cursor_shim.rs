@@ -838,3 +838,45 @@ async fn a_model_switch_names_its_model_from_its_own_send_on() {
         "an earlier message was merged into the switch: {prompts}"
     );
 }
+
+#[tokio::test]
+async fn auto_access_mode_turns_on_sdk_auto_review() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let fixture = SessionFixture::new();
+    for auto_review in [true, false] {
+        let mut child = tokio::process::Command::new("node")
+            .arg(fixture.dir.path().join("shim.mjs"))
+            .env("GODSPEED_CURSOR_STATE_DIR", fixture.dir.path().join("state"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let run = serde_json::json!({
+            "op": "run", "prompt": "normal", "cwd": fixture.dir.path(), "resume": null,
+            "mcp": {"name": "godspeed", "command": "godspeed", "args": ["mcp"], "env": {}},
+            "autoReview": auto_review,
+        });
+        stdin
+            .write_all(format!("{run}\n").as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(frame(&mut lines).await["ev"], "ready");
+        assert_eq!(frame(&mut lines).await["ev"], "text");
+        assert_eq!(frame(&mut lines).await["status"], "finished");
+        finish(&mut child, stdin).await;
+        let options: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture.dir.path().join("mcp-options.json")).unwrap(),
+        )
+        .unwrap();
+        let expected = if auto_review {
+            serde_json::json!(true)
+        } else {
+            serde_json::Value::Null
+        };
+        assert_eq!(options["autoReview"], expected);
+    }
+}

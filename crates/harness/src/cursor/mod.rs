@@ -33,6 +33,13 @@
 //!   login); the shim surfaces the exact fix as an error chip otherwise.
 //! - Steering: native SDK input at the next model step, acknowledged only
 //!   when consumed. Inputs that race turn completion become a coalesced follow-up.
+//! - Access modes: the SDK has no per-call approval channel (its `request`
+//!   messages carry only an id, and the bundle hardcodes `ignoreApprovals`),
+//!   so supervised and auto-accept edits are unavailable and a run in one
+//!   is refused rather than widened. Auto maps to `local.autoReview` (the
+//!   SDK's classifier-backed auto mode; MCP tool calls fail closed under
+//!   it), full access to the SDK's default. Verified against the
+//!   `@cursor/sdk` typings for the pin.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -48,8 +55,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
-    RunRequest, SteeringMode, TodoItem, TodoStatus, ToolCall,
+    AccessMode, AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice,
+    ReasoningLevel, RunRequest, SteeringMode, TodoItem, TodoStatus, ToolCall,
 };
 
 use crate::process::{Child, ChildStdin, Command, Stdio};
@@ -258,9 +265,10 @@ impl Harness for CursorHarness {
         true
     }
     /// Each SDK send names its model, so a change runs from the next turn on
-    /// the same agent; no model is Cursor's `auto`.
+    /// the same agent; no model is Cursor's `auto`. Auto review is fixed
+    /// when the agent is created.
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
-        live.cwd == next.cwd
+        live.cwd == next.cwd && live.access_mode() == next.access_mode()
     }
 
     /// Keep a successful catalog during transient outages. A cold failure
@@ -309,6 +317,13 @@ impl Harness for CursorHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        let mode = request.access_mode();
+        if !zeron_proto::access_mode_supported(HarnessId::Cursor, mode) {
+            return Err(HarnessError::Protocol(format!(
+                "Cursor can't ask before acting, so it can't run in {}. Switch the access mode to Auto or Full access.",
+                mode.label()
+            )));
+        }
         let lease = if self.executable.is_none() {
             Some(state::Lease::acquire(&state::state_root(), request.resume.as_deref()).await?)
         } else {
@@ -369,6 +384,7 @@ impl Harness for CursorHarness {
             "resume": request.resume,
             "mcp": request.mcp,
             "storeDir": lease.as_ref().and_then(|lease| lease.store_dir.as_ref()),
+            "autoReview": request.access_mode() == AccessMode::Auto,
         });
         let _ = stdin_tx.send(first.to_string());
 

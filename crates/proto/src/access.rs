@@ -97,8 +97,9 @@ impl AccessMode {
 /// driver's `access` docs.
 pub fn supported_access_modes(harness: HarnessId) -> &'static [AccessMode] {
     match harness {
-        // The SDK has no permission callback and runs every tool itself.
-        HarnessId::Cursor => &[AccessMode::FullAccess],
+        // The SDK has no permission callback; its auto review is the one
+        // gate short of full access.
+        HarnessId::Cursor => &[AccessMode::Auto, AccessMode::FullAccess],
         // Pi has no permission system: every tool runs.
         HarnessId::Pi => &[AccessMode::FullAccess],
         _ => &AccessMode::ALL,
@@ -404,10 +405,14 @@ mod tests {
         );
         assert_eq!(
             AccessMode::Supervised.cycle(HarnessId::Cursor),
-            AccessMode::FullAccess
+            AccessMode::Auto
         );
         assert_eq!(
             AccessMode::FullAccess.cycle(HarnessId::Cursor),
+            AccessMode::Auto
+        );
+        assert_eq!(
+            AccessMode::Supervised.cycle(HarnessId::Pi),
             AccessMode::FullAccess
         );
     }
