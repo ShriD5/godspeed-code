@@ -2238,6 +2238,37 @@ impl AppState {
         self.sessions.iter().find(|s| s.chat_id == chat_id)
     }
 
+    /// Chats with a run live on THIS device right now: working, or paused on
+    /// a question/approval (the run dies with its process either way).
+    /// Sessions synced from other devices don't count — quitting here can't
+    /// stop them. Staleness-checked, so a crashed run never blocks a quit.
+    pub fn local_live_runs(&self, now: DateTime<Utc>) -> usize {
+        self.sessions
+            .iter()
+            .filter(|s| {
+                self.local_device_id
+                    .as_deref()
+                    .is_none_or(|local| s.device_id == local)
+            })
+            .filter(|s| {
+                matches!(
+                    effective_indicator(Some(s), now),
+                    Indicator::Working | Indicator::AwaitingInput
+                )
+            })
+            .count()
+    }
+
+    /// Live runs that exiting this process would kill: the local ones while
+    /// the engine is embedded here. A daemon engine keeps running them after
+    /// the app quits, so it counts none.
+    pub fn runs_ended_by_exit(&self, now: DateTime<Utc>) -> usize {
+        match self.engine() {
+            Some(engine) if engine.mode() == EngineMode::InProcess => self.local_live_runs(now),
+            _ => 0,
+        }
+    }
+
     /// Subagents running under `chat_id` right now (the engine's count on its
     /// session row; 0 once that row goes stale). Every device can ask, opened
     /// chat or not.
@@ -4518,6 +4549,27 @@ mod tests {
         // A zero-byte total renders as plain "Sending…", not a percent.
         s.begin_upload_progress(0, Arc::new(AtomicU64::new(0)));
         assert_eq!(s.upload_progress_percent(), None);
+    }
+
+    /// T3 10161: the quit confirmation counts only fresh runs on this device;
+    /// with no engine embedded (none, or a daemon) nothing dies on exit.
+    #[test]
+    fn live_runs_count_fresh_local_sessions_only() {
+        let now = Utc::now();
+        let mut s = AppState::new();
+        s.local_device_id = Some("dev".into());
+        let mut remote = session("r", SessionStatus::Working, 1, now);
+        remote.device_id = "other".into();
+        s.sessions = vec![
+            session("a", SessionStatus::Working, 1, now),
+            session("b", SessionStatus::AwaitingInput, 1, now),
+            session("c", SessionStatus::Idle, 1, now),
+            // A crashed run past the staleness window.
+            session("d", SessionStatus::Working, 600, now),
+            remote,
+        ];
+        assert_eq!(s.local_live_runs(now), 2);
+        assert_eq!(s.runs_ended_by_exit(now), 0, "no embedded engine");
     }
 
     #[test]

@@ -132,6 +132,7 @@ impl Shell {
             || self.right_plus.get().is_some()
             || !self.pending_file_closes.is_empty()
             || self.pending_exit.is_some()
+            || self.exit_confirm.is_some()
     }
 
     pub(super) fn activate_right_surface(
