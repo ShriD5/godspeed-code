@@ -19,8 +19,8 @@ use zeron_proto::{
     SessionStatus, Space, UserInputAnswer, UserInputQuestion,
 };
 
+use crate::godspeed::{Godspeed, HarnessInfo, TurnOutcome, session_for, short};
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
-use crate::godspeed::{HarnessInfo, TurnOutcome, Godspeed, session_for, short};
 
 /// Default and ceiling for the blocking waits.
 const MAX_BATCH: usize = 32;
@@ -127,6 +127,7 @@ fn catalog() -> Vec<ToolDef> {
                     "project": { "type": "string", "description": "Project id, path, or name. Belongs to a specific device; when device is supplied, search only there. Optional." },
                     "device": { "type": "string", "description": "Host device (id or name). With project, it must own that project. Without either, use the local engine." },
                     "parent": { "type": "string", "description": "Parent chat to record (id, prefix, or title). Defaults to the chat you are speaking from." },
+                    "notify": { "type": "boolean", "default": false, "description": "Wake this parent with durable notifications when the child needs approval, completes, or fails. Requires parent and child on the same device." },
                     "harness": { "type": "string", "description": "Harness id (see list_harnesses with the chosen device). Defaults to claude-code when available." },
                     "model": { "type": "string", "description": "Model id from list_models on the chosen device. Omit for the harness default." },
                     "reasoning": { "type": "string", "description": "Reasoning level the model supports (e.g. low, medium, high, max)." },
@@ -516,6 +517,8 @@ struct CreateChatArgs {
     project: Option<String>,
     device: Option<String>,
     parent: Option<String>,
+    #[serde(default)]
+    notify: bool,
     harness: Option<String>,
     model: Option<String>,
     reasoning: Option<String>,
@@ -778,7 +781,8 @@ impl Tools {
     }
 
     async fn list_projects(&self, args: DeviceArgs) -> anyhow::Result<Value> {
-        let (mut spaces, devices) = tokio::try_join!(self.godspeed.spaces(), self.godspeed.devices())?;
+        let (mut spaces, devices) =
+            tokio::try_join!(self.godspeed.spaces(), self.godspeed.devices())?;
         if let Some(device) = args.device.as_deref() {
             let device = self.godspeed.resolve_device_id(Some(device)).await?;
             spaces.retain(|s| s.device_id == device);
@@ -848,7 +852,10 @@ impl Tools {
             chats.retain(|c| c.space_id.as_deref() == Some(space.id.as_str()));
         }
         if args.device.is_some() {
-            let device = self.godspeed.resolve_device_id(args.device.as_deref()).await?;
+            let device = self
+                .godspeed
+                .resolve_device_id(args.device.as_deref())
+                .await?;
             chats.retain(|c| c.device_id == device);
         }
         if !args.include_archived {
@@ -921,6 +928,10 @@ impl Tools {
             args.kind != Some(ChatKind::Side) || parent_chat_id.is_some(),
             "kind side requires a parent or origin chat"
         );
+        anyhow::ensure!(
+            !args.notify || parent_chat_id.is_some(),
+            "notify requires a side chat with a parent"
+        );
         let kind = if parent_chat_id.is_some() {
             ChatKind::Side
         } else {
@@ -938,6 +949,16 @@ impl Tools {
             .godspeed
             .resolve_target(args.project.as_deref(), args.device.as_deref())
             .await?;
+        if args.notify {
+            let parent = self
+                .godspeed
+                .resolve_chat(parent_chat_id.as_deref().expect("validated parent"))
+                .await?;
+            anyhow::ensure!(
+                parent.device_id == device_id,
+                "notify is only supported when the parent and child use the same device"
+            );
+        }
         let harnesses = self.godspeed.harnesses_on(Some(&device_id)).await?;
         let harness = match args.harness.as_deref() {
             Some(raw) => {
@@ -1009,6 +1030,9 @@ impl Tools {
         }
         if let Some(parent) = &parent_chat_id {
             mutate["parentChatId"] = json!(parent);
+        }
+        if args.notify {
+            mutate["notifyParent"] = json!(true);
         }
         if let Some(branch) = args
             .branch
@@ -1750,6 +1774,30 @@ mod tests {
     }
 
     #[test]
+    fn create_chat_notify_defaults_off_and_is_exposed_for_batch_items() {
+        let default: CreateChatArgs = serde_json::from_value(json!({})).unwrap();
+        let enabled: CreateChatArgs = serde_json::from_value(json!({ "notify": true })).unwrap();
+        assert!(!default.notify);
+        assert!(enabled.notify);
+        let create_chat = catalog()
+            .into_iter()
+            .find(|tool| tool.name == "create_chat")
+            .unwrap();
+        assert_eq!(
+            create_chat.input_schema["properties"]["notify"]["default"],
+            false
+        );
+        let create_chats = catalog()
+            .into_iter()
+            .find(|tool| tool.name == "create_chats")
+            .unwrap();
+        assert!(
+            create_chats.input_schema["properties"]["requests"]["items"]["properties"]["notify"]
+                .is_object()
+        );
+    }
+
+    #[test]
     fn the_show_visual_example_passes_its_own_check() {
         let start = SHOW_VISUAL_DESCRIPTION.find("local s = ui.state").unwrap();
         let end = start
@@ -1981,11 +2029,9 @@ mod tests {
     /// A worker chat parked on a command approval, and an orchestrator chat
     /// in `mode` speaking through this server.
     fn approval_world(mode: &str) -> Arc<World> {
-        let question = zeron_proto::ApprovalRequest::new(
-            zeron_proto::ApprovalKind::Command,
-            "Run the deploy",
-        )
-        .into_question("q-1");
+        let question =
+            zeron_proto::ApprovalRequest::new(zeron_proto::ApprovalKind::Command, "Run the deploy")
+                .into_question("q-1");
         let edit = zeron_proto::ApprovalRequest::new(
             zeron_proto::ApprovalKind::FileChange,
             "Edit src/lib.rs",
@@ -2015,9 +2061,7 @@ mod tests {
             chat_id: Some("chat-boss-3".into()),
             device_id: Some("dev-local".into()),
         };
-        let answer = |question: &str, label: &str| {
-            json!({ "chat": "chat-alpha-1", "answers": [{ "question_id": question, "labels": [label] }] })
-        };
+        let answer = |question: &str, label: &str| json!({ "chat": "chat-alpha-1", "answers": [{ "question_id": question, "labels": [label] }] });
         // Auto-accept edits may approve an edit, never a command, and may
         // always decline.
         let world = approval_world("auto-accept-edits");
@@ -2051,7 +2095,10 @@ mod tests {
         let world = approval_world("full-access");
         let tools = self::tools(world.clone(), origin);
         tools
-            .call("respond_to_input", answer("q-1", "Approve for this session"))
+            .call(
+                "respond_to_input",
+                answer("q-1", "Approve for this session"),
+            )
             .await
             .unwrap();
         assert_eq!(world.writes.lock().unwrap().len(), 1);
@@ -2081,7 +2128,10 @@ mod tests {
             .await
             .unwrap();
         tools
-            .call("create_chat", json!({ "kind": "chat", "project": "space-1" }))
+            .call(
+                "create_chat",
+                json!({ "kind": "chat", "project": "space-1" }),
+            )
             .await
             .unwrap();
         tools
@@ -2099,7 +2149,11 @@ mod tests {
             .collect();
         assert_eq!(
             modes,
-            [&json!("auto-accept-edits"), &json!("auto-accept-edits"), &json!("supervised")]
+            [
+                &json!("auto-accept-edits"),
+                &json!("auto-accept-edits"),
+                &json!("supervised")
+            ]
         );
     }
 

@@ -614,6 +614,19 @@ fn chat_seen_is_monotonic() {
 }
 
 #[test]
+fn notify_parent_is_opt_in_and_survives_chat_upserts() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    assert!(!ws.chat_notifies_parent("chat-1").unwrap());
+    assert!(ws.set_chat_notify_parent("chat-1", true).unwrap());
+    assert!(ws.chat_notifies_parent("chat-1").unwrap());
+
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    assert!(ws.chat_notifies_parent("chat-1").unwrap());
+    assert!(!ws.set_chat_notify_parent("missing", true).unwrap());
+}
+
+#[test]
 fn two_docs_converge_through_a_server() {
     let mut a = RegistryDoc::new("dev-a");
     let mut b = RegistryDoc::new("dev-b");

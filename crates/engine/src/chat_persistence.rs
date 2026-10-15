@@ -94,7 +94,7 @@ impl ChatPersistence {
             let _ = wake.try_send(());
         } else {
             // Offline synchronous tooling/tests have no executor to schedule.
-            self.flush_sync();
+            let _ = self.flush_sync();
         }
     }
 
@@ -120,7 +120,7 @@ impl ChatPersistence {
             let job = this.clone();
             if let Err(error) = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                job.flush_sync();
+                let _ = job.flush_sync();
             })
             .await
             {
@@ -139,15 +139,15 @@ impl ChatPersistence {
         }
     }
 
-    pub(crate) fn flush_sync(&self) {
-        let flush = || {
+    pub(crate) fn flush_sync(&self) -> Result<(), String> {
+        let flush = || -> Result<(), String> {
             let _write = self.write.lock().unwrap_or_else(|e| e.into_inner());
             let generation = self.generation.load(Ordering::Acquire);
             if generation == self.saved.load(Ordering::Acquire) {
-                return;
+                return Ok(());
             }
             let Some(doc) = self.doc.upgrade() else {
-                return;
+                return Err("chat doc was dropped before snapshot flush".into());
             };
             // Never read the cursor AFTER exporting: a concurrent import
             // could then label an older snapshot with a newer cursor.
@@ -170,26 +170,25 @@ impl ChatPersistence {
                         )
                         .map_err(|e| e.to_string())
                 });
-            match result {
-                Ok(()) => {
-                    #[cfg(test)]
-                    self.writes.fetch_add(1, Ordering::Relaxed);
-                    self.saved.store(generation, Ordering::Release);
-                }
-                Err(error) => {
-                    tracing::warn!(chat = %self.chat_id, %error, "chat snapshot failed; retrying")
-                }
-            }
+            result?;
+            #[cfg(test)]
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            self.saved.store(generation, Ordering::Release);
+            Ok(())
         };
         // Compatibility for synchronous shutdown/eviction and command APIs.
         // Async persisters already execute this on the blocking pool.
-        if tokio::runtime::Handle::try_current()
+        let result = if tokio::runtime::Handle::try_current()
             .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
         {
-            tokio::task::block_in_place(flush);
+            tokio::task::block_in_place(flush)
         } else {
-            flush();
+            flush()
+        };
+        if let Err(error) = &result {
+            tracing::warn!(chat = %self.chat_id, %error, "chat snapshot failed; retrying");
         }
+        result
     }
 }
 
@@ -244,7 +243,7 @@ mod tests {
             persistence.applied(cursor, false);
         }
         contender.await.unwrap();
-        persistence.flush_sync();
+        persistence.flush_sync().unwrap();
         for task in heartbeat_tasks {
             task.abort();
         }
@@ -323,10 +322,10 @@ mod tests {
         .await
         .unwrap();
         persistence.applied(1002, false);
-        persistence.flush_sync(); // shutdown/eviction must not await the timer
+        persistence.flush_sync().unwrap(); // shutdown/eviction must not await the timer
         assert_eq!(store.snapshot_cursor("whale").unwrap(), 1002);
         persistence.reset_cursor(0);
-        persistence.flush_sync();
+        persistence.flush_sync().unwrap();
         assert_eq!(
             store.snapshot_cursor("whale").unwrap(),
             0,
@@ -351,13 +350,13 @@ mod tests {
         doc.doc().commit();
         persistence.applied(2, false);
         release_tx.send(()).unwrap();
-        job.await.unwrap();
+        job.await.unwrap().unwrap();
         assert_eq!(
             store.snapshot_cursor("whale").unwrap(),
             1,
             "cursor must have been captured before export"
         );
-        persistence.flush_sync();
+        persistence.flush_sync().unwrap();
         assert_eq!(store.snapshot_cursor("whale").unwrap(), 2);
     }
 }

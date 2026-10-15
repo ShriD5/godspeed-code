@@ -592,6 +592,7 @@ pub struct ChatDocHandle {
     /// explicit prompt or queue send resumes it; incidental doc/status changes
     /// must not turn Cancel into "send the next row".
     queue_paused: AtomicBool,
+    queue_fail_paused: AtomicBool,
     /// True when the doc changed while nobody watched: the mirror rebuild is
     /// deferred to the next `watch_messages` attach instead of paid per commit.
     mirror_dirty: AtomicBool,
@@ -1612,6 +1613,7 @@ impl DocHost {
             held_sends: Mutex::new(HashMap::new()),
             stopped_by: Mutex::new(None),
             queue_paused: AtomicBool::new(recovered_queue_pending),
+            queue_fail_paused: AtomicBool::new(false),
             mirror_dirty: AtomicBool::new(true),
             last_access: AtomicI64::new(now_ms()),
             last_focus: AtomicU64::new(0),
@@ -3532,6 +3534,69 @@ impl DocHost {
         Ok(id)
     }
 
+    /// Queue one engine-generated child notification without treating it as a
+    /// user send (which would unarchive an archived parent). The receipt and
+    /// row are committed together in the parent doc.
+    pub async fn queue_delegation_notice(
+        &self,
+        chat_id: &str,
+        event_id: &str,
+        text: &str,
+    ) -> Result<bool, EngineError> {
+        let workspace = self
+            .workspace()
+            .ok_or_else(|| EngineError::Other("workspace host is not wired".into()))?;
+        let parent = workspace
+            .chat(chat_id)?
+            .ok_or_else(|| EngineError::Other(format!("no such parent chat: {chat_id}")))?;
+        if !parent.is_top_level() || parent.device_id != self.inner.config.device_id {
+            return Err(EngineError::Other(
+                "delegation notifications require a top-level parent hosted on this device".into(),
+            ));
+        }
+        if !self.is_host(chat_id) {
+            return Err(EngineError::Other(format!(
+                "device {} does not host parent chat {chat_id}",
+                self.inner.config.device_id
+            )));
+        }
+        let handle = self.open(chat_id)?;
+        let _drain = handle.drain_lock.lock().await;
+        let held = parent.archived
+            || explicitly_stopped(&handle)
+            || handle.queue_fail_paused.load(Ordering::Acquire);
+        handle.queue_paused.store(held, Ordering::Release);
+        let inserted = if handle.doc.has_delegation_receipt(event_id) {
+            false
+        } else {
+            handle.doc.push_delegation_notice_once(
+                event_id,
+                &QueuedMessage {
+                    id: event_id.to_string(),
+                    text: text.to_string(),
+                    attachments: Vec::new(),
+                    hold_for_turn_end: false,
+                    issued_by: self.inner.config.device_id.clone(),
+                    issued_at: now_ms(),
+                    edited_at: None,
+                    delivery_gate: None,
+                },
+            )?
+        };
+        if inserted {
+            handle.publish_queue();
+        }
+        if let Err(error) = self.persist_snapshot(&handle) {
+            handle.queue_paused.store(true, Ordering::Release);
+            return Err(error);
+        }
+        drop(_drain);
+        if !held {
+            self.drain_queue(&handle).await;
+        }
+        Ok(inserted)
+    }
+
     /// Retype a queued message. Empty text deletes the row — emptying the box
     /// is how you say "drop it". `false` when the row is already gone.
     pub fn update_queued_message(
@@ -3965,6 +4030,7 @@ impl DocHost {
             return Ok(false);
         };
         let was_paused = handle.queue_paused.swap(false, Ordering::AcqRel);
+        handle.queue_fail_paused.store(false, Ordering::Release);
         handle.publish_queue();
         if let Err(err) = self
             .dispatch_queued(&handle, &item, QueueSend::Interrupt)
@@ -3972,6 +4038,7 @@ impl DocHost {
         {
             if was_paused {
                 handle.queue_paused.store(true, Ordering::Release);
+                handle.queue_fail_paused.store(true, Ordering::Release);
             }
             // Put it back rather than swallowing what the user typed — at the
             // head, because the user just said this one was the urgent one.
@@ -4026,6 +4093,7 @@ impl DocHost {
                 .doc
                 .insert_queued(handle.steer_slot(&item.id)?, &item)?;
             handle.queue_paused.store(false, Ordering::Release);
+            handle.queue_fail_paused.store(false, Ordering::Release);
             handle.publish_queue();
             return Ok(true);
         }
@@ -4033,6 +4101,7 @@ impl DocHost {
             return Ok(false);
         };
         let was_paused = handle.queue_paused.swap(false, Ordering::AcqRel);
+        handle.queue_fail_paused.store(false, Ordering::Release);
         handle.publish_queue();
         // Always attempt the non-interrupting path first. If no turn exists,
         // `dispatch_queued` falls through to NextTurn; if a new turn appeared
@@ -4040,6 +4109,7 @@ impl DocHost {
         if let Err(err) = self.dispatch_queued(&handle, &item, QueueSend::Steer).await {
             if was_paused {
                 handle.queue_paused.store(true, Ordering::Release);
+                handle.queue_fail_paused.store(true, Ordering::Release);
             }
             let _ = handle.doc.insert_queued(0, &item);
             handle.publish_queue();
@@ -4131,6 +4201,7 @@ impl DocHost {
             if let Err(err) = self.dispatch_queued(handle, &item, send).await {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "queued send failed");
                 handle.queue_paused.store(true, Ordering::Release);
+                handle.queue_fail_paused.store(true, Ordering::Release);
                 let _ = handle.doc.insert_queued(0, &item);
                 handle.publish_queue();
                 return;
@@ -4234,10 +4305,12 @@ impl DocHost {
             Ok(true) => Ok(true),
             Ok(false) => {
                 handle.queue_paused.store(false, Ordering::Release);
+                handle.queue_fail_paused.store(false, Ordering::Release);
                 Ok(false)
             }
             Err(err) => {
                 handle.queue_paused.store(false, Ordering::Release);
+                handle.queue_fail_paused.store(false, Ordering::Release);
                 Err(err)
             }
         }
@@ -5494,6 +5567,7 @@ impl DocHost {
                 // thaws a queue frozen by Cancel. Clear only after dispatch
                 // succeeds so a failed send cannot silently unfreeze it.
                 handle.queue_paused.store(false, Ordering::Release);
+                handle.queue_fail_paused.store(false, Ordering::Release);
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
@@ -5640,6 +5714,7 @@ impl DocHost {
         }
         // Sending is the deliberate action that thaws a queue frozen by Cancel.
         handle.queue_paused.store(false, Ordering::Release);
+        handle.queue_fail_paused.store(false, Ordering::Release);
         handle.publish_queue();
         Ok(())
     }
@@ -5697,6 +5772,7 @@ impl DocHost {
         {
             SteerOutcome::Accepted => {
                 handle.queue_paused.store(false, Ordering::Release);
+                handle.queue_fail_paused.store(false, Ordering::Release);
                 Ok((SessionCommandStatus::Applied, None))
             }
             SteerOutcome::NotSteerable => {
@@ -5721,6 +5797,7 @@ impl DocHost {
                 self.dispatch_with_source_context(sessions, chat_id, harness, request, message_id)
                     .await?;
                 handle.queue_paused.store(false, Ordering::Release);
+                handle.queue_fail_paused.store(false, Ordering::Release);
                 Ok((
                     SessionCommandStatus::Applied,
                     Some("queued as new turn".into()),
@@ -5954,7 +6031,9 @@ impl DocHost {
             }
         }
         if let Some(persistence) = &handle.persistence {
-            persistence.flush_sync();
+            if let Err(error) = persistence.flush_sync() {
+                tracing::warn!(chat = %handle.chat_id, %error, "chat snapshot flush failed");
+            }
             return;
         }
         match handle.doc.export_snapshot() {
@@ -5968,6 +6047,30 @@ impl DocHost {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "snapshot export failed");
             }
         }
+    }
+
+    fn persist_snapshot(&self, handle: &ChatDocHandle) -> Result<(), EngineError> {
+        if handle.retired.load(Ordering::Relaxed)
+            && matches!(
+                self.inner.store.load_snapshot_with_cursor(&handle.chat_id),
+                Ok(Some((_, _, epoch))) if epoch >= crate::chat2_host::CHAT2_DOC_EPOCH
+            )
+        {
+            return Err(EngineError::Other(
+                "cannot persist a delegation notice to a retired chat document".into(),
+            ));
+        }
+        if let Some(persistence) = &handle.persistence {
+            persistence.dirty(true);
+            persistence.flush_sync().map_err(|error| {
+                EngineError::Other(format!("delegation notice persistence: {error}"))
+            })?;
+            return Ok(());
+        }
+        let bytes = handle.doc.export_snapshot()?;
+        self.inner.store.save_snapshot(&handle.chat_id, &bytes)?;
+        handle.snapshot_bytes.store(bytes.len(), Ordering::Relaxed);
+        Ok(())
     }
 
     /// A fork must be durable before publishing its discoverable registry row.
@@ -5995,6 +6098,83 @@ impl DocHost {
             lock(&handle.chat2).take();
             // Retain the durable subscription through agent shutdown cleanup.
         }
+    }
+}
+
+fn explicitly_stopped(handle: &ChatDocHandle) -> bool {
+    handle
+        .doc
+        .read_commands()
+        .is_ok_and(|commands| command_log_explicitly_stopped(&commands))
+}
+
+fn command_log_explicitly_stopped(commands: &[SessionCommandEntry]) -> bool {
+    commands
+        .iter()
+        .rev()
+        .find(|command| {
+            matches!(
+                command.status,
+                SessionCommandStatus::Applied | SessionCommandStatus::Pending
+            ) && matches!(
+                command.payload,
+                SessionCommandPayload::Run { .. }
+                    | SessionCommandPayload::Steer { .. }
+                    | SessionCommandPayload::Interrupt {}
+            )
+        })
+        .is_some_and(|command| matches!(command.payload, SessionCommandPayload::Interrupt {}))
+}
+
+#[cfg(test)]
+mod delegation_stop_tests {
+    use super::*;
+
+    fn command(
+        id: &str,
+        payload: SessionCommandPayload,
+        status: SessionCommandStatus,
+    ) -> SessionCommandEntry {
+        SessionCommandEntry {
+            id: id.into(),
+            payload,
+            issued_by: "device-a".into(),
+            issued_at: 1,
+            based_on: None,
+            expires_at: None,
+            status,
+            resolution: None,
+        }
+    }
+
+    #[test]
+    fn stop_is_held_until_a_later_run_or_steer() {
+        let stopped = command(
+            "stop",
+            SessionCommandPayload::Interrupt {},
+            SessionCommandStatus::Applied,
+        );
+        assert!(command_log_explicitly_stopped(std::slice::from_ref(
+            &stopped
+        )));
+        let resumed = command(
+            "resume",
+            SessionCommandPayload::Steer {
+                prompt: "continue".into(),
+                message_id: None,
+            },
+            SessionCommandStatus::Pending,
+        );
+        assert!(!command_log_explicitly_stopped(&[stopped.clone(), resumed]));
+        let rejected = command(
+            "rejected",
+            SessionCommandPayload::Steer {
+                prompt: "ignore".into(),
+                message_id: None,
+            },
+            SessionCommandStatus::Rejected,
+        );
+        assert!(command_log_explicitly_stopped(&[stopped, rejected]));
     }
 }
 

@@ -23,13 +23,14 @@ pub mod change_requests;
 pub mod chat2_host;
 pub mod chat_import;
 mod chat_persistence;
+pub mod delegation;
 pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;
+pub mod git_actions;
 pub mod harness_updates;
 pub(crate) mod home_index;
 mod http_error;
-pub mod git_actions;
 pub mod instance_lock;
 pub mod local_import;
 pub mod message_index;
@@ -159,6 +160,7 @@ pub struct EngineCore {
     pub harness_updates: harness_updates::HarnessUpdateCoordinator,
     /// Always-on agents: device-scoped definitions + scheduler + inbox.
     pub agents: Agents,
+    pub delegations: delegation::DelegationNotifications,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -371,6 +373,13 @@ impl EngineCore {
             registry.clone(),
         )?;
         agents.start();
+        let delegations = delegation::DelegationNotifications::start(
+            data_dir,
+            workspace.clone(),
+            doc_host.clone(),
+            sessions.clone(),
+            device_id.clone(),
+        )?;
         Ok(Self {
             sessions,
             doc_host,
@@ -388,6 +397,7 @@ impl EngineCore {
             agent_accounts,
             harness_updates,
             agents,
+            delegations,
             device_id,
             local_import,
             chat_import,
@@ -557,6 +567,7 @@ impl EngineCore {
     /// snapshot.
     pub async fn shutdown(&self) {
         // First: no new agent run may start against a draining engine.
+        self.delegations.shutdown().await;
         self.agents.shutdown().await;
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;

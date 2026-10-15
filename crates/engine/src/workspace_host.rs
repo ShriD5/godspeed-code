@@ -684,6 +684,10 @@ impl WorkspaceHost {
         Ok(self.read(|doc| doc.read_chats())?)
     }
 
+    pub fn chat_notifies_parent(&self, chat_id: &str) -> Result<bool, EngineError> {
+        Ok(self.read(|doc| doc.chat_notifies_parent(chat_id))?)
+    }
+
     pub fn read_devices(&self) -> Result<Vec<Device>, EngineError> {
         Ok(self.read(|doc| doc.read_devices())?)
     }
@@ -952,7 +956,58 @@ impl WorkspaceHost {
         cwd: Option<String>,
         parent_chat_id: Option<String>,
     ) -> Result<(), EngineError> {
-        if self.read(|doc| doc.chat(chat_id))?.is_some() {
+        self.create_chat_with_parent_notify(
+            chat_id,
+            space_id,
+            device_id,
+            config,
+            cwd,
+            parent_chat_id,
+            false,
+        )
+    }
+
+    pub fn create_chat_with_parent_notify(
+        &self,
+        chat_id: &str,
+        space_id: Option<&str>,
+        device_id: Option<&str>,
+        config: Option<ChatConfig>,
+        cwd: Option<String>,
+        parent_chat_id: Option<String>,
+        notify_parent: bool,
+    ) -> Result<(), EngineError> {
+        if let Some(existing) = self.read(|doc| doc.chat(chat_id))? {
+            if notify_parent {
+                let parent_id = parent_chat_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| EngineError::Other("notify requires a parent chat".into()))?;
+                if existing.parent_chat_id.as_deref() != Some(parent_id) {
+                    return Err(EngineError::Other(
+                        "notify retry does not match the existing child relationship".into(),
+                    ));
+                }
+                if device_id.is_some_and(|device| device != existing.device_id)
+                    || space_id
+                        .is_some_and(|space_id| existing.space_id.as_deref() != Some(space_id))
+                {
+                    return Err(EngineError::Other(
+                        "notify retry does not match the existing child device or space".into(),
+                    ));
+                }
+                let parent = self.read(|doc| doc.chat(parent_id))?.ok_or_else(|| {
+                    EngineError::Other(format!("no such parent chat: {parent_id}"))
+                })?;
+                if !parent.is_top_level() || parent.device_id != existing.device_id {
+                    return Err(EngineError::Other(
+                        "notify requires a top-level parent and child hosted on the same device"
+                            .into(),
+                    ));
+                }
+                self.mutate(|doc| doc.set_chat_notify_parent(chat_id, true))?;
+            }
             return Ok(()); // idempotent: optimistic client retries never duplicate
         }
         let space = match space_id {
@@ -971,6 +1026,25 @@ impl WorkspaceHost {
                 ));
             }
         };
+        let parent_chat_id = parent_chat_id.filter(|p| !p.trim().is_empty());
+        if notify_parent {
+            let parent_id = parent_chat_id
+                .as_deref()
+                .ok_or_else(|| EngineError::Other("notify requires a parent chat".into()))?;
+            let parent = self
+                .read(|doc| doc.chat(parent_id))?
+                .ok_or_else(|| EngineError::Other(format!("no such parent chat: {parent_id}")))?;
+            if !parent.is_top_level() {
+                return Err(EngineError::Other(
+                    "notify requires a top-level parent chat".into(),
+                ));
+            }
+            if parent.device_id != host_device {
+                return Err(EngineError::Other(
+                    "notify is only supported when the parent and child use the same device".into(),
+                ));
+            }
+        }
         let created_at = Utc::now();
         let cwd = match &space {
             Some(space) => cwd.unwrap_or_else(|| space.path.clone()),
@@ -1005,9 +1079,12 @@ impl WorkspaceHost {
                 harness_session_cwd: None,
                 space_id: space.as_ref().map(|s| s.id.clone()),
                 last_seen_at: None,
-                parent_chat_id: parent_chat_id.filter(|p| !p.trim().is_empty()),
+                parent_chat_id,
             })
         })?;
+        if notify_parent {
+            self.mutate(|doc| doc.set_chat_notify_parent(chat_id, true))?;
+        }
         Ok(())
     }
 

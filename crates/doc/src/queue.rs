@@ -130,6 +130,41 @@ impl SessionDoc {
         Ok(())
     }
 
+    /// Append a delegation notice once. The receipt lives beside the queue in
+    /// the destination doc and is committed with the row, so retries remain
+    /// idempotent even after the host consumes the queue item.
+    pub fn push_delegation_notice_once(
+        &self,
+        event_id: &str,
+        item: &QueuedMessage,
+    ) -> Result<bool, DocError> {
+        if event_id.trim().is_empty() || item.id != event_id {
+            return Err(DocError::Schema(
+                "delegation event id must match queue row id".into(),
+            ));
+        }
+        if item.text.trim().is_empty() {
+            return Err(DocError::Schema("queued message text required".into()));
+        }
+        let receipts = self.doc().get_map("delegationReceipts");
+        if receipts.get(event_id).is_some() {
+            return Ok(false);
+        }
+        let queue = self.doc().get_movable_list("queue");
+        let map = queue.push_container(loro::LoroMap::new())?;
+        write_queued_map(&map, item)?;
+        receipts.insert(event_id, item.issued_at)?;
+        self.doc().commit();
+        Ok(true)
+    }
+
+    pub fn has_delegation_receipt(&self, event_id: &str) -> bool {
+        self.doc()
+            .get_map("delegationReceipts")
+            .get(event_id)
+            .is_some()
+    }
+
     /// Put a row back at `index` (clamped). The host's undo for a send that
     /// failed after the row was taken: it goes back where it was rather than to
     /// the back of the queue, so a failed "send now" doesn't demote the message
@@ -623,6 +658,23 @@ mod tests {
         assert_eq!(doc.take_queued("q2").unwrap().unwrap().text, "second");
         assert!(doc.take_queued("q2").unwrap().is_none());
         assert!(doc.take_queue_head().unwrap().is_none());
+    }
+
+    #[test]
+    fn delegation_receipt_survives_queue_consumption_and_retry() {
+        let doc = doc();
+        let notice = item("delegation:child:completed:turn-1", "Child completed");
+        assert!(
+            doc.push_delegation_notice_once(&notice.id, &notice)
+                .unwrap()
+        );
+        assert_eq!(doc.take_queued(&notice.id).unwrap(), Some(notice.clone()));
+        assert!(doc.has_delegation_receipt(&notice.id));
+        assert!(
+            !doc.push_delegation_notice_once(&notice.id, &notice)
+                .unwrap()
+        );
+        assert!(doc.read_queue().unwrap().is_empty());
     }
 
     #[test]

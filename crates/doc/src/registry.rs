@@ -1328,6 +1328,33 @@ impl RegistryDoc {
         Ok(true)
     }
 
+    /// Engine opt-in for delivering a delegated chat's terminal events to its
+    /// parent. This field stays outside `Chat` so older clients need no schema
+    /// changes.
+    pub fn set_chat_notify_parent(
+        &mut self,
+        chat_id: &str,
+        enabled: bool,
+    ) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("notifyParent", json!(enabled))]),
+        );
+        Ok(true)
+    }
+
+    pub fn chat_notifies_parent(&self, chat_id: &str) -> Result<bool, DocError> {
+        Ok(self
+            .overlay_row(KIND_CHATS, chat_id)
+            .and_then(|row| row.fields.get("notifyParent").and_then(Value::as_bool))
+            .unwrap_or(false))
+    }
+
     pub fn set_chat_archived(&mut self, chat_id: &str, archived: bool) -> Result<bool, DocError> {
         if !self.row_exists(KIND_CHATS, chat_id) {
             return Ok(false);

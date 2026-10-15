@@ -519,8 +519,9 @@ struct ReadAttachmentChunkParams {
 const _: () = assert!(zeron_proto::VISUAL_MAX_BYTES == zeron_visual::MAX_SCRIPT_BYTES);
 const _: () = assert!(zeron_proto::VISUAL_MAX_ASSETS == zeron_visual::assets::MAX_ASSETS);
 const _: () = assert!(zeron_proto::VISUAL_MAX_ASSET_BYTES == zeron_visual::assets::MAX_ASSET_BYTES);
-const _: () =
-    assert!(zeron_proto::VISUAL_MAX_TOTAL_ASSET_BYTES == zeron_visual::assets::MAX_TOTAL_ASSET_BYTES);
+const _: () = assert!(
+    zeron_proto::VISUAL_MAX_TOTAL_ASSET_BYTES == zeron_visual::assets::MAX_TOTAL_ASSET_BYTES
+);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -535,7 +536,8 @@ struct PublishVisualParams {
 
 fn no_turn_for_visual() -> RpcError {
     RpcError::Failed(
-        "This chat has no running turn on this device; show_visual only works from inside a turn.".into(),
+        "This chat has no running turn on this device; show_visual only works from inside a turn."
+            .into(),
     )
 }
 
@@ -616,6 +618,8 @@ enum MutateParams {
         /// on the row as `parentChatId` for orchestration trees.
         #[serde(default)]
         parent_chat_id: Option<String>,
+        #[serde(default)]
+        notify_parent: bool,
     },
     /// Create a space (device + folder pair). Idempotent by id; a live
     /// duplicate `(deviceId, path)` no-ops. `gitDetected` is seeded from the
@@ -1369,19 +1373,21 @@ impl EngineRpc {
                 branch,
                 cwd,
                 parent_chat_id,
+                notify_parent,
             } => {
                 // A voice orchestrator is hidden, so the chats it creates are
                 // the user's top-level sessions rather than its side chats.
                 let parent_chat_id = parent_chat_id
                     .filter(|parent| !zeron_proto::voice::is_orchestrator_chat(parent));
                 self.workspace
-                    .create_chat_with_parent(
+                    .create_chat_with_parent_notify(
                         &chat_id,
                         space_id.as_deref(),
                         device_id.as_deref(),
                         config,
                         cwd,
                         parent_chat_id,
+                        notify_parent,
                     )
                     .map_err(failed)?;
                 if let Some(branch) = branch.as_deref().filter(|b| !b.is_empty()) {
@@ -1574,7 +1580,8 @@ async fn run_requested_install(
     cancel: zeron_harness::CancellationToken,
 ) -> Result<(), zeron_harness::HarnessError> {
     #[cfg(test)]
-    if let Ok(script) = std::env::var(format!("GODSPEED_INSTALLER_COMMAND_{harness:?}").to_uppercase())
+    if let Ok(script) =
+        std::env::var(format!("GODSPEED_INSTALLER_COMMAND_{harness:?}").to_uppercase())
     {
         return zeron_harness::install::install_with_command(harness, &script, cancel).await;
     }
