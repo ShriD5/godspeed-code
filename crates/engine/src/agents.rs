@@ -1069,7 +1069,9 @@ impl Inner {
             }
         }
         let aborted = last.status == Some(MessageStatus::Aborted);
-        if errored || aborted || error.is_some() && text.trim().is_empty() {
+        // An error part fails the run even after partial text: the reply
+        // stopped short of what was asked, so it never reads as Succeeded.
+        if errored || aborted || error.is_some() {
             let reason = error
                 .or_else(|| {
                     (!text.trim().is_empty()).then(|| prompt::excerpt(&text, SUMMARY_CHARS))

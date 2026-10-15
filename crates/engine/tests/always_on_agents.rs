@@ -30,9 +30,9 @@ const SPACE: &str = "space-agents";
 type PromptLog = Arc<Mutex<Vec<String>>>;
 type RequestLog = Arc<Mutex<Vec<RunRequest>>>;
 
-/// Answers by keyword in the instructions: `FAIL` errors out, `ASK` waits
-/// on a question first, `APPROVE` on a permission approval, anything else
-/// replies with a report.
+/// Answers by keyword in the instructions: `FAIL` errors out, `PARTIAL`
+/// errors after some text, `ASK` waits on a question first, `APPROVE` on a
+/// permission approval, anything else replies with a report.
 struct ScriptedHarness {
     prompts: PromptLog,
     requests: RequestLog,
@@ -92,6 +92,21 @@ impl Harness for ScriptedHarness {
                     message: "boom: the build is broken".into(),
                 }),
                 Ok(done(DoneStatus::Errored, Some("boom: the build is broken"))),
+            ];
+            return Ok(futures::stream::iter(events).boxed());
+        }
+        if instructions.contains("PARTIAL") {
+            // Some text, then an error, on a turn the harness still closes
+            // as completed: the transcript is the only failure signal.
+            let events = vec![
+                Ok(started),
+                Ok(AgentEvent::TextDelta {
+                    text: "Checked half the suites.".into(),
+                }),
+                Ok(AgentEvent::Error {
+                    message: "stream cut: rate limited".into(),
+                }),
+                Ok(done(DoneStatus::Completed, None)),
             ];
             return Ok(futures::stream::iter(events).boxed());
         }
@@ -720,6 +735,21 @@ async fn three_failures_in_a_row_pause_the_agent() {
     assert!(resumed.paused_reason.is_none());
     assert_eq!(resumed.consecutive_failures, 0);
     assert!(resumed.next_fire_at.is_some());
+    w.core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_error_after_partial_text_fails_the_run() {
+    let w = world();
+    let agent = create(
+        &w.client,
+        draft("Half", "PARTIAL report.", json!([{ "kind": "webhook" }])),
+    )
+    .await;
+    let run = w.core.agents.run_now(&agent.id).await.unwrap();
+    let failed = wait_for_run(&w, &run.id, AgentRunStatus::Failed).await;
+    assert_eq!(failed.summary.as_deref(), Some("stream cut: rate limited"));
+    assert_eq!(w.core.agents.list().unwrap()[0].consecutive_failures, 1);
     w.core.shutdown().await;
 }
 
