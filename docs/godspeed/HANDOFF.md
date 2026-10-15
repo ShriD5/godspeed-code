@@ -12,7 +12,7 @@ wants it to be the fastest and best-looking option, and eventually open source.
 - Repo: `~/Developer/godspeed`, private at github.com/ShriD5/godspeed (`origin`). `upstream` is
   zeronsh/zeron, for cherry-picking fixes only. GitHub Actions is **disabled** on the repo on
   purpose (Zeron's macOS/Windows workflows would burn private-repo minutes).
-- `main` is at `405ee5c7` and pushed. Parity with T3 is 54% by the latest audit.
+- `main` is at `7678436a` (search merged) and pushed. Parity with T3 is 54% by the latest audit.
 - Installed build: `/Applications/Godspeed.app` (release, ad-hoc signed) and the `godspeed` CLI
   (symlink in `~/.local/bin`). It is older than `main`; repackage to pick up recent work.
 
