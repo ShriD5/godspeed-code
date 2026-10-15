@@ -2246,7 +2246,7 @@ fn attaching_an_edge_after_local_only_writes_reseeds_them() {
 /// `None`, and a newer peer's recovery mode costs the marker, not the row.
 #[test]
 fn chat_limit_marker_has_its_own_writer() {
-    use zeron_proto::{ChatLimit, LimitRecovery, LimitResetSource};
+    use zeron_proto::{ChatLimit, LimitLogin, LimitRecovery, LimitResetSource};
     let mut ws = RegistryDoc::new("dev-a");
     ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
     let limit = ChatLimit {
@@ -2255,6 +2255,10 @@ fn chat_limit_marker_has_its_own_writer() {
         reset_source: Some(LimitResetSource::Provider),
         window: Some("5-hour".into()),
         recovery: LimitRecovery::ResumeAtReset,
+        login: Some(LimitLogin {
+            harness: zeron_proto::HarnessId::ClaudeCode,
+            fingerprint: Some("digest".into()),
+        }),
     };
     assert!(ws.set_chat_limit("chat-1", Some(&limit)).unwrap());
     assert_eq!(ws.chat("chat-1").unwrap().unwrap().limit.as_ref(), Some(&limit));

@@ -24,7 +24,7 @@ struct SetChatLimitRecoveryParams {
 }
 
 impl EngineRpc {
-    pub(super) fn limit_recovery_rpc(
+    pub(super) async fn limit_recovery_rpc(
         &self,
         method: &str,
         params: serde_json::Value,
@@ -44,6 +44,7 @@ impl EngineRpc {
                 let p: SetChatLimitRecoveryParams = parse_params(params)?;
                 let limit = recovery
                     .set_recovery(&p.chat_id, p.action, p.reset_at)
+                    .await
                     .map_err(failed)?;
                 RpcReply::value(&serde_json::json!({ "limit": limit }))
             }

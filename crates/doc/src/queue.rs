@@ -20,6 +20,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::schema::{DocError, SessionDoc};
 
+const DELEGATION_RECEIPTS: &str = "delegationReceipts";
+const LIMIT_RESUME_RECEIPTS: &str = "limitResumeReceipts";
+
 /// One unsent message waiting its turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,26 +146,60 @@ impl SessionDoc {
                 "delegation event id must match queue row id".into(),
             ));
         }
-        if item.text.trim().is_empty() {
-            return Err(DocError::Schema("queued message text required".into()));
-        }
-        let receipts = self.doc().get_map("delegationReceipts");
-        if receipts.get(event_id).is_some() {
-            return Ok(false);
-        }
-        let queue = self.doc().get_movable_list("queue");
-        let map = queue.push_container(loro::LoroMap::new())?;
-        write_queued_map(&map, item)?;
-        receipts.insert(event_id, item.issued_at)?;
-        self.doc().commit();
-        Ok(true)
+        self.queue_once(DELEGATION_RECEIPTS, None, item)
     }
 
     pub fn has_delegation_receipt(&self, event_id: &str) -> bool {
         self.doc()
-            .get_map("delegationReceipts")
+            .get_map(DELEGATION_RECEIPTS)
             .get(event_id)
             .is_some()
+    }
+
+    /// Put a usage-limit continuation at the head of the queue once, keyed
+    /// by the row id. Like delegation notices, the receipt outlives the row.
+    pub fn queue_limit_resume_once(&self, item: &QueuedMessage) -> Result<bool, DocError> {
+        if item.id.trim().is_empty() {
+            return Err(DocError::Schema("queued message id required".into()));
+        }
+        self.queue_once(LIMIT_RESUME_RECEIPTS, Some(0), item)
+    }
+
+    /// Take back a continuation that was queued but never sent, receipt and
+    /// all, so a later resume queues it afresh. False when it already went.
+    pub fn withdraw_limit_resume(&self, id: &str) -> Result<bool, DocError> {
+        let queue = self.doc().get_movable_list("queue");
+        let Some(index) = index_of(&queue, id) else {
+            return Ok(false);
+        };
+        queue.delete(index, 1)?;
+        self.doc().get_map(LIMIT_RESUME_RECEIPTS).delete(id)?;
+        self.doc().commit();
+        Ok(true)
+    }
+
+    fn queue_once(
+        &self,
+        receipts: &str,
+        index: Option<usize>,
+        item: &QueuedMessage,
+    ) -> Result<bool, DocError> {
+        if item.text.trim().is_empty() {
+            return Err(DocError::Schema("queued message text required".into()));
+        }
+        let receipts = self.doc().get_map(receipts);
+        if receipts.get(&item.id).is_some() {
+            return Ok(false);
+        }
+        let queue = self.doc().get_movable_list("queue");
+        let map = match index {
+            Some(index) => queue.insert_container(index.min(queue.len()), loro::LoroMap::new())?,
+            None => queue.push_container(loro::LoroMap::new())?,
+        };
+        write_queued_map(&map, item)?;
+        receipts.insert(&item.id, item.issued_at)?;
+        self.doc().commit();
+        Ok(true)
     }
 
     /// Put a row back at `index` (clamped). The host's undo for a send that
@@ -675,6 +712,30 @@ mod tests {
                 .unwrap()
         );
         assert!(doc.read_queue().unwrap().is_empty());
+    }
+
+    #[test]
+    fn limit_resume_leads_the_queue_once_even_after_it_is_consumed() {
+        let doc = doc();
+        doc.push_queued(&item("held", "held while limited"))
+            .unwrap();
+        let resume = item("limit-resume-1", "Continue where you left off.");
+        assert!(doc.queue_limit_resume_once(&resume).unwrap());
+        assert_eq!(
+            texts(&doc),
+            vec!["Continue where you left off.", "held while limited"]
+        );
+        assert!(!doc.queue_limit_resume_once(&resume).unwrap());
+        assert_eq!(doc.take_queue_head().unwrap(), Some(resume.clone()));
+        assert!(!doc.queue_limit_resume_once(&resume).unwrap());
+        assert_eq!(texts(&doc), vec!["held while limited"]);
+        assert!(!doc.withdraw_limit_resume(&resume.id).unwrap());
+
+        let unsent = item("limit-resume-2", "Continue where you left off.");
+        doc.queue_limit_resume_once(&unsent).unwrap();
+        assert!(doc.withdraw_limit_resume(&unsent.id).unwrap());
+        assert_eq!(texts(&doc), vec!["held while limited"]);
+        assert!(doc.queue_limit_resume_once(&unsent).unwrap());
     }
 
     #[test]

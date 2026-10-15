@@ -659,11 +659,15 @@ impl WorkspaceHost {
     /// task and push the write to the room.
     fn mutate<R>(&self, f: impl FnOnce(&mut RegistryDoc) -> R) -> R {
         let result = f(&mut lock(&self.inner.reg));
+        self.announce_write();
+        result
+    }
+
+    fn announce_write(&self) {
         self.inner.bump_changed();
         if let Some(room) = lock(&self.inner.room).as_ref() {
             room.nudge();
         }
-        result
     }
 
     fn read<R>(&self, f: impl FnOnce(&RegistryDoc) -> R) -> R {
@@ -1266,6 +1270,29 @@ impl WorkspaceHost {
         limit: Option<&zeron_proto::ChatLimit>,
     ) -> Result<bool, EngineError> {
         Ok(self.mutate(|doc| doc.set_chat_limit(chat_id, limit))?)
+    }
+
+    /// Rewrite the chat's usage-limit marker from its current value in one
+    /// registry transaction, so concurrent edits cannot drop each other.
+    /// `edit` returns the replacement, or `None` to leave it; a chat with no
+    /// marker is left alone. Returns the marker written.
+    pub fn update_chat_limit(
+        &self,
+        chat_id: &str,
+        edit: impl FnOnce(&zeron_proto::ChatLimit) -> Option<zeron_proto::ChatLimit>,
+    ) -> Result<Option<zeron_proto::ChatLimit>, EngineError> {
+        let mut reg = lock(&self.inner.reg);
+        let Some(next) = reg
+            .chat(chat_id)?
+            .and_then(|chat| chat.limit)
+            .and_then(|limit| edit(&limit))
+        else {
+            return Ok(None);
+        };
+        reg.set_chat_limit(chat_id, Some(&next))?;
+        drop(reg);
+        self.announce_write();
+        Ok(Some(next))
     }
 
     /// Tombstone: removes the chats (and session-status) row; the per-chat session

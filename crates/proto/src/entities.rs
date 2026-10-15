@@ -335,6 +335,21 @@ pub struct ChatLimit {
     pub window: Option<String>,
     #[serde(default)]
     pub recovery: LimitRecovery,
+    /// The login the limit hit, once the host has looked it up. A scheduled
+    /// resume only fires while that same login is active; `None` asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<LimitLogin>,
+}
+
+/// The harness login a usage limit belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LimitLogin {
+    pub harness: HarnessId,
+    /// An opaque digest of the active account; `None` when the harness runs
+    /// without an account login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 impl ChatLimit {
@@ -1738,6 +1753,7 @@ mod tests {
             reset_source: None,
             window: None,
             recovery: LimitRecovery::Ask,
+            login: None,
         });
         assert_eq!(chat_indicator(&chat, None), ChatIndicator::Limited);
         let errored = session(SessionStatus::Errored);

@@ -3,7 +3,7 @@
 //! sends made meanwhile wait in its queue, and a scheduled resume continues
 //! the same session exactly once after the reset — across a restart too —
 //! with the held messages following it. The timer is driven through
-//! `tick_at`, so the clock is the test's.
+//! `tick_at`, so the clock is the test's, and the harness login is a fake.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,8 +15,8 @@ use futures::stream::BoxStream;
 use serde_json::json;
 
 use zeron_doc::{MessagePart, MessageRole, SessionCommandPayload};
-use zeron_engine::limit_recovery::RESUME_PROMPT;
-use zeron_engine::{EngineCore, HarnessRegistry};
+use zeron_engine::limit_recovery::{ActiveLogins, HarnessLogin, RESUME_PROMPT, resume_row_id};
+use zeron_engine::{EngineCore, EngineError, HarnessRegistry};
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::{
     AgentEvent, ChatIndicator, ChatLimit, DoneStatus, HarnessId, LimitRecovery, LimitResetSource,
@@ -109,12 +109,26 @@ impl Harness for LimitHarness {
     }
 }
 
+/// The account the harness is signed in with, switchable by the test.
+struct FakeLogins(Mutex<Option<String>>);
+
+#[async_trait]
+impl ActiveLogins for FakeLogins {
+    async fn active_login(&self, _harness: HarnessId) -> Result<HarnessLogin, EngineError> {
+        Ok(HarnessLogin {
+            fingerprint: self.0.lock().unwrap().clone(),
+            usage_windows: Vec::new(),
+        })
+    }
+}
+
 struct World {
     _tmp: tempfile::TempDir,
     data_dir: std::path::PathBuf,
     cwd: String,
     prompts: Arc<Mutex<Vec<String>>>,
     reset: Arc<Mutex<Option<DateTime<Utc>>>>,
+    logins: Arc<FakeLogins>,
 }
 
 impl World {
@@ -129,7 +143,12 @@ impl World {
             _tmp: tmp,
             prompts: Default::default(),
             reset: Default::default(),
+            logins: Arc::new(FakeLogins(Mutex::new(Some("account-a".into())))),
         }
+    }
+
+    fn sign_in(&self, account: &str) {
+        *self.logins.0.lock().unwrap() = Some(account.into());
     }
 
     fn assemble(&self) -> EngineCore {
@@ -138,8 +157,10 @@ impl World {
             prompts: self.prompts.clone(),
             reset: self.reset.clone(),
         }));
-        EngineCore::assemble(&self.data_dir, Arc::new(registry), HarnessId::Mock, None)
-            .expect("engine core assembles")
+        let core = EngineCore::assemble(&self.data_dir, Arc::new(registry), HarnessId::Mock, None)
+            .expect("engine core assembles");
+        core.limit_recovery.set_logins(self.logins.clone());
+        core
     }
 
     fn prompts(&self) -> Vec<String> {
@@ -269,8 +290,19 @@ async fn limited_chat(world: &World, core: &EngineCore) -> DateTime<Utc> {
     *world.reset.lock().unwrap() = Some(reset);
     create_chat(core).await;
     send(core, world, "please LIMIT");
-    wait_for(|| limit(core).is_some(), "the chat to go Limited").await;
+    wait_for(
+        || limit(core).is_some_and(|l| l.login.is_some()),
+        "the chat to go Limited on its login",
+    )
+    .await;
     reset
+}
+
+/// An explicit Stop, through the command plane like the composer's.
+fn stop(core: &EngineCore) {
+    core.doc_host
+        .queue_command(CHAT, SessionCommandPayload::Interrupt {})
+        .expect("queue stop");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -306,14 +338,18 @@ async fn a_limited_turn_resumes_once_after_the_reset_and_held_sends_follow() {
 
     // Before the reset nothing moves; the timer wakes for it.
     assert_eq!(
-        core.limit_recovery.tick_at(reset - TimeDelta::minutes(1)),
+        core.limit_recovery
+            .tick_at(reset - TimeDelta::minutes(1))
+            .await,
         Some(reset)
     );
     settle().await;
     assert_eq!(world.prompts(), ["please LIMIT"]);
 
     // After it: one continuation, then the held send.
-    core.limit_recovery.tick_at(reset + TimeDelta::seconds(1));
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
     wait_for(
         || world.prompts().len() == 3,
         "the continuation and the held send",
@@ -324,7 +360,9 @@ async fn a_limited_turn_resumes_once_after_the_reset_and_held_sends_follow() {
     assert!(queue_texts(&core).is_empty());
 
     // Ticks after the fact fire nothing more.
-    core.limit_recovery.tick_at(reset + TimeDelta::seconds(5));
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(5))
+        .await;
     settle().await;
     assert_eq!(world.count(RESUME_PROMPT), 1);
     // The user's message stays where it was: once.
@@ -363,8 +401,12 @@ async fn a_scheduled_resume_survives_an_engine_restart() {
         "nothing fires before the reset"
     );
 
-    core.limit_recovery.tick_at(reset + TimeDelta::seconds(1));
-    core.limit_recovery.tick_at(reset + TimeDelta::seconds(2));
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(2))
+        .await;
     wait_for(
         || world.prompts().len() == 3,
         "the resume after the restart",
@@ -396,8 +438,12 @@ async fn a_dismissed_limit_never_fires_and_releases_what_it_held() {
     assert!(reply["limit"].is_null());
     wait_for(|| world.count("go anyway") == 1, "the held send to go out").await;
 
-    core.limit_recovery.tick_at(reset + TimeDelta::seconds(1));
-    core.limit_recovery.tick_at(reset + TimeDelta::hours(2));
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::hours(2))
+        .await;
     settle().await;
     assert_eq!(world.count(RESUME_PROMPT), 0);
     core.shutdown().await;
@@ -413,7 +459,9 @@ async fn snooze_and_asking_markers_clear_at_the_reset_without_a_continuation() {
     send(&core, &world, "later");
     wait_for(|| queue_texts(&core) == ["later"], "the send to be held").await;
 
-    core.limit_recovery.tick_at(reset + TimeDelta::seconds(1));
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
     wait_for(|| world.count("later") == 1, "the held send at the reset").await;
     assert!(limit(&core).is_none());
     assert_eq!(world.count(RESUME_PROMPT), 0);
@@ -425,7 +473,8 @@ async fn snooze_and_asking_markers_clear_at_the_reset_without_a_continuation() {
     wait_for(|| limit(&core).is_some(), "Limited again").await;
     let marker = limit(&core).unwrap();
     core.limit_recovery
-        .tick_at(marker.reset_at.unwrap() + TimeDelta::seconds(1));
+        .tick_at(marker.reset_at.unwrap() + TimeDelta::seconds(1))
+        .await;
     settle().await;
     assert_eq!(limit(&core).map(|l| l.recovery), Some(LimitRecovery::Ask));
     assert_eq!(world.count(RESUME_PROMPT), 0);
@@ -438,7 +487,9 @@ async fn a_resume_missed_by_hours_asks_instead_of_firing() {
     let core = world.assemble();
     let reset = limited_chat(&world, &core).await;
     set_recovery(&core, "resume", None).await;
-    core.limit_recovery.tick_at(reset + TimeDelta::hours(13));
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::hours(13))
+        .await;
     settle().await;
     assert_eq!(limit(&core).map(|l| l.recovery), Some(LimitRecovery::Ask));
     assert_eq!(world.count(RESUME_PROMPT), 0);
@@ -463,7 +514,9 @@ async fn auto_resume_arms_new_limits_and_text_only_limits_ask_for_a_time() {
         limit(&core).map(|l| l.recovery),
         Some(LimitRecovery::ResumeAtReset)
     );
-    core.limit_recovery.tick_at(reset + TimeDelta::seconds(1));
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
     wait_for(|| world.count(RESUME_PROMPT) == 1, "the automatic resume").await;
     wait_for(|| limit(&core).is_none(), "the marker to clear").await;
 
@@ -503,5 +556,162 @@ async fn auto_resume_arms_new_limits_and_text_only_limits_ask_for_a_time() {
         .await
         .unwrap();
     assert_eq!(settings, json!({ "autoResume": true }));
+    core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_continuation_queued_before_a_crash_goes_out_once_after_restart() {
+    let world = World::new();
+    let core = world.assemble();
+    let reset = limited_chat(&world, &core).await;
+    set_recovery(&core, "resume", None).await;
+    send(&core, &world, "after crash");
+    wait_for(
+        || queue_texts(&core) == ["after crash"],
+        "the send to be held",
+    )
+    .await;
+    // The crash lands between the two writes: the continuation is queued,
+    // the marker is not yet cleared.
+    let marker = limit(&core).unwrap();
+    core.doc_host
+        .queue_limit_resume(CHAT, &resume_row_id(&marker), RESUME_PROMPT)
+        .unwrap();
+    core.shutdown().await;
+    drop(core);
+
+    let core = world.assemble();
+    assert_eq!(
+        limit(&core),
+        Some(marker.clone()),
+        "the resume is still owed"
+    );
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(2))
+        .await;
+    wait_for(|| world.prompts().len() == 3, "the resume after the crash").await;
+    assert_eq!(
+        world.prompts(),
+        ["please LIMIT", RESUME_PROMPT, "after crash"]
+    );
+    assert!(limit(&core).is_none());
+
+    // The same marker redelivered after the continuation went out (a stale
+    // sync, a retried write) sends nothing more.
+    core.workspace.set_chat_limit(CHAT, Some(&marker)).unwrap();
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(3))
+        .await;
+    settle().await;
+    assert_eq!(world.count(RESUME_PROMPT), 1);
+    assert!(limit(&core).is_none());
+    core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_never_fires_on_another_login_and_asks_instead() {
+    let world = World::new();
+    let core = world.assemble();
+    let reset = limited_chat(&world, &core).await;
+    set_recovery(&core, "resume", None).await;
+    send(&core, &world, "held one");
+    wait_for(|| queue_texts(&core) == ["held one"], "the send to be held").await;
+    world.sign_in("account-b");
+    core.shutdown().await;
+    drop(core);
+
+    let core = world.assemble();
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(2))
+        .await;
+    settle().await;
+    assert_eq!(world.prompts(), ["please LIMIT"]);
+    assert_eq!(limit(&core).map(|l| l.recovery), Some(LimitRecovery::Ask));
+    assert_eq!(queue_texts(&core), ["held one"], "held sends wait too");
+
+    // The user decides: resuming now continues on the login now active.
+    set_recovery(&core, "resume", Some(Utc::now() - TimeDelta::seconds(1))).await;
+    wait_for(|| world.prompts().len() == 3, "the chosen resume").await;
+    assert_eq!(world.prompts(), ["please LIMIT", RESUME_PROMPT, "held one"]);
+    core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_after_scheduling_cancels_the_resume_across_a_restart() {
+    let world = World::new();
+    let core = world.assemble();
+    let reset = limited_chat(&world, &core).await;
+    set_recovery(&core, "resume", None).await;
+    stop(&core);
+    wait_for(
+        || limit(&core).is_some_and(|l| l.recovery == LimitRecovery::Ask),
+        "the stop to cancel the resume",
+    )
+    .await;
+    core.shutdown().await;
+    drop(core);
+
+    let core = world.assemble();
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
+    settle().await;
+    assert_eq!(world.count(RESUME_PROMPT), 0);
+    assert_eq!(limit(&core).map(|l| l.recovery), Some(LimitRecovery::Ask));
+    core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_snooze_releases_nothing_after_a_stop() {
+    let world = World::new();
+    let core = world.assemble();
+    let reset = limited_chat(&world, &core).await;
+    set_recovery(&core, "snooze", None).await;
+    send(&core, &world, "later");
+    wait_for(|| queue_texts(&core) == ["later"], "the send to be held").await;
+    stop(&core);
+    settle().await;
+
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
+    settle().await;
+    assert!(limit(&core).is_none());
+    assert_eq!(world.count("later"), 0, "the stop keeps the queue frozen");
+    assert_eq!(queue_texts(&core), ["later"]);
+    core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_archived_chat_does_not_resume_even_after_a_restart() {
+    let world = World::new();
+    let core = world.assemble();
+    let reset = limited_chat(&world, &core).await;
+    set_recovery(&core, "resume", None).await;
+    core.workspace.set_chat_archived(CHAT, true).unwrap();
+    core.shutdown().await;
+    drop(core);
+
+    let core = world.assemble();
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(1))
+        .await;
+    settle().await;
+    assert_eq!(world.count(RESUME_PROMPT), 0);
+    assert_eq!(limit(&core).map(|l| l.recovery), Some(LimitRecovery::Ask));
+
+    // Unarchived later, it still asks rather than firing late.
+    core.workspace.set_chat_archived(CHAT, false).unwrap();
+    core.limit_recovery
+        .tick_at(reset + TimeDelta::seconds(2))
+        .await;
+    settle().await;
+    assert_eq!(world.count(RESUME_PROMPT), 0);
     core.shutdown().await;
 }

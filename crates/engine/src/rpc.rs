@@ -2081,7 +2081,7 @@ impl RpcService for EngineRpc {
             return self.message_search_rpc(params).await;
         }
         if limit_recovery::handles(method) {
-            return self.limit_recovery_rpc(method, params);
+            return self.limit_recovery_rpc(method, params).await;
         }
         if git_actions::handles(method) {
             return self.git_action(method, params).await;

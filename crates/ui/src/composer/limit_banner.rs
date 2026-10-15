@@ -241,6 +241,7 @@ mod tests {
             reset_source: None,
             window: Some("5-hour".into()),
             recovery,
+            login: None,
         }
     }
 

@@ -364,7 +364,7 @@ impl EngineCore {
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
         let limit_recovery =
             limit_recovery::LimitRecoveryService::open(data_dir, workspace.clone(), doc_host.clone());
-        limit_recovery.set_accounts(agent_accounts.clone());
+        limit_recovery.set_logins(Arc::new(agent_accounts.clone()));
         // Turn starts snapshot the checkout tree — the "Latest turn" diff base
         // — and end any usage-limit marker: the chat is running again.
         let turn_diff = diff_sync.clone();

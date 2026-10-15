@@ -1195,14 +1195,33 @@ impl DocHost {
     }
 
     /// A usage limit lifted: thaw the chat's queue (what it held was held
-    /// for the limit, and a restart restores queues frozen) and drain it.
-    /// Opens the chat if it went cold; a no-op for chats this device doesn't
-    /// host.
+    /// for the limit, and a restart restores queues frozen) and drain it —
+    /// unless the user's last word on the chat was Stop, which keeps it
+    /// frozen. Opens the chat if it went cold; a no-op for chats this device
+    /// doesn't host.
     pub fn release_queue(&self, chat_id: &str) {
         let Ok(handle) = self.open(chat_id) else {
             return;
         };
+        if explicitly_stopped(&handle) {
+            handle.queue_paused.store(true, Ordering::Release);
+            return;
+        }
+        self.thaw_and_drain(handle);
+    }
+
+    /// A scheduled resume's continuation is queued and its marker cleared:
+    /// send it. Resuming is the user's own choice, made after any Stop, so
+    /// it thaws a frozen queue.
+    pub fn resume_queue(&self, chat_id: &str) {
+        if let Ok(handle) = self.open(chat_id) {
+            self.thaw_and_drain(handle);
+        }
+    }
+
+    fn thaw_and_drain(&self, handle: Arc<ChatDocHandle>) {
         handle.queue_paused.store(false, Ordering::Release);
+        handle.queue_fail_paused.store(false, Ordering::Release);
         let host = self.clone();
         self.spawn_worker(async move {
             host.drain_queue(&handle).await;
@@ -1226,9 +1245,30 @@ impl DocHost {
             .is_some_and(|limit| limit.holds_sends(chrono::Utc::now()))
     }
 
-    /// Put a usage-limit resume's continuation at the head of the queue —
-    /// ahead of the messages held while limited — and drain. `row_id` names
-    /// the limit it resumes: false when that continuation is already queued.
+    /// A Stop cancels a scheduled usage-limit resume: the chat goes back to
+    /// asking instead of continuing on its own at the reset.
+    fn cancel_limit_resume(&self, chat_id: &str) {
+        let Some(workspace) = self.workspace() else {
+            return;
+        };
+        let asking = workspace.update_chat_limit(chat_id, |limit| {
+            (limit.recovery == zeron_proto::LimitRecovery::ResumeAtReset).then(|| {
+                zeron_proto::ChatLimit {
+                    recovery: zeron_proto::LimitRecovery::Ask,
+                    ..limit.clone()
+                }
+            })
+        });
+        if let Err(err) = asking {
+            tracing::warn!(chat = %chat_id, %err, "stop did not cancel the scheduled resume");
+        }
+    }
+
+    /// Durably put a usage-limit resume's continuation at the head of the
+    /// queue, ahead of the messages held while limited. `row_id` names the
+    /// limit it resumes; false when that continuation was queued before,
+    /// even if it has since been sent. Nothing drains: the marker still
+    /// holds the queue until the caller clears it and calls `resume_queue`.
     pub fn queue_limit_resume(
         &self,
         chat_id: &str,
@@ -1236,9 +1276,6 @@ impl DocHost {
         prompt: &str,
     ) -> Result<bool, EngineError> {
         let handle = self.open(chat_id)?;
-        if handle.doc.read_queue()?.iter().any(|row| row.id == row_id) {
-            return Ok(false);
-        }
         let item = QueuedMessage {
             id: row_id.to_string(),
             text: prompt.to_string(),
@@ -1249,15 +1286,23 @@ impl DocHost {
             edited_at: None,
             delivery_gate: None,
         };
-        handle.doc.insert_queued(0, &item)?;
-        // Resuming is a deliberate send: it thaws a queue a Stop froze.
-        handle.queue_paused.store(false, Ordering::Release);
+        let inserted = handle.doc.queue_limit_resume_once(&item)?;
+        if inserted {
+            handle.publish_queue();
+        }
+        self.persist_snapshot(&handle)?;
+        Ok(inserted)
+    }
+
+    /// Take an unsent continuation back out of the queue (a resume that will
+    /// no longer fire on its own). False when it was never queued or has gone.
+    pub fn withdraw_limit_resume(&self, chat_id: &str, row_id: &str) -> Result<bool, EngineError> {
+        let handle = self.open(chat_id)?;
+        if !handle.doc.withdraw_limit_resume(row_id)? {
+            return Ok(false);
+        }
         handle.publish_queue();
-        self.save_snapshot(&handle);
-        let host = self.clone();
-        self.spawn_worker(async move {
-            host.drain_queue(&handle).await;
-        });
+        self.persist_snapshot(&handle)?;
         Ok(true)
     }
 
@@ -5669,6 +5714,7 @@ impl DocHost {
                 .await
             }
             SessionCommandPayload::Interrupt {} => {
+                self.cancel_limit_resume(chat_id);
                 self.await_earlier_prompts(sessions, handle, &entry.id)
                     .await;
                 *lock(&handle.stopped_by) = Some(entry.id.clone());
@@ -6158,13 +6204,13 @@ impl DocHost {
             )
         {
             return Err(EngineError::Other(
-                "cannot persist a delegation notice to a retired chat document".into(),
+                "cannot persist an engine notice to a retired chat document".into(),
             ));
         }
         if let Some(persistence) = &handle.persistence {
             persistence.dirty(true);
             persistence.flush_sync().map_err(|error| {
-                EngineError::Other(format!("delegation notice persistence: {error}"))
+                EngineError::Other(format!("engine notice persistence: {error}"))
             })?;
             return Ok(());
         }

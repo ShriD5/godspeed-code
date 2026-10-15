@@ -14,24 +14,29 @@
 //!   clock at least every [`MAX_SLEEP`] because tokio's monotonic timers stop
 //!   while a laptop sleeps. Nothing about the schedule lives in memory: every
 //!   tick re-derives it from the markers, so restarts need no restoration.
-//! - **Resume.** At the reset a scheduled resume clears the marker and puts
-//!   one continuation prompt at the head of the queue — the failed turn's
-//!   own message is already in the session and is not sent again — then the
-//!   held messages follow it. A resume found long after its reset (the
-//!   machine was off) goes back to asking instead of firing stale work.
+//! - **Resume.** At the reset a scheduled resume durably queues one
+//!   continuation prompt at the head of the queue — the failed turn's own
+//!   message is already in the session and is not sent again — then clears
+//!   the marker, and the held messages follow it. A resume goes back to
+//!   asking instead when it is found long after its reset (the machine was
+//!   off), the chat was archived or stopped, or the harness is signed in to
+//!   a different account than the one the limit hit; it never switches
+//!   accounts itself.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
+use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use zeron_proto::{
-    ChatLimit, HarnessId, LimitRecovery as Recovery, LimitRecoveryAction, LimitRecoverySettings,
-    LimitResetSource,
+    AgentUsageWindow, Chat, ChatLimit, HarnessId, LimitLogin, LimitRecovery as Recovery,
+    LimitRecoveryAction, LimitRecoverySettings, LimitResetSource,
 };
 
 use crate::EngineError;
@@ -63,6 +68,55 @@ pub struct LimitSignal {
 /// (always-on agent runs never do: their next fire replaces the run).
 pub type AutoResumeFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// What a harness is signed in with right now.
+#[derive(Debug, Clone, Default)]
+pub struct HarnessLogin {
+    /// [`login_fingerprint`] of the active account(s); `None` without one.
+    pub fingerprint: Option<String>,
+    pub usage_windows: Vec<AgentUsageWindow>,
+}
+
+/// The source of each harness's active login: the device's agent accounts.
+#[async_trait]
+pub trait ActiveLogins: Send + Sync {
+    async fn active_login(&self, harness: HarnessId) -> Result<HarnessLogin, EngineError>;
+}
+
+#[async_trait]
+impl ActiveLogins for AgentAccounts {
+    async fn active_login(&self, harness: HarnessId) -> Result<HarnessLogin, EngineError> {
+        let snapshot = self.list(false).await?;
+        let active: Vec<_> = snapshot
+            .accounts
+            .into_iter()
+            .filter(|account| account.harness == harness && account.active)
+            .collect();
+        Ok(HarnessLogin {
+            fingerprint: login_fingerprint(active.iter().map(|account| account.id.as_str())),
+            usage_windows: active
+                .into_iter()
+                .flat_map(|account| account.usage_windows)
+                .collect(),
+        })
+    }
+}
+
+/// An opaque digest of a set of account ids, safe to sync on the chat row.
+pub fn login_fingerprint<'a>(ids: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut ids: Vec<&str> = ids.collect();
+    if ids.is_empty() {
+        return None;
+    }
+    ids.sort_unstable();
+    let digest = Sha256::digest(ids.join("\n").as_bytes());
+    Some(digest[..12].iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The queue row id of the continuation that resumes `limit`: one per limit.
+pub fn resume_row_id(limit: &ChatLimit) -> String {
+    format!("limit-resume-{}", limit.limited_at.timestamp_millis())
+}
+
 #[derive(Clone)]
 pub struct LimitRecoveryService {
     inner: Arc<Inner>,
@@ -74,12 +128,14 @@ struct Inner {
     device_id: String,
     workspace: WorkspaceHost,
     doc_host: DocHost,
-    accounts: OnceLock<AgentAccounts>,
+    logins: Mutex<Option<Arc<dyn ActiveLogins>>>,
     auto_filter: OnceLock<AutoResumeFilter>,
     clock: Arc<dyn Clock>,
     /// Chats whose continuation this service sent: a limit on that turn
     /// keeps the resume the user chose (when it names a fresh reset).
     resumed: Mutex<HashSet<String>>,
+    /// One tick at a time: two overlapping ticks could both resume a chat.
+    ticking: tokio::sync::Mutex<()>,
     wake: Notify,
     cancel: CancellationToken,
     tasks: TaskTracker,
@@ -129,10 +185,11 @@ impl LimitRecoveryService {
                 device_id: workspace.device_id().to_string(),
                 workspace,
                 doc_host,
-                accounts: OnceLock::new(),
+                logins: Mutex::new(None),
                 auto_filter: OnceLock::new(),
                 clock,
                 resumed: Mutex::new(HashSet::new()),
+                ticking: tokio::sync::Mutex::new(()),
                 wake: Notify::new(),
                 cancel: CancellationToken::new(),
                 tasks: TaskTracker::new(),
@@ -140,9 +197,10 @@ impl LimitRecoveryService {
         }
     }
 
-    /// The usage meters an unknown reset falls back to.
-    pub fn set_accounts(&self, accounts: AgentAccounts) {
-        let _ = self.inner.accounts.set(accounts);
+    /// The logins limits bind to, and the usage meters an unknown reset
+    /// falls back to.
+    pub fn set_logins(&self, logins: Arc<dyn ActiveLogins>) {
+        *lock(&self.inner.logins) = Some(logins);
     }
 
     pub fn set_auto_resume_filter(&self, filter: AutoResumeFilter) {
@@ -201,23 +259,21 @@ impl LimitRecoveryService {
             } else {
                 Recovery::Ask
             },
+            login: None,
         };
         if let Err(err) = inner.workspace.set_chat_limit(chat_id, Some(&limit)) {
             tracing::warn!(chat = %chat_id, %err, "limit recovery: marker not written");
             return;
         }
         tracing::info!(chat = %chat_id, reset = ?limit.reset_at, "chat is usage-limited");
-        if reset.is_none() {
-            let inner = inner.clone();
-            let chat_id = chat_id.to_owned();
-            let harness = signal.harness;
-            self.inner.tasks.spawn(async move {
-                tokio::select! {
-                    _ = inner.cancel.cancelled() => {}
-                    _ = inner.fill_reset_from_usage(&chat_id, harness, limit) => {}
-                }
-            });
-        }
+        let task = inner.clone();
+        let chat_id = chat_id.to_owned();
+        self.inner.tasks.spawn(async move {
+            tokio::select! {
+                _ = task.cancel.cancelled() => {}
+                _ = task.bind_login(&chat_id, signal.harness, now) => {}
+            }
+        });
         inner.wake.notify_one();
     }
 
@@ -236,8 +292,10 @@ impl LimitRecoveryService {
         }
     }
 
-    /// A banner choice. Returns the chat's marker afterwards.
-    pub fn set_recovery(
+    /// A banner choice. Returns the chat's marker afterwards. Choosing to
+    /// resume now (or a marker that never learnt its login) binds the
+    /// resume to the login active at this moment: the user has decided.
+    pub async fn set_recovery(
         &self,
         chat_id: &str,
         action: LimitRecoveryAction,
@@ -248,40 +306,52 @@ impl LimitRecoveryService {
             .workspace
             .chat(chat_id)?
             .ok_or_else(|| failed(format!("no such chat: {chat_id}")))?;
-        let Some(mut limit) = chat.limit else {
+        let Some(limit) = chat.limit else {
             return Ok(None);
         };
-        match action {
+        let recovery = match action {
             LimitRecoveryAction::Dismiss => {
                 inner.clear(chat_id);
                 return Ok(None);
             }
-            LimitRecoveryAction::Ask => limit.recovery = Recovery::Ask,
-            LimitRecoveryAction::Resume | LimitRecoveryAction::Snooze => {
-                if let Some(at) = reset_at {
-                    limit.reset_at = Some(at);
-                    limit.reset_source = Some(LimitResetSource::User);
-                }
-                if limit.reset_at.is_none() {
-                    return Err(failed("No reset time is known yet: pick when to resume"));
-                }
-                limit.recovery = if action == LimitRecoveryAction::Resume {
-                    Recovery::ResumeAtReset
-                } else {
-                    Recovery::Snoozed
-                };
-            }
+            LimitRecoveryAction::Ask => Recovery::Ask,
+            LimitRecoveryAction::Resume => Recovery::ResumeAtReset,
+            LimitRecoveryAction::Snooze => Recovery::Snoozed,
+        };
+        if recovery != Recovery::Ask && reset_at.is_none() && limit.reset_at.is_none() {
+            return Err(failed("No reset time is known yet: pick when to resume"));
         }
-        inner.workspace.set_chat_limit(chat_id, Some(&limit))?;
+        let now = inner.clock.now();
+        let rebind = recovery == Recovery::ResumeAtReset
+            && (limit.login.is_none() || reset_at.is_some_and(|at| at <= now));
+        let login = if rebind {
+            inner.current_login(chat_id, &limit).await
+        } else {
+            None
+        };
+        let updated = inner.workspace.update_chat_limit(chat_id, |current| {
+            let mut next = current.clone();
+            next.recovery = recovery;
+            if recovery != Recovery::Ask
+                && let Some(at) = reset_at
+            {
+                next.reset_at = Some(at);
+                next.reset_source = Some(LimitResetSource::User);
+            }
+            if let Some(login) = &login {
+                next.login = Some(login.clone());
+            }
+            Some(next)
+        })?;
         inner.wake.notify_one();
-        Ok(Some(limit))
+        Ok(updated)
     }
 
     /// Act on every due marker at `now`; returns the next reset to wake
     /// for. The timer calls this with the wall clock; tests call it directly.
     #[doc(hidden)]
-    pub fn tick_at(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        self.inner.tick(now)
+    pub async fn tick_at(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        self.inner.tick(now).await
     }
 }
 
@@ -299,52 +369,72 @@ impl Inner {
         self.doc_host.release_queue(chat_id);
     }
 
-    async fn fill_reset_from_usage(&self, chat_id: &str, harness: HarnessId, limit: ChatLimit) {
-        let Some(accounts) = self.accounts.get() else {
-            return;
-        };
-        let snapshot = match accounts.list(false).await {
-            Ok(snapshot) => snapshot,
+    fn logins(&self) -> Option<Arc<dyn ActiveLogins>> {
+        lock(&self.logins).clone()
+    }
+
+    async fn active_login(&self, harness: HarnessId) -> Result<HarnessLogin, EngineError> {
+        match self.logins() {
+            Some(logins) => logins.active_login(harness).await,
+            None => Ok(HarnessLogin::default()),
+        }
+    }
+
+    /// The login the chat's harness is on now, when it can be read.
+    async fn current_login(&self, chat_id: &str, limit: &ChatLimit) -> Option<LimitLogin> {
+        let harness = limit
+            .login
+            .as_ref()
+            .map(|login| login.harness)
+            .or_else(|| self.workspace.chat_config(chat_id).map(|c| c.harness))?;
+        let login = self.active_login(harness).await.ok()?;
+        Some(LimitLogin {
+            harness,
+            fingerprint: login.fingerprint,
+        })
+    }
+
+    /// Record which login the limit at `limited_at` hit and, when no reset
+    /// is known, fall back to that account's spent usage window.
+    async fn bind_login(&self, chat_id: &str, harness: HarnessId, limited_at: DateTime<Utc>) {
+        let login = match self.active_login(harness).await {
+            Ok(login) => login,
             Err(err) => {
-                tracing::debug!(chat = %chat_id, %err, "limit recovery: usage meters unavailable");
+                tracing::debug!(chat = %chat_id, %err, "limit recovery: login unavailable");
                 return;
             }
         };
-        let now = self.clock.now();
-        let Some(reset) = snapshot
-            .accounts
-            .iter()
-            .filter(|account| account.harness == harness && account.active)
-            .find_map(|account| exhausted_window_reset(&account.usage_windows, now))
-        else {
-            return;
-        };
-        // Only the marker this lookup was for: the chat may have resumed,
-        // been dismissed or limited again meanwhile.
-        let current = self
-            .workspace
-            .chat(chat_id)
-            .ok()
-            .flatten()
-            .and_then(|c| c.limit);
-        if current.as_ref() != Some(&limit) {
-            return;
-        }
-        let mut limit = limit;
-        limit.reset_at = Some(reset);
-        limit.reset_source = Some(LimitResetSource::UsageWindow);
-        if self.auto_resume(chat_id) {
-            limit.recovery = Recovery::ResumeAtReset;
-        }
-        if let Err(err) = self.workspace.set_chat_limit(chat_id, Some(&limit)) {
-            tracing::warn!(chat = %chat_id, %err, "limit recovery: usage reset not written");
+        let usage_reset = exhausted_window_reset(&login.usage_windows, self.clock.now());
+        let auto = self.auto_resume(chat_id);
+        let updated = self.workspace.update_chat_limit(chat_id, |limit| {
+            if limit.limited_at != limited_at {
+                return None;
+            }
+            let mut next = limit.clone();
+            next.login.get_or_insert(LimitLogin {
+                harness,
+                fingerprint: login.fingerprint,
+            });
+            if next.reset_at.is_none()
+                && let Some(reset) = usage_reset
+            {
+                next.reset_at = Some(reset);
+                next.reset_source = Some(LimitResetSource::UsageWindow);
+                if auto {
+                    next.recovery = Recovery::ResumeAtReset;
+                }
+            }
+            (next != *limit).then_some(next)
+        });
+        if let Err(err) = updated {
+            tracing::warn!(chat = %chat_id, %err, "limit recovery: login not recorded");
         }
         self.wake.notify_one();
     }
 
     async fn run_loop(self: Arc<Self>) {
         loop {
-            let next = self.tick(self.clock.now());
+            let next = self.tick(self.clock.now()).await;
             let sleep = next
                 .map(|at| (at - self.clock.now()).to_std().unwrap_or(Duration::ZERO))
                 .unwrap_or(MAX_SLEEP)
@@ -357,7 +447,8 @@ impl Inner {
         }
     }
 
-    fn tick(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    async fn tick(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let _ticking = self.ticking.lock().await;
         let chats = match self.workspace.read_chats() {
             Ok(chats) => chats,
             Err(err) => {
@@ -367,7 +458,7 @@ impl Inner {
         };
         let mut earliest: Option<DateTime<Utc>> = None;
         for chat in chats.into_iter().filter(|c| c.device_id == self.device_id) {
-            let Some(limit) = chat.limit else {
+            let Some(limit) = chat.limit.clone() else {
                 continue;
             };
             let Some(reset) = limit.reset_at else {
@@ -378,28 +469,9 @@ impl Inner {
                 continue;
             }
             match limit.recovery {
-                Recovery::ResumeAtReset if now - reset > RESUME_STALE => {
-                    // Misfire: the machine slept through the reset by hours.
-                    // Stale work is not sent on its own; the banner offers it.
-                    let mut asking = limit.clone();
-                    asking.recovery = Recovery::Ask;
-                    tracing::info!(chat = %chat.id, "limit recovery: resume missed by hours; asking");
-                    if let Err(err) = self.workspace.set_chat_limit(&chat.id, Some(&asking)) {
-                        tracing::warn!(chat = %chat.id, %err, "limit recovery: misfire not recorded");
-                    }
-                }
-                Recovery::ResumeAtReset => self.resume(&chat.id, &limit),
-                Recovery::Snoozed => self.clear(&chat.id),
-                // Messages the user queued while limited continue the session
-                // themselves once the window is back; an agent run's chat has
-                // nothing to ask (its agent fires again on its own).
-                Recovery::Ask
-                    if self.has_queue(&chat.id)
-                        || self.auto_filter.get().is_some_and(|f| !f(&chat.id)) =>
-                {
-                    self.clear(&chat.id)
-                }
-                Recovery::Ask => {}
+                Recovery::ResumeAtReset => self.resume_due(&chat, &limit, now).await,
+                _ if chat.archived => {}
+                _ => self.release_due(&chat.id, &limit).await,
             }
         }
         earliest
@@ -409,26 +481,103 @@ impl Inner {
         self.doc_host.queue_len(chat_id) > 0
     }
 
-    /// Clear the marker, then queue the continuation ahead of anything held.
-    /// The row id is the marker's identity, so a repeat (a redelivered tick,
-    /// a crash between the two writes) cannot send it twice.
+    /// A snoozed or asking marker past its reset. Messages the user queued
+    /// while limited continue the session themselves once the window is
+    /// back, on the same login only; an agent run's chat has nothing to ask
+    /// (its agent fires again on its own).
+    async fn release_due(&self, chat_id: &str, limit: &ChatLimit) {
+        let agent_run = self.auto_filter.get().is_some_and(|f| !f(chat_id));
+        if limit.recovery == Recovery::Ask && !agent_run && !self.has_queue(chat_id) {
+            return;
+        }
+        if agent_run || self.same_login(limit).await {
+            self.clear(chat_id);
+        } else if limit.recovery == Recovery::Snoozed {
+            self.ask(chat_id, limit, "the harness is on another login");
+        }
+    }
+
+    async fn resume_due(&self, chat: &Chat, limit: &ChatLimit, now: DateTime<Utc>) {
+        match self.resume_blocker(chat, limit, now).await {
+            Some(reason) => self.ask(&chat.id, limit, reason),
+            None => self.resume(&chat.id, limit),
+        }
+    }
+
+    /// Why a due resume must not fire on its own, if anything.
+    async fn resume_blocker(
+        &self,
+        chat: &Chat,
+        limit: &ChatLimit,
+        now: DateTime<Utc>,
+    ) -> Option<&'static str> {
+        if limit
+            .reset_at
+            .is_some_and(|reset| now - reset > RESUME_STALE)
+        {
+            return Some("the reset passed hours ago");
+        }
+        if chat.archived {
+            return Some("the chat is archived");
+        }
+        if !self.same_login(limit).await {
+            return Some("the harness is on another login");
+        }
+        None
+    }
+
+    async fn same_login(&self, limit: &ChatLimit) -> bool {
+        let Some(bound) = &limit.login else {
+            return false;
+        };
+        self.active_login(bound.harness)
+            .await
+            .is_ok_and(|now| now.fingerprint == bound.fingerprint)
+    }
+
+    /// Turn a due resume or snooze back into a question for the banner,
+    /// taking back a continuation an interrupted resume left queued.
+    fn ask(&self, chat_id: &str, limit: &ChatLimit, reason: &str) {
+        tracing::info!(chat = %chat_id, reason, "limit recovery: not resuming on its own; asking");
+        if let Err(err) = self
+            .doc_host
+            .withdraw_limit_resume(chat_id, &resume_row_id(limit))
+        {
+            tracing::warn!(chat = %chat_id, %err, "limit recovery: continuation not withdrawn");
+            return;
+        }
+        let asking = self.workspace.update_chat_limit(chat_id, |current| {
+            (current.limited_at == limit.limited_at && current.recovery != Recovery::Ask).then(
+                || ChatLimit {
+                    recovery: Recovery::Ask,
+                    ..current.clone()
+                },
+            )
+        });
+        if let Err(err) = asking {
+            tracing::warn!(chat = %chat_id, %err, "limit recovery: asking not recorded");
+        }
+    }
+
+    /// Queue the continuation ahead of anything held, then clear the marker.
+    /// The marker is the only record that a resume is owed, so it outlives
+    /// the queue write: a crash or failure in between retries on the next
+    /// tick, and the row's receipt keeps the retry from sending it twice.
     fn resume(&self, chat_id: &str, limit: &ChatLimit) {
-        if let Err(err) = self.workspace.set_chat_limit(chat_id, None) {
-            tracing::warn!(chat = %chat_id, %err, "limit recovery: resume not started");
+        if let Err(err) =
+            self.doc_host
+                .queue_limit_resume(chat_id, &resume_row_id(limit), RESUME_PROMPT)
+        {
+            tracing::warn!(chat = %chat_id, %err, "limit recovery: continuation not queued");
             return;
         }
         lock(&self.resumed).insert(chat_id.to_owned());
-        let row_id = format!("limit-resume-{}", limit.limited_at.timestamp_millis());
-        match self
-            .doc_host
-            .queue_limit_resume(chat_id, &row_id, RESUME_PROMPT)
-        {
-            Ok(true) => tracing::info!(chat = %chat_id, "limit recovery: resuming at reset"),
-            Ok(false) => {}
-            Err(err) => {
-                tracing::warn!(chat = %chat_id, %err, "limit recovery: continuation not queued")
-            }
+        if let Err(err) = self.workspace.set_chat_limit(chat_id, None) {
+            tracing::warn!(chat = %chat_id, %err, "limit recovery: marker not cleared");
+            return;
         }
+        tracing::info!(chat = %chat_id, "limit recovery: resuming at reset");
+        self.doc_host.resume_queue(chat_id);
     }
 }
 
