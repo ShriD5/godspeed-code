@@ -561,6 +561,7 @@ impl Harness for ClaudeHarness {
                 || async {
                     let response = self.initialize().await?;
                     catalog::with_discovered_models(catalog::configured_models(), &response)
+                        .map(catalog::clamp_discovered)
                 },
             )
             .await
