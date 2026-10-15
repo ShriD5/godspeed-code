@@ -829,6 +829,29 @@ impl Wizard {
         }
     }
 
+    /// Free text the user typed that never went out: each page's answer (the
+    /// live editor text for the current page, which only syncs into `typed`
+    /// on Enter or paging), skipping blanks and untouched prefills.
+    pub fn unsent_typed(&self, current: &str) -> Vec<String> {
+        self.questions
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, q)| {
+                if q.is_approval() {
+                    return None;
+                }
+                let text = if ix == self.page {
+                    current
+                } else {
+                    self.typed.get(ix)?.as_str()
+                };
+                let text = text.trim();
+                let prefill = q.prefill.as_deref().map(str::trim);
+                (!text.is_empty() && Some(text) != prefill).then(|| text.to_owned())
+            })
+            .collect()
+    }
+
     /// Answers per question: free text overrides picked labels.
     pub fn answers(&self) -> Vec<UserInputAnswer> {
         self.questions
@@ -860,6 +883,19 @@ impl Wizard {
             })
             .collect()
     }
+}
+
+/// The chat draft saved when a question opened, with the answers typed into
+/// that question appended (blank-line separated) so a cancel loses nothing.
+fn draft_with_unsent_answers(saved: &str, unsent: Vec<String>) -> String {
+    if unsent.is_empty() {
+        return saved.to_owned();
+    }
+    std::iter::once(saved.trim_end().to_owned())
+        .chain(unsent)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -8637,13 +8673,24 @@ impl Composer {
                         || (!transcript.is_empty()
                             && !self.answered_requests.contains(&wizard.request_id));
                     if released {
+                        // Stop (or the agent moving on) cancels the question,
+                        // but what the user typed into it is theirs: it goes
+                        // back into the chat draft instead of vanishing with
+                        // the card (T3 8963). A submitted answer was sent.
+                        let unsent = if self.answered_requests.contains(&wizard.request_id) {
+                            Vec::new()
+                        } else {
+                            wizard.unsent_typed(self.input.read(cx).text())
+                        };
                         self.wizard = None;
                         self.advance_task = None;
-                        let draft = self
-                            .drafts
-                            .get(&self.current_key)
-                            .cloned()
-                            .unwrap_or_default();
+                        let draft = draft_with_unsent_answers(
+                            self.drafts
+                                .get(&self.current_key)
+                                .map(String::as_str)
+                                .unwrap_or_default(),
+                            unsent,
+                        );
                         self.input.update(cx, |input, cx| {
                             input.set_text(draft, cx);
                             input.set_placeholder("Do anything…", cx);
@@ -16393,6 +16440,34 @@ mod tests {
             vec!["custom answer"],
             "typed overrides picked, trimmed"
         );
+    }
+
+    /// T3 8963: answers typed into a question that gets cancelled go back to
+    /// the chat draft; untouched prefills and blank pages don't.
+    #[test]
+    fn cancelled_question_answers_return_to_the_draft() {
+        let mut prefilled = question("q3", &[], false);
+        prefilled.prefill = Some("agent default".into());
+        let mut w = Wizard::new(
+            "req".into(),
+            vec![
+                question("q1", &["a"], false),
+                question("q2", &["x"], false),
+                prefilled,
+            ],
+        );
+        w.set_typed("first answer".into());
+        w.advance();
+        // Page 2's text lives only in the editor until Enter.
+        let unsent = w.unsent_typed("  second answer \n");
+        assert_eq!(unsent, ["first answer", "second answer"]);
+        assert_eq!(
+            draft_with_unsent_answers("my draft\n", unsent),
+            "my draft\n\nfirst answer\n\nsecond answer"
+        );
+        assert_eq!(draft_with_unsent_answers("", vec!["only".into()]), "only");
+        assert_eq!(draft_with_unsent_answers("keep  ", Vec::new()), "keep  ");
+        assert!(w.unsent_typed("").len() == 1, "blank current page");
     }
 
     #[gpui::test]
