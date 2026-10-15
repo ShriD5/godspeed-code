@@ -308,8 +308,54 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
     version
 }
 
+/// Remove terminal control sequences a CLI writes even into a pipe: OSC
+/// (`ESC ] … BEL` or `ESC ] … ESC \`, opencode ≤ 1.18 sets the window title
+/// `ESC ]0;<cwd>: ready BEL` on every command), CSI (`ESC [ … final`, colors)
+/// and two-byte escapes. Glued to the next word, a title made
+/// `ready\x071.18.31` unparseable and the version probe failed.
+pub(crate) fn strip_terminal_escapes(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('\x1b') && !text.contains('\u{9b}') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                Some(']') => {
+                    // OSC: up to BEL or ST (ESC \).
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                Some('[') => {
+                    // CSI: parameter/intermediate bytes, then a final byte.
+                    for c in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // Two-byte escape (or a lone trailing ESC).
+                _ => {}
+            },
+            '\u{9b}' => {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 pub(crate) fn parse_version(bytes: &[u8]) -> Option<semver::Version> {
-    String::from_utf8_lossy(bytes)
+    strip_terminal_escapes(&String::from_utf8_lossy(bytes))
         .split_whitespace()
         .find_map(|word| {
             semver::Version::parse(
@@ -686,6 +732,30 @@ mod tests {
             assert!(started.elapsed() < std::time::Duration::from_secs(3));
             assert_eq!(newest_candidate(vec![path.clone()]), Some(path));
         }
+    }
+
+    /// pingdotgg/t3code#7754: opencode ≤ 1.18 writes an OSC window title to
+    /// stdout even into a pipe, glued to the real output.
+    #[test]
+    fn terminal_escapes_are_stripped_from_captured_output() {
+        assert_eq!(
+            parse_version(b"\x1b]0;proj2: ready\x071.18.31\n").unwrap().to_string(),
+            "1.18.31"
+        );
+        for (raw, clean) in [
+            ("\x1b]0;tmp: ready\x07build (primary)", "build (primary)"),
+            ("\x1b]2;title\x1b\\opencode/big-pickle", "opencode/big-pickle"),
+            ("\x1b[1;32mgreen\x1b[0m plain", "green plain"),
+            ("\u{9b}31mred", "red"),
+            ("{\"type\":\"x\"}", "{\"type\":\"x\"}"),
+            ("tail\x1b", "tail"),
+        ] {
+            assert_eq!(strip_terminal_escapes(raw), clean, "{raw:?}");
+        }
+        assert!(matches!(
+            strip_terminal_escapes("no escapes"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     /// Version probes run outside any project (pingdotgg/t3code#8818): a

@@ -369,6 +369,8 @@ async fn read_loop(
             tracing::debug!(target: "zeron_harness::rpc", "non-UTF-8 stdout line (skipped)");
             continue;
         };
+        // A title or color sequence glued to a frame would make it unparseable.
+        let line = crate::executable::strip_terminal_escapes(line);
         let line = line.trim();
         if let Some(url) =
             line.strip_prefix("Open the following link to authenticate the ACP server: ")

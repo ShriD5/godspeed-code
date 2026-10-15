@@ -964,6 +964,7 @@ async fn run_session(session: Session) {
         tokio::select! {
             line = stdout_lines.next_line() => match line {
                 Ok(Some(line)) => {
+                    let line = crate::executable::strip_terminal_escapes(&line);
                     let line = line.trim();
                     if line.is_empty() {
                         continue;
