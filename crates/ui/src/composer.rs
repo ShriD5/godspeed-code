@@ -42,7 +42,7 @@ use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
 mod chip;
-mod limit_banner;
+pub(crate) mod limit_banner;
 pub use chip::ChipKind;
 use chip::*;
 pub(crate) use chip::{

@@ -808,6 +808,47 @@ mod tests {
     }
 
     #[gpui::test]
+    fn undo_outside_a_text_field_puts_a_settled_thread_back(cx: &mut gpui::TestAppContext) {
+        use zeron_proto::LifecycleState;
+        let dir = tempfile::tempdir().unwrap();
+        let window = test_shell(cx, dir.path());
+        let lifecycle = |shell: &Shell, cx: &App| {
+            shell
+                .state
+                .read(cx)
+                .chats
+                .iter()
+                .find(|chat| chat.id == "regular")
+                .map(|chat| chat.lifecycle.state)
+        };
+        window
+            .update(cx, |shell, _, cx| {
+                prepare(shell, cx);
+                shell.debug_gate = Some(super::GatePhase::Ready);
+                shell.change_lifecycle("regular".into(), LifecycleState::Settled, cx);
+                assert_eq!(lifecycle(shell, cx), Some(LifecycleState::Settled));
+                assert_eq!(shell.sidebar_visible_order(cx), ["pin", "other"]);
+            })
+            .unwrap();
+        let mut cx = gpui::VisualTestContext::from_window(window.into(), cx);
+        cx.run_until_parked();
+        // Pressing the sidebar blurred the composer: no field owns focus.
+        window
+            .update(&mut cx, |shell, window, cx| {
+                window.focus(&shell.unfocused, cx)
+            })
+            .unwrap();
+        cx.dispatch_action(crate::composer::Undo);
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |shell, _, cx| {
+                assert_eq!(lifecycle(shell, cx), Some(LifecycleState::Active));
+                assert!(shell.lifecycle_undo.is_none(), "one undo per action");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn sections_keep_placed_order_and_drags_reorder_them(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let window = test_shell(cx, dir.path());

@@ -93,6 +93,7 @@ mod sidebar_pins;
 mod sidebar_sections;
 mod search_warm;
 pub(crate) mod spaces;
+mod thread_lifecycle;
 mod thread_search;
 use side_chats::SideChatTab;
 mod tabs;
@@ -207,15 +208,39 @@ fn move_settings_focus(
 enum ChatMenuPage {
     Root,
     Copy,
+    Snooze,
 }
 
-/// Hover-intent keys for the chat menu's rows; only Copy owns a submenu.
+impl ChatMenuPage {
+    /// The submenu a hovered row opens: Copy and Snooze own one.
+    fn for_row(key: u8) -> Self {
+        match key {
+            CHAT_MENU_ROW_COPY => Self::Copy,
+            CHAT_MENU_ROW_SNOOZE => Self::Snooze,
+            _ => Self::Root,
+        }
+    }
+
+    fn row(self) -> Option<u8> {
+        match self {
+            Self::Root => None,
+            Self::Copy => Some(CHAT_MENU_ROW_COPY),
+            Self::Snooze => Some(CHAT_MENU_ROW_SNOOZE),
+        }
+    }
+}
+
+/// Hover-intent keys for the chat menu's rows.
 const CHAT_MENU_ROW_RENAME: u8 = 0;
 const CHAT_MENU_ROW_PIN: u8 = 1;
 const CHAT_MENU_ROW_ARCHIVE: u8 = 2;
 const CHAT_MENU_ROW_COPY: u8 = 3;
 const CHAT_MENU_ROW_DELETE: u8 = 4;
 const CHAT_MENU_ROW_TAB: u8 = 5;
+const CHAT_MENU_ROW_SETTLE: u8 = 9;
+const CHAT_MENU_ROW_SNOOZE: u8 = 10;
+const CHAT_MENU_ROW_WAKE: u8 = 11;
+const CHAT_MENU_ROW_UNREAD: u8 = 12;
 
 #[derive(Clone, Copy)]
 enum TabCloseAction {
@@ -501,6 +526,10 @@ pub fn apply_keymap(
         // Fixed: ⌘K summons the command palette.
         // Pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), ToggleCommandPalette, None),
+        // Fixed: ⌘Z outside a text field undoes the last sidebar lifecycle
+        // action (text fields bind their own); a terminal keeps the key.
+        KeyBinding::new(&platform_combo("mod-z"), crate::composer::Undo, None),
+        KeyBinding::new(&platform_combo("mod-z"), gpui::NoAction, Some("Terminal")),
         KeyBinding::new(
             &valid_or_default(&keymap.open_model_picker, "mod-/"),
             OpenModelPicker,
@@ -1613,7 +1642,8 @@ enum ShellEscapeOutcome {
 /// When the shell next has render-only clock pixels to repaint, as of `now`:
 /// every second while the selected chat is Working (the trailer's elapsed
 /// timer and its 7s flavour word), else the next wall-clock minute for
-/// relative "5m"/"2h" labels. State transitions (staleness, device presence,
+/// relative "5m"/"2h" labels, or a snooze ending sooner (its row returns to
+/// the active list). State transitions (staleness, device presence,
 /// send grace) arrive as AppState notifications instead — see
 /// [`AppState::watch_clock_transitions`]. Nothing else ticks: AwaitingInput
 /// and Errored show no clock, and the connection pill has no countdown (its
@@ -1626,8 +1656,16 @@ fn shell_clock_wake(state: &AppState, now: DateTime<Utc>) -> DateTime<Utc> {
     if working {
         return now + chrono::TimeDelta::seconds(1);
     }
-    DateTime::from_timestamp((now.timestamp().div_euclid(60) + 1) * 60, 0)
-        .unwrap_or(now + chrono::TimeDelta::minutes(1))
+    let next_minute = DateTime::from_timestamp((now.timestamp().div_euclid(60) + 1) * 60, 0)
+        .unwrap_or(now + chrono::TimeDelta::minutes(1));
+    state
+        .chats
+        .iter()
+        .filter_map(|chat| match chat.lifecycle.state {
+            zeron_proto::LifecycleState::Snoozed { until } if until > now => Some(until),
+            _ => None,
+        })
+        .fold(next_minute, DateTime::min)
 }
 
 /// A one-shot redraw timer, re-armed on every render for the view's next
@@ -2034,6 +2072,17 @@ pub struct Shell {
     /// expanded list ("Show more" reveals another page).
     pub(super) archived_open: bool,
     pub(super) archived_shown: usize,
+    /// The Snoozed and Settled shelves: collapsed by default (they hold what
+    /// the user put out of the way), session-transient, paged like Archived.
+    pub(super) snoozed_open: bool,
+    pub(super) snoozed_shown: usize,
+    pub(super) settled_open: bool,
+    pub(super) settled_shown: usize,
+    /// The last sidebar lifecycle action (settle, snooze, wake, mark unread),
+    /// kept for one undo.
+    lifecycle_undo: Option<thread_lifecycle::LifecycleUndo>,
+    /// The Snooze submenu's typed-time field, while it is open.
+    snooze_custom: Option<thread_lifecycle::SnoozeCustom>,
     /// Ephemeral collapsed project/device sections, keyed by organization + id.
     pub(super) sidebar_collapsed_groups: std::collections::HashSet<String>,
     /// In-flight disclosure tweens, shared by device groups, Pinned and Archived.
@@ -2148,9 +2197,9 @@ pub struct Shell {
     chat_menu: popover::Popup<ChatMenuState>,
     /// The Copy submenu's hover grace, its painted bounds, and which side
     /// of the menu it opens on (the sidebar options menu's recipe).
-    chat_copy_intent: popover::HoverIntent<u8>,
-    chat_copy_bounds: Option<gpui::Bounds<Pixels>>,
-    chat_copy_left: bool,
+    chat_submenu_intent: popover::HoverIntent<u8>,
+    chat_submenu_bounds: Option<gpui::Bounds<Pixels>>,
+    chat_submenu_left: bool,
     /// The chat title being edited in place on its row.
     chat_rename: Option<ChatRename>,
     /// Chat id awaiting delete confirmation.
@@ -2603,6 +2652,12 @@ impl Shell {
             pinned_open: true,
             sessions_open: true,
             archived_shown: 0,
+            snoozed_open: false,
+            snoozed_shown: 0,
+            settled_open: false,
+            settled_shown: 0,
+            lifecycle_undo: None,
+            snooze_custom: None,
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_reveal_motions: std::collections::HashSet::new(),
             sidebar_disclosure_motion: std::collections::HashMap::new(),
@@ -2672,9 +2727,9 @@ impl Shell {
             files_settings_sub: None,
             appearance_settings_sub: None,
             chat_menu: popover::Popup::default(),
-            chat_copy_intent: Default::default(),
-            chat_copy_bounds: None,
-            chat_copy_left: false,
+            chat_submenu_intent: Default::default(),
+            chat_submenu_bounds: None,
+            chat_submenu_left: false,
             chat_rename: None,
             delete_confirm: None,
             discard_working_tree: None,
@@ -5179,7 +5234,8 @@ impl Shell {
 
     /// Close the session-row context menu through the exit animation.
     fn close_chat_menu(&mut self, cx: &mut Context<Self>) {
-        self.chat_copy_intent.reset();
+        self.chat_submenu_intent.reset();
+        self.snooze_custom = None;
         if self.chat_menu.begin_close() {
             popover::reap_popup(cx, |shell: &mut Self| &mut shell.chat_menu);
             cx.notify();
@@ -5199,26 +5255,22 @@ impl Shell {
         crate::toast::show(cx, kind, message);
     }
 
-    fn set_chat_copy_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        let page = if open {
-            ChatMenuPage::Copy
-        } else {
-            ChatMenuPage::Root
-        };
+    fn set_chat_submenu(&mut self, page: ChatMenuPage, cx: &mut Context<Self>) {
         if let Some(menu) = self.chat_menu.open_mut()
             && menu.page != page
         {
             menu.page = page;
-            if !open {
-                self.chat_copy_bounds = None;
+            self.chat_submenu_bounds = None;
+            if page != ChatMenuPage::Snooze {
+                self.snooze_custom = None;
             }
             cx.notify();
         }
     }
 
-    /// Pointer intent over a chat-menu row: hovering Copy opens its submenu,
-    /// any other row closes it — after a grace while the pointer is heading
-    /// into the open submenu.
+    /// Pointer intent over a chat-menu row: hovering Copy or Snooze opens its
+    /// submenu, any other row closes it — after a grace while the pointer is
+    /// heading into the open submenu.
     fn hover_chat_menu_row(
         &mut self,
         key: u8,
@@ -5226,33 +5278,28 @@ impl Shell {
         moved: bool,
         cx: &mut Context<Self>,
     ) {
-        let current = self
-            .chat_menu
-            .as_open()
-            .filter(|menu| menu.page == ChatMenuPage::Copy)
-            .map(|_| CHAT_MENU_ROW_COPY);
-        let (bounds, left) = (self.chat_copy_bounds, self.chat_copy_left);
+        let current = self.chat_menu.as_open().and_then(|menu| menu.page.row());
+        let (bounds, left) = (self.chat_submenu_bounds, self.chat_submenu_left);
         let action = if moved {
-            self.chat_copy_intent
+            self.chat_submenu_intent
                 .moved(current.as_ref(), &key, pointer, bounds, left)
         } else {
-            self.chat_copy_intent
+            self.chat_submenu_intent
                 .enter(current.as_ref(), &key, pointer, bounds, left)
         };
         match action {
             popover::HoverAction::None => {}
             popover::HoverAction::Open => {
-                self.set_chat_copy_open(key == CHAT_MENU_ROW_COPY, cx);
-                self.chat_copy_intent.record_origin(pointer);
+                self.set_chat_submenu(ChatMenuPage::for_row(key), cx);
+                self.chat_submenu_intent.record_origin(pointer);
             }
             popover::HoverAction::Defer => {
-                self.chat_copy_intent.defer(cx, move |this, cx| {
-                    if this.chat_menu.is_open()
-                        && this.chat_copy_intent.pending() == Some(&key)
+                self.chat_submenu_intent.defer(cx, move |this, cx| {
+                    if this.chat_menu.is_open() && this.chat_submenu_intent.pending() == Some(&key)
                     {
-                        this.chat_copy_intent.cancel();
-                        this.set_chat_copy_open(key == CHAT_MENU_ROW_COPY, cx);
-                        this.chat_copy_intent.record_origin(pointer);
+                        this.chat_submenu_intent.cancel();
+                        this.set_chat_submenu(ChatMenuPage::for_row(key), cx);
+                        this.chat_submenu_intent.record_origin(pointer);
                     }
                 });
             }
@@ -5273,7 +5320,7 @@ impl Shell {
                 if *hovered {
                     this.hover_chat_menu_row(key, window.mouse_position(), false, cx);
                 } else {
-                    this.chat_copy_intent.leave(&key);
+                    this.chat_submenu_intent.leave(&key);
                 }
             }))
             .on_mouse_move(cx.listener(move |this, event: &gpui::MouseMoveEvent, _, cx| {
@@ -5283,76 +5330,90 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The chat menu's Copy row: opens its submenu beside the menu on hover
-    /// (or click), on whichever side has room.
-    fn render_chat_copy_trigger(
+    /// A chat-menu row that opens its submenu (Copy, Snooze) beside the menu
+    /// on hover or click, on whichever side has room.
+    fn render_chat_submenu_trigger(
         &mut self,
         chat_id: &str,
-        open: bool,
+        page: ChatMenuPage,
+        glyph: &'static str,
+        label: &'static str,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let open = self.chat_menu.get().is_some_and(|menu| menu.page == page);
+        let slug = label.to_lowercase();
         let entity = cx.entity().downgrade();
         let exit_entity = entity.clone();
-        let mut row = popover::menu_row_nav(theme, open, false, format!("chat-menu-copy-{chat_id}"))
-            .id("chat-menu-copy")
-            .relative()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.chat_copy_intent.reset();
-                this.set_chat_copy_open(true, cx);
-                cx.stop_propagation();
-            }))
-            .child(icon(icons::COPY).size(px(16.0)).text_color(theme.text_muted))
-            .child(div().flex_1().child(SharedString::from("Copy")))
-            .child(
-                icon(icons::ALT_ARROW_RIGHT)
-                    .size(px(14.0))
-                    .text_color(theme.text_muted),
-            )
-            .child(
-                gpui::canvas(
-                    move |bounds, window, cx| {
-                        let left = bounds.right() + px(244.0) > window.viewport_size().width;
-                        let _ = entity.update(cx, |this, cx| {
-                            if this.chat_copy_left != left {
-                                this.chat_copy_left = left;
-                                cx.notify();
-                            }
-                        });
-                    },
-                    move |trigger, _, window, _| {
-                        if !open {
-                            return;
-                        }
-                        // Leaving the trigger anywhere but toward the submenu
-                        // closes it, as in the sidebar options menu.
-                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
-                            if phase != gpui::DispatchPhase::Bubble {
+        let mut row =
+            popover::menu_row_nav(theme, open, false, format!("chat-menu-{slug}-{chat_id}"))
+                .id(SharedString::from(format!("chat-menu-{slug}")))
+                .relative()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.chat_submenu_intent.reset();
+                    this.set_chat_submenu(page, cx);
+                    cx.stop_propagation();
+                }))
+                .child(icon(glyph).size(px(16.0)).text_color(theme.text_muted))
+                .child(div().flex_1().child(SharedString::from(label)))
+                .child(
+                    icon(icons::ALT_ARROW_RIGHT)
+                        .size(px(14.0))
+                        .text_color(theme.text_muted),
+                )
+                .child(
+                    gpui::canvas(
+                        move |bounds, window, cx| {
+                            let left = bounds.right() + px(244.0) > window.viewport_size().width;
+                            let _ = entity.update(cx, |this, cx| {
+                                if this.chat_submenu_left != left {
+                                    this.chat_submenu_left = left;
+                                    cx.notify();
+                                }
+                            });
+                        },
+                        move |trigger, _, window, _| {
+                            if !open {
                                 return;
                             }
-                            let _ = exit_entity.update(cx, |this, cx| {
-                                let (bounds, left) = (this.chat_copy_bounds, this.chat_copy_left);
-                                if this
-                                    .chat_copy_intent
-                                    .contains_pointer(trigger, bounds, event.position, left)
-                                {
-                                    return;
-                                }
-                                this.chat_copy_intent.reset();
-                                this.set_chat_copy_open(false, cx);
-                            });
-                        });
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            );
+                            // Leaving the trigger anywhere but toward the submenu
+                            // closes it, as in the sidebar options menu.
+                            window.on_mouse_event(
+                                move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                                    if phase != gpui::DispatchPhase::Bubble {
+                                        return;
+                                    }
+                                    let _ = exit_entity.update(cx, |this, cx| {
+                                        let (bounds, left) =
+                                            (this.chat_submenu_bounds, this.chat_submenu_left);
+                                        if this.chat_submenu_intent.contains_pointer(
+                                            trigger,
+                                            bounds,
+                                            event.position,
+                                            left,
+                                        ) || this.snooze_custom.is_some()
+                                        {
+                                            return;
+                                        }
+                                        this.chat_submenu_intent.reset();
+                                        this.set_chat_submenu(ChatMenuPage::Root, cx);
+                                    });
+                                },
+                            );
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
         if open {
-            let submenu = self.render_chat_copy_submenu(chat_id, theme, cx);
+            let submenu = match page {
+                ChatMenuPage::Snooze => self.render_snooze_submenu(chat_id, theme, cx),
+                _ => self.render_chat_copy_submenu(chat_id, theme, cx),
+            };
             row = row.child(popover::nested_menu(
-                format!("chat-copy-submenu-{chat_id}"),
+                format!("chat-{slug}-submenu-{chat_id}"),
                 submenu,
-                self.chat_copy_left,
+                self.chat_submenu_left,
             ));
         }
         row.into_any_element()
@@ -5423,7 +5484,8 @@ impl Shell {
             .child(
                 gpui::canvas(
                     move |bounds, _, cx| {
-                        let _ = entity.update(cx, |this, _| this.chat_copy_bounds = Some(bounds));
+                        let _ =
+                            entity.update(cx, |this, _| this.chat_submenu_bounds = Some(bounds));
                     },
                     |_, _, _, _| {},
                 )
@@ -8347,6 +8409,12 @@ impl Shell {
         let shows_metadata = branch.is_some() || change_request.is_some();
         let queued = queued && !undelivered;
         let working = status == zeron_proto::ChatIndicator::Working && !queued && !undelivered;
+        let working_for = working
+            .then(|| self.sidebar_working_for(&id, Utc::now(), cx))
+            .flatten();
+        let diff_stats = shows_metadata
+            .then(|| self.sidebar_diff_stats(&id, cx))
+            .flatten();
         // Subagents running under this chat show as a "● N" pill beside the
         // row's own activity indicator, never in place of it: the pill takes
         // the time stamp's spot (compact) or leads the status (regular), and
@@ -8508,7 +8576,13 @@ impl Shell {
                                         .text_size(crate::typography::ui_rems(10.0))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(status_color)
-                                        .child(SharedString::from(label)),
+                                        .child(SharedString::from(match working_for {
+                                            Some(elapsed) => format!(
+                                                "{label} · {}",
+                                                spaces::working_duration_label(elapsed)
+                                            ),
+                                            None => label.to_owned(),
+                                        })),
                                 ),
                         )
                         .into_any_element()
@@ -8974,6 +9048,29 @@ impl Shell {
                                     .child(popover::search_highlight(branch, search_query, theme)),
                             ))
                         })
+                        .when_some(diff_stats, |el, (additions, deletions)| {
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .flex_row()
+                                    .gap(px(4.0))
+                                    .ml(px(2.0))
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(crate::typography::ui_rems(10.5))
+                                    .line_height(px(14.0))
+                                    .child(
+                                        div()
+                                            .text_color(crate::changes::add_color(theme))
+                                            .child(SharedString::from(format!("+{additions}"))),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(crate::changes::del_color(theme))
+                                            .child(SharedString::from(format!("−{deletions}"))),
+                                    ),
+                            )
+                        })
                         // Stable invisible spring keeps the optional PR badge
                         // pinned right without changing no-PR paint.
                         .child(div().flex_1().min_w_0())
@@ -9372,8 +9469,12 @@ impl Shell {
             })
             .collect();
 
-        // t3code's archived accordion, below the active list.
-        let archived_section = self.render_archived_section(theme, cx);
+        // The Snoozed, Settled and (t3code's) Archived accordions, below the
+        // active list.
+        let shelves: Vec<AnyElement> = spaces::SidebarShelf::ALL
+            .into_iter()
+            .filter_map(|shelf| self.render_shelf_section(shelf, theme, cx))
+            .collect();
 
         // The space filter lives ABOVE the scroll region (fixed) so its
         // dropdown can float without being clipped by the list's overflow.
@@ -9560,7 +9661,7 @@ impl Shell {
                     // is the whole column; a little air stands in.
                     .pt(px(SIDEBAR_LIST_PAD_TOP))
                     .child(active_list)
-                    .children(archived_section)
+                    .children(shelves)
                     .children(moving_row),
             )),
         )
@@ -10878,10 +10979,10 @@ impl Shell {
             let menu = popover::popover_card(&theme)
                 .w(px(216.0))
                 .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    // The Copy submenu floats outside this card: a press on
-                    // it is inside the menu.
+                    // The Copy and Snooze submenus float outside this card:
+                    // a press on one is inside the menu.
                     if this
-                        .chat_copy_bounds
+                        .chat_submenu_bounds
                         .is_some_and(|bounds| bounds.contains(&event.position))
                     {
                         return;
@@ -10890,7 +10991,6 @@ impl Shell {
                 }))
                 .flex()
                 .flex_col();
-            let copy_open = menu_state.page == ChatMenuPage::Copy;
             let menu = if chat_id.is_empty() {
                 menu
             } else {
@@ -10930,9 +11030,17 @@ impl Shell {
                                     .text_color(theme.text_muted),
                             )
                             .child(SharedString::from("Archive"));
-                    let copy = self.render_chat_copy_trigger(&chat_id, copy_open, &theme, cx);
-                    menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_PIN, pin, cx))
-                        .child(self.chat_menu_hover_row(CHAT_MENU_ROW_ARCHIVE, archive, cx))
+                    let copy = self.render_chat_submenu_trigger(
+                        &chat_id,
+                        ChatMenuPage::Copy,
+                        icons::COPY,
+                        "Copy",
+                        &theme,
+                        cx,
+                    );
+                    let menu = menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_PIN, pin, cx));
+                    let menu = self.render_lifecycle_menu_rows(menu, &chat_id, &theme, cx);
+                    menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_ARCHIVE, archive, cx))
                         .child(self.chat_menu_hover_row(CHAT_MENU_ROW_COPY, copy, cx))
                 };
                 let delete = popover::menu_row(&theme, false, format!("chat-menu-delete-{chat_id}"))
@@ -13518,6 +13626,7 @@ impl Render for Shell {
             }
         }
         self.focus_rename_chat(window, cx);
+        self.focus_snooze_custom(window, cx);
 
         self.render_time = Some(self.motion_time());
         if self.all_file_edits_flushed(cx)
@@ -13905,6 +14014,13 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ArchiveSession, _, cx| {
                 if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
                     this.archive_selected_chat(cx)
+                }
+            }))
+            // An Undo that reaches the shell found no text field to edit:
+            // it undoes the last sidebar lifecycle action instead.
+            .on_action(cx.listener(|this, _: &crate::composer::Undo, _, cx| {
+                if !this.overlay_owns_keyboard(cx) {
+                    this.undo_lifecycle_action(cx)
                 }
             }))
             // A jump routes back to chat itself, so Settings is not a dead

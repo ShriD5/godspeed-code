@@ -1301,7 +1301,10 @@ mod pinned_session_tests {
                 shell.activate_sidebar_view_row(SidebarViewRow::ShowArchived, cx);
                 assert_eq!(shell.settings.sidebar_show_archived, visible);
                 assert_eq!(shell.archived_open, open);
-                assert_eq!(shell.archived_sidebar_chats(cx).len(), 1);
+                assert_eq!(
+                    shell.shelf_sidebar_chats(SidebarShelf::Archived, cx).len(),
+                    1
+                );
             });
             cx.update(|window, cx| {
                 window.refresh();
@@ -2191,6 +2194,66 @@ const SIDEBAR_DISCLOSURE_SECTION_HEIGHT: f32 =
 /// [`ARCHIVED_PAGE_ROWS`].
 const ARCHIVED_INITIAL_ROWS: usize = 10;
 const ARCHIVED_PAGE_ROWS: usize = 25;
+
+/// A collapsible shelf under the active list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SidebarShelf {
+    Snoozed,
+    Settled,
+    Archived,
+}
+
+impl SidebarShelf {
+    pub(super) const ALL: [Self; 3] = [Self::Snoozed, Self::Settled, Self::Archived];
+
+    /// Its disclosure motion and element id stem.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Snoozed => "snoozed",
+            Self::Settled => "settled",
+            Self::Archived => "archived",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Snoozed => "Snoozed",
+            Self::Settled => "Settled",
+            Self::Archived => "Archived",
+        }
+    }
+
+    /// Whether `chat` sits on this shelf at `now`. Archive outranks the
+    /// lifecycle: an archived chat is only ever on the Archived shelf.
+    fn holds(self, chat: &zeron_proto::Chat, now: DateTime<Utc>) -> bool {
+        use zeron_proto::LifecycleState;
+        match (self, chat.lifecycle.at(now)) {
+            (Self::Archived, _) => chat.archived,
+            _ if chat.archived => false,
+            (Self::Snoozed, LifecycleState::Snoozed { .. }) => true,
+            (Self::Settled, LifecycleState::Settled) => true,
+            _ => false,
+        }
+    }
+}
+
+/// `<1m`, `4m`, `1h 5m`: a running turn's age beside its Working label.
+pub(super) fn working_duration_label(elapsed: chrono::TimeDelta) -> String {
+    let minutes = elapsed.num_minutes().max(0);
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => "<1m".to_owned(),
+        (0, minutes) => format!("{minutes}m"),
+        (hours, 0) => format!("{hours}h"),
+        (hours, minutes) => format!("{hours}h {minutes}m"),
+    }
+}
+
+fn snoozed_until(chat: &zeron_proto::Chat) -> Option<DateTime<Utc>> {
+    match chat.lifecycle.state {
+        zeron_proto::LifecycleState::Snoozed { until } => Some(until),
+        _ => None,
+    }
+}
 
 /// Put this machine's device group first without disturbing the recency-based
 /// order of any remote groups. A targeted promotion is more truthful than a
@@ -4926,20 +4989,22 @@ impl Shell {
     /// clear), or a synced section could not be expanded. Either way the
     /// sidebar notice says why.
     pub(super) fn reveal_sidebar_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) -> bool {
-        let (active, archived) = {
+        let (active, shelved) = {
             let state = self.state.read(cx);
             let active = state
                 .sidebar_chats(Utc::now(), self.settings.space_filter.as_deref())
                 .into_iter()
                 .find(|(_, chat)| chat.id == chat_id)
                 .map(|(_, chat)| chat.clone());
-            let archived = self
-                .archived_sidebar_chats(cx)
-                .iter()
-                .position(|chat| chat.id == chat_id);
-            (active, archived)
+            let shelved = SidebarShelf::ALL.into_iter().find_map(|shelf| {
+                self.shelf_sidebar_chats(shelf, cx)
+                    .iter()
+                    .position(|chat| chat.id == chat_id)
+                    .map(|index| (shelf, index))
+            });
+            (active, shelved)
         };
-        if active.is_none() && archived.is_none() {
+        if active.is_none() && shelved.is_none() {
             self.show_notice(crate::toast::ToastKind::Error, "Clear the project filter to rename this session", cx);
             return false;
         }
@@ -4975,24 +5040,27 @@ impl Shell {
                 self.sessions_open = true;
                 self.queue_sidebar_reveal("sessions");
             }
-        } else if let Some(index) = archived {
-            if !self.settings.sidebar_show_archived {
+        } else if let Some((shelf, index)) = shelved {
+            if shelf == SidebarShelf::Archived && !self.settings.sidebar_show_archived {
                 self.settings.sidebar_show_archived = true;
                 self.schedule_save(cx);
             }
-            if !self.archived_open {
-                self.archived_open = true;
-                self.archived_shown = ARCHIVED_INITIAL_ROWS;
-                self.queue_sidebar_reveal("archived");
+            let (open, shown) = self.shelf_disclosure(shelf);
+            let shown = if open { shown } else { ARCHIVED_INITIAL_ROWS };
+            if !open {
+                self.queue_sidebar_reveal(shelf.key());
             }
             // Page the shelf just far enough to include the row, in the
             // same steps "Show more" takes.
-            let shown = self.archived_shown.max(ARCHIVED_INITIAL_ROWS);
-            if index >= shown {
-                self.archived_shown = ARCHIVED_INITIAL_ROWS
+            let shown = shown.max(ARCHIVED_INITIAL_ROWS);
+            let shown = if index >= shown {
+                ARCHIVED_INITIAL_ROWS
                     + (index + 1 - ARCHIVED_INITIAL_ROWS).div_ceil(ARCHIVED_PAGE_ROWS)
-                        * ARCHIVED_PAGE_ROWS;
-            }
+                        * ARCHIVED_PAGE_ROWS
+            } else {
+                shown
+            };
+            self.set_shelf_disclosure(shelf, true, shown);
         }
         if self.settings.sidebar_collapsed {
             self.toggle_sidebar(cx);
@@ -5799,37 +5867,94 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The Archived shelf's chats under the project filter, in sidebar order.
-    fn archived_sidebar_chats(&self, cx: &App) -> Vec<zeron_proto::Chat> {
+    /// How long the chat's current turn has run (its send, else its session
+    /// start), for the Working label.
+    pub(super) fn sidebar_working_for(
+        &self,
+        chat_id: &str,
+        now: DateTime<Utc>,
+        cx: &App,
+    ) -> Option<chrono::TimeDelta> {
+        let state = self.state.read(cx);
+        let since = state
+            .pending_send_started(chat_id, now)
+            .or_else(|| state.session_for(chat_id)?.started_at)?;
+        Some(now - since)
+    }
+
+    /// `(additions, deletions)` in the chat's checkout, when an open Changes
+    /// pane already watches its device; never a capture of its own.
+    pub(super) fn sidebar_diff_stats(&self, chat_id: &str, cx: &App) -> Option<(u32, u32)> {
+        let state = self.state.read(cx);
+        let chat = state.chats.iter().find(|chat| chat.id == chat_id)?;
+        let local = state.local_device_id.as_deref();
+        self.diffs
+            .values()
+            .find_map(|changes| changes.read(cx).diff_stats_for(chat, local))
+            .filter(|(additions, deletions)| additions + deletions > 0)
+    }
+
+    /// A shelf's chats under the project filter: snoozed by when they wake,
+    /// the others in sidebar order.
+    pub(super) fn shelf_sidebar_chats(
+        &self,
+        shelf: SidebarShelf,
+        cx: &App,
+    ) -> Vec<zeron_proto::Chat> {
+        let now = Utc::now();
         let state = self.state.read(cx);
         let in_filter = state.project_filter(self.settings.space_filter.as_deref());
         let mut rows: Vec<zeron_proto::Chat> = state
             .chats
             .iter()
-            // Spawned children stay out of the Archived section too — the
-            // same top-level rule as `visible_chats`.
-            .filter(|c| c.archived && c.is_top_level())
+            // Spawned children stay off the shelves too — the same top-level
+            // rule as `visible_chats`.
+            .filter(|c| c.is_top_level() && shelf.holds(c, now))
             .filter(|chat| in_filter(chat))
             .cloned()
             .collect();
         rows.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
+        if shelf == SidebarShelf::Snoozed {
+            rows.sort_by_key(|chat| snoozed_until(chat));
+        }
         rows
     }
 
-    /// Archived sessions share active-row data and layout, with a restore action.
-    /// The shelf starts with ten sessions and pages by 25.
-    pub(super) fn render_archived_section(
+    fn shelf_disclosure(&self, shelf: SidebarShelf) -> (bool, usize) {
+        match shelf {
+            SidebarShelf::Snoozed => (self.snoozed_open, self.snoozed_shown),
+            SidebarShelf::Settled => (self.settled_open, self.settled_shown),
+            SidebarShelf::Archived => (self.archived_open, self.archived_shown),
+        }
+    }
+
+    fn set_shelf_disclosure(&mut self, shelf: SidebarShelf, open: bool, shown: usize) {
+        let (open_slot, shown_slot) = match shelf {
+            SidebarShelf::Snoozed => (&mut self.snoozed_open, &mut self.snoozed_shown),
+            SidebarShelf::Settled => (&mut self.settled_open, &mut self.settled_shown),
+            SidebarShelf::Archived => (&mut self.archived_open, &mut self.archived_shown),
+        };
+        *open_slot = open;
+        *shown_slot = shown;
+    }
+
+    /// A shelf under the active list — Snoozed, Settled, Archived — sharing
+    /// active-row data and layout. Archived rows offer restore on hover;
+    /// snoozed rows show when they wake. Each starts with ten sessions and
+    /// pages by 25.
+    pub(super) fn render_shelf_section(
         &mut self,
+        shelf: SidebarShelf,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.settings.sidebar_show_archived {
+        if shelf == SidebarShelf::Archived && !self.settings.sidebar_show_archived {
             return None;
         }
         const INITIAL: usize = ARCHIVED_INITIAL_ROWS;
         const PAGE: usize = ARCHIVED_PAGE_ROWS;
         let now = Utc::now();
-        let rows = self.archived_sidebar_chats(cx);
+        let rows = self.shelf_sidebar_chats(shelf, cx);
         if rows.is_empty() {
             return None;
         }
@@ -5841,9 +5966,10 @@ impl Shell {
                 })
                 .collect()
         };
+        let key = shelf.key();
         let total = rows.len();
-        let open = self.archived_open;
-        let shown = self.archived_shown.max(INITIAL);
+        let (open, shown) = self.shelf_disclosure(shelf);
+        let shown = shown.max(INITIAL);
         let visible_count = total.min(shown);
         let has_more = total > shown;
         // "Show more" matches the row slot: compact rows are 29px, so the
@@ -5872,31 +5998,30 @@ impl Shell {
             } else {
                 0.0
             };
-        self.begin_queued_sidebar_reveal("archived", open, body_height);
+        self.begin_queued_sidebar_reveal(key, open, body_height);
         // Match Pinned: a muted label with a right-aligned disclosure chevron.
         // The count only shows while collapsed.
-        let chevron = self.sidebar_disclosure_chevron("archived", open, theme);
+        let chevron = self.sidebar_disclosure_chevron(key, open, theme);
         let header = sidebar_disclosure_header(
             theme,
             None,
-            "Archived".into(),
+            shelf.label().into(),
             (!open).then_some(total),
             None,
             chevron,
         )
-            .id("archived-toggle")
-            .debug_selector(|| "archived-toggle".into())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                let was_open = this.archived_open;
-                this.begin_sidebar_disclosure_motion(
-                    "archived",
-                    if was_open { body_height } else { 0.0 },
-                    if was_open { 0.0 } else { body_height },
-                );
-                this.archived_open = !was_open;
-                this.archived_shown = INITIAL;
-                cx.notify();
-            }));
+        .id(SharedString::from(format!("{key}-toggle")))
+        .debug_selector(move || format!("{key}-toggle"))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let (was_open, _) = this.shelf_disclosure(shelf);
+            this.begin_sidebar_disclosure_motion(
+                key,
+                if was_open { body_height } else { 0.0 },
+                if was_open { 0.0 } else { body_height },
+            );
+            this.set_shelf_disclosure(shelf, !was_open, INITIAL);
+            cx.notify();
+        }));
         let section = div().flex().flex_col().child(header);
         let body = {
             let selected = self.state.read(cx).selected_chat.clone();
@@ -5913,6 +6038,10 @@ impl Shell {
                     .sidebar_show_harness
                     .then(|| chat.config.as_ref().map(|c| c.harness))
                     .flatten();
+                let time = match snoozed_until(&chat) {
+                    Some(until) => crate::composer::limit_banner::local_moment_label(until, now),
+                    None => format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now),
+                };
                 list = list.child(
                     self.render_chat_row(
                         chat.id.clone(),
@@ -5920,15 +6049,14 @@ impl Shell {
                             &chat.title.clone().unwrap_or_else(|| "New session".into()),
                         )
                         .into(),
-                        format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now)
-                            .into(),
+                        time.into(),
                         row.folder.into(),
                         row.branch.map(SharedString::from),
                         row.change_request,
                         harness,
                         row.status,
                         is_selected,
-                        true,
+                        shelf == SidebarShelf::Archived,
                         false,
                         None,
                         None,
@@ -5944,7 +6072,7 @@ impl Shell {
                 let remaining = (total - shown).min(PAGE);
                 body = body.child(
                     div()
-                        .id("archived-more")
+                        .id(SharedString::from(format!("{key}-more")))
                         // Sits outside the rows' gapped column — match the
                         // list's 2px row gap or it fuses with the last row.
                         .mt(px(2.0))
@@ -5960,7 +6088,8 @@ impl Shell {
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.glass_hover()).text_color(theme.text))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.archived_shown = this.archived_shown.max(INITIAL) + PAGE;
+                            let (open, shown) = this.shelf_disclosure(shelf);
+                            this.set_shelf_disclosure(shelf, open, shown.max(INITIAL) + PAGE);
                             cx.notify();
                         }))
                         .child(
@@ -5973,8 +6102,8 @@ impl Shell {
             }
             body.into_any_element()
         };
-        let body = self.render_sidebar_disclosure_body("archived", open, body_height, body);
-        // The active list already provides the spacing above Archived.
+        let body = self.render_sidebar_disclosure_body(key, open, body_height, body);
+        // The active list already provides the spacing above the shelves.
         let section = section.child(body);
         Some(section.into_any_element())
     }

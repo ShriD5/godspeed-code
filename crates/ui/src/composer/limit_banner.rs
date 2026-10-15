@@ -56,7 +56,7 @@ pub(super) struct BannerModel {
 }
 
 /// "3:40 PM" today, "Tue 3:40 PM" this week, "Oct 20, 3:40 PM" later.
-fn reset_label(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+pub(crate) fn local_moment_label(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let local = at.with_timezone(&Local);
     let today = now.with_timezone(&Local).date_naive();
     let days = (local.date_naive() - today).num_days();
@@ -89,18 +89,18 @@ pub(super) fn banner_model(limit: &ChatLimit, now: DateTime<Utc>) -> BannerModel
         (Some(at), LimitRecovery::ResumeAtReset) => (
             format!(
                 "Resumes automatically at {}. Messages you send wait until then.",
-                reset_label(at, now)
+                local_moment_label(at, now)
             ),
             vec![Cancel, Dismiss],
         ),
         (Some(at), LimitRecovery::Snoozed) => (
-            format!("Snoozed until {}.", reset_label(at, now)),
+            format!("Snoozed until {}.", local_moment_label(at, now)),
             vec![Cancel, Dismiss],
         ),
         (Some(at), LimitRecovery::Ask) => (
             format!(
                 "Resets at {}. Messages you send wait until then.",
-                reset_label(at, now)
+                local_moment_label(at, now)
             ),
             vec![ResumeAtReset, Snooze, Dismiss],
         ),

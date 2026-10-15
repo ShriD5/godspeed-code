@@ -2044,6 +2044,16 @@ impl Changes {
         })
     }
 
+    /// `(additions, deletions)` of `chat`'s checkout, when this pane already
+    /// watches the device hosting it (`local_device` stands for no target).
+    pub fn diff_stats_for(&self, chat: &Chat, local_device: Option<&str>) -> Option<(u32, u32)> {
+        let watched = self.watch_target.as_deref().or(local_device)?;
+        if !self.started || watched != chat.device_id {
+            return None;
+        }
+        resolve_diff(&self.diffs, chat).map(|diff| (diff.additions, diff.deletions))
+    }
+
     fn resolved(&self, cx: &App) -> Option<CheckoutDiff> {
         let state = self.state.read(cx);
         let chat = state.selected_chat_row()?;

@@ -31,8 +31,9 @@ use crate::comments::ReviewComment;
 use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
 use zeron_proto::{
-    AuthState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus, Device,
-    EngineInfo, HarnessId, Session, SidebarPreferencesState, Space, WorkspaceScope,
+    AuthState, ChangeRequestSummary, Chat, ChatIndicator, ChatLifecycle,
+    CheckoutChangeRequestStatus, Device, EngineInfo, HarnessId, LifecycleState, Session,
+    SidebarPreferencesState, Space, WorkspaceScope,
 };
 use zeron_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
 
@@ -812,6 +813,9 @@ pub struct AppState {
     /// canvas always reopens where the user left it.
     pub(crate) canvas_target: Option<CanvasTarget>,
     pub selected_chat: Option<String>,
+    /// The open chat the user marked unread: looking at it must not mark it
+    /// read again until they leave it or pick it anew.
+    kept_unread: Option<String>,
     /// Boot auto-select happened (or a manual selection superseded it).
     pub auto_selected: bool,
     /// First chats / spaces watch frame has landed — device-local state that
@@ -957,6 +961,7 @@ impl AppState {
             selected_device: None,
             canvas_target: None,
             selected_chat: None,
+            kept_unread: None,
             transcript: Vec::new(),
             queue: Vec::new(),
             context_usage: None,
@@ -2137,6 +2142,7 @@ impl AppState {
                 None => true,
                 Some(id) => self.space_row(id).is_some(),
             })
+            .filter(|c| c.lifecycle.at(now) == LifecycleState::Active)
             .map(|c| (self.display_status_for(c, now), c))
             .collect();
         sort_active(&mut rows);
@@ -2790,6 +2796,7 @@ impl AppState {
     /// watch server-side. Selecting a chat also lands in its space and marks it
     /// seen (a global-list click must switch the tab strip too).
     pub fn select_chat(&mut self, chat_id: Option<String>, cx: &mut Context<Self>) {
+        self.kept_unread = None;
         if let Some(id) = &chat_id
             && !self.is_unsaved_side_chat(id)
         {
@@ -2986,6 +2993,9 @@ impl AppState {
     }
 
     pub fn mark_chat_seen(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        if self.kept_unread.as_deref() == Some(chat_id) {
+            return;
+        }
         let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
             return;
         };
@@ -3002,6 +3012,91 @@ impl AppState {
             let params = serde_json::json!({ "op": "markChatSeen", "chatId": chat_id });
             if let Err(err) = handle.client().call(methods::MUTATE, params).await {
                 tracing::warn!(chat = %chat_id, error = %err, "markChatSeen failed");
+            }
+        })
+        .detach();
+    }
+
+    /// Mark a chat unread on every device; returns the seen marker it had, for
+    /// an undo. The open chat stays unread while it is looked at.
+    pub fn mark_chat_unread(
+        &mut self,
+        chat_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<DateTime<Utc>> {
+        let chat = self.chats.iter_mut().find(|c| c.id == chat_id)?;
+        let seen_at = chat.last_seen_at.take();
+        if self.selected_chat.as_deref() == Some(chat_id) {
+            self.kept_unread = Some(chat_id.to_owned());
+        }
+        cx.notify();
+        self.spawn_mutate(
+            serde_json::json!({ "op": "markChatUnread", "chatId": chat_id }),
+            cx,
+        );
+        seen_at
+    }
+
+    /// Undo a Mark as unread: put the seen marker back (it only moves
+    /// forward, so newer activity stays unread).
+    pub fn restore_chat_seen(
+        &mut self,
+        chat_id: &str,
+        seen_at: DateTime<Utc>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.kept_unread.as_deref() == Some(chat_id) {
+            self.kept_unread = None;
+        }
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id)
+            && chat.last_seen_at.is_none()
+        {
+            chat.last_seen_at = Some(seen_at);
+        }
+        cx.notify();
+        self.spawn_mutate(
+            serde_json::json!({
+                "op": "markChatSeen",
+                "chatId": chat_id,
+                "at": seen_at.timestamp_millis(),
+            }),
+            cx,
+        );
+    }
+
+    /// Settle, snooze or wake a chat, showing it at once; the engine's row
+    /// follows (or the failure toasts and the next frame puts it back).
+    pub fn set_chat_lifecycle(
+        &mut self,
+        chat_id: &str,
+        lifecycle: LifecycleState,
+        expected: Option<LifecycleState>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            chat.lifecycle = ChatLifecycle::new(lifecycle, Utc::now());
+        }
+        cx.notify();
+        let mut params = serde_json::json!({
+            "op": "setChatLifecycle",
+            "chatId": chat_id,
+            "lifecycle": lifecycle,
+        });
+        if let Some(expected) = expected {
+            params["expected"] = serde_json::json!(expected);
+        }
+        self.spawn_mutate(params, cx);
+    }
+
+    /// Fire a `Mutate`, toasting a refusal.
+    fn spawn_mutate(&self, params: serde_json::Value, cx: &mut Context<Self>) {
+        let Some(handle) = self.engine.clone() else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            if let Err(err) = handle.client().call(methods::MUTATE, params).await {
+                let message = err.to_string();
+                cx.update(|cx| crate::toast::error(cx, message));
             }
         })
         .detach();
@@ -5466,6 +5561,31 @@ mod tests {
         state.apply_chats(vec![archived, chat("b", 1, None)]);
         let visible: Vec<&str> = state.visible_chats().map(|c| c.id.as_str()).collect();
         assert_eq!(visible, ["b"]);
+    }
+
+    #[test]
+    fn settled_and_snoozed_chats_leave_the_sidebar_until_the_snooze_ends() {
+        let now = Utc::now();
+        let mut state = AppState::new();
+        let mut settled = chat("settled", 0, Some(1));
+        settled.lifecycle = ChatLifecycle::new(LifecycleState::Settled, now);
+        let mut snoozed = chat("snoozed", 0, Some(2));
+        snoozed.lifecycle = ChatLifecycle::new(
+            LifecycleState::Snoozed {
+                until: now + TimeDelta::hours(1),
+            },
+            now,
+        );
+        state.apply_chats(vec![settled, snoozed, chat("active", 0, Some(3))]);
+        let listed = |at| -> Vec<String> {
+            state
+                .sidebar_chats(at, None)
+                .into_iter()
+                .map(|(_, c)| c.id.clone())
+                .collect()
+        };
+        assert_eq!(listed(now), ["active"]);
+        assert_eq!(listed(now + TimeDelta::hours(1)), ["active", "snoozed"]);
     }
 
     #[test]
