@@ -1911,6 +1911,44 @@ async fn v2_question_forms_reach_the_user_and_are_answered() {
     }
 }
 
+/// A live 2.0.24 question form with several fields (from zeronsh/zeron#833):
+/// every field reaches the panel, the multiselect as a multi-select, and the
+/// reply keys each field, the multiselect as a value array.
+#[tokio::test]
+async fn v2_question_forms_answer_every_field_through_the_form_route() {
+    let mut wire = TurnWire::start_policy(false, true, false, Some(true)).await;
+    wire.request("/api/model").await;
+    wire.request("/prompt").await;
+    wire.v2(
+        "form.created",
+        json!({"form":{
+        "id":"frm_1","sessionID":"fixture","title":"Questions",
+        "metadata":{"kind":"question","tool":{"messageID":"msg_1","id":"call_1"}},
+        "fields":[
+            {"key":"q0","title":"Color","description":"Which color?","type":"string",
+             "options":[{"value":"Red","label":"Red","description":"warm"}],"custom":true},
+            {"key":"q1","title":"Toppings","description":"Pick some","type":"multiselect",
+             "options":[{"value":"A","label":"A"}],"custom":true}
+        ]}}),
+    );
+    let body = wire.posted("/api/session/fixture/form/frm_1/reply").await;
+    assert_eq!(body, json!({"answer":{"q0":"Yes","q1":["Yes"]}}));
+    let asked = wire.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0].question, "Which color?");
+    assert!(!asked[0].multi_select);
+    assert_eq!(asked[1].header, "Toppings");
+    assert!(asked[1].multi_select);
+    while let Ok(Some(Ok(event))) =
+        tokio::time::timeout(Duration::from_millis(100), wire.events.recv()).await
+    {
+        assert!(
+            !matches!(event, AgentEvent::InputRequested { .. } | AgentEvent::InputResolved { .. }),
+            "{event:?}"
+        );
+    }
+}
+
 #[test]
 fn v2_form_answers_are_typed_and_respect_conditions() {
     let form = json!({"fields": [
