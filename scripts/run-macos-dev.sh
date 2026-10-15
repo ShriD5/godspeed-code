@@ -74,6 +74,7 @@ echo "running Godspeed Dev (bundle $BUNDLE_ID, data $DATA_DIR, IPC $IPC_PORT)" >
 # -W keeps the script attached until the app exits. Runtime logs remain in the
 # isolated data directory (`target/macos-dev/data/logs/godspeed-headed.log`).
 OPEN_ENV=(
+  --env "GODSPEED_AUTO_UPDATE=0"
   --env "GODSPEED_DATA_DIR=$DATA_DIR"
   --env "GODSPEED_IPC_PORT=$IPC_PORT"
 )
