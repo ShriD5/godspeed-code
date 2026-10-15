@@ -1154,12 +1154,15 @@ async fn run_session(session: Session) {
         }
 
         let mut start_params = start_params.clone();
+        // The user's effective config: per-turn overrides must merge with
+        // it, not replace it (see [`merge_user_turn_config`]).
+        let user_config = client
+            .request("config/read", json!({"includeLayers": false}))
+            .await;
         if title_only {
             // Disable each configured MCP server explicitly: an empty table
             // would merge with user configuration and leave servers enabled.
-            let config = client
-                .request("config/read", json!({"includeLayers": false}))
-                .await?;
+            let config = user_config.as_ref().map_err(|e| HarnessError::Protocol(e.to_string()))?;
             if let Some(servers) = config["config"]["mcp_servers"].as_object() {
                 let overrides = start_params
                     .get_mut("config")
@@ -1201,9 +1204,10 @@ async fn run_session(session: Session) {
             cwd: thread["cwd"].as_str().unwrap_or(&request.cwd).to_owned(),
             model_provider: thread["modelProvider"].as_str().map(str::to_owned),
         };
-        Ok::<_, HarnessError>((thread_id, children, voice_context))
+        let user_config = user_config.map(|mut c| c["config"].take()).unwrap_or(Value::Null);
+        Ok::<_, HarnessError>((thread_id, children, voice_context, user_config))
     };
-    let (thread_id, mut children, voice_context) = tokio::select! {
+    let (thread_id, mut children, voice_context, user_config) = tokio::select! {
         res = setup => match res {
             Ok(thread_id) => thread_id,
             Err(e) => {
@@ -1252,6 +1256,7 @@ async fn run_session(session: Session) {
         // nothing renders and the UI's 45s staleness gate flips Working off
         // (user report: "not streaming, doesn't say it's working").
         p.insert("summary".into(), "auto".into());
+        merge_user_turn_config(&mut p, &user_config);
         if let Some(model) = &live.model {
             p.insert("model".into(), Value::String(model.clone()));
         }
@@ -1968,6 +1973,60 @@ async fn run_session(session: Session) {
     }
 }
 
+/// Let the user's Codex config win over the `turn/start` defaults. Both
+/// `summary` and `sandboxPolicy` override the thread "for this turn and
+/// subsequent turns" (app-server schema, 0.155), so sending ours replaced
+/// what the user set: `model_reasoning_summary = "none"` (providers such as
+/// Bedrock reject `detailed`/`concise` on every turn) and
+/// `[sandbox_workspace_write] network_access` and friends (a missing field
+/// reads as false). The user's summary choice is left to the config; their
+/// workspace-write settings fill the policy, extra roots joined with ours.
+fn merge_user_turn_config(params: &mut serde_json::Map<String, Value>, config: &Value) {
+    if config
+        .get("model_reasoning_summary")
+        .is_some_and(|summary| !summary.is_null())
+    {
+        params.remove("summary");
+    }
+    let Some(user) = config.get("sandbox_workspace_write").filter(|v| v.is_object()) else {
+        return;
+    };
+    let Some(policy) = params
+        .get_mut("sandboxPolicy")
+        .and_then(Value::as_object_mut)
+        .filter(|p| p.get("type").and_then(Value::as_str) == Some("workspaceWrite"))
+    else {
+        return;
+    };
+    for (theirs, ours) in [
+        ("network_access", "networkAccess"),
+        ("exclude_slash_tmp", "excludeSlashTmp"),
+        ("exclude_tmpdir_env_var", "excludeTmpdirEnvVar"),
+    ] {
+        if let Some(value) = user.get(theirs).and_then(Value::as_bool) {
+            policy.insert(ours.into(), value.into());
+        }
+    }
+    let mut roots: Vec<Value> = policy
+        .get("writableRoots")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for root in user
+        .get("writable_roots")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if root.is_string() && !roots.contains(root) {
+            roots.push(root.clone());
+        }
+    }
+    if !roots.is_empty() {
+        policy.insert("writableRoots".into(), Value::Array(roots));
+    }
+}
+
 /// How long an interrupted turn's commands get to exit before a process
 /// still running counts as background work.
 const COMMAND_EXIT_GRACE: Duration = Duration::from_secs(3);
@@ -2429,6 +2488,54 @@ mod tests {
         assert!(file.diff.unwrap().starts_with("--- a//repo/a.rs"));
 
         assert!(approval_request("execCommandApproval", &json!({}), &none, "/").is_none());
+    }
+
+    /// pingdotgg/t3code#14952 and #13987: `turn/start`'s `summary` and
+    /// `sandboxPolicy` override the thread's config for every later turn, so
+    /// ours replaced `model_reasoning_summary = "none"` and
+    /// `sandbox_workspace_write.network_access`. Config shapes from
+    /// `codex app-server generate-json-schema` (ConfigReadResponse, 0.155).
+    #[test]
+    fn turn_overrides_merge_with_the_users_codex_config() {
+        let turn = || -> serde_json::Map<String, Value> {
+            let mut p = serde_json::Map::new();
+            p.insert("summary".into(), "auto".into());
+            p.insert(
+                "sandboxPolicy".into(),
+                sandbox_policy_value(SandboxLevel::WorkspaceWrite, &["/data/a1".to_owned()]),
+            );
+            p
+        };
+        // Nothing configured: our defaults stand.
+        let mut p = turn();
+        merge_user_turn_config(&mut p, &json!({"model_reasoning_summary": null, "sandbox_workspace_write": null}));
+        assert_eq!(p, turn());
+
+        let mut p = turn();
+        merge_user_turn_config(
+            &mut p,
+            &json!({
+                "model_reasoning_summary": "none",
+                "sandbox_workspace_write": {
+                    "network_access": false, "exclude_slash_tmp": true,
+                    "exclude_tmpdir_env_var": false, "writable_roots": ["/cache", "/data/a1"],
+                },
+            }),
+        );
+        assert!(p.get("summary").is_none(), "the config's summary applies");
+        assert_eq!(
+            p["sandboxPolicy"],
+            json!({
+                "type": "workspaceWrite", "networkAccess": false, "excludeSlashTmp": true,
+                "excludeTmpdirEnvVar": false, "writableRoots": ["/data/a1", "/cache"],
+            })
+        );
+        // Only workspace-write takes those settings.
+        let mut p = serde_json::Map::new();
+        p.insert("sandboxPolicy".into(), sandbox_policy_value(SandboxLevel::ReadOnly, &[]));
+        let before = p.clone();
+        merge_user_turn_config(&mut p, &json!({"sandbox_workspace_write": {"network_access": true}}));
+        assert_eq!(p, before);
     }
 
     #[test]
