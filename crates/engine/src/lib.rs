@@ -32,6 +32,7 @@ pub mod harness_updates;
 pub(crate) mod home_index;
 mod http_error;
 pub mod instance_lock;
+pub mod limit_recovery;
 pub mod local_import;
 pub mod message_index;
 mod model_catalogs;
@@ -161,6 +162,8 @@ pub struct EngineCore {
     /// Always-on agents: device-scoped definitions + scheduler + inbox.
     pub agents: Agents,
     pub delegations: delegation::DelegationNotifications,
+    /// Usage-limit recovery: Limited markers, held sends, resume at reset.
+    pub limit_recovery: limit_recovery::LimitRecoveryService,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -359,10 +362,20 @@ impl EngineCore {
             repos.clone(),
         ));
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
-        // Turn starts snapshot the checkout tree — the "Latest turn" diff base.
+        let limit_recovery =
+            limit_recovery::LimitRecoveryService::open(data_dir, workspace.clone(), doc_host.clone());
+        limit_recovery.set_accounts(agent_accounts.clone());
+        // Turn starts snapshot the checkout tree — the "Latest turn" diff base
+        // — and end any usage-limit marker: the chat is running again.
         let turn_diff = diff_sync.clone();
+        let turn_limits = limit_recovery.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
+            turn_limits.note_turn_start(chat_id);
+        }));
+        let limited = limit_recovery.clone();
+        sessions.set_limit_listener(Arc::new(move |chat_id, signal| {
+            limited.note_limited(chat_id, signal);
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         let agents = Agents::open(
@@ -373,6 +386,13 @@ impl EngineCore {
             registry.clone(),
         )?;
         agents.start();
+        // An agent run's chat never arms a resume on its own: the agent's
+        // next fire, which waits for the reset, replaces it.
+        // Weakly: the sessions engine holds the recovery service, so a strong
+        // agents handle here would be a cycle that outlives shutdown.
+        let agent_run = agents.owns_chat_probe();
+        limit_recovery.set_auto_resume_filter(Arc::new(move |chat_id| !agent_run(chat_id)));
+        limit_recovery.start();
         let delegations = delegation::DelegationNotifications::start(
             data_dir,
             workspace.clone(),
@@ -398,6 +418,7 @@ impl EngineCore {
             harness_updates,
             agents,
             delegations,
+            limit_recovery,
             device_id,
             local_import,
             chat_import,
@@ -536,6 +557,7 @@ impl EngineCore {
         .with_previews(self.previews.clone())
         .with_harness_updates(self.harness_updates.clone())
         .with_agents(self.agents.clone())
+        .with_limit_recovery(self.limit_recovery.clone())
         .with_chat_import(self.chat_import.clone())
         .with_message_index(self.message_index.clone());
         if let Some(links) = self.links() {
@@ -566,9 +588,10 @@ impl EngineCore {
     /// kill live PTYs, stamp our workspace `lastSeenAt`, and flush every open doc
     /// snapshot.
     pub async fn shutdown(&self) {
-        // First: no new agent run may start against a draining engine.
+        // First: no new agent run or resume may start against a draining engine.
         self.delegations.shutdown().await;
         self.agents.shutdown().await;
+        self.limit_recovery.shutdown().await;
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally

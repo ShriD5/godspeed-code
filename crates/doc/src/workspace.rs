@@ -733,6 +733,18 @@ pub(crate) struct RawChat {
     room_gen: Option<u32>,
     #[serde(default)]
     parent_chat_id: Option<String>,
+    /// LENIENT for the same reason as `config`: a newer peer's recovery
+    /// mode costs the limit marker, not the row.
+    #[serde(default, deserialize_with = "lenient_chat_limit")]
+    limit: Option<zeron_proto::ChatLimit>,
+}
+
+fn lenient_chat_limit<'de, D>(deserializer: D) -> Result<Option<zeron_proto::ChatLimit>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -774,6 +786,7 @@ impl From<RawChat> for Chat {
             last_seen_at: raw.last_seen_at.map(dt),
             room_gen: raw.room_gen,
             parent_chat_id: raw.parent_chat_id,
+            limit: raw.limit,
         }
     }
 }
@@ -890,6 +903,7 @@ mod tests {
             harness_session_id: None,
             harness_session_cwd: None,
             parent_chat_id: Some("parent-chat".into()),
+            limit: None,
             space_id: None,
             last_seen_at: None,
             room_gen: None,

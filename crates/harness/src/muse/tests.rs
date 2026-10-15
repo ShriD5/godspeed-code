@@ -288,6 +288,20 @@ fn subagents_open_a_child_transcript_and_count_as_background_work() {
 }
 
 #[test]
+fn failed_turns_classify_usage_limits_apart_from_context_overflow() {
+    let mut norm = Normalizer::default();
+    norm.turn_completed(&json!({"turnId":"t","terminal":"failed","error":{"kind":"usageLimitExceeded","message":"You have used your 5-hour allowance","resetsAt":4102444800i64}}));
+    assert_eq!(norm.status(), DoneStatus::Errored);
+    assert_eq!(norm.limit, Some(chrono::DateTime::from_timestamp(4_102_444_800, 0)));
+    norm.turn_completed(&json!({"turnId":"t2","terminal":"failed","error":{"kind":"providerError","message":"429 Too Many Requests"}}));
+    assert_eq!(norm.limit, Some(None));
+    norm.turn_completed(&json!({"turnId":"t3","terminal":"failed","error":{"kind":"contextLimit","message":"The conversation exceeds the context window"}}));
+    assert_eq!(norm.limit, None);
+    norm.turn_completed(&json!({"turnId":"t4","terminal":"completed"}));
+    assert_eq!(norm.limit, None);
+}
+
+#[test]
 fn turn_terminals_decide_status_and_a_logged_out_cli_says_so() {
     let mut norm = Normalizer::default();
     norm.turn_completed(&json!({"turnId":"t","terminal":"failed","error":{"kind":"authRequired","message":"no credential","retryable":false}}));

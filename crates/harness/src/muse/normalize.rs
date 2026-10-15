@@ -33,12 +33,16 @@ pub(super) struct Normalizer {
     /// a paragraph instead of running on from the last sentence.
     wrote_text: bool,
     pub error: Option<String>,
+    /// The failed turn hit a usage limit (`Some(reset)` when Meta said
+    /// when it lifts): the errored Done is a limited turn.
+    pub limit: Option<Option<chrono::DateTime<chrono::Utc>>>,
     pub aborted: bool,
 }
 
 impl Normalizer {
     pub fn reset(&mut self) {
         self.error = None;
+        self.limit = None;
         self.aborted = false;
         self.wrote_text = false;
         // Settled items are never re-emitted; open ones keep folding into
@@ -71,6 +75,7 @@ impl Normalizer {
         let terminal = string(params, "terminal");
         self.aborted = terminal == "cancelled";
         self.error = (terminal == "failed").then(|| turn_error(params));
+        self.limit = (terminal == "failed").then(|| turn_limit(params)).flatten();
     }
 
     pub fn map(&mut self, method: &str, params: &Value) -> Vec<AgentEvent> {
@@ -263,6 +268,32 @@ fn turn_error(params: &Value) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or("Muse turn failed")
         .into()
+}
+
+/// A failed turn's usage limit: an error `kind` naming a limit or quota, or
+/// limit wording in its message (never a full context window).
+fn turn_limit(params: &Value) -> Option<Option<chrono::DateTime<chrono::Utc>>> {
+    let error = &params["error"];
+    let message = turn_error(params);
+    let now = chrono::Utc::now();
+    if crate::limits::is_context_full(&message) {
+        return None;
+    }
+    let kind = error["kind"].as_str().unwrap_or("").to_ascii_lowercase();
+    let kind_says = ["limit", "quota", "ratelimit"]
+        .iter()
+        .any(|needle| kind.contains(needle))
+        && !kind.contains("context");
+    let reset = || {
+        error["resetsAt"]
+            .as_i64()
+            .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+            .or_else(|| crate::limits::parse_reset(&message, now))
+    };
+    if kind_says {
+        return Some(reset());
+    }
+    crate::limits::classify(&message, now).map(|_| reset())
 }
 
 fn todo_events(params: &Value) -> Vec<AgentEvent> {

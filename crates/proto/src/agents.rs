@@ -169,6 +169,9 @@ pub enum AgentRunStatus {
     /// Not run: misfire grace exceeded, previous run still active, or the
     /// agent was paused. `summary` says which.
     Skipped,
+    /// Stopped on the provider's usage limit. Not a failure: it never counts
+    /// toward the auto-pause, and the agent's next fire waits for the reset.
+    Limited,
 }
 
 impl AgentRunStatus {

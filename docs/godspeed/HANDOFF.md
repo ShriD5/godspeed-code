@@ -12,7 +12,7 @@ wants it to be the fastest and best-looking option, and eventually open source.
 - Repo: `~/Developer/godspeed`, private at github.com/ShriD5/godspeed (`origin`). `upstream` is
   zeronsh/zeron, for cherry-picking fixes only. GitHub Actions is **disabled** on the repo on
   purpose (Zeron's macOS/Windows workflows would burn private-repo minutes).
-- `main` is at `7678436a` (search merged) and pushed. Parity with T3 is 54% by the latest audit.
+- `main` is at `6726f928` (search and resume-at-reset merged) and pushed. Parity with T3 is 54% by the latest audit.
 - Installed build: `/Applications/Godspeed.app` (release, ad-hoc signed) and the `godspeed` CLI
   (symlink in `~/.local/bin`). It is older than `main`; repackage to pick up recent work.
 
@@ -70,26 +70,16 @@ Known flaky only under heavy load (pass alone): `version_probe_bounds_hangs_and_
   discovery fix (project skills first).
 - App icon: a silver low-poly speedster (`design/icon/sp-electric.jpg`).
 
-## In progress when this was written
+## In progress
 
-One worktree agent was mid-way (search has since been merged). If the session that ran them has ended, they stopped: inspect,
-finish per the spec below, test, then merge into `main` with `git merge --no-ff`.
-
-1. **Resume at reset**: branch `worktree-agent-af021430c3f06d38a`, worktree
-   `.claude/worktrees/agent-af021430c3f06d38a`, cache `/Volumes/Lexar/build/godspeed-target-resume`.
-   Done: harness classifies usage-limit failures with reset times; proto persists a Limited chat
-   state. Uncommitted: engine work (agents.rs, agents/store.rs, doc_host.rs, lib.rs, rpc.rs).
-   Remaining spec: engine timer that survives restarts and laptop sleep (reuse the always-on
-   scheduler patterns); composer banner with Resume at reset / Snooze until reset / Dismiss and a
-   default setting; hold queued messages while limited; always-on runs that hit a limit are Limited,
-   don't count toward auto-pause, and wait for the reset. Same chat and account only (no fallback).
-   Tests with an injected clock.
-2. **Instant local search**: DONE and merged into `main` (`4d4eeea4`). Message index in
-   `crates/engine/src/message_index.rs`, palette message search, Cmd/Ctrl+F find bar. Gaps: no
-   accent folding, word-start matching only, find skips closed folds and tool cards.
-
-After merging, remove the worktree (`git worktree remove -f -f <path>`), delete the branch and the
-cache directory.
+Both earlier worktrees are merged: instant local search (`4d4eeea4`) and resume at reset
+(`34bd1382`). A Codex session is now working the "Next, in order" list on branch
+`feat/godspeed-completion` (worktree `.claude/worktrees/godspeed-completion`, plan in
+`docs/godspeed/COMPLETION-PLAN.md` on that branch). Its coordination log, briefs, benchmark audit
+and review notes live in `/Volumes/Lexar/build/godspeed-coordination/` (`progress.md` first).
+Known follow-ups it owns: three resume-at-reset robustness fixes in `resume-review.md` (marker
+cleared before the continuation is durably queued; same-account binding not enforced; Stop/archive
+after scheduling not respected).
 
 ## Next, in order
 

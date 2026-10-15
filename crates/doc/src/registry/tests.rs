@@ -274,6 +274,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         harness_session_id: None,
         harness_session_cwd: None,
         parent_chat_id: Some("parent-chat".into()),
+        limit: None,
         space_id: None,
         last_seen_at: None,
         room_gen: None,
@@ -2238,4 +2239,42 @@ fn attaching_an_edge_after_local_only_writes_reseeds_them() {
     let mut doc = RegistryDoc::from_bytes(&doc.to_bytes().unwrap(), "dev-a").unwrap();
     doc.set_local_only(false);
     assert_eq!(doc.pending_len(), 0);
+}
+
+/// The limit marker round-trips through its own setter, survives a
+/// whole-row upsert from a stale copy (upserts never carry it), clears with
+/// `None`, and a newer peer's recovery mode costs the marker, not the row.
+#[test]
+fn chat_limit_marker_has_its_own_writer() {
+    use zeron_proto::{ChatLimit, LimitRecovery, LimitResetSource};
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    let limit = ChatLimit {
+        limited_at: ts(5_000),
+        reset_at: Some(ts(9_000)),
+        reset_source: Some(LimitResetSource::Provider),
+        window: Some("5-hour".into()),
+        recovery: LimitRecovery::ResumeAtReset,
+    };
+    assert!(ws.set_chat_limit("chat-1", Some(&limit)).unwrap());
+    assert_eq!(ws.chat("chat-1").unwrap().unwrap().limit.as_ref(), Some(&limit));
+    let mut stale = chat("chat-1", "dev-a");
+    stale.title = Some("renamed".into());
+    ws.upsert_chat(&stale).unwrap();
+    let row = ws.chat("chat-1").unwrap().unwrap();
+    assert_eq!(row.title.as_deref(), Some("renamed"));
+    assert_eq!(row.limit.as_ref(), Some(&limit));
+    assert!(ws.set_chat_limit("chat-1", None).unwrap());
+    assert_eq!(ws.chat("chat-1").unwrap().unwrap().limit, None);
+    assert!(!ws.set_chat_limit("missing", Some(&limit)).unwrap());
+
+    ws.write(
+        KIND_CHATS,
+        "chat-1",
+        OpKind::Update,
+        fields([("limit", json!({"limitedAt": 5000, "recovery": "fromTheFuture"}))]),
+    );
+    let row = ws.chat("chat-1").unwrap().unwrap();
+    assert_eq!(row.limit, None);
+    assert_eq!(row.title.as_deref(), Some("renamed"));
 }

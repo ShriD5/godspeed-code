@@ -10,7 +10,7 @@ use zeron_proto::{Session, SessionStatus};
 use crate::doc_host::DocHost;
 use crate::sessions::SessionsEngine;
 use crate::workspace_host::WorkspaceHost;
-use crate::{EngineError, now_ms};
+use crate::EngineError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingNotice {

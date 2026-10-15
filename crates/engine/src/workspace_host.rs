@@ -1079,7 +1079,8 @@ impl WorkspaceHost {
                 harness_session_cwd: None,
                 space_id: space.as_ref().map(|s| s.id.clone()),
                 last_seen_at: None,
-                parent_chat_id,
+                parent_chat_id: parent_chat_id.filter(|p| !p.trim().is_empty()),
+                limit: None,
             })
         })?;
         if notify_parent {
@@ -1256,6 +1257,15 @@ impl WorkspaceHost {
     /// when the chat doesn't exist.
     pub fn set_chat_config(&self, chat_id: &str, config: &ChatConfig) -> Result<bool, EngineError> {
         Ok(self.mutate(|doc| doc.set_chat_config(chat_id, config))?)
+    }
+
+    /// Set or clear the chat's usage-limit marker (`limit_recovery`).
+    pub fn set_chat_limit(
+        &self,
+        chat_id: &str,
+        limit: Option<&zeron_proto::ChatLimit>,
+    ) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.set_chat_limit(chat_id, limit))?)
     }
 
     /// Tombstone: removes the chats (and session-status) row; the per-chat session

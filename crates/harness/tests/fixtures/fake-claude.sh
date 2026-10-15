@@ -435,6 +435,14 @@ case "$first" in
   emit '{"type":"result","subtype":"error_max_turns","errors":[],"usage":{"input_tokens":1,"output_tokens":2},"session_id":"sess-err"}'
   ;;
 
+*scenario:limit*)
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-limit"}'
+  # The window's reset rides the rejected event (epoch seconds).
+  emit '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":4102444800}}'
+  emit '{"type":"assistant","parent_tool_use_id":null,"message":{"model":"<synthetic>","content":[{"type":"text","text":"You have hit your limit"}]},"error":"rate_limit"}'
+  emit '{"type":"result","subtype":"success","is_error":true,"result":"You have hit your limit","usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-limit"}'
+  ;;
+
 *)
   emit '{"type":"result","subtype":"error_during_execution","errors":["unknown scenario"],"usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-x"}'
   ;;

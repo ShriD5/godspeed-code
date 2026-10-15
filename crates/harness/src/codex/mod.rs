@@ -1326,6 +1326,11 @@ async fn run_session(session: Session) {
     let mut reasoning_streams: HashMap<String, ReasoningStream> = HashMap::new();
     // Token usage is held until the turn ends, emitted just before Done.
     let mut pending_usage: Option<AgentEvent> = None;
+    // Latest `account/rateLimits/updated` snapshot: where a usage-limited
+    // turn's reset comes from.
+    let mut rate_limits: Option<Value> = None;
+    // A final (not retried) usage-limit `error` notification this turn.
+    let mut limit_error: Option<String> = None;
     // Steers whose `turn/steer` lost the turn-completed race; delivered as the
     // next `turn/start` when the expected turn's end notification arrives.
     // Each carries the configuration it was sent with, adopted when its own
@@ -1606,6 +1611,18 @@ async fn run_session(session: Session) {
                         } else {
                             DoneStatus::Completed
                         };
+                        let limited_earlier = limit_error.take();
+                        if status == DoneStatus::Errored
+                            && let Some(limit) = normalize::turn_limit_event(
+                                params.pointer("/turn/error").filter(|e| !e.is_null()),
+                                limited_earlier.as_deref(),
+                                rate_limits.as_ref(),
+                                chrono::Utc::now(),
+                            )
+                            && !send(&event_tx, limit).await
+                        {
+                            break 'main;
+                        }
                         if status == DoneStatus::Interrupted
                             || params.pointer("/turn/status").and_then(Value::as_str) == Some("interrupted")
                         {
@@ -1686,6 +1703,18 @@ async fn run_session(session: Session) {
                         if interrupted {
                             done_after_interrupt = true;
                         }
+                        let limited_earlier = limit_error.take();
+                        if !interrupted
+                            && let Some(limit) = normalize::turn_limit_event(
+                                params.pointer("/turn/error").filter(|e| !e.is_null()),
+                                limited_earlier.as_deref(),
+                                rate_limits.as_ref(),
+                                chrono::Utc::now(),
+                            )
+                            && !send(&event_tx, limit).await
+                        {
+                            break 'main;
+                        }
                         let _ = send(
                             &event_tx,
                             AgentEvent::Done {
@@ -1753,9 +1782,21 @@ async fn run_session(session: Session) {
                             .or_else(|| params.get("message").and_then(Value::as_str))
                             .unwrap_or("Codex error")
                             .to_owned();
+                        // A retried error is transient; only a final one
+                        // can leave the turn usage-limited.
+                        let error = params.get("error").filter(|e| e.is_object()).unwrap_or(&params);
+                        if params.get("willRetry").and_then(Value::as_bool) != Some(true)
+                            && normalize::error_is_limit(error, chrono::Utc::now())
+                        {
+                            limit_error = Some(message.clone());
+                        }
                         if !send(&event_tx, AgentEvent::Error { message }).await {
                             break 'main;
                         }
+                    }
+
+                    "account/rateLimits/updated" => {
+                        rate_limits = Some(params.clone());
                     }
 
                     // thread/status, mcpServer startup, account noise, … —

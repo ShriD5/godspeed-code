@@ -633,6 +633,41 @@ async fn refusal_maps_to_an_errored_done() {
     assert!(dones[0].1.as_deref().unwrap_or("").contains("refused"));
 }
 
+/// An agent's quota error ends the turn usage-limited with the wait its text
+/// names; a full context window is an ordinary failure.
+#[tokio::test]
+async fn quota_errors_end_the_turn_limited_and_context_overflow_does_not() {
+    let (quota_controls, _steer, _token) = controls();
+    let before = chrono::Utc::now();
+    let events = run_to_end(&harness(), request("scenario:quota"), quota_controls).await;
+    let limits: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::UsageLimit { reset_at, .. } => Some(*reset_at),
+            _ => None,
+        })
+        .collect();
+    let [Some(reset)] = limits.as_slice() else {
+        panic!("one limit with a reset: {events:?}");
+    };
+    let wait = *reset - before;
+    assert!(
+        wait >= chrono::TimeDelta::minutes(149) && wait <= chrono::TimeDelta::minutes(151),
+        "{wait:?}"
+    );
+    assert_eq!(dones(&events).last().map(|d| d.0), Some(DoneStatus::Errored));
+
+    let (full_controls, _steer, _token) = controls();
+    let events = run_to_end(&harness(), request("scenario:context-full"), full_controls).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::UsageLimit { .. })),
+        "{events:?}"
+    );
+    assert_eq!(dones(&events).last().map(|d| d.0), Some(DoneStatus::Errored));
+}
+
 #[tokio::test]
 async fn resume_loads_the_session_and_drops_replayed_history() {
     let (controls, _steer, _token) = controls();

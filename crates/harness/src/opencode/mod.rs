@@ -1479,6 +1479,9 @@ struct TurnState {
     retry_reported: bool,
     /// This turn was aborted because the provider retry loop hit the cap.
     aborted_for_retry: bool,
+    /// The provider refused for a usage/rate limit (`Some(reset)` when it
+    /// said when the window reopens): the errored Done is a limited turn.
+    limit: Option<Option<chrono::DateTime<chrono::Utc>>>,
     /// Deadline for the first session-scoped event after the prompt.
     stall_deadline: Option<tokio::time::Instant>,
     /// Main-session tool calls started and not yet finished.
@@ -1486,6 +1489,41 @@ struct TurnState {
     /// Aborted to deliver a steer immediately: its idle/interrupted frame is
     /// a steer boundary, not the end of the run.
     preempted: bool,
+}
+
+/// A `session.error` that is a usage/rate limit: an `APIError` with HTTP 429
+/// or limit wording (never a full context window). `Some(reset)` — the
+/// `retry-after` header's wait or the text's — when it is one.
+fn session_error_limit(
+    error: &Value,
+    message: &str,
+) -> Option<Option<chrono::DateTime<chrono::Utc>>> {
+    let now = chrono::Utc::now();
+    let data = error.get("data").unwrap_or(&Value::Null);
+    let status = data
+        .get("statusCode")
+        .and_then(Value::as_u64)
+        .or_else(|| data.get("status").and_then(Value::as_u64));
+    let text_hit = crate::limits::classify(message, now);
+    if status != Some(429) && text_hit.is_none() {
+        return None;
+    }
+    if crate::limits::is_context_full(message) {
+        return None;
+    }
+    let header_wait = data
+        .get("responseHeaders")
+        .and_then(|headers| headers.get("retry-after"))
+        .and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .or_else(|| v.as_i64())
+        })
+        .filter(|secs| *secs > 0)
+        .map(|secs| now + chrono::TimeDelta::seconds(secs));
+    Some(header_wait.or(text_hit.and_then(|hit| hit.reset_at)).or_else(|| {
+        crate::limits::parse_reset(message, now)
+    }))
 }
 
 /// A detached native-command HTTP request failed. `generation` binds the
@@ -1536,6 +1574,7 @@ impl TurnState {
             error: None,
             retry_reported: false,
             aborted_for_retry: false,
+            limit: None,
             stall_deadline: stall.map(|d| tokio::time::Instant::now() + d),
             open_tools: Default::default(),
             preempted: false,
@@ -1935,6 +1974,12 @@ async fn run_session(session: Session) {
             }
             let errored = turn.aborted_for_retry
                 || (turn.error.is_some() && !turn.saw_content);
+            if errored
+                && let Some(reset) = turn.limit
+                && !send(&event_tx, crate::limits::event(reset, None)).await
+            {
+                break $label;
+            }
             let _ = send(&event_tx, AgentEvent::Done {
                 status: if errored {
                     DoneStatus::Errored
@@ -3231,7 +3276,23 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                         .get("message")
                         .and_then(Value::as_str)
                         .unwrap_or("provider error");
-                    if attempt >= RETRY_ABORT_ATTEMPT && !turn.aborted_for_retry {
+                    // A usage limit (OpenCode Go's 429s among them) does not
+                    // lift between retries: give up once it is clearly not a
+                    // blip, and end the turn limited rather than failed.
+                    let limit = crate::limits::classify(message, chrono::Utc::now());
+                    if let Some(hit) = limit
+                        && attempt >= RETRY_REPORT_ATTEMPT
+                        && !turn.aborted_for_retry
+                    {
+                        turn.aborted_for_retry = true;
+                        turn.limit = Some(hit.reset_at);
+                        turn.error = Some(format!("usage limit reached: {message}"));
+                        let msg = format!("The provider's usage limit was reached: {message}");
+                        if !send(event_tx, AgentEvent::Error { message: msg }).await {
+                            return BusOutcome::ConsumerGone;
+                        }
+                        let _ = server.abort_session(session_id, dir).await;
+                    } else if attempt >= RETRY_ABORT_ATTEMPT && !turn.aborted_for_retry {
                         turn.aborted_for_retry = true;
                         turn.error = Some(format!(
                             "the provider kept failing after {attempt} attempts: {message}"
@@ -3293,6 +3354,9 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             });
             if kind == "session.error" {
                 turn.error = Some(message.clone());
+                if let Some(reset) = session_error_limit(error, &message) {
+                    turn.limit = Some(reset);
+                }
             }
             if !duplicate && !send(event_tx, AgentEvent::Error { message }).await {
                 return BusOutcome::ConsumerGone;
