@@ -41,7 +41,7 @@ Always-on agents (open-dots, done properly)
 - [ ] Inbox of results: unread/archived, links to the thread and diff, needs-approval items.
 - [ ] Approvals showing the exact command/path; rules (bucket → connector → tool) with a revoke page;
       unanswered approvals queue in the inbox instead of auto-denying.
-- [ ] Channels: native notifications, Telegram (Allow once / Always / Deny buttons).
+- [ ] Channels: native notifications. Telegram deferred (decided 2026-10-15: keep the native design, no open-dots port).
 - [ ] Runs on the headless engine so a VPS keeps agents alive when the laptop sleeps.
 
 Design pass

@@ -20,7 +20,7 @@ What Godspeed adds on top (in progress, tracked in the roadmap):
 - **Approvals and access modes**: supervised, auto-accept edits, auto, or full access, per thread.
 - **Git from the app**: commit, push, pull and open PRs with generated messages and descriptions.
 - **Always-on agents**: agents with memory, triggered by cron, webhooks, file changes or GitHub
-  events, with an inbox and Telegram approvals.
+  events, with an inbox.
 
 ## Build
 
