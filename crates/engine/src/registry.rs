@@ -99,14 +99,28 @@ struct HarnessPrefsFile {
     enabled: Option<Vec<HarnessId>>,
 }
 
-/// Per-device automatic session title preferences.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Per-device text generation preferences: session titles, commit messages,
+/// pull request text and branch names all run on this harness and model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TitleSettings {
     /// None follows the session harness, using a supported installed fallback.
     pub harness: Option<HarnessId>,
     /// None selects the cheapest model offered by the selected harness.
     pub model: Option<String>,
+    /// Strip agent attribution trailers (`Co-Authored-By: Claude …`,
+    /// `Generated with Claude Code`) from commit messages and PR bodies.
+    pub remove_agent_credits: bool,
+}
+
+impl Default for TitleSettings {
+    fn default() -> Self {
+        Self {
+            harness: None,
+            model: None,
+            remove_agent_credits: true,
+        }
+    }
 }
 
 type Factory = Box<dyn Fn() -> Result<Arc<dyn Harness>, HarnessError> + Send + Sync>;
@@ -1250,6 +1264,7 @@ mod title_tests {
         let settings = TitleSettings {
             harness: Some(HarnessId::ClaudeCode),
             model: Some("haiku-test".into()),
+            remove_agent_credits: false,
         };
         registry.set_title_settings(settings.clone()).unwrap();
         let reloaded = HarnessRegistry::new();
@@ -1259,7 +1274,8 @@ mod title_tests {
             registry
                 .set_title_settings(TitleSettings {
                     harness: None,
-                    model: Some("orphan".into())
+                    model: Some("orphan".into()),
+                    ..TitleSettings::default()
                 })
                 .is_err()
         );
@@ -1267,7 +1283,8 @@ mod title_tests {
             registry
                 .set_title_settings(TitleSettings {
                     harness: Some(HarnessId::Cursor),
-                    model: None
+                    model: None,
+                    ..TitleSettings::default()
                 })
                 .is_err()
         );
