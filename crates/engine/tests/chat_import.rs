@@ -128,6 +128,7 @@ impl Fixture {
         fixture.seed_t3();
         fixture.write_claude();
         fixture.write_codex();
+        fixture.write_cursor();
         fixture
     }
 
@@ -405,6 +406,79 @@ impl Fixture {
             owned.join("\n"),
         )
         .unwrap();
+    }
+
+    /// Cursor Agent CLI stores: hex-JSON meta, JSON message blobs, and a
+    /// protobuf root listing them (field 1) plus the workspace URI (field 9).
+    fn write_cursor(&self) {
+        let store = |agent_id: &str, name: &str, messages: &[serde_json::Value]| {
+            let dir = self
+                .home
+                .join(".cursor")
+                .join("chats")
+                .join("workspace-hash")
+                .join(agent_id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = Connection::open(dir.join("store.db")).unwrap();
+            db.execute_batch(
+                "CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);
+                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);",
+            )
+            .unwrap();
+            let mut root = Vec::new();
+            for message in messages {
+                let data = message.to_string().into_bytes();
+                let id = Sha256::digest(&data);
+                db.execute(
+                    "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+                    params![format!("{id:x}"), data],
+                )
+                .unwrap();
+                root.extend_from_slice(&[0x0a, 32]);
+                root.extend_from_slice(&id);
+            }
+            let uri = format!("file://{}", self.repo);
+            root.extend_from_slice(&[(9 << 3) | 2, uri.len() as u8]);
+            root.extend_from_slice(uri.as_bytes());
+            let root_id = format!("{:x}", Sha256::digest(&root));
+            db.execute(
+                "INSERT INTO blobs (id, data) VALUES (?1, ?2)",
+                params![root_id, root],
+            )
+            .unwrap();
+            let meta = serde_json::json!({
+                "agentId": agent_id, "latestRootBlobId": root_id, "name": name,
+                "mode": "auto-run", "createdAt": 1_790_000_000_000_i64,
+            })
+            .to_string();
+            let hex: String = meta.bytes().map(|b| format!("{b:02x}")).collect();
+            db.execute(
+                "INSERT INTO meta (key, value) VALUES ('0', ?1)",
+                params![hex],
+            )
+            .unwrap();
+        };
+        let conversation = |query: &str| {
+            vec![
+                serde_json::json!({"role": "system", "content": "You are an AI coding assistant"}),
+                serde_json::json!({"role": "user", "content": format!(
+                    "<user_info>\nWorkspace Path: {}\n</user_info>", self.repo)}),
+                serde_json::json!({"role": "user", "content": [
+                    {"type": "text", "text": format!("<user_query>\n{query}\n</user_query>")}]}),
+                serde_json::json!({"role": "assistant", "content": [
+                    {"type": "reasoning", "text": "Check the PRs"},
+                    {"type": "tool-call", "toolCallId": "tc-1", "toolName": "Shell",
+                     "args": {"command": "gh pr list"}}]}),
+                serde_json::json!({"role": "tool", "content": [
+                    {"type": "tool-result", "toolCallId": "tc-1", "toolName": "Shell",
+                     "result": "Exit code: 0"}]}),
+                serde_json::json!({"role": "assistant", "content": [
+                    {"type": "text", "text": "Three open."}]}),
+            ]
+        };
+        store("cursor-new", "New Agent", &conversation("Open prs ?"));
+        // The chat a T3 Code thread drives: T3 is its canonical import.
+        store("cursor-session", "Grok chat", &conversation("Ask grok"));
     }
 
     fn write_codex(&self) {
@@ -856,13 +930,27 @@ async fn sessions_land_once_across_sources() {
         "subagent thread skipped"
     );
 
+    let cursor = e.importer.preview(ChatImportSource::Cursor);
+    assert_eq!(
+        state_of(&cursor, "cursor:cursor-session"),
+        Some(ChatImportState::Elsewhere),
+        "T3 Code's Cursor thread owns it"
+    );
+    assert_eq!(
+        state_of(&cursor, "cursor:cursor-new"),
+        Some(ChatImportState::New)
+    );
+    assert!(cursor.projects[0].chats.iter().all(|c| !c.resumable));
+
     let claude_run = run(&e.importer, ChatImportSource::Claude);
     let codex_run = run(&e.importer, ChatImportSource::Codex);
+    let cursor_run = run(&e.importer, ChatImportSource::Cursor);
     let t3_run = run(&e.importer, ChatImportSource::T3);
     assert_eq!((claude_run.imported, claude_run.skipped), (1, 1));
     assert_eq!((codex_run.imported, codex_run.skipped), (1, 1));
+    assert_eq!((cursor_run.imported, cursor_run.skipped), (1, 1));
     assert_eq!(t3_run.imported, 3);
-    assert_eq!(e.core.workspace.read_chats().unwrap().len(), 5);
+    assert_eq!(e.core.workspace.read_chats().unwrap().len(), 6);
     assert_eq!(
         e.core.workspace.read_spaces().unwrap().len(),
         1,
@@ -908,6 +996,36 @@ async fn sessions_land_once_across_sources() {
         &codex_log[1].parts[1],
         MessagePart::Tool { call: ToolCall::Exec { command }, resolved: true, .. } if command == "ls"
     ));
+
+    // Cursor CLI chats import as history on the Cursor harness.
+    let cursor_row = e
+        .core
+        .workspace
+        .chat(&chat_id_for("cursor:cursor-new"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(cursor_row.title.as_deref(), Some("Open prs ?"));
+    assert_eq!(cursor_row.cwd.as_deref(), Some(fixture.repo.as_str()));
+    assert_eq!(cursor_row.config.unwrap().harness, HarnessId::Cursor);
+    assert_eq!(cursor_row.harness_session_id, None);
+    let cursor_log = entries(&e.core, "cursor:cursor-new");
+    assert_eq!(
+        cursor_log.len(),
+        2,
+        "system prompt and injected context dropped"
+    );
+    assert_eq!(texts(&cursor_log[0]), "Open prs ?");
+    assert!(
+        matches!(&cursor_log[1].parts[0], MessagePart::Reasoning { text, .. } if text == "Check the PRs")
+    );
+    assert!(matches!(
+        &cursor_log[1].parts[1],
+        MessagePart::Tool { call: ToolCall::Exec { command }, resolved: true, is_error: false, .. }
+            if command == "gh pr list"
+    ));
+    assert!(
+        matches!(&cursor_log[1].parts[2], MessagePart::Text { text, .. } if text == "Three open.")
+    );
 
     // A chat already resuming a session (here: native) claims it.
     let fresh = Fixture::new();
@@ -1028,12 +1146,12 @@ async fn sources_are_never_modified() {
     assert_eq!(fixture.source_hashes(), before);
 }
 
-/// A trial import of this machine's real history into a throwaway engine:
+/// A trial import of this machine's real history (all four sources) into a throwaway engine:
 /// `cargo test -p zeron-engine --test chat_import real_history_trial -- --ignored --nocapture`.
 /// Sources are only read (T3's database through a private copy); prints
 /// counts, never content.
 #[tokio::test]
-#[ignore = "reads the real ~/.t3, ~/.claude and ~/.codex"]
+#[ignore = "reads the real ~/.t3, ~/.claude, ~/.codex and ~/.cursor"]
 async fn real_history_trial() {
     let data = tempfile::tempdir().unwrap();
     let core = EngineCore::assemble_with_profile(
@@ -1043,11 +1161,7 @@ async fn real_history_trial() {
         None,
     )
     .unwrap();
-    for source in [
-        ChatImportSource::T3,
-        ChatImportSource::Claude,
-        ChatImportSource::Codex,
-    ] {
+    for source in ChatImportSource::ALL {
         let preview = core.chat_import.preview(source);
         let started = std::time::Instant::now();
         let summary = core.chat_import.run(

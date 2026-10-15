@@ -1,14 +1,12 @@
 //! T3 Code reader: the server's projection tables in `userdata/state.sqlite`.
 //!
-//! T3 Code keeps the database open in WAL mode while it runs, so the live
-//! file is never opened: the database and its `-wal`/`-shm` siblings are
-//! copied into a private temp dir (an APFS clone on macOS, so 1 GB costs
-//! nothing) and the copy is opened read-only.
+//! T3 Code keeps the database open in WAL mode while it runs, so it is read
+//! through a private copy ([`SqliteCopy`]), never in place.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::params;
 use serde_json::Value;
 use zeron_proto::{AccessMode, HarnessId, ToolCall};
 
@@ -16,6 +14,7 @@ use super::model::{
     SourceChat, SourceImage, SourceMessage, TranscriptBuilder, basename, harness_for_provider,
     parse_time, reasoning_level,
 };
+use super::snapshot::SqliteCopy;
 use crate::EngineError;
 
 const DB_NAMES: [&str; 2] = ["state.sqlite", "statev2.sqlite"];
@@ -28,11 +27,10 @@ pub(crate) fn database_path(home: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// An open snapshot of the T3 database. The temp copy lives as long as this.
+/// An open snapshot of the T3 database.
 pub(crate) struct T3Snapshot {
-    conn: Connection,
+    db: SqliteCopy,
     attachments: PathBuf,
-    _dir: tempfile::TempDir,
 }
 
 fn sql_err(err: rusqlite::Error) -> EngineError {
@@ -42,38 +40,15 @@ fn sql_err(err: rusqlite::Error) -> EngineError {
 impl T3Snapshot {
     /// Copy and open the database at `db` read-only.
     pub fn open(db: &Path, attachments: PathBuf) -> Result<Self, EngineError> {
-        let dir = tempfile::Builder::new()
-            .prefix("godspeed-t3-import-")
-            .tempdir()?;
-        let name = db
-            .file_name()
-            .ok_or_else(|| EngineError::Other("T3 Code database path has no name".into()))?;
-        let copy = dir.path().join(name);
-        std::fs::copy(db, &copy)?;
-        for suffix in ["-wal", "-shm"] {
-            let mut sibling = db.as_os_str().to_owned();
-            sibling.push(suffix);
-            let sibling = PathBuf::from(sibling);
-            if sibling.is_file() {
-                let mut target = copy.as_os_str().to_owned();
-                target.push(suffix);
-                std::fs::copy(&sibling, PathBuf::from(target))?;
-            }
-        }
-        let conn = Connection::open_with_flags(
-            &copy,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(sql_err)?;
         Ok(Self {
-            conn,
+            db: SqliteCopy::open(db)?,
             attachments,
-            _dir: dir,
         })
     }
 
     fn columns(&self, table: &str) -> Result<Vec<String>, EngineError> {
         let mut stmt = self
+            .db
             .conn
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(sql_err)?;
@@ -99,6 +74,7 @@ impl T3Snapshot {
             return Ok(Vec::new());
         }
         let mut stmt = self
+            .db
             .conn
             .prepare("SELECT resume_cursor_json FROM provider_session_runtime")
             .map_err(sql_err)?;
@@ -162,7 +138,7 @@ impl T3Snapshot {
                 ""
             },
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(sql_err)?;
+        let mut stmt = self.db.conn.prepare(&sql).map_err(sql_err)?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(ThreadRow {
@@ -198,6 +174,7 @@ impl T3Snapshot {
         let mut items: Vec<(i64, u8, i64, Item)> = Vec::new();
         let millis = |at: &str| parse_time(at).map(|t| t.timestamp_millis()).unwrap_or(0);
         let mut stmt = self
+            .db
             .conn
             .prepare(
                 "SELECT message_id, role, text, created_at, attachments_json
@@ -231,6 +208,7 @@ impl T3Snapshot {
         }
         if !self.columns("projection_thread_activities")?.is_empty() {
             let mut stmt = self
+                .db
                 .conn
                 .prepare(
                     "SELECT activity_id, kind, tone, payload_json, created_at, sequence

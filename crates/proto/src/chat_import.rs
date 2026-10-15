@@ -1,10 +1,12 @@
 //! Chat import wire types — bringing conversations from other agent apps
-//! (T3 Code, plain Claude Code, plain Codex) into this workspace.
+//! (T3 Code, plain Claude Code, plain Codex, the Cursor Agent CLI) into this
+//! workspace.
 //!
 //! The engine scans each source read-only, the UI previews it per project,
 //! and an import streams [`ChatImportProgress`] items ending in a
 //! [`ChatImportSummary`]. Every imported chat remembers its origin as a
-//! source key (`t3:<thread>`, `claude:<session>`, `codex:<thread>`) so a
+//! source key (`t3:<thread>`, `claude:<session>`, `codex:<thread>`,
+//! `cursor:<chat>`) so a
 //! re-run updates or skips instead of duplicating.
 
 use chrono::{DateTime, Utc};
@@ -22,16 +24,19 @@ pub enum ChatImportSource {
     Claude,
     /// Codex rollouts (`~/.codex/sessions/YYYY/MM/DD/*.jsonl`).
     Codex,
+    /// Cursor Agent CLI chat stores (`~/.cursor/chats/<workspace>/<chat>/store.db`).
+    Cursor,
 }
 
 impl ChatImportSource {
-    pub const ALL: [ChatImportSource; 3] = [Self::T3, Self::Claude, Self::Codex];
+    pub const ALL: [ChatImportSource; 4] = [Self::T3, Self::Claude, Self::Codex, Self::Cursor];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::T3 => "T3 Code",
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
         }
     }
 
@@ -41,6 +46,7 @@ impl ChatImportSource {
             Self::T3 => "t3",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
         }
     }
 

@@ -772,8 +772,8 @@ async fn run_session(session: Session) {
 }
 
 /// Decode one cursor SDK tool (public vocabulary name + args) into a typed
-/// [`ToolCall`], tolerant of arg spellings.
-fn decode_tool(name: &str, args: &Value) -> ToolCall {
+/// [`ToolCall`], tolerant of arg spellings. Transcript importers share it.
+pub fn decode_tool(name: &str, args: &Value) -> ToolCall {
     let s = |keys: &[&str]| {
         keys.iter()
             .find_map(|k| args.get(*k).and_then(Value::as_str))

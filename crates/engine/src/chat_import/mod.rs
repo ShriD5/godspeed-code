@@ -1,4 +1,5 @@
-//! Chat import from other agent apps: T3 Code, plain Claude Code, plain Codex.
+//! Chat import from other agent apps: T3 Code, plain Claude Code, plain Codex,
+//! and the Cursor Agent CLI.
 //!
 //! Sources are only ever read (T3's live database through a private copy);
 //! everything written goes through the paths native chats use:
@@ -25,7 +26,9 @@
 
 mod claude;
 mod codex;
+mod cursor;
 mod model;
+mod snapshot;
 mod t3;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -58,6 +61,8 @@ pub struct ImportRoots {
     pub claude_projects: PathBuf,
     /// Codex's home (`~/.codex`, or `$CODEX_HOME`).
     pub codex_home: PathBuf,
+    /// The Cursor Agent CLI's chat stores (`~/.cursor/chats`, or under `$CURSOR_DATA_DIR`).
+    pub cursor_chats: PathBuf,
 }
 
 impl ImportRoots {
@@ -67,6 +72,7 @@ impl ImportRoots {
             t3_home: home.join(".t3"),
             claude_projects: home.join(".claude").join("projects"),
             codex_home: home.join(".codex"),
+            cursor_chats: home.join(".cursor").join("chats"),
         }
     }
 
@@ -89,6 +95,9 @@ impl ImportRoots {
         }
         if let Some(dir) = env_dir("CODEX_HOME") {
             roots.codex_home = dir;
+        }
+        if let Some(dir) = env_dir("CURSOR_DATA_DIR") {
+            roots.cursor_chats = dir.join("chats");
         }
         roots
     }
@@ -135,6 +144,7 @@ impl Scan {
                     .ok_or_else(|| EngineError::Other(format!("{} vanished", chat.key)))?;
                 match source {
                     ChatImportSource::Claude => claude::transcript(path),
+                    ChatImportSource::Cursor => cursor::transcript(path),
                     _ => codex::transcript(path),
                 }
             }
@@ -167,18 +177,22 @@ fn scan(roots: &ImportRoots, source: ChatImportSource) -> Result<Scan, EngineErr
                 reader: Reader::T3(snapshot),
             })
         }
-        ChatImportSource::Claude | ChatImportSource::Codex => {
-            let (location, files) = if source == ChatImportSource::Claude {
-                let files = claude::session_files(&roots.claude_projects)
-                    .into_iter()
-                    .map(|path| (path, false))
-                    .collect::<Vec<_>>();
-                (roots.claude_projects.clone(), files)
-            } else {
-                (
+        ChatImportSource::Claude | ChatImportSource::Codex | ChatImportSource::Cursor => {
+            let unarchived =
+                |files: Vec<PathBuf>| files.into_iter().map(|path| (path, false)).collect();
+            let (location, files): (PathBuf, Vec<(PathBuf, bool)>) = match source {
+                ChatImportSource::Claude => (
+                    roots.claude_projects.clone(),
+                    unarchived(claude::session_files(&roots.claude_projects)),
+                ),
+                ChatImportSource::Cursor => (
+                    roots.cursor_chats.clone(),
+                    unarchived(cursor::store_files(&roots.cursor_chats)),
+                ),
+                _ => (
                     roots.codex_home.join("sessions"),
                     codex::rollout_files(&roots.codex_home),
-                )
+                ),
             };
             let titles = if source == ChatImportSource::Codex {
                 codex::thread_titles(&roots.codex_home)
@@ -190,6 +204,7 @@ fn scan(roots: &ImportRoots, source: ChatImportSource) -> Result<Scan, EngineErr
             for (path, archived) in files {
                 let scanned = match source {
                     ChatImportSource::Claude => claude::scan_file(&path),
+                    ChatImportSource::Cursor => cursor::scan_file(&path),
                     _ => codex::scan_file(&path, archived, &titles),
                 };
                 match scanned {
@@ -342,6 +357,7 @@ fn failed_preview(
             ChatImportSource::T3 => roots.t3_home.display().to_string(),
             ChatImportSource::Claude => roots.claude_projects.display().to_string(),
             ChatImportSource::Codex => roots.codex_home.display().to_string(),
+            ChatImportSource::Cursor => roots.cursor_chats.display().to_string(),
         },
         projects: Vec::new(),
         warnings,
