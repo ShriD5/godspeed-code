@@ -233,10 +233,6 @@ impl ClaudeHarness {
             "--verbose",
             "--include-partial-messages",
             "--replay-user-messages",
-            // Newer Claude models emit no readable thinking text unless a
-            // summary is asked for (raw reasoning stays provider-private).
-            "--thinking-display",
-            "summarized",
             // Route permission prompts to the stdio control channel so
             // `can_use_tool` (and AskUserQuestion in particular) reaches us.
             // Undocumented flag; validated live against 2.1.228.
@@ -277,10 +273,16 @@ impl ClaudeHarness {
         args
     }
 
-    fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
+    fn build_command(&self, exe: &PathBuf, request: &RunRequest, thinking_display: bool) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
         cmd.args(Self::launch_args(request));
+        // Newer Claude models emit no readable thinking text unless a
+        // summary is asked for (raw reasoning stays provider-private). A CLI
+        // without the flag exits on it, so it rides only where supported.
+        if thinking_display {
+            cmd.args(["--thinking-display", "summarized"]);
+        }
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
         }
@@ -391,6 +393,64 @@ impl ClaudeHarness {
             Err(_) => Err(HarnessError::Protocol("Claude initialize timed out".into())),
         }
     }
+}
+
+/// Whether this CLI accepts `--thinking-display` (2.1.81 rejects it and
+/// exits). The flag is hidden from `claude --help` (`hideHelp()`, 2.1.300),
+/// so help text can't tell; the option parser can: given the flag and then
+/// a sentinel unknown option, the CLI reports whichever it doesn't know
+/// first and exits before any session, network or config write. One probe
+/// per executable identity; an inconclusive probe (timeout, no output)
+/// assumes support, as every current CLI has it, and is retried next run.
+async fn supports_thinking_display(exe: &std::path::Path) -> bool {
+    type Key = (PathBuf, Option<std::time::SystemTime>, u64);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<Key, bool>>> =
+        std::sync::OnceLock::new();
+    const SENTINEL: &str = "--godspeed-capability-probe";
+    let key = std::fs::metadata(exe)
+        .ok()
+        .map(|m| (exe.to_path_buf(), m.modified().ok(), m.len()));
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(known) = key.as_ref().and_then(|k| {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(k)
+            .copied()
+    }) {
+        return known;
+    }
+    let mut cmd = Command::new(exe);
+    crate::compose_child_path(&mut cmd, exe);
+    cmd.args(["--thinking-display", "summarized", SENTINEL])
+        .current_dir(crate::executable::neutral_cwd())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
+        Ok(Ok(output)) => output,
+        _ => return true,
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let verdict = if text.contains("unknown option '--thinking-display'") {
+        false
+    } else if text.contains(SENTINEL) {
+        true
+    } else {
+        return true;
+    };
+    if let Some(key) = key {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, verdict);
+    }
+    verdict
 }
 
 /// `commands` out of an `initialize` control_response payload
@@ -600,7 +660,8 @@ impl ClaudeHarness {
         title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
-        let mut cmd = self.build_command(&exe, &request);
+        let thinking_display = supports_thinking_display(&exe).await;
+        let mut cmd = self.build_command(&exe, &request, thinking_display);
         if title_only {
             cmd.args([
                 "--system-prompt",
@@ -1685,6 +1746,65 @@ mod tests {
         assert_eq!(qs[1].header, "Alt");
         assert_eq!(qs[1].question, "Pick many");
         assert!(qs[1].multi_select);
+    }
+
+    /// zeronsh/zeron#477: a CLI that predates `--thinking-display` exits on
+    /// it, failing every run. Probed against the parser's own error, since
+    /// the flag is hidden from `--help` on current CLIs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn thinking_display_rides_only_clis_that_accept_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        // Commander reports the first option it doesn't know.
+        let old = script(
+            "claude-2.1.81",
+            r#"echo "error: unknown option '$1'" >&2; exit 1"#,
+        );
+        let new = script(
+            "claude-2.1.300",
+            r#"echo "error: unknown option '$3'" >&2; exit 1"#,
+        );
+        let silent = script("claude-silent", "exit 1");
+        assert!(!supports_thinking_display(&old).await);
+        assert!(supports_thinking_display(&new).await);
+        assert!(supports_thinking_display(&silent).await, "inconclusive keeps the flag");
+
+        let harness = ClaudeHarness::new();
+        let request = RunRequest {
+            mcp: None,
+            prompt: "hi".into(),
+            harness: None,
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: zeron_proto::SandboxLevel::DangerFullAccess,
+            auto_approve: true,
+            attachments: Vec::new(),
+            worktree: None,
+            resume: None,
+            access: None,
+        };
+        let args = |cmd: &Command| -> Vec<String> {
+            cmd.as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert!(
+            !args(&harness.build_command(&old, &request, false))
+                .contains(&"--thinking-display".to_owned())
+        );
+        let with = args(&harness.build_command(&new, &request, true));
+        let at = with.iter().position(|a| a == "--thinking-display").unwrap();
+        assert_eq!(with[at + 1], "summarized");
     }
 
     #[test]
