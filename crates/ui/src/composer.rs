@@ -5623,6 +5623,12 @@ fn invocation_token(text: &str, cursor: usize, prefix: char) -> Option<MentionTo
 
 /// Pasted prose is eligible only at completion boundaries, never inside
 /// Markdown code/links. Catalog matching below decides whether it is a reference.
+///
+/// Only `$skill` and `/command` invocations qualify. Pasted `@` text is never
+/// turned into a file mention: in pasted code and logs `@` is a decorator,
+/// an annotation, a handle or an npm scope far more often than a reference,
+/// and a paste rewritten into a mention link isn't what the user copied
+/// (T3 8331). Typing `@` still opens the file picker.
 fn pasted_reference_tokens(text: &str, pasted: Range<usize>) -> Vec<(char, MentionToken)> {
     if text.len() > 256 * 1024 || text.get(pasted.clone()).is_none() {
         return Vec::new();
@@ -5630,16 +5636,13 @@ fn pasted_reference_tokens(text: &str, pasted: Range<usize>) -> Vec<(char, Menti
     let mut tokens = Vec::new();
     let mut attempts = 0;
     for (relative, prefix) in text[pasted.clone()].char_indices() {
-        if !matches!(prefix, '@' | '$' | '/') {
+        if !matches!(prefix, '$' | '/') {
             continue;
         }
         let start = pasted.start + relative;
         let mut end = start + 1;
         for ch in text[end..].chars() {
-            if !(ch.is_alphanumeric()
-                || matches!(ch, '_' | '-' | '.' | ':')
-                || (prefix == '@' && ch == '/'))
-            {
+            if !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':')) {
                 break;
             }
             end += ch.len_utf8();
@@ -5667,11 +5670,7 @@ fn pasted_reference_tokens(text: &str, pasted: Range<usize>) -> Vec<(char, Menti
             break;
         }
         attempts += 1;
-        let token = if prefix == '@' {
-            mention_token(text, end)
-        } else {
-            invocation_token(text, end, prefix)
-        };
+        let token = invocation_token(text, end, prefix);
         if let Some(mut token) = token.filter(|token| token.range.start == start) {
             token.range.end = end;
             token.query = text[start + 1..end].to_owned();
@@ -7509,7 +7508,6 @@ impl Composer {
             return;
         }
         let params = self.catalog_params(cx);
-        let file_params = self.file_search_params("", cx);
         if !params["targetDeviceId"].as_str().is_some_and(|target| {
             self.state
                 .read(cx)
@@ -7529,7 +7527,7 @@ impl Composer {
         );
         cx.spawn(async move |this, cx| {
             let mut candidates = Vec::new();
-            if tokens.iter().any(|(prefix, _)| *prefix != '@') && harness.is_some() {
+            if harness.is_some() {
                 let commands = async {
                     engine
                         .client()
@@ -7556,7 +7554,6 @@ impl Composer {
                 candidates = invocation_candidates(commands, skills);
             }
             let mut replacements = Vec::new();
-            let mut files = HashMap::new();
             for (prefix, token) in tokens {
                 if this
                     .update(cx, |this, cx| this.input.read(cx).edit_revision != revision)
@@ -7564,34 +7561,7 @@ impl Composer {
                 {
                     return;
                 }
-                let replacement = if prefix == '@' {
-                    if !files.contains_key(&token.query) {
-                        let Some(mut search) = file_params.clone() else {
-                            continue;
-                        };
-                        search["query"] = token.query.clone().into();
-                        let results = engine
-                            .client()
-                            .call(methods::SEARCH_FILES, search)
-                            .await
-                            .ok()
-                            .and_then(|v| serde_json::from_value::<Vec<FileSearchMatch>>(v).ok())
-                            .unwrap_or_default();
-                        let exact: Vec<_> = results
-                            .into_iter()
-                            .filter(|file| {
-                                file.path.trim_end_matches('/') == token.query.trim_end_matches('/')
-                                    && local_path_is_safe(&file.path)
-                            })
-                            .collect();
-                        files.insert(
-                            token.query.clone(),
-                            (exact.len() == 1)
-                                .then(|| local_file_link(&exact[0].path, exact[0].is_dir)),
-                        );
-                    }
-                    files.get(&token.query).cloned().flatten()
-                } else if prefix == '$' && !preferences.dollar {
+                let replacement = if prefix == '$' && !preferences.dollar {
                     None
                 } else {
                     let exact: Vec<_> = candidates
@@ -13381,8 +13351,21 @@ mod tests {
                 .iter()
                 .map(|(prefix, token)| (*prefix, token.query.as_str()))
                 .collect::<Vec<_>>(),
-            vec![('@', "README.md"), ('$', "framer"), ('/', "review")]
+            vec![('$', "framer"), ('/', "review")]
         );
+        // T3 8331: pasted `@` text (decorators, handles, file names) stays
+        // exactly what was copied; it never becomes a mention.
+        for text in [
+            "@README.md",
+            "@foo(bar)",
+            "@property\ndef x(self):",
+            "see @src/lib.rs",
+        ] {
+            assert!(
+                pasted_reference_tokens(text, 0..text.len()).is_empty(),
+                "{text}"
+            );
+        }
         for text in [
             "```\n@README.md\n```",
             "    @README.md",
@@ -13404,7 +13387,7 @@ mod tests {
         );
         // Invalid candidates consume the same work budget as accepted ones.
         // Do not repeatedly parse a large pasted block of literal examples.
-        let text = format!("```\n{}\n```\n$review", "@example ".repeat(4_000));
+        let text = format!("```\n{}\n```\n$review", "$example ".repeat(4_000));
         assert!(pasted_reference_tokens(&text, 0..text.len()).is_empty());
     }
 
