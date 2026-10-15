@@ -210,6 +210,13 @@ pub(crate) struct ResultFrame {
     pub result: Option<String>,
     #[serde(default)]
     pub errors: Vec<Value>,
+    /// Set on a `success`-subtype result whose turn actually failed (an API
+    /// error such as "Prompt is too long").
+    #[serde(default)]
+    pub is_error: bool,
+    /// Why the turn ended (`prompt_too_long`, `blocking_limit`, …).
+    #[serde(default)]
+    pub terminal_reason: Option<String>,
     #[serde(default)]
     pub usage: UsageBody,
     #[serde(default)]

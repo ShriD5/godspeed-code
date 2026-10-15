@@ -14,6 +14,9 @@ fn assistant_error_text(code: &str) -> String {
     match code {
         "authentication_failed" => "Authentication failed — sign in to Claude again.".into(),
         "oauth_org_not_allowed" => "This organization isn't allowed to use Claude here.".into(),
+        "account_on_hold" => "This Claude account is on hold.".into(),
+        "verification_required" => "Claude needs you to verify this account first.".into(),
+        "cloud_credential_error" => "Your cloud provider credentials were rejected.".into(),
         "billing_error" => "Billing error — check your Claude plan or payment method.".into(),
         "rate_limit" => "Claude usage limit reached — try again after the limit resets.".into(),
         "overloaded" => "Claude is overloaded right now — try again shortly.".into(),
@@ -23,6 +26,32 @@ fn assistant_error_text(code: &str) -> String {
         "max_output_tokens" => "The reply hit the maximum output length.".into(),
         "unknown" => "Claude returned an unspecified error.".into(),
         other => format!("Claude error: {other}"),
+    }
+}
+
+/// A full context window is not a usage limit: retrying never helps, and the
+/// way out is compacting or starting over.
+const CONTEXT_FULL: &str = "The conversation no longer fits in the model's context window. \
+     Run /compact to summarize it, or start a new chat.";
+
+/// The CLI's own wording for an over-long prompt (`invalid_request` on the
+/// assistant frame, the result text, or `terminal_reason: prompt_too_long`).
+fn is_prompt_too_long(text: &str) -> bool {
+    text.trim_start()
+        .get(..18)
+        .is_some_and(|head| head.eq_ignore_ascii_case("prompt is too long"))
+}
+
+/// The visible text for an errored assistant frame: the code's wording,
+/// except where the CLI's own text names something more specific.
+fn assistant_error_message(code: &str, text: &str) -> String {
+    if is_prompt_too_long(text) {
+        return CONTEXT_FULL.into();
+    }
+    match code {
+        // These codes cover many causes; the CLI's text says which one.
+        "invalid_request" | "unknown" if !text.trim().is_empty() => text.trim().to_owned(),
+        _ => assistant_error_text(code),
     }
 }
 
@@ -143,6 +172,16 @@ pub fn decode_tool_use(name: &str, input: &Value) -> ToolCall {
     }
 }
 
+/// An assistant frame's text blocks, joined.
+fn frame_text(message: &super::wire::MessageBody) -> String {
+    message
+        .blocks()
+        .filter(|b: &ContentBlock| b.kind == "text")
+        .map(|b| b.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn new_message_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -211,6 +250,9 @@ pub(crate) struct Normalizer {
     /// `/usage` and `/context`, model `<synthetic>`) stream no deltas at
     /// all: their only text is the assistant frame's text blocks.
     streamed_text: bool,
+    /// This turn already surfaced an assistant-level error; the result's own
+    /// copy of it would only repeat the same failure.
+    turn_error_shown: bool,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
 }
@@ -225,6 +267,7 @@ impl Normalizer {
             agent_spawn_tools: std::collections::HashSet::new(),
             assistant_message_id: new_message_id(),
             streamed_text: false,
+            turn_error_shown: false,
             session_id: None,
         }
     }
@@ -509,7 +552,7 @@ impl Normalizer {
                         out.push(tag(
                             parent,
                             AgentEvent::Error {
-                                message: assistant_error_text(code),
+                                message: assistant_error_message(code, &frame_text(&f.message)),
                             },
                         ));
                     }
@@ -620,8 +663,9 @@ impl Normalizer {
                 // carries a terse `error` code here — often with empty content
                 // and no `result` error — so surface it visibly.
                 if let Some(code) = &f.error {
+                    self.turn_error_shown = true;
                     out.push(AgentEvent::Error {
-                        message: assistant_error_text(code),
+                        message: assistant_error_message(code, &frame_text(&f.message)),
                     });
                 }
                 // The enclosing assistant frame closes the streamed message
@@ -727,7 +771,38 @@ impl Normalizer {
                     input_tokens: f.usage.input_tokens,
                     output_tokens: f.usage.output_tokens,
                 };
-                let done = if f.subtype == "success" {
+                let error_shown = std::mem::take(&mut self.turn_error_shown);
+                let context_full = f.terminal_reason.as_deref() == Some("prompt_too_long")
+                    || f.result.as_deref().is_some_and(is_prompt_too_long);
+                let done = if f.subtype == "success" && f.is_error {
+                    // A failed API call still reports subtype `success`: an
+                    // over-long prompt, an auth or quota failure. The
+                    // assistant frame usually surfaced it already.
+                    let error = if error_shown {
+                        None
+                    } else if context_full {
+                        Some(CONTEXT_FULL.to_owned())
+                    } else {
+                        Some(
+                            f.result
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|r| !r.is_empty())
+                                .unwrap_or(result_error_text(""))
+                                .to_owned(),
+                        )
+                    };
+                    AgentEvent::Done {
+                        status: if interrupted {
+                            DoneStatus::Interrupted
+                        } else {
+                            DoneStatus::Errored
+                        },
+                        result: None,
+                        error,
+                        session_id: f.session_id,
+                    }
+                } else if f.subtype == "success" {
                     AgentEvent::Done {
                         status: if interrupted {
                             DoneStatus::Interrupted
@@ -756,7 +831,9 @@ impl Normalizer {
                             "internal CLI diagnostic (not surfaced): {diagnostic}"
                         );
                     }
-                    let error = if !errors.is_empty() {
+                    let error = if context_full || errors.iter().any(|e| is_prompt_too_long(e)) {
+                        (!error_shown).then(|| CONTEXT_FULL.to_owned())
+                    } else if !errors.is_empty() {
                         // Real user-relevant errors — surface verbatim.
                         Some(errors.join("; "))
                     } else {
@@ -1458,6 +1535,70 @@ mod tests {
                 })
             ),
             "wake turn settles with its own Done"
+        );
+    }
+
+    /// A full context window ends the turn with a synthetic
+    /// `invalid_request` frame reading "Prompt is too long" and an errored
+    /// `success` result (pingdotgg/t3code#19832). That is neither a usage
+    /// limit nor a generic invalid request, and it is one failure: one
+    /// visible error, and a turn that ends Errored rather than Completed.
+    #[test]
+    fn a_full_context_window_is_its_own_error_once() {
+        let mut norm = Normalizer::new();
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","error":"invalid_request","message":{"model":"<synthetic>","content":[{"type":"text","text":"Prompt is too long"}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let errors: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Error { .. } | AgentEvent::TextDelta { .. }))
+            .collect();
+        assert_eq!(
+            errors,
+            vec![&AgentEvent::Error {
+                message: CONTEXT_FULL.into()
+            }],
+            "the error text is not also rendered as a reply"
+        );
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"blocking_limit","result":"Prompt is too long","session_id":"s"}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { status: DoneStatus::Errored, error: None, .. })
+        ), "{events:?}");
+        // Without the assistant frame the result carries the message itself.
+        let done = result_done(
+            r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"prompt_too_long","result":"Prompt is too long: 1000123 tokens > 1000000 maximum"}"#,
+        );
+        assert!(matches!(
+            done,
+            AgentEvent::Done { status: DoneStatus::Errored, error: Some(ref e), .. } if e == CONTEXT_FULL
+        ));
+        // Other errored successes keep the CLI's wording.
+        let done = result_done(
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: 500"}"#,
+        );
+        assert!(matches!(
+            done,
+            AgentEvent::Done { status: DoneStatus::Errored, error: Some(ref e), .. } if e == "API Error: 500"
+        ));
+        // A real usage limit still reads as one.
+        assert_eq!(
+            assistant_error_message("rate_limit", "You've hit your limit"),
+            assistant_error_text("rate_limit")
+        );
+        assert_eq!(
+            assistant_error_message("invalid_request", "API Error: 400 bad image"),
+            "API Error: 400 bad image"
         );
     }
 
