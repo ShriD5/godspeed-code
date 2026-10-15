@@ -168,7 +168,7 @@ case "$turnline" in
   ;;
 
 *scenario:title*)
-  for want in '"sandbox":"read-only"' '"ephemeral":true' '"baseInstructions":"You generate session titles.' '"features.shell_tool":false' '"mcp_servers.test.enabled":false'; do
+  for want in '"sandbox":"read-only"' '"ephemeral":true' '"baseInstructions":"You are a restricted text generator.' '"features.shell_tool":false' '"mcp_servers.test.enabled":false'; do
     has "$thread_line" "$want" || { fail_turn "$tid" "title restriction missing"; exit 0; }
   done
   has "$turnline" '"sandboxPolicy":{"type":"readOnly"}' || { fail_turn "$tid" "title turn not read-only"; exit 0; }

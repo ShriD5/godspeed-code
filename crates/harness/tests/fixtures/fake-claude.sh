@@ -41,7 +41,7 @@ case "$first" in
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --tools) shift; [ "$1" = "" ] && tools_off=true ;;
-      --system-prompt) shift; case "$1" in "You generate session titles."*) system_set=true ;; esac ;;
+      --system-prompt) shift; case "$1" in "You are a restricted text generator."*) system_set=true ;; esac ;;
       --strict-mcp-config) mcp_off=true ;;
       --dangerously-skip-permissions) exit 1 ;;
     esac
