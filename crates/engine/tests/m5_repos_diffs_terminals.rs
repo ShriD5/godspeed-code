@@ -215,7 +215,7 @@ async fn repos_round_trip_add_branches_worktrees() {
 
     // Delete: dir removed, godspeed branch removed, refs pruned.
     repos
-        .delete_worktree(&repo_dir, Path::new(&worktree.path))
+        .delete_worktree(&repo_dir, Path::new(&worktree.path), false)
         .await
         .expect("delete worktree");
     assert!(!PathBuf::from(&worktree.path).exists());
@@ -2371,7 +2371,8 @@ async fn rpc_dispatch_for_m5_methods() {
     core.terminals
         .close(&setup.terminal.id)
         .expect("close setup terminal");
-    client
+    // The setup Action left an untracked file: removal needs confirmation.
+    let refused = client
         .call(
             methods::DELETE_WORKTREE,
             serde_json::json!({
@@ -2380,7 +2381,42 @@ async fn rpc_dispatch_for_m5_methods() {
             }),
         )
         .await
+        .expect_err("a dirty worktree is not removed unconfirmed");
+    assert!(
+        refused.to_string().contains("uncommitted changes"),
+        "{refused}"
+    );
+    let orphans = client
+        .call(
+            methods::LIST_ORPHAN_WORKTREES,
+            serde_json::json!({ "repoPath": repo_path }),
+        )
+        .await
+        .expect("ListOrphanWorktrees");
+    assert!(
+        orphans
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| {
+                o["dirty"] == true
+                    && same_file::is_same_file(o["path"].as_str().unwrap(), &outcome.worktree.path)
+                        .unwrap_or(false)
+            }),
+        "{orphans}"
+    );
+    client
+        .call(
+            methods::DELETE_WORKTREE,
+            serde_json::json!({
+                "repoPath": repo_path,
+                "worktreePath": outcome.worktree.path,
+                "force": true,
+            }),
+        )
+        .await
         .expect("delete setup worktree");
+    assert!(!PathBuf::from(&outcome.worktree.path).exists());
 
     // WatchCheckoutDiffs: streams the current (empty) diff set immediately.
     let mut diffs_stream = client

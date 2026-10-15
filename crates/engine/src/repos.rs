@@ -43,6 +43,11 @@ pub(crate) fn noninteractive_git(cmd: &mut tokio::process::Command) {
         .env("SSH_ASKPASS_REQUIRE", "never");
 }
 
+/// `branch.<name>.<key> = true` marks a branch Godspeed created for a worktree.
+const GODSPEED_CREATED_KEY: &str = "godspeedCreated";
+/// Error prefix of a worktree removal refused for uncommitted work; callers
+/// confirm with the user and retry with `force`.
+pub const WORKTREE_DIRTY: &str = "Worktree has uncommitted changes";
 /// Hard wall-clock ceiling for a folder listing (the walk runs in a disposable
 /// blocking task; on expiry the caller unblocks and the task is abandoned).
 const FOLDER_LIST_TIMEOUT: Duration = Duration::from_secs(6);
@@ -172,6 +177,10 @@ struct ReposInner {
     /// changes, so the full first-parent walk runs once per HEAD, not on
     /// every spaces repair pass.
     trunk_roots: std::sync::Mutex<HashMap<String, String>>,
+    /// One lock per repository (its common git dir): parallel worktree
+    /// launches pick names, add worktrees and write `.git/config` one at a
+    /// time instead of colliding on branch names and Git's ref/config locks.
+    worktree_locks: std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Clone)]
@@ -238,6 +247,7 @@ impl Repos {
                 trunk_roots: std::sync::Mutex::new(HashMap::new()),
                 github_avatar_pages: std::sync::Mutex::new(HashSet::new()),
                 workspace_search: WorkspaceSearch::new(),
+                worktree_locks: std::sync::Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1355,14 +1365,59 @@ impl Repos {
 
     // ── worktrees ───────────────────────────────────────────────────────────
 
+    /// The per-repository worktree lock, keyed by the common git dir so a
+    /// repository reached through any of its checkouts shares one.
+    async fn worktree_lock(&self, repo_path: &Path) -> tokio::sync::OwnedMutexGuard<()> {
+        let common = self
+            .git(&["rev-parse", "--git-common-dir"], Some(repo_path))
+            .await
+            .map(|dir| repo_path.join(dir))
+            .unwrap_or_else(|_| repo_path.to_path_buf());
+        let key = std::fs::canonicalize(&common).unwrap_or(common);
+        let lock = self
+            .inner
+            .worktree_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key)
+            .or_default()
+            .clone();
+        lock.lock_owned().await
+    }
+
+    /// The prefix new worktree branches get (device setting, `godspeed/` by
+    /// default).
+    pub fn worktree_branch_prefix(&self) -> String {
+        self.inner.worktrees.branch_prefix()
+    }
+
+    /// Whether Godspeed created `branch` (the `branch.<name>.godspeedCreated`
+    /// mark it sets on every worktree branch; `git branch -m` carries it
+    /// along). Branches from before the mark count when they carry the
+    /// original `godspeed/` prefix.
+    pub async fn godspeed_created_branch(&self, repo_path: &Path, branch: &str) -> bool {
+        if branch.is_empty() {
+            return false;
+        }
+        let key = format!("branch.{branch}.{GODSPEED_CREATED_KEY}");
+        match self.git_probe(&["config", "--get", &key], Some(repo_path)).await {
+            Ok(Some(value)) => value == "true",
+            _ => branch.starts_with(zeron_proto::DEFAULT_WORKTREE_BRANCH_PREFIX),
+        }
+    }
+
     /// `git worktree add` an isolated checkout under
-    /// `{worktrees_root}/<repoName>/<generatedName>`, on a fresh `godspeed/<name>`
-    /// branch off `branch`.
+    /// `{worktrees_root}/<repoName>/<generatedName>`, on a fresh
+    /// `<prefix><name>` branch off `branch` (prefix: the device setting,
+    /// `godspeed/` by default), marked as Godspeed's own. Creations in one
+    /// repository run one at a time.
     pub async fn create_worktree(
         &self,
         repo_path: &Path,
         branch: &str,
     ) -> Result<Worktree, EngineError> {
+        let _serialized = self.worktree_lock(repo_path).await;
+        let prefix = self.worktree_branch_prefix();
         let repo_name = repo_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1403,7 +1458,7 @@ impl Repos {
                 ADJECTIVES[(seed % ADJECTIVES.len() as u64) as usize],
                 NOUNS[((seed / 31) % NOUNS.len() as u64) as usize]
             );
-            if !base.join(&candidate).exists() && !existing.contains(&format!("godspeed/{candidate}"))
+            if !base.join(&candidate).exists() && !existing.contains(&format!("{prefix}{candidate}"))
             {
                 name = Some(candidate);
                 break;
@@ -1415,7 +1470,7 @@ impl Repos {
         #[cfg(windows)]
         validate_windows_worktree_path(&path.to_string_lossy())?;
         std::fs::create_dir_all(&base)?;
-        let branch_name = format!("godspeed/{name}");
+        let branch_name = format!("{prefix}{name}");
         #[cfg(windows)]
         self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
             .await?;
@@ -1432,6 +1487,15 @@ impl Repos {
             Some(repo_path),
         )
         .await?;
+        // The mark, not the name, is what lets deletion and the title rename
+        // touch this branch later.
+        let mark = format!("branch.{branch_name}.{GODSPEED_CREATED_KEY}");
+        if let Err(err) = self
+            .git(&["config", "--local", &mark, "true"], Some(repo_path))
+            .await
+        {
+            tracing::warn!(branch = %branch_name, error = %err, "worktree branch mark not written");
+        }
         let checkout = self.checkout_identity(&path).await?;
         Ok(Worktree {
             repo_path: repo_path.to_string_lossy().to_string(),
@@ -1571,10 +1635,17 @@ impl Repos {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        if current != expected_branch || expected_branch != format!("godspeed/{folder}") {
+        // Still the generated `<prefix><folder>` branch Godspeed made (any
+        // prefix it was made with), not one the user renamed or brought.
+        if current != expected_branch
+            || folder.is_empty()
+            || !expected_branch.ends_with(&folder)
+            || !self.godspeed_created_branch(worktree_path, expected_branch).await
+        {
             return Ok(current);
         }
-        let preferred = worktree_branch_from_title(title);
+        let prefix = &expected_branch[..expected_branch.len() - folder.len()];
+        let preferred = branch_from_title(prefix, title);
         if preferred == current {
             return Ok(current);
         }
@@ -1599,41 +1670,152 @@ impl Repos {
         self.current_branch(worktree_path).await
     }
 
-    /// Best-effort worktree removal (if it still exists), then prune stale refs.
-    /// Deletes the worktree's branch ONLY when godspeed created it (`godspeed/…`) — the
-    /// user may have checked out their own branch inside the worktree.
+    /// The main checkout of the repository `path` belongs to (the folder
+    /// holding its common `.git`), from any of its worktrees.
+    pub async fn main_checkout(&self, path: &Path) -> Option<PathBuf> {
+        let common = self
+            .git(&["rev-parse", "--git-common-dir"], Some(path))
+            .await
+            .ok()?;
+        let common = std::fs::canonicalize(path.join(common)).ok()?;
+        (common.file_name()? == ".git").then(|| common.parent().map(Path::to_path_buf))?
+    }
+
+    /// Uncommitted work in a checkout: changed, staged and untracked paths
+    /// (ignored files don't count). `None` when git can't read it.
+    pub async fn uncommitted_paths(&self, checkout: &Path) -> Option<usize> {
+        self.git(&["status", "--porcelain", "--untracked-files=normal"], Some(checkout))
+            .await
+            .ok()
+            .map(|status| status.lines().filter(|line| !line.is_empty()).count())
+    }
+
+    /// Remove a worktree (if it still exists), then prune stale refs.
+    ///
+    /// Uncommitted work is never thrown away unless the caller confirmed it
+    /// with `force`: a dirty (or unreadable) worktree is refused with
+    /// [`WORKTREE_DIRTY`]. The worktree's branch goes only when Godspeed
+    /// created it (see [`Self::godspeed_created_branch`]) — the user may have
+    /// checked out their own branch inside — and, without `force`, only once
+    /// it is merged (`git branch -d`), so unpushed commits survive.
     pub async fn delete_worktree(
         &self,
         repo_path: &Path,
         worktree_path: &Path,
+        force: bool,
     ) -> Result<(), EngineError> {
-        let branch = if worktree_path.exists() {
+        let exists = worktree_path.exists();
+        let branch = if exists {
             self.current_branch(worktree_path).await.unwrap_or_default()
         } else {
             String::new()
         };
-        if worktree_path.exists() {
-            let removed = self
-                .git(
-                    &[
-                        "worktree",
-                        "remove",
-                        "--force",
-                        &worktree_path.to_string_lossy(),
-                    ],
-                    Some(repo_path),
-                )
-                .await;
-            if removed.is_err() {
+        if exists && !force {
+            match self.uncommitted_paths(worktree_path).await {
+                Some(0) => {}
+                Some(n) => {
+                    return Err(EngineError::Other(format!(
+                        "{WORKTREE_DIRTY}: {n} uncommitted change{} in {}",
+                        if n == 1 { "" } else { "s" },
+                        worktree_path.display()
+                    )));
+                }
+                None => {
+                    return Err(EngineError::Other(format!(
+                        "{WORKTREE_DIRTY}: couldn't read the status of {}",
+                        worktree_path.display()
+                    )));
+                }
+            }
+        }
+        if exists {
+            let path = worktree_path.to_string_lossy();
+            let mut args = vec!["worktree", "remove"];
+            if force {
+                args.push("--force");
+            }
+            args.push(path.as_ref());
+            let removed = self.git(&args, Some(repo_path)).await;
+            if let Err(err) = removed {
+                if !force {
+                    return Err(err);
+                }
                 // git refused (or the dir is half-gone) — delete the folder directly.
                 let _ = std::fs::remove_dir_all(worktree_path);
             }
         }
         let _ = self.git(&["worktree", "prune"], Some(repo_path)).await;
-        if branch.starts_with("godspeed/") {
-            let _ = self.git(&["branch", "-D", &branch], Some(repo_path)).await;
+        if self.godspeed_created_branch(repo_path, &branch).await {
+            let delete = if force { "-D" } else { "-d" };
+            if let Err(err) = self.git(&["branch", delete, "--", &branch], Some(repo_path)).await {
+                tracing::info!(%branch, error = %err, "worktree branch kept");
+            }
         }
         Ok(())
+    }
+
+    /// Godspeed's linked worktrees of `repo_path` (under the worktree root or
+    /// on a branch it created) that no path in `referenced` lies inside —
+    /// worktrees left behind by deleted chats. Never the main checkout.
+    pub async fn orphan_worktrees(
+        &self,
+        repo_path: &Path,
+        referenced: &[PathBuf],
+    ) -> Result<Vec<zeron_proto::OrphanWorktree>, EngineError> {
+        let listing = self
+            .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+            .await?;
+        // Canonical through the deepest part that exists: a chat cwd may
+        // point at a folder inside the worktree that is gone now, and
+        // `/var` vs `/private/var` must still compare equal.
+        let canonical = |path: &Path| {
+            for base in path.ancestors() {
+                if let Ok(resolved) = std::fs::canonicalize(base) {
+                    let rest = path.strip_prefix(base).unwrap_or(Path::new(""));
+                    return resolved.join(rest);
+                }
+            }
+            path.to_path_buf()
+        };
+        let referenced: Vec<PathBuf> = referenced.iter().map(|p| canonical(p)).collect();
+        let root = canonical(&self.inner.worktrees.root());
+        let mut orphans = Vec::new();
+        // Blocks are blank-line separated; the first is the main checkout.
+        for block in listing.split("\n\n").skip(1) {
+            let mut path = None;
+            let mut branch = None;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("worktree ") {
+                    path = Some(PathBuf::from(value));
+                } else if let Some(value) = line.strip_prefix("branch ") {
+                    branch = Some(value.trim_start_matches("refs/heads/").to_string());
+                }
+            }
+            let Some(path) = path else {
+                continue;
+            };
+            let resolved = canonical(&path);
+            let ours = resolved.starts_with(&root)
+                || match &branch {
+                    Some(branch) => self.godspeed_created_branch(repo_path, branch).await,
+                    None => false,
+                };
+            if !ours || referenced.iter().any(|r| r.starts_with(&resolved)) {
+                continue;
+            }
+            let uncommitted = if path.exists() {
+                self.uncommitted_paths(&path).await
+            } else {
+                Some(0)
+            };
+            orphans.push(zeron_proto::OrphanWorktree {
+                repo_path: repo_path.to_string_lossy().into_owned(),
+                path: path.to_string_lossy().into_owned(),
+                branch,
+                dirty: uncommitted != Some(0),
+            });
+        }
+        Ok(orphans)
     }
 
     // ── ListFolders ─────────────────────────────────────────────────────────
@@ -2353,6 +2535,11 @@ fn canonical_search_root(root: &Path) -> Result<PathBuf, EngineError> {
 /// letters first; native keeps it ASCII-only (generated titles are Title Case
 /// English), so non-ASCII characters collapse into the `-` separator.
 pub fn worktree_branch_from_title(title: &str) -> String {
+    branch_from_title(zeron_proto::DEFAULT_WORKTREE_BRANCH_PREFIX, title)
+}
+
+/// [`worktree_branch_from_title`] under any branch prefix.
+pub fn branch_from_title(prefix: &str, title: &str) -> String {
     let mut slug = String::new();
     for c in title.trim().chars() {
         if matches!(c, '\'' | '"' | '`') {
@@ -2366,7 +2553,7 @@ pub fn worktree_branch_from_title(title: &str) -> String {
     }
     slug.truncate(48);
     let slug = slug.trim_matches('-');
-    format!("godspeed/{}", if slug.is_empty() { "update" } else { slug })
+    format!("{prefix}{}", if slug.is_empty() { "update" } else { slug })
 }
 
 fn bounded_field(value: &str, max_chars: usize) -> String {
@@ -2661,6 +2848,104 @@ mod tests {
         assert_eq!(envs.get("GCM_INTERACTIVE").map(String::as_str), Some("never"));
         assert_eq!(envs.get("GIT_ASKPASS").map(String::as_str), Some(""));
         assert_eq!(envs.get("SSH_ASKPASS_REQUIRE").map(String::as_str), Some("never"));
+    }
+
+    #[tokio::test]
+    async fn parallel_worktrees_are_marked_and_dirty_ones_are_never_force_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let repos = Repos::with_worktrees_root(
+            &tmp.path().join("data"),
+            "test",
+            tmp.path().join("worktrees"),
+        );
+        let git = |args: &'static [&'static str], cwd: PathBuf| {
+            let repos = repos.clone();
+            async move { repos.git(args, Some(&cwd)).await }
+        };
+        git(&["init", "-b", "main"], repo.clone()).await.unwrap();
+        git(&["config", "user.name", "Test"], repo.clone()).await.unwrap();
+        git(&["config", "user.email", "test@example.com"], repo.clone())
+            .await
+            .unwrap();
+        git(&["commit", "--allow-empty", "-m", "init"], repo.clone())
+            .await
+            .unwrap();
+
+        // The branch prefix is a device setting; git-invalid prefixes are refused.
+        assert!(
+            repos
+                .set_worktree_settings(zeron_proto::WorktreeSettings {
+                    branch_prefix: Some("-nope".into()),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
+        );
+        repos
+            .set_worktree_settings(zeron_proto::WorktreeSettings {
+                branch_prefix: Some("shri/".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Parallel launches into one repository all land, each on its own branch.
+        let created: Vec<Worktree> =
+            futures::future::join_all((0..6).map(|_| repos.create_worktree(&repo, "main")))
+                .await
+                .into_iter()
+                .map(|created| created.expect("every parallel creation succeeds"))
+                .collect();
+        let names: HashSet<&str> = created.iter().map(|w| w.branch.as_str()).collect();
+        assert_eq!(names.len(), created.len());
+        for worktree in &created {
+            assert!(worktree.branch.starts_with("shri/"), "{}", worktree.branch);
+            assert!(repos.godspeed_created_branch(&repo, &worktree.branch).await);
+        }
+        git(&["branch", "mine"], repo.clone()).await.unwrap();
+        assert!(!repos.godspeed_created_branch(&repo, "mine").await);
+        assert!(repos.godspeed_created_branch(&repo, "godspeed/legacy").await);
+
+        // Only worktrees no chat points into are orphans; never the main checkout.
+        let in_use = PathBuf::from(&created[0].path).join("src");
+        let orphans = repos.orphan_worktrees(&repo, &[in_use.clone()]).await.unwrap();
+        assert_eq!(orphans.len(), created.len() - 1);
+        let same = |a: &str, b: &str| same_file::is_same_file(a, b).unwrap_or(false);
+        assert!(orphans.iter().all(|o| !same(&o.path, &created[0].path) && !o.dirty));
+
+        // A dirty worktree is refused without force, and kept with its branch.
+        let dirty = PathBuf::from(&created[1].path);
+        std::fs::write(dirty.join("notes.txt"), "unsaved").unwrap();
+        let refused = repos
+            .delete_worktree(&repo, &dirty, false)
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().starts_with(WORKTREE_DIRTY), "{refused}");
+        assert!(dirty.join("notes.txt").exists());
+        assert!(repos.branch_exists(&repo, &created[1].branch).await);
+        let listed = repos.orphan_worktrees(&repo, &[in_use.clone()]).await.unwrap();
+        assert!(listed.iter().any(|o| same(&o.path, &created[1].path) && o.dirty));
+        // Confirmed: it goes, branch and all.
+        repos.delete_worktree(&repo, &dirty, true).await.unwrap();
+        assert!(!dirty.exists());
+        assert!(!repos.branch_exists(&repo, &created[1].branch).await);
+
+        // A clean worktree goes without force; its branch only once merged,
+        // so unpushed commits survive.
+        let committed = PathBuf::from(&created[2].path);
+        git(&["commit", "--allow-empty", "-m", "wip"], committed.clone())
+            .await
+            .unwrap();
+        repos.delete_worktree(&repo, &committed, false).await.unwrap();
+        assert!(!committed.exists());
+        assert!(repos.branch_exists(&repo, &created[2].branch).await);
+        let merged = PathBuf::from(&created[3].path);
+        repos.delete_worktree(&repo, &merged, false).await.unwrap();
+        assert!(!repos.branch_exists(&repo, &created[3].branch).await);
+        assert_eq!(repos.main_checkout(&PathBuf::from(&created[0].path)).await,
+            Some(std::fs::canonicalize(&repo).unwrap()));
     }
 
     async fn two_step_fixture(hook_exit: u8) -> (tempfile::TempDir, Repos, PathBuf) {

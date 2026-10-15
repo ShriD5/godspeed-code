@@ -440,6 +440,35 @@ async fn check_worktree_setup_and_reuse(use_project_symlink: bool, test_setup: b
     assert_eq!(core.repos.current_branch(&repo_dir).await.unwrap(), "main");
     assert_eq!(core.workspace.read_spaces().unwrap().len(), 1);
 
+    // Deleting a chat can take its worktree along; uncommitted work there
+    // needs the user's confirmation first, and a refusal keeps the chat.
+    std::fs::write(PathBuf::from(&next_cwd).join("scratch.txt"), "wip").unwrap();
+    let refused = client
+        .call(
+            zeron_rpc::methods::MUTATE,
+            serde_json::json!({
+                "op": "deleteChat", "chatId": next_chat, "removeWorktree": true,
+            }),
+        )
+        .await
+        .expect_err("dirty worktree refused");
+    assert!(refused.to_string().contains("uncommitted changes"), "{refused}");
+    assert!(core.workspace.chat(next_chat).unwrap().is_some());
+    assert!(PathBuf::from(&next_cwd).exists());
+    client
+        .call(
+            zeron_rpc::methods::MUTATE,
+            serde_json::json!({
+                "op": "deleteChat", "chatId": next_chat, "removeWorktree": true, "force": true,
+            }),
+        )
+        .await
+        .expect("confirmed delete");
+    assert!(core.workspace.chat(next_chat).unwrap().is_none());
+    assert!(!PathBuf::from(&next_cwd).exists());
+    // The other chat's worktree is in use and stays.
+    assert!(first.exists());
+
     core.shutdown().await;
 }
 
@@ -481,6 +510,7 @@ async fn worktree_location_supports_long_windows_files() {
         .set_worktree_settings(zeron_proto::WorktreeSettings {
             use_custom_directory: true,
             custom_directory: Some(destination.to_string_lossy().into_owned()),
+            branch_prefix: None,
         })
         .await
         .unwrap();
@@ -548,6 +578,7 @@ async fn worktree_location_rejects_unlaunchable_windows_destinations() {
         .set_worktree_settings(zeron_proto::WorktreeSettings {
             use_custom_directory: true,
             custom_directory: Some(destination.to_string_lossy().into_owned()),
+            branch_prefix: None,
         })
         .await
         .unwrap_err();
@@ -583,6 +614,7 @@ async fn worktree_location_rejects_unlaunchable_windows_destinations() {
         .set_worktree_settings(zeron_proto::WorktreeSettings {
             use_custom_directory: true,
             custom_directory: Some(near_limit.to_string_lossy().into_owned()),
+            branch_prefix: None,
         })
         .await
         .unwrap();

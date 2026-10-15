@@ -449,6 +449,21 @@ pub struct Worktree {
     pub checkout_id: Option<String>,
 }
 
+/// One row of `ListOrphanWorktrees`: a Godspeed worktree no chat's cwd
+/// points into any more. Removing it goes through `DeleteWorktree`, with
+/// `force` only after the user confirmed losing `dirty` work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanWorktree {
+    pub repo_path: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Uncommitted or untracked changes (or a status git couldn't read).
+    #[serde(default)]
+    pub dirty: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderEntry {
@@ -474,6 +489,22 @@ pub struct WorktreeSettings {
     pub use_custom_directory: bool,
     /// Remembered even while the custom location is disabled.
     pub custom_directory: Option<String>,
+    /// Prefix for new worktree branches; `None` keeps
+    /// [`DEFAULT_WORKTREE_BRANCH_PREFIX`]. May be empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_prefix: Option<String>,
+}
+
+/// The prefix new worktree branches get unless the device chooses another.
+pub const DEFAULT_WORKTREE_BRANCH_PREFIX: &str = "godspeed/";
+
+impl WorktreeSettings {
+    /// The prefix new worktree branches get.
+    pub fn effective_branch_prefix(&self) -> &str {
+        self.branch_prefix
+            .as_deref()
+            .unwrap_or(DEFAULT_WORKTREE_BRANCH_PREFIX)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

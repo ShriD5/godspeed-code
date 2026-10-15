@@ -278,6 +278,18 @@ struct DeleteWorktreeParams {
     repo_path: String,
     #[serde(alias = "path")]
     worktree_path: String,
+    /// The user confirmed losing uncommitted work (and unmerged commits on
+    /// a Godspeed branch). Without it a dirty worktree is refused.
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListOrphanWorktreesParams {
+    /// One repository; every git project on this device when absent.
+    #[serde(default)]
+    repo_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -666,8 +678,17 @@ enum MutateParams {
     #[serde(rename_all = "camelCase")]
     SetChatConfig { chat_id: String, config: ChatConfig },
     /// Tombstone: removes the chats-map row; the session doc remains.
+    /// `removeWorktree` also removes the Godspeed worktree the chat ran in
+    /// when no other chat uses it; a dirty one is refused (and the chat
+    /// kept) unless `force` says the user confirmed losing that work.
     #[serde(rename_all = "camelCase")]
-    DeleteChat { chat_id: String },
+    DeleteChat {
+        chat_id: String,
+        #[serde(default)]
+        remove_worktree: bool,
+        #[serde(default)]
+        force: bool,
+    },
     #[serde(rename_all = "camelCase")]
     RenameDevice { device_id: String, name: String },
     /// Synced seen marker (LWW + monotonic guard): clears the "completed"
@@ -1232,6 +1253,102 @@ impl EngineRpc {
             .ok_or(VoiceRejection::Unsupported)
     }
 
+    /// Godspeed worktrees no chat's cwd points into: of `repo_path`, or of
+    /// every git project on this device. Archived chats still count as users.
+    async fn orphan_worktrees(
+        &self,
+        repo_path: Option<String>,
+    ) -> Result<Vec<zeron_proto::OrphanWorktree>, RpcError> {
+        let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+        let referenced: Vec<std::path::PathBuf> = self
+            .workspace
+            .read_chats()
+            .map_err(failed)?
+            .into_iter()
+            .filter_map(|chat| chat.cwd)
+            .map(std::path::PathBuf::from)
+            .collect();
+        let repos: Vec<String> = match repo_path {
+            Some(path) => vec![path],
+            None => {
+                let device = self.workspace.device_id().to_string();
+                let mut paths: Vec<String> = self
+                    .workspace
+                    .read_spaces()
+                    .map_err(failed)?
+                    .into_iter()
+                    .filter(|space| space.device_id == device && space.git_detected)
+                    .map(|space| space.path)
+                    .collect();
+                paths.sort();
+                paths.dedup();
+                paths
+            }
+        };
+        let mut orphans: Vec<zeron_proto::OrphanWorktree> = Vec::new();
+        for repo in repos {
+            match self
+                .repos
+                .orphan_worktrees(std::path::Path::new(&repo), &referenced)
+                .await
+            {
+                // Two spaces of one repository list its worktrees twice.
+                Ok(found) => {
+                    for orphan in found {
+                        if !orphans.iter().any(|o| o.path == orphan.path) {
+                            orphans.push(orphan);
+                        }
+                    }
+                }
+                Err(err) => tracing::debug!(%repo, error = %err, "orphan worktree scan skipped"),
+            }
+        }
+        Ok(orphans)
+    }
+
+    /// Remove the Godspeed worktree `chat_id` runs in, when it is this
+    /// device's and no other chat uses it. Anything else is left alone.
+    async fn remove_chat_worktree(&self, chat_id: &str, force: bool) -> Result<(), RpcError> {
+        let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+        let chats = self.workspace.read_chats().map_err(failed)?;
+        let Some(chat) = chats.iter().find(|chat| chat.id == chat_id) else {
+            return Ok(());
+        };
+        let Some(cwd) = chat
+            .cwd
+            .as_deref()
+            .filter(|_| chat.device_id == self.workspace.device_id())
+        else {
+            return Ok(());
+        };
+        let cwd = std::path::Path::new(cwd);
+        let Some(repo) = self.repos.main_checkout(cwd).await else {
+            return Ok(());
+        };
+        let others: Vec<std::path::PathBuf> = chats
+            .iter()
+            .filter(|other| other.id != chat_id)
+            .filter_map(|other| other.cwd.as_deref())
+            .map(std::path::PathBuf::from)
+            .collect();
+        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let orphans = self
+            .repos
+            .orphan_worktrees(&repo, &others)
+            .await
+            .map_err(failed)?;
+        let Some(worktree) = orphans.into_iter().find(|orphan| {
+            let path = std::path::Path::new(&orphan.path);
+            cwd.starts_with(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
+        }) else {
+            return Ok(());
+        };
+        self.repos
+            .delete_worktree(&repo, std::path::Path::new(&worktree.path), force)
+            .await
+            .map_err(failed)
+    }
+
     fn mutate(&self, params: MutateParams) -> Result<(), RpcError> {
         let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
         match params {
@@ -1346,7 +1463,7 @@ impl EngineRpc {
                     .map_err(failed)
                     .map(drop)
             }
-            MutateParams::DeleteChat { chat_id } => {
+            MutateParams::DeleteChat { chat_id, .. } => {
                 self.voice.retire_chat(&chat_id);
                 self.workspace.delete_chat(&chat_id).map_err(failed)?;
                 self.doc_host.purge_chat(&chat_id);
@@ -1577,6 +1694,7 @@ fn forwardable(method: &str) -> bool {
             | methods::WATCH_WORKSPACE_FILES
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
+            | methods::LIST_ORPHAN_WORKTREES
             // Project Actions live in the owning engine's private profile store.
             | methods::LIST_PROJECT_ACTIONS
             | methods::UPSERT_PROJECT_ACTION
@@ -2674,6 +2792,15 @@ impl RpcService for EngineRpc {
             methods::MUTATE => {
                 let p: MutateParams = parse_params(params)?;
                 let sidebar_pins = matches!(&p, MutateParams::ChangeSidebarPin { .. });
+                // The worktree goes first: a refusal keeps the chat.
+                if let MutateParams::DeleteChat {
+                    chat_id,
+                    remove_worktree: true,
+                    force,
+                } = &p
+                {
+                    self.remove_chat_worktree(chat_id, *force).await?;
+                }
                 self.mutate(p)?;
                 if sidebar_pins {
                     return RpcReply::value(&serde_json::json!({
@@ -3577,10 +3704,19 @@ impl RpcService for EngineRpc {
                     .delete_worktree(
                         std::path::Path::new(&p.repo_path),
                         std::path::Path::new(&p.worktree_path),
+                        p.force,
                     )
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::LIST_ORPHAN_WORKTREES => {
+                let p: ListOrphanWorktreesParams = if params.is_null() {
+                    ListOrphanWorktreesParams::default()
+                } else {
+                    parse_params(params)?
+                };
+                RpcReply::value(&self.orphan_worktrees(p.repo_path).await?)
             }
             methods::LIST_PROJECT_ACTIONS => {
                 let p: ListProjectActionsParams = parse_params(params)?;

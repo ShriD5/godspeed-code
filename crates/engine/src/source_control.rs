@@ -4134,6 +4134,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             .set_worktree_settings(zeron_proto::WorktreeSettings {
                 use_custom_directory: true,
                 custom_directory: Some(custom_root.to_string_lossy().into_owned()),
+                branch_prefix: None,
             })
             .await
             .unwrap();

@@ -33,6 +33,17 @@ impl WorktreePreferences {
                         .as_deref()
                         .is_some_and(|path| !path.is_empty() && Path::new(path).is_absolute())
             })
+            .map(|mut settings| {
+                // A hand-edited prefix git would refuse falls back to the default.
+                if settings
+                    .branch_prefix
+                    .as_deref()
+                    .is_some_and(|prefix| !valid_branch_prefix(prefix))
+                {
+                    settings.branch_prefix = None;
+                }
+                settings
+            })
             .unwrap_or_default();
         Self {
             path,
@@ -60,6 +71,15 @@ impl WorktreePreferences {
         self.root_for(&self.settings.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
+    /// The prefix new worktree branches get.
+    pub fn branch_prefix(&self) -> String {
+        self.settings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .effective_branch_prefix()
+            .to_string()
+    }
+
     pub fn status(&self) -> WorktreeSettingsStatus {
         let settings = self
             .settings
@@ -85,6 +105,14 @@ impl WorktreePreferences {
             return Err(EngineError::Other(
                 "Worktree location is controlled by GODSPEED_WORKTREES_DIR on this device".into(),
             ));
+        }
+        if let Some(prefix) = next.branch_prefix.as_mut() {
+            *prefix = prefix.trim().to_string();
+            if !valid_branch_prefix(prefix) {
+                return Err(EngineError::Other(format!(
+                    "\"{prefix}\" can't start a Git branch name. Use letters, digits, '-', '_', '.' and '/'."
+                )));
+            }
         }
         if next.use_custom_directory {
             let path = next
@@ -126,6 +154,21 @@ impl WorktreePreferences {
         }
         Ok(self.status())
     }
+}
+
+/// A prefix that keeps `<prefix><generated-name>` a valid branch name
+/// (`git check-ref-format --branch`), checked without running git. Empty is
+/// allowed: plain generated names.
+pub(crate) fn valid_branch_prefix(prefix: &str) -> bool {
+    prefix.len() <= 64
+        && prefix
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
+        && !prefix.starts_with(['-', '/', '.'])
+        && !prefix.contains("..")
+        && !prefix.contains("//")
+        && !prefix.contains("/.")
+        && !prefix.split('/').any(|part| part.ends_with(".lock"))
 }
 
 fn validate_directory(value: &str) -> Result<PathBuf, EngineError> {
@@ -178,6 +221,7 @@ mod tests {
         WorktreeSettings {
             use_custom_directory: true,
             custom_directory: Some(path.to_string_lossy().into_owned()),
+            branch_prefix: None,
         }
     }
 
