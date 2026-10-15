@@ -1860,6 +1860,85 @@ async fn permissions_do_not_auto_answer_agent_questions() {
     assert_eq!(body, json!({"answers": [["No"]]}));
 }
 
+/// zeronsh/zeron#668: on 2.x the `question` tool asks through a form
+/// (`form.created`), which the v2 normalizer dropped — the tool waited
+/// forever. Shape from opencode 2.0.29's question plugin (`toField`): one
+/// `q<n>` string/multiselect field per question, options by label/value,
+/// free text allowed. The answer goes back on the session's form route.
+#[tokio::test]
+async fn v2_question_forms_reach_the_user_and_are_answered() {
+    let mut wire = TurnWire::start_config(
+        false,
+        true,
+        false,
+        Some(true),
+        "2.0.20",
+        json!({"answerLabel": "Web app"}),
+        false,
+    )
+    .await;
+    wire.request("/api/model").await;
+    wire.request("/prompt").await;
+    wire.v2(
+        "form.created",
+        json!({"form": {
+            "id": "frm_1", "sessionID": "fixture", "title": "Questions",
+            "metadata": {"kind": "question"},
+            "fields": [{
+                "key": "q0", "title": "Codebase area", "type": "string", "custom": true,
+                "description": "Which part of the codebase would you like to explore?",
+                "options": [
+                    {"value": "API", "label": "API", "description": "Auth and uploads."},
+                    {"value": "Web app", "label": "Web app", "description": "Pages."},
+                ],
+            }],
+        }}),
+    );
+    let body = wire.posted("/api/session/fixture/form/frm_1/reply").await;
+    assert_eq!(body, json!({"answer": {"q0": "Web app"}}));
+    let asked = wire.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].header, "Codebase area");
+    assert_eq!(asked[0].options, ["API", "Web app"]);
+    // The engine's bridge owns the input lifecycle: no twin from the driver.
+    while let Ok(Some(Ok(event))) =
+        tokio::time::timeout(Duration::from_millis(100), wire.events.recv()).await
+    {
+        assert!(
+            !matches!(event, AgentEvent::InputRequested { .. } | AgentEvent::InputResolved { .. }),
+            "{event:?}"
+        );
+    }
+}
+
+#[test]
+fn v2_form_answers_are_typed_and_respect_conditions() {
+    let form = json!({"fields": [
+        {"key": "deploy", "type": "boolean"},
+        {"key": "env", "type": "string", "options": [{"value": "prod", "label": "Production"}],
+         "when": [{"key": "deploy", "op": "eq", "value": true}]},
+        {"key": "tags", "type": "multiselect", "custom": false,
+         "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
+        {"key": "count", "type": "integer"},
+        {"key": "why", "type": "string"},
+    ]});
+    let labels = |l: &[&[&str]]| -> Vec<Vec<String>> {
+        l.iter().map(|q| q.iter().map(|s| s.to_string()).collect()).collect()
+    };
+    assert_eq!(
+        v2_form_answer(&form, &labels(&[&["Yes"], &["Production"], &["Beta", "Other"], &[" 4 "], &[]])),
+        json!({"deploy": true, "env": "prod", "tags": ["b"], "count": 4})
+    );
+    // `env` is inactive once `deploy` is No: answering it would be rejected.
+    assert_eq!(
+        v2_form_answer(&form, &labels(&[&["No"], &["Production"], &[], &["x"], &["because"]])),
+        json!({"deploy": false, "why": "because"})
+    );
+    // An open-a-URL field has no question shape; the frame is left alone.
+    assert!(v2_form_question(&json!({"form": {"id": "f", "sessionID": "s", "title": "t",
+        "fields": [{"key": "k", "type": "external", "url": "https://x"}]}})).is_none());
+}
+
 #[test]
 fn v2_tools_are_scoped_and_retired_and_real_failures_are_visible() {
     let mut tools = HashMap::new();

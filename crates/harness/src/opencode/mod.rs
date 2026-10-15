@@ -866,6 +866,27 @@ impl Server {
         Ok((status, text))
     }
 
+    async fn delete(&self, path: &str, directory: Option<&str>) -> Result<(), HarnessError> {
+        let req = self
+            .request(reqwest::Method::DELETE, path)
+            .timeout(CALL_TIMEOUT);
+        let resp = self
+            .scoped(req, directory)
+            .await
+            .send()
+            .await
+            .map_err(|e| HarnessError::Protocol(format!("opencode DELETE {path}: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(HarnessError::Protocol(format!(
+                "opencode DELETE {path}: {status} {}",
+                truncate_body(&body)
+            )));
+        }
+        Ok(())
+    }
+
     /// Directory scope: the server's per-request instance selector. V1 takes
     /// it as a query param (plus header, matching the official SDK); V2's
     /// strict query validation rejects unknown params — there the header
@@ -3389,24 +3410,22 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             if questions.is_empty() {
                 return BusOutcome::Continue;
             }
-            if !send(
-                event_tx,
-                AgentEvent::InputRequested {
-                    request_id: id.to_owned(),
-                    questions: questions.clone(),
-                },
-            )
-            .await
-            {
-                return BusOutcome::ConsumerGone;
-            }
+            // The engine's input bridge alone emits InputRequested and
+            // InputResolved (it mints the id the answer resolves); a copy
+            // keyed by opencode's id is an unanswerable twin.
             let rx = (request_input)(questions.clone());
             let base = server.base.clone();
             let auth = server.auth.clone();
             let dir_owned = dir.map(str::to_owned);
             let request_id = id.to_owned();
-            let tx = event_tx.clone();
             let protocol_cell = server.protocol.clone();
+            // 2.x asks through a form ([`v2_form_question`]), answered on the
+            // session's form route with typed values per field.
+            let form = props
+                .get("form")
+                .filter(|f| f.is_object())
+                .cloned()
+                .zip(event_session.map(str::to_owned));
             tokio::spawn(async move {
                 let server = Server {
                     child: None,
@@ -3417,18 +3436,38 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
                 };
-                let reply = match rx.await {
-                    Ok(answers) => {
-                        let ordered: Vec<Vec<String>> = questions
-                            .iter()
-                            .map(|q| {
-                                answers
-                                    .iter()
-                                    .find(|a| a.question_id == q.id)
-                                    .map(|a| a.labels.clone())
-                                    .unwrap_or_default()
-                            })
-                            .collect();
+                let answered = rx.await.map(|answers| {
+                    questions
+                        .iter()
+                        .map(|q| {
+                            answers
+                                .iter()
+                                .find(|a| a.question_id == q.id)
+                                .map(|a| a.labels.clone())
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<Vec<String>>>()
+                });
+                let reply = match (answered, form) {
+                    (Ok(ordered), Some((form, session))) => {
+                        server
+                            .post_json(
+                                &format!("/api/session/{session}/form/{request_id}/reply"),
+                                dir_owned.as_deref(),
+                                &json!({ "answer": v2_form_answer(&form, &ordered) }),
+                            )
+                            .await
+                            .map(drop)
+                    }
+                    (Err(_), Some((_, session))) => {
+                        server
+                            .delete(
+                                &format!("/api/session/{session}/form/{request_id}"),
+                                dir_owned.as_deref(),
+                            )
+                            .await
+                    }
+                    (Ok(ordered), None) => {
                         server
                             .post_json(
                                 &format!("/question/{request_id}/reply"),
@@ -3436,8 +3475,9 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                                 &json!({ "answers": ordered }),
                             )
                             .await
+                            .map(drop)
                     }
-                    Err(_) => {
+                    (Err(_), None) => {
                         server
                             .post_json(
                                 &format!("/question/{request_id}/reject"),
@@ -3445,19 +3485,15 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                                 &Value::Null,
                             )
                             .await
+                            .map(drop)
                     }
                 };
                 if let Err(e) = reply {
-                    tracing::debug!(
+                    tracing::warn!(
                         target: "zeron_harness::opencode",
                         "question reply failed: {e}"
                     );
                 }
-                let _ = tx
-                    .send(Ok(AgentEvent::InputResolved {
-                        request_id: request_id.clone(),
-                    }))
-                    .await;
             });
             BusOutcome::Continue
         }
@@ -4047,6 +4083,10 @@ fn normalize_v2_frame_with_session_models(
 ) -> Vec<Value> {
     let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
     let data = event.get("data").cloned().unwrap_or(Value::Null);
+    // Its session rides inside the form, not at the top of the frame.
+    if kind == "form.created" {
+        return v2_form_question(&data).into_iter().collect();
+    }
     if data
         .get("sessionID")
         .and_then(Value::as_str)
@@ -4303,6 +4343,153 @@ fn normalize_v2_frame_with_session_models(
         }
         _ => Vec::new(),
     }
+}
+
+/// A 2.x `form.created` (`{form: {id, sessionID, title, fields}}`) as a 1.x
+/// `question.asked`. 2.x has no question event: the `question` tool (and
+/// any other asker) opens a form and waits for its reply, so dropping the
+/// frame hung the tool forever (verified against opencode 2.0.20 and 2.0.29,
+/// `packages/core/src/tool/plugin/question.ts`, `schema/src/form.ts`). The
+/// fields ride along for the typed reply ([`v2_form_answer`]). A form with
+/// an `external` (open-a-URL) field has no question shape and is left to
+/// other clients.
+fn v2_form_question(data: &Value) -> Option<Value> {
+    let form = data.get("form")?;
+    let id = form.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+    let session = form
+        .get("sessionID")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let fields = form.get("fields").and_then(Value::as_array).filter(|f| !f.is_empty())?;
+    if fields
+        .iter()
+        .any(|f| f.get("type").and_then(Value::as_str) == Some("external"))
+    {
+        return None;
+    }
+    let title = form.get("title").and_then(Value::as_str).unwrap_or("Question");
+    let questions: Vec<Value> = fields
+        .iter()
+        .map(|field| {
+            let text = |key: &str| field.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
+            let kind = field.get("type").and_then(Value::as_str).unwrap_or("string");
+            let options: Vec<Value> = if kind == "boolean" {
+                vec![json!({"label": "Yes"}), json!({"label": "No"})]
+            } else {
+                string_options(field)
+                    .into_iter()
+                    .map(|(label, _, description)| json!({"label": label, "description": description}))
+                    .collect()
+            };
+            json!({
+                "question": text("description").or(text("title")).or(text("key")).unwrap_or(title),
+                "header": text("title").unwrap_or(title),
+                "options": options,
+                "multiple": kind == "multiselect",
+            })
+        })
+        .collect();
+    Some(json!({
+        "type": "question.asked",
+        "properties": {
+            "id": id,
+            "sessionID": session,
+            "questions": questions,
+            "form": {"fields": fields},
+        }
+    }))
+}
+
+/// A form field's `options` as (label, value, description).
+fn string_options(field: &Value) -> Vec<(String, String, Value)> {
+    field
+        .get("options")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|o| {
+            let value = o.get("value").and_then(Value::as_str)?;
+            let label = o.get("label").and_then(Value::as_str).unwrap_or(value);
+            Some((
+                label.to_owned(),
+                value.to_owned(),
+                o.get("description").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect()
+}
+
+/// The 2.x form answer (`{<field key>: value}`) for the labels picked per
+/// question, typed per field: option labels map to their values, free text
+/// passes where the field allows it, booleans and numbers parse. Fields left
+/// blank, unparsable, or switched off by their `when` conditions are left
+/// out — opencode rejects an answer to an inactive field.
+fn v2_form_answer(form: &Value, labels: &[Vec<String>]) -> Value {
+    let fields = form
+        .get("fields")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut answer = serde_json::Map::new();
+    for (field, picked) in fields.iter().zip(labels) {
+        let Some(key) = field.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        let active = field
+            .get("when")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .all(|when| {
+                let Some(value) = when.get("key").and_then(Value::as_str).and_then(|k| answer.get(k))
+                else {
+                    return false;
+                };
+                let target = when.get("value").unwrap_or(&Value::Null);
+                let hit = match value {
+                    Value::Array(items) => items.contains(target),
+                    other => other == target,
+                };
+                if when.get("op").and_then(Value::as_str) == Some("neq") { !hit } else { hit }
+            });
+        if !active {
+            continue;
+        }
+        let picked: Vec<&str> = picked.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+        let options = string_options(field);
+        let custom = field.get("custom").and_then(Value::as_bool) == Some(true) || options.is_empty();
+        let pick = |label: &str| -> Option<String> {
+            options
+                .iter()
+                .find(|(l, _, _)| l == label)
+                .map(|(_, v, _)| v.clone())
+                .or_else(|| custom.then(|| label.to_owned()))
+        };
+        let value = match field.get("type").and_then(Value::as_str).unwrap_or("string") {
+            "multiselect" => {
+                let values: Vec<Value> = picked.iter().filter_map(|l| pick(l)).map(Value::String).collect();
+                (!values.is_empty()).then_some(Value::Array(values))
+            }
+            "boolean" => picked.first().and_then(|l| match *l {
+                "Yes" => Some(Value::Bool(true)),
+                "No" => Some(Value::Bool(false)),
+                _ => None,
+            }),
+            "integer" => picked.first().and_then(|l| l.parse::<i64>().ok()).map(Value::from),
+            "number" => picked
+                .first()
+                .and_then(|l| l.parse::<f64>().ok())
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number),
+            _ => picked.first().and_then(|l| pick(l)).map(Value::String),
+        };
+        if let Some(value) = value {
+            answer.insert(key.to_owned(), value);
+        }
+    }
+    Value::Object(answer)
 }
 
 /// The 2.x error shape (`{type, message}`) folded into the 1.x
