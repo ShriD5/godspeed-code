@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeron_doc::SessionCommandPayload;
 use zeron_proto::{
-    Chat, ChatConfig, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, Session, SessionStatus,
-    Space, UserInputAnswer,
+    AccessMode, Chat, ChatConfig, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, Session,
+    SessionStatus, Space, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
@@ -131,6 +131,7 @@ fn catalog() -> Vec<ToolDef> {
                     "model": { "type": "string", "description": "Model id from list_models on the chosen device. Omit for the harness default." },
                     "reasoning": { "type": "string", "description": "Reasoning level the model supports (e.g. low, medium, high, max)." },
                     "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "default": "workspace-write" },
+                    "access_mode": { "type": "string", "enum": ["supervised", "auto-accept-edits", "auto", "full-access"], "description": "What the new chat's agent may do before it asks. Defaults to your own chat's mode and never exceeds it." },
                     "title": { "type": "string", "description": "Sidebar title. Otherwise the engine titles it from the first exchange." },
                     "branch": { "type": "string", "description": "Branch label to record on the chat." },
                     "cwd": { "type": "string", "description": "Working directory override (an existing worktree path). Defaults to the project folder." },
@@ -174,7 +175,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "respond_to_input",
-            description: "Answer a question the chat's agent is blocked on (see get_chat / wait_for_turn pendingInput). Labels are the option strings, or free text for open questions.",
+            description: "Answer a question the chat's agent is blocked on (see get_chat / wait_for_turn pendingInput). Labels are the option strings, or free text for open questions. A question with an `approval` is a permission request: answer with one of its decision labels (or approve / approveForSession / decline). You may approve only what your own chat's access mode would let you do without asking (full access: anything; auto-accept edits and auto: file edits; supervised: nothing); declining is always allowed.",
             input_schema: chat_key_schema(json!({
                 "request_id": { "type": "string", "description": "The pending request id. Defaults to the chat's current pending question." },
                 "answers": {
@@ -519,6 +520,7 @@ struct CreateChatArgs {
     model: Option<String>,
     reasoning: Option<String>,
     sandbox: Option<String>,
+    access_mode: Option<String>,
     title: Option<String>,
     branch: Option<String>,
     cwd: Option<String>,
@@ -968,12 +970,31 @@ impl Tools {
             Some(raw) => parse_enum("sandbox", raw).map_err(anyhow::Error::msg)?,
             None => SandboxLevel::WorkspaceWrite,
         };
+        // A delegated chat never gets more access than the chat delegating
+        // to it: it takes the origin's mode unless asked for less.
+        let requested: Option<AccessMode> = match (args.access_mode.as_deref(), &args.sandbox) {
+            (Some(raw), _) => Some(parse_enum("access mode", raw).map_err(anyhow::Error::msg)?),
+            (None, Some(_)) => Some(AccessMode::from_legacy(sandbox, false)),
+            (None, None) => None,
+        };
+        let access_mode = match (requested, self.origin_access_mode().await?) {
+            (Some(mode), Some(cap)) => Some(mode.at_most(cap)),
+            (mode, cap) => mode.or(cap),
+        };
+        if let Some(mode) = access_mode {
+            anyhow::ensure!(
+                zeron_proto::access_mode_supported(harness, mode),
+                "{harness:?} can't run in {}; pick another harness or access mode",
+                mode.label()
+            );
+        }
         let config = ChatConfig {
             harness,
             model: args.model.clone(),
             reasoning,
             model_options: Default::default(),
-            sandbox,
+            sandbox: access_mode.map_or(sandbox, |mode| mode.legacy().0),
+            access_mode,
         };
 
         let chat_id = uuid::Uuid::new_v4().to_string();
@@ -1243,29 +1264,37 @@ impl Tools {
 
     async fn respond_to_input(&self, args: RespondArgs) -> anyhow::Result<Value> {
         let chat = self.godspeed.resolve_chat(&args.chat).await?;
+        let entries = self
+            .godspeed
+            .transcript_on(&chat.id, Some(&chat.device_id))
+            .await?;
+        let rendered = render_entries(&entries, RenderOptions::default());
+        let pending = match &args.request_id {
+            Some(id) => rendered
+                .iter()
+                .rev()
+                .filter_map(|m| m.pending_input.clone())
+                .find(|p| p.get("requestId").and_then(Value::as_str) == Some(id.as_str())),
+            None => last_pending_input(&rendered),
+        };
         let request_id = match args.request_id {
             Some(id) => id,
-            None => {
-                let entries = self
-                    .godspeed
-                    .transcript_on(&chat.id, Some(&chat.device_id))
-                    .await?;
-                let rendered = render_entries(&entries, RenderOptions::default());
-                last_pending_input(&rendered)
-                    .and_then(|p| {
-                        p.get("requestId")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("chat {} has no pending question", short(&chat.id))
-                    })?
-            }
+            None => pending
+                .as_ref()
+                .and_then(|p| p.get("requestId").and_then(Value::as_str))
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("chat {} has no pending question", short(&chat.id))
+                })?,
         };
         if args.answers.is_empty() {
             anyhow::bail!("answers is empty");
         }
-        let answers = args
+        let questions: Vec<UserInputQuestion> = pending
+            .and_then(|p| p.get("questions").cloned())
+            .and_then(|q| serde_json::from_value(q).ok())
+            .unwrap_or_default();
+        let answers: Vec<UserInputAnswer> = args
             .answers
             .into_iter()
             .map(|a| UserInputAnswer {
@@ -1273,6 +1302,39 @@ impl Tools {
                 labels: a.labels,
             })
             .collect();
+        // Approving is a grant of access: only as far as this agent's own
+        // chat could go without asking. Declining is always allowed.
+        if questions.iter().any(UserInputQuestion::is_approval) {
+            let mode = self.origin_access_mode().await?;
+            for answer in &answers {
+                let Some(approval) = questions
+                    .iter()
+                    .find(|q| q.id == answer.question_id)
+                    .and_then(|q| q.approval.as_ref())
+                else {
+                    continue;
+                };
+                for label in &answer.labels {
+                    let decision = approval.decision_for(label).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{label:?} is not a decision for this approval; use one of: {}",
+                            approval
+                                .decisions
+                                .iter()
+                                .map(|d| d.label.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
+                    anyhow::ensure!(
+                        !decision.approves() || mode.is_some_and(|m| m.covers(approval)),
+                        "Your chat runs in {}, which doesn't allow approving \"{}\" for another agent. Decline it or leave it for the user.",
+                        mode.map_or("no Godspeed chat", |m| m.label()),
+                        approval.title
+                    );
+                }
+            }
+        }
         let command_id = self
             .godspeed
             .queue_command(
@@ -1284,6 +1346,21 @@ impl Tools {
             )
             .await?;
         Ok(json!({ "chatId": chat.id, "requestId": request_id, "commandId": command_id }))
+    }
+
+    /// The access mode of the chat this server speaks for; `None` outside a
+    /// chat, where nothing grants approvals.
+    async fn origin_access_mode(&self) -> anyhow::Result<Option<AccessMode>> {
+        let Some(origin) = self.godspeed.origin().chat_id.clone() else {
+            return Ok(None);
+        };
+        let chat = self.godspeed.resolve_chat(&origin).await?;
+        Ok(Some(
+            chat.config
+                .as_ref()
+                .map(ChatConfig::effective_access_mode)
+                .unwrap_or_default(),
+        ))
     }
 
     // ---- shared pieces -------------------------------------------------------
@@ -1373,7 +1450,12 @@ impl Tools {
                     resume: None,
                     attachments: Vec::new(),
                     worktree: None,
+                    access: None,
                 };
+                let mut request = request;
+                if let Some(config) = &config {
+                    request.set_access_mode(config.effective_access_mode());
+                }
                 self.godspeed
                     .queue_command(
                         &chat.id,
@@ -1535,6 +1617,8 @@ mod tests {
         extra_chats: Vec<Value>,
         catalog_error: Option<&'static str>,
         reads: Mutex<Vec<(String, Value)>>,
+        /// Replaces the default two-message transcript.
+        transcript: Option<Value>,
     }
 
     fn stream(item: Value) -> RpcReply {
@@ -1611,6 +1695,9 @@ mod tests {
                 methods::LIST_MODELS => RpcReply::Value(json!([
                     { "id": "opus", "label": "Opus" }, { "id": "sonnet", "label": "Sonnet" }
                 ])),
+                methods::WATCH_DOC_MESSAGES if self.transcript.is_some() => {
+                    stream(json!({ "reset": self.transcript.clone().unwrap() }))
+                }
                 methods::WATCH_DOC_MESSAGES => stream(json!({ "reset": [
                     { "id": "u1", "role": "user", "createdAt": 1, "deviceId": "dev-local",
                       "parts": [{ "kind": "text", "id": "t", "text": "hi" }] },
@@ -1667,7 +1754,7 @@ mod tests {
         let start = SHOW_VISUAL_DESCRIPTION.find("local s = ui.state").unwrap();
         let end = start
             + SHOW_VISUAL_DESCRIPTION[start..]
-                .find("\n\nZeron runs the script")
+                .find("\n\nGodspeed runs the script")
                 .unwrap();
         let report = zeron_visual::check(&SHOW_VISUAL_DESCRIPTION[start..end], 1).unwrap();
         assert_eq!(report.interactions, 2, "both tabs");
@@ -1869,6 +1956,7 @@ mod tests {
             updated_at: chrono::Utc::now() - chrono::Duration::minutes(10),
             last_completed_turn: None,
             running_subagents: 0,
+            awaiting_approval: false,
         };
         // No mid-turn capability is required for a live mailbox delivery.
         let sent = tools
@@ -1887,6 +1975,131 @@ mod tests {
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].0, methods::QUEUE_COMMAND);
         assert_eq!(writes[0].1["command"]["kind"], "steer");
+    }
+
+    /// A worker chat parked on a command approval, and an orchestrator chat
+    /// in `mode` speaking through this server.
+    fn approval_world(mode: &str) -> Arc<World> {
+        let question = zeron_proto::ApprovalRequest::new(
+            zeron_proto::ApprovalKind::Command,
+            "Run the deploy",
+        )
+        .into_question("q-1");
+        let edit = zeron_proto::ApprovalRequest::new(
+            zeron_proto::ApprovalKind::FileChange,
+            "Edit src/lib.rs",
+        )
+        .into_question("q-2");
+        Arc::new(World {
+            extra_chats: vec![json!({
+                "id": "chat-boss-3", "deviceId": "dev-local", "title": "Boss",
+                "archived": false, "spaceId": "space-1",
+                "config": { "harness": "claude-code", "model": null, "reasoning": null,
+                            "sandbox": "workspace-write", "accessMode": mode },
+                "createdAt": "2026-09-03T00:00:00Z"
+            })],
+            transcript: Some(json!([
+                { "id": "a1", "role": "assistant", "createdAt": 2, "deviceId": "dev-local",
+                  "status": "streaming",
+                  "parts": [{ "kind": "input", "id": "in-req-1", "requestId": "req-1", "questions": [question, edit],
+                              "resolved": false }] }
+            ])),
+            ..World::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn orchestrators_approve_only_within_their_own_access_mode() {
+        let origin = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let answer = |question: &str, label: &str| {
+            json!({ "chat": "chat-alpha-1", "answers": [{ "question_id": question, "labels": [label] }] })
+        };
+        // Auto-accept edits may approve an edit, never a command, and may
+        // always decline.
+        let world = approval_world("auto-accept-edits");
+        let tools = self::tools(world.clone(), origin.clone());
+        let err = tools
+            .call("respond_to_input", answer("q-1", "Approve"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Auto-accept edits"), "{err}");
+        tools
+            .call("respond_to_input", answer("q-2", "approve"))
+            .await
+            .unwrap();
+        tools
+            .call("respond_to_input", answer("q-1", "Decline"))
+            .await
+            .unwrap();
+        let err = tools
+            .call("respond_to_input", answer("q-1", "Sure thing"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("not a decision"), "{err}");
+        {
+            let writes = world.writes.lock().unwrap();
+            assert_eq!(writes.len(), 2, "refused answers never reach the ledger");
+            assert_eq!(writes[0].1["command"]["kind"], "respondInput");
+            assert_eq!(writes[0].1["command"]["requestId"], "req-1");
+        }
+
+        // Full access may approve anything for the session.
+        let world = approval_world("full-access");
+        let tools = self::tools(world.clone(), origin);
+        tools
+            .call("respond_to_input", answer("q-1", "Approve for this session"))
+            .await
+            .unwrap();
+        assert_eq!(world.writes.lock().unwrap().len(), 1);
+
+        // Outside a chat nothing grants an approval.
+        let tools = self::tools(approval_world("full-access"), Origin::default());
+        let err = tools
+            .call("respond_to_input", answer("q-1", "Approve"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no Godspeed chat"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn delegated_chats_never_exceed_the_origin_access_mode() {
+        let origin = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let world = approval_world("auto-accept-edits");
+        let tools = self::tools(world.clone(), origin);
+        tools
+            .call(
+                "create_chat",
+                json!({ "kind": "chat", "project": "space-1", "access_mode": "full-access" }),
+            )
+            .await
+            .unwrap();
+        tools
+            .call("create_chat", json!({ "kind": "chat", "project": "space-1" }))
+            .await
+            .unwrap();
+        tools
+            .call(
+                "create_chat",
+                json!({ "kind": "chat", "project": "space-1", "sandbox": "read-only" }),
+            )
+            .await
+            .unwrap();
+        let writes = world.writes.lock().unwrap();
+        let modes: Vec<&Value> = writes
+            .iter()
+            .filter(|(_, w)| w["op"] == "createChat")
+            .map(|(_, w)| &w["config"]["accessMode"])
+            .collect();
+        assert_eq!(
+            modes,
+            [&json!("auto-accept-edits"), &json!("auto-accept-edits"), &json!("supervised")]
+        );
     }
 
     #[tokio::test]

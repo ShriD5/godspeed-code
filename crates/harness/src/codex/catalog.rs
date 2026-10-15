@@ -54,14 +54,16 @@ pub(crate) fn sandbox_policy_type(sandbox: SandboxLevel) -> &'static str {
 }
 
 /// `turn/start`'s full `sandboxPolicy` object. Workspace-write keeps network
-/// access: godspeed agents fetch deps and hit APIs unattended, and with the
-/// approval policy pinned to "never" a network-less sandbox would fail those
-/// commands with no escalation path.
-pub(crate) fn sandbox_policy_value(sandbox: SandboxLevel) -> serde_json::Value {
+/// access (godspeed agents fetch deps and hit APIs) and adds the run's extra
+/// writable roots (an always-on agent's memory directory).
+pub(crate) fn sandbox_policy_value(sandbox: SandboxLevel, roots: &[String]) -> serde_json::Value {
     let mut policy = serde_json::Map::new();
     policy.insert("type".into(), sandbox_policy_type(sandbox).into());
     if matches!(sandbox, SandboxLevel::WorkspaceWrite) {
         policy.insert("networkAccess".into(), true.into());
+        if !roots.is_empty() {
+            policy.insert("writableRoots".into(), roots.into());
+        }
     }
     serde_json::Value::Object(policy)
 }

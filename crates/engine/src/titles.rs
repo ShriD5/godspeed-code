@@ -240,6 +240,7 @@ pub(crate) async fn generate_text(
             attachments: Vec::new(),
             resume: None,
             worktree: None,
+            access: None,
         };
         match tokio::time::timeout(
             timeout,
@@ -409,6 +410,7 @@ mod tests {
             resume: None,
             attachments: vec![],
             worktree: None,
+            access: None,
         };
         let result = collect_text(&harness, request, None).await;
         assert!(

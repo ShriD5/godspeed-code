@@ -68,6 +68,10 @@ if has "$line" '"method":"session/load"'; then
       emit "{\"id\":$(rid "$line"),\"result\":{}}"
     fi
   fi
+elif has "$line" '"method":"session/new"' && has "$line" 'acp-modes-fixture'; then
+  # First-class session modes (SessionModeState), the shape Hermes
+  # advertises: the access mode selects one through session/set_mode.
+  emit "{\"id\":$(rid "$line"),\"result\":{\"sessionId\":\"s-1\",\"modes\":{\"currentModeId\":\"default\",\"availableModes\":[{\"id\":\"default\",\"name\":\"Default\"},{\"id\":\"accept_edits\",\"name\":\"Accept edits\"},{\"id\":\"dont_ask\",\"name\":\"Don't ask\"}]}}}"
 elif has "$line" '"method":"session/new"'; then
   has "$line" '"mcpServers":[]' || has "$line" '"name":"godspeed"' || exit 1
   # Advertise config options: model (current differs from the tests' request,
@@ -93,12 +97,16 @@ fi
 # ---- model/config sets (0..n), then the first turn ---------------------------
 CONFIG_SETS=""
 MODEL_SETS=""
+MODE_SETS=""
 read -r promptline || exit 1
 while has "$promptline" '"method":"session/set_config_option"' \
-  || has "$promptline" '"method":"session/set_model"'; do
+  || has "$promptline" '"method":"session/set_model"' \
+  || has "$promptline" '"method":"session/set_mode"'; do
   emit "{\"id\":$(rid "$promptline"),\"result\":{}}"
   if has "$promptline" '"method":"session/set_model"'; then
     MODEL_SETS="$MODEL_SETS $promptline"
+  elif has "$promptline" '"method":"session/set_mode"'; then
+    MODE_SETS="$MODE_SETS $promptline"
   else
     CONFIG_SETS="$CONFIG_SETS $promptline"
   fi
@@ -294,6 +302,30 @@ case "$promptline" in
   { has "$ans" '"id":77' && has "$ans" '"outcome":"selected"' && has "$ans" '"optionId":"always"'; } ||
     { emit "{\"id\":$pid,\"result\":{\"stopReason\":\"refusal\"}}"; exit 0; }
   update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"approved"}}'
+  emit "{\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"
+  ;;
+
+*scenario:approval*)
+  # Auto-accept edits over ACP: the mode rides session/set_mode, an
+  # in-workspace edit is allowed once without asking, a command and an
+  # edit outside the workspace are the user's (answered here "Always allow",
+  # then "Decline" — not an option name, read as reject_once).
+  has "$MODE_SETS" '"modeId":"accept_edits"' ||
+    { emit "{\"id\":$pid,\"result\":{\"stopReason\":\"refusal\"}}"; exit 0; }
+  opts='[{"optionId":"once","name":"Allow once","kind":"allow_once"},{"optionId":"always","name":"Always allow","kind":"allow_always"},{"optionId":"no","name":"Reject","kind":"reject_once"},{"optionId":"never","name":"Never","kind":"reject_always"}]'
+  emit "{\"id\":61,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"$SID\",\"toolCall\":{\"toolCallId\":\"t1\",\"kind\":\"edit\",\"title\":\"Edit src/a.rs\",\"locations\":[{\"path\":\"src/a.rs\"}],\"content\":[{\"type\":\"diff\",\"path\":\"src/a.rs\",\"oldText\":\"a\\n\",\"newText\":\"b\\n\"}]},\"options\":$opts}}"
+  read -r ans || exit 1
+  { has "$ans" '"id":61' && has "$ans" '"optionId":"once"'; } ||
+    { emit "{\"id\":$pid,\"result\":{\"stopReason\":\"refusal\"}}"; exit 0; }
+  emit "{\"id\":62,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"$SID\",\"toolCall\":{\"toolCallId\":\"t2\",\"kind\":\"execute\",\"title\":\"Run tests\",\"rawInput\":{\"command\":\"cargo test\"}},\"options\":$opts}}"
+  read -r ans || exit 1
+  { has "$ans" '"id":62' && has "$ans" '"optionId":"always"'; } ||
+    { emit "{\"id\":$pid,\"result\":{\"stopReason\":\"refusal\"}}"; exit 0; }
+  emit "{\"id\":63,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"$SID\",\"toolCall\":{\"toolCallId\":\"t3\",\"kind\":\"edit\",\"title\":\"Edit hosts\",\"locations\":[{\"path\":\"/etc/hosts\"}]},\"options\":$opts}}"
+  read -r ans || exit 1
+  { has "$ans" '"id":63' && has "$ans" '"optionId":"no"'; } ||
+    { emit "{\"id\":$pid,\"result\":{\"stopReason\":\"refusal\"}}"; exit 0; }
+  update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"approvals done"}}'
   emit "{\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"
   ;;
 

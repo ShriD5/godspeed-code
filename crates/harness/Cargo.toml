@@ -40,6 +40,7 @@ thiserror.workspace = true
 tracing.workspace = true
 sha2.workspace = true
 semver = "1"
+similar.workspace = true
 zip.workspace = true
 
 [target.'cfg(unix)'.dependencies]

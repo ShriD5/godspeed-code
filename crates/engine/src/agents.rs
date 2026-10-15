@@ -550,6 +550,15 @@ impl Inner {
     /// here is user-facing.
     fn validate(&self, mut draft: AgentDraft) -> Result<(AgentDraft, String), EngineError> {
         draft.name = draft.name.trim().to_string();
+        draft.normalize_access();
+        let mode = draft.access_mode();
+        if !zeron_proto::access_mode_supported(draft.harness, mode) {
+            return Err(failed(format!(
+                "{:?} can't run in {}; pick another access mode",
+                draft.harness,
+                mode.label()
+            )));
+        }
         if draft.name.is_empty() {
             return Err(failed("Give the agent a name"));
         }
@@ -903,12 +912,21 @@ impl Inner {
             webhook: fire.webhook.as_ref(),
             changed_paths: &fire.changed_paths,
         });
+        // The agent's access mode, with its memory directory writable under
+        // the sandboxed modes for drivers that take extra roots.
+        let mode = agent.draft.access_mode();
+        let (sandbox, auto_approve) = mode.legacy();
+        let access = zeron_proto::RunAccess {
+            mode,
+            writable_roots: vec![self.agent_dir(&agent.id).to_string_lossy().into_owned()],
+        };
         let config = ChatConfig {
             harness: agent.draft.harness,
             model: agent.draft.model.clone(),
             reasoning: agent.draft.reasoning,
             model_options: Default::default(),
-            sandbox: agent.draft.sandbox,
+            sandbox,
+            access_mode: Some(mode),
         };
         let chat_id = new_id();
         self.workspace.create_chat(
@@ -935,13 +953,14 @@ impl Inner {
                     reasoning: agent.draft.reasoning,
                     model_options: Default::default(),
                     cwd: space.path.clone(),
-                    sandbox: agent.draft.sandbox,
-                    auto_approve: agent.draft.auto_approve,
+                    sandbox,
+                    auto_approve,
                     resume: None,
                     attachments: Vec::new(),
                     worktree: None,
                     // The host injects Godspeed's MCP server itself.
                     mcp: None,
+                    access: Some(access),
                 },
                 message_id: new_id(),
             },

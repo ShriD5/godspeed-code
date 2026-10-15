@@ -254,6 +254,36 @@ pub struct RunRequest {
     /// no Godspeed tools; title runs never carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpServer>,
+    /// The thread's access mode (and extra writable roots). Additive +
+    /// serde-defaulted: `None` (an older sender) reads the mode off the
+    /// legacy `sandbox` / `auto_approve` pair, which senders keep in step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<crate::RunAccess>,
+}
+
+impl RunRequest {
+    /// The access mode this run honors.
+    pub fn access_mode(&self) -> crate::AccessMode {
+        self.access.as_ref().map_or_else(
+            || crate::AccessMode::from_legacy(self.sandbox, self.auto_approve),
+            |access| access.mode,
+        )
+    }
+
+    /// Extra writable roots for the sandboxed modes.
+    pub fn writable_roots(&self) -> &[String] {
+        self.access
+            .as_ref()
+            .map_or(&[], |access| access.writable_roots.as_slice())
+    }
+
+    /// Set the access mode, keeping the legacy pair in step for older hosts.
+    pub fn set_access_mode(&mut self, mode: crate::AccessMode) {
+        let (sandbox, auto_approve) = mode.legacy();
+        self.sandbox = sandbox;
+        self.auto_approve = auto_approve;
+        self.access.get_or_insert_with(Default::default).mode = mode;
+    }
 }
 
 /// A stdio MCP server the harness should add to the agent's session, on top
@@ -555,6 +585,11 @@ pub struct UserInputQuestion {
     pub prefill: Option<String>,
     #[serde(default)]
     pub multiline: bool,
+    /// Set when this question is a permission request (see
+    /// [`crate::ApprovalRequest`]). Additive: older readers see a plain
+    /// question whose options are the decision labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::ApprovalRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -20,19 +20,22 @@ use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::agents::{AgentRun, AgentRunFilter, AgentRunStatus, AgentSummary};
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AccessMode, AgentEvent, ApprovalKind, ApprovalRequest, DoneStatus, HarnessId, Model,
+    ReasoningLevel, RunRequest, SessionStatus, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 use zeron_rpc::methods;
 
 const SPACE: &str = "space-agents";
 
 type PromptLog = Arc<Mutex<Vec<String>>>;
+type RequestLog = Arc<Mutex<Vec<RunRequest>>>;
 
 /// Answers by keyword in the instructions: `FAIL` errors out, `ASK` waits
-/// on an approval question first, anything else replies with a report.
+/// on a question first, `APPROVE` on a permission approval, anything else
+/// replies with a report.
 struct ScriptedHarness {
     prompts: PromptLog,
+    requests: RequestLog,
 }
 
 #[async_trait]
@@ -61,6 +64,7 @@ impl Harness for ScriptedHarness {
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         self.prompts.lock().unwrap().push(request.prompt.clone());
+        self.requests.lock().unwrap().push(request.clone());
         let started = AgentEvent::SessionStarted {
             harness: HarnessId::Mock,
             model: "mock-1".into(),
@@ -91,6 +95,25 @@ impl Harness for ScriptedHarness {
             ];
             return Ok(futures::stream::iter(events).boxed());
         }
+        if instructions.contains("APPROVE") {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let request_input = controls.request_input;
+            tokio::spawn(async move {
+                let _ = tx.send(started);
+                let mut approval = ApprovalRequest::new(ApprovalKind::Command, "Clean the build");
+                approval.command = Some("rm -rf build/".into());
+                approval.cwd = Some("/project".into());
+                let decision = zeron_harness::approval::ask(request_input.as_ref(), approval).await;
+                let _ = tx.send(AgentEvent::TextDelta {
+                    text: format!("Decision: {}.", decision.wire_name()),
+                });
+                let _ = tx.send(done(DoneStatus::Completed, None));
+            });
+            let stream = futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|event| (Ok(event), rx))
+            });
+            return Ok(stream.boxed());
+        }
         if instructions.contains("ASK") {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let request_input = controls.request_input;
@@ -104,6 +127,7 @@ impl Harness for ScriptedHarness {
                     prefill: None,
                     multiline: false,
                     multi_select: false,
+                    approval: None,
                 }])
                 .await
                 .unwrap_or_default();
@@ -151,15 +175,18 @@ struct World {
     core: EngineCore,
     client: zeron_rpc::RpcClient,
     prompts: PromptLog,
+    requests: RequestLog,
     workspace_dir: std::path::PathBuf,
 }
 
 fn world() -> World {
     let tmp = tempfile::tempdir().unwrap();
     let prompts = PromptLog::default();
+    let requests = RequestLog::default();
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(ScriptedHarness {
         prompts: prompts.clone(),
+        requests: requests.clone(),
     }));
     let core = EngineCore::assemble(
         &tmp.path().join("data"),
@@ -185,6 +212,7 @@ fn world() -> World {
         core,
         client,
         prompts,
+        requests,
         workspace_dir,
     }
 }
@@ -531,6 +559,115 @@ async fn busy_agents_skip_fires_and_approvals_wait_until_answered() {
         done.summary.as_deref(),
         Some("You picked Allow; cleaned up.")
     );
+    w.core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approvals_round_trip_through_the_ledger_and_resume_a_parked_agent() {
+    let w = world();
+    let mut supervised = draft("Janitor", "APPROVE before cleaning.", json!([]));
+    supervised["accessMode"] = json!("supervised");
+    let agent = create(&w.client, supervised).await;
+    // Saved in step: older engines read the legacy pair.
+    assert_eq!(agent.draft.access_mode, Some(AccessMode::Supervised));
+    assert_eq!(agent.draft.sandbox, zeron_proto::SandboxLevel::ReadOnly);
+    assert!(!agent.draft.auto_approve);
+
+    let run = w.core.agents.run_now(&agent.id).await.unwrap();
+    let parked = wait_for_run(&w, &run.id, AgentRunStatus::NeedsApproval).await;
+    let chat_id = parked.chat_id.clone().unwrap();
+
+    // The run carried the agent's mode and its memory directory as an extra
+    // writable root; the chat config syncs the mode.
+    let request = w.requests.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(request.access_mode(), AccessMode::Supervised);
+    let memory_dir = std::path::Path::new(&agent.memory_path)
+        .parent()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(request.writable_roots(), [memory_dir]);
+    let chat = w.core.workspace.chat(&chat_id).unwrap().unwrap();
+    assert_eq!(
+        chat.config.unwrap().access_mode,
+        Some(AccessMode::Supervised)
+    );
+
+    // The sidebar row says "needs approval" on every device.
+    let session = w
+        .core
+        .workspace
+        .read_sessions()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.chat_id == chat_id)
+        .unwrap();
+    assert_eq!(session.status, SessionStatus::AwaitingInput);
+    assert!(session.awaiting_approval);
+    assert_eq!(
+        zeron_proto::chat_indicator(
+            &w.core.workspace.chat(&chat_id).unwrap().unwrap(),
+            Some(&session)
+        ),
+        zeron_proto::ChatIndicator::AwaitingApproval
+    );
+
+    // Never auto-denied: it waits until someone answers.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for_run(&w, &run.id, AgentRunStatus::NeedsApproval).await;
+
+    // The approval is in the transcript with its command and decisions.
+    let (request_id, question) = w
+        .core
+        .doc_host
+        .open(&chat_id)
+        .unwrap()
+        .doc()
+        .read_entries()
+        .unwrap()
+        .iter()
+        .flat_map(|e| e.parts.iter())
+        .find_map(|part| match part {
+            MessagePart::Input {
+                request_id,
+                questions,
+                ..
+            } => Some((request_id.clone(), questions[0].clone())),
+            _ => None,
+        })
+        .expect("the approval is in the transcript");
+    let approval = question.approval.as_ref().expect("an approval request");
+    assert_eq!(approval.command.as_deref(), Some("rm -rf build/"));
+    assert_eq!(approval.kind, ApprovalKind::Command);
+
+    // Any device answers through the command ledger.
+    w.core
+        .doc_host
+        .queue_command(
+            &chat_id,
+            SessionCommandPayload::RespondInput {
+                request_id,
+                answers: vec![UserInputAnswer {
+                    question_id: question.id.clone(),
+                    labels: vec!["Approve for this session".into()],
+                }],
+            },
+        )
+        .unwrap();
+    let done = wait_for_run(&w, &run.id, AgentRunStatus::Succeeded).await;
+    assert_eq!(
+        done.summary.as_deref(),
+        Some("Decision: approveForSession.")
+    );
+    let session = w
+        .core
+        .workspace
+        .read_sessions()
+        .unwrap()
+        .into_iter()
+        .find(|s| s.chat_id == chat_id)
+        .unwrap();
+    assert!(!session.awaiting_approval, "the flag clears with the answer");
     w.core.shutdown().await;
 }
 

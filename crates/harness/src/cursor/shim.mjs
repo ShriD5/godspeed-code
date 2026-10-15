@@ -669,6 +669,8 @@ async function start(msg) {
     cwd: msg.cwd || process.cwd(),
     enableAgentRetries: true,
     settingSources: ["user", "team", "mdm", "plugins"],
+    // Godspeed's Auto access mode: the SDK's classifier-backed auto review.
+    ...(msg.autoReview ? { autoReview: true } : {}),
   };
   // Isolated per-run store (see the header above). Resume looks the agent's
   // store up by marker; a markerless (pre-isolation) agent resumes from the

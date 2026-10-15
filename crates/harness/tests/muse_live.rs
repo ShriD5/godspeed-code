@@ -79,6 +79,7 @@ async fn start(
         attachments: vec![],
         worktree: None,
         mcp: None,
+        access: None,
     };
     let stream = harness.run(request, controls).await.unwrap();
     Run {

@@ -203,9 +203,10 @@ pub trait Harness: Send + Sync {
     /// Whether a live runtime started for `live` can take `next` as its
     /// next prompt. Only a difference that changes how the runtime was
     /// launched needs a fresh one — replacing a runtime kills its background
-    /// work. The default covers what every driver's launch reads (the
-    /// sandbox level and auto-approve are read only by drivers that
-    /// override this); drivers narrow it further to their own launch.
+    /// work. The default covers what every driver's launch reads, the
+    /// access mode included (a driver that can switch it on the live
+    /// runtime says so in [`Self::reconfigures_in_place`]); drivers narrow
+    /// it further to their own launch.
     /// Whether a live runtime started for `live` adopts `next`'s differing
     /// configuration in place, before `next`'s prompt, instead of being
     /// replaced (which kills its background work). The prompt then arrives
@@ -219,6 +220,8 @@ pub trait Harness: Send + Sync {
             && live.reasoning == next.reasoning
             && same_model_options(&live.model_options, &next.model_options)
             && live.cwd == next.cwd
+            && live.access_mode() == next.access_mode()
+            && live.writable_roots() == next.writable_roots()
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError>;
     fn model_context(&self) -> Result<Option<ModelContext>, HarnessError> {
@@ -286,6 +289,7 @@ pub trait Harness: Send + Sync {
 
 pub mod acp;
 pub(crate) mod adapter_install;
+pub mod approval;
 pub mod archive_install;
 mod catalog;
 mod catalog_failure;
@@ -605,6 +609,29 @@ pub(crate) fn send_signal(job: &std::sync::Arc<windows_process::Job>, _signal: S
     if let Err(error) = job.terminate() {
         tracing::warn!(%error, "could not terminate Windows agent job");
     }
+}
+
+/// Refuse a run in an access mode the harness cannot honor, rather than run
+/// it with more access than the mode allows (see
+/// [`zeron_proto::supported_access_modes`]).
+pub fn refuse_unsupported_access(
+    harness: HarnessId,
+    name: &str,
+    request: &RunRequest,
+) -> Result<(), HarnessError> {
+    let mode = request.access_mode();
+    if zeron_proto::access_mode_supported(harness, mode) {
+        return Ok(());
+    }
+    let supported: Vec<&str> = zeron_proto::supported_access_modes(harness)
+        .iter()
+        .map(|m| m.label())
+        .collect();
+    Err(HarnessError::Protocol(format!(
+        "{name} can't ask before acting, so it can't run in {}. Switch the access mode to {}.",
+        mode.label(),
+        supported.join(" or ")
+    )))
 }
 
 /// System instruction shared by the restricted text-generation drivers

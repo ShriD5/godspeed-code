@@ -1069,6 +1069,7 @@ impl SessionHandle {
                     attachments: refs.clone(),
                     worktree: request.worktree.clone(),
                     mcp: None,
+                    access: None,
                 };
                 self.core.queue_command(
                     &device_id,

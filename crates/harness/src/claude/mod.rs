@@ -10,10 +10,19 @@
 //!   transport the Claude Agent SDK's `query()` drives, and was re-validated
 //!   live against 2.1.228: `can_use_tool` control requests arrive and
 //!   allow/deny responses are honored). The alternative channel — an MCP
-//!   permission tool — needs a server process and was rejected. Tool calls
-//!   auto-allow (godspeed sessions run unattended, parity with the ACP
-//!   harness's preferred-allow behavior); `AskUserQuestion` round-trips
-//!   through [`RunControls::request_input`].
+//!   permission tool — needs a server process and was rejected.
+//!   `AskUserQuestion` round-trips through [`RunControls::request_input`].
+//! - ACCESS MODES map onto the CLI's own `--permission-mode` (validated
+//!   against `claude --help` and the Agent SDK typings, 2.1.295):
+//!   supervised = `default`, auto-accept edits = `acceptEdits`, auto =
+//!   `auto` (the CLI's classifier), full access = `bypassPermissions`. The
+//!   CLI decides what needs a yes; every `can_use_tool` it still raises
+//!   becomes an [`ApprovalRequest`] the user answers. "Approve for this
+//!   session" echoes the request's `permission_suggestions` back as
+//!   `updatedPermissions` with `destination: "session"` (in memory only,
+//!   never written to settings files). A mode change between non-bypass
+//!   modes applies in place (`set_permission_mode`); entering or leaving
+//!   bypass needs a relaunch. Extra writable roots ride `--add-dir`.
 //! - DONE is the CLI's own `result` frame, eagerly: background work (a
 //!   spawned subagent) never holds the turn. The CLI natively runs a second
 //!   wake turn when a background task finishes — a fresh `init` (same
@@ -60,8 +69,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand,
-    SteeringMode, UserInputAnswer, UserInputQuestion,
+    AccessMode, AgentEvent, ApprovalDecision, ApprovalKind, ApprovalRequest, DoneStatus,
+    HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand, SteeringMode, UserInputAnswer,
+    UserInputQuestion,
 };
 
 use crate::process::{Child, ChildStdin, Command, Stdio};
@@ -239,17 +249,13 @@ impl ClaudeHarness {
         if let Some(effort) = to_effort(request.reasoning, request.model.as_deref()) {
             args.extend(["--effort".into(), effort.into()]);
         }
-        if request.auto_approve {
-            args.extend(
-                [
-                    "--permission-mode",
-                    "bypassPermissions",
-                    "--dangerously-skip-permissions",
-                ]
-                .map(str::to_owned),
-            );
-        } else {
-            args.extend(["--permission-mode".into(), "default".into()]);
+        let mode = request.access_mode();
+        args.extend(["--permission-mode".into(), permission_mode(mode).into()]);
+        if mode == AccessMode::FullAccess {
+            args.push("--dangerously-skip-permissions".into());
+        }
+        for root in request.writable_roots() {
+            args.extend(["--add-dir".into(), root.clone()]);
         }
         let mut settings = serde_json::Map::new();
         if option_is_on(&request.model_options, "fastMode") {
@@ -465,10 +471,15 @@ impl Harness for ClaudeHarness {
         live.cwd == next.cwd && Self::launch_args(live) == Self::launch_args(next)
     }
     /// Model, context window, effort, fast mode, thinking and ultracode all
-    /// change on the live process (`set_model`, `apply_flag_settings`). Only
-    /// the directory and the permission mode it launched with need a new one.
+    /// change on the live process (`set_model`, `apply_flag_settings`), and
+    /// so does the permission mode (`set_permission_mode`) — except into or
+    /// out of bypass, which the CLI only allows for a process launched with
+    /// it. The directory and extra roots need a new one.
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
-        live.cwd == next.cwd && live.auto_approve == next.auto_approve
+        let bypass = |r: &RunRequest| r.access_mode() == AccessMode::FullAccess;
+        live.cwd == next.cwd
+            && bypass(live) == bypass(next)
+            && live.writable_roots() == next.writable_roots()
     }
 
     /// Credential and executable identity scopes both initialize and catalog caches.
@@ -571,7 +582,10 @@ impl Harness for ClaudeHarness {
         request.attachments.clear();
         request.mcp = None;
         request.model_options.clear();
-        request.auto_approve = false;
+        request.set_access_mode(AccessMode::Supervised);
+        if let Some(access) = &mut request.access {
+            access.writable_roots.clear();
+        }
         self.run_with_mode(request, controls, true).await
     }
 }
@@ -918,7 +932,7 @@ async fn run_session(session: Session) {
                             }));
                             let _ = stdin_tx.send(StdinMsg::Line(line));
                         } else {
-                            handle_control_request(req, &request_input, &stdin_tx);
+                            handle_control_request(req, &config, &request_input, &stdin_tx);
                         }
                         continue;
                     }
@@ -1072,6 +1086,13 @@ async fn run_session(session: Session) {
                             let line = wire::apply_flag_settings_line(
                                 &format!("zeron_settings_{reconfigures}"),
                                 flag_settings(&next),
+                            );
+                            if stdin_tx.send(StdinMsg::Line(line)).is_err() { break 'main; }
+                        }
+                        if next.access_mode() != config.access_mode() {
+                            let line = wire::set_permission_mode_line(
+                                &format!("zeron_mode_{reconfigures}"),
+                                permission_mode(next.access_mode()),
                             );
                             if stdin_tx.send(StdinMsg::Line(line)).is_err() { break 'main; }
                         }
@@ -1323,15 +1344,15 @@ type RequestInputFn = Box<
         + Sync,
 >;
 
-/// Serve one `can_use_tool` control request. Every tool is auto-approved
-/// (unattended parity — the CLI still blocks until SOME response arrives, so
-/// every request must be answered); `AskUserQuestion` is intercepted —
-/// surface the questions through the engine's input bridge (which owns the
-/// `InputRequested`/`InputResolved` lifecycle), wait for the user's answers
-/// (in a subtask so the frame loop keeps flowing), and hand them back keyed
-/// by question text, as the tool expects.
+/// Serve one `can_use_tool` control request. The CLI already applied the
+/// run's permission mode, so whatever reaches us needs a decision:
+/// `AskUserQuestion` surfaces its questions; every other tool becomes an
+/// approval (allowed outright only under full access, as a belt to the
+/// CLI's own bypass). Both wait in a subtask so the frame loop keeps flowing
+/// — the CLI blocks the tool until SOME response arrives.
 fn handle_control_request(
     req: ControlRequestFrame,
+    config: &RunRequest,
     request_input: &Arc<RequestInputFn>,
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
 ) {
@@ -1343,8 +1364,20 @@ fn handle_control_request(
         return;
     }
     if req.request.tool_name != "AskUserQuestion" {
-        let line = control_response_line(&req.request_id, allow_response(req.request.input));
-        let _ = stdin_tx.send(StdinMsg::Line(line));
+        if config.access_mode() == AccessMode::FullAccess {
+            let line = control_response_line(&req.request_id, allow_response(req.request.input));
+            let _ = stdin_tx.send(StdinMsg::Line(line));
+            return;
+        }
+        let approval = approval_request(&req.request, &config.cwd);
+        let request_input = Arc::clone(request_input);
+        let stdin_tx = stdin_tx.clone();
+        tokio::spawn(async move {
+            let decision = crate::approval::ask(request_input.as_ref(), approval).await;
+            let response = permission_result(&req.request, decision);
+            let line = control_response_line(&req.request_id, response);
+            let _ = stdin_tx.send(StdinMsg::Line(line));
+        });
         return;
     }
     let request_input = Arc::clone(request_input);
@@ -1367,6 +1400,189 @@ fn handle_control_request(
         let line = control_response_line(&request_id, allow_response(updated));
         let _ = stdin_tx.send(StdinMsg::Line(line));
     });
+}
+
+/// `--permission-mode` for an access mode. `default` is the CLI's own
+/// spelling of "ask" (`manual` is a newer alias for it).
+fn permission_mode(mode: AccessMode) -> &'static str {
+    match mode {
+        AccessMode::Supervised => "default",
+        AccessMode::AutoAcceptEdits => "acceptEdits",
+        AccessMode::Auto => "auto",
+        AccessMode::FullAccess => "bypassPermissions",
+    }
+}
+
+/// Describe a `can_use_tool` request for the approval card: the exact Bash
+/// command, the edited path with a diff preview, or the tool and its target.
+fn approval_request(req: &wire::ControlRequestBody, cwd: &str) -> ApprovalRequest {
+    let input = &req.input;
+    let text = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_owned);
+    let tool = req.tool_name.as_str();
+    let (kind, title) = match tool {
+        "Bash" => (
+            ApprovalKind::Command,
+            text("description").unwrap_or_else(|| "Run a command".into()),
+        ),
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
+            let path = text("file_path")
+                .or_else(|| text("notebook_path"))
+                .unwrap_or_default();
+            (
+                ApprovalKind::FileChange,
+                format!("Edit {}", display_path(&path, cwd)),
+            )
+        }
+        "Read" | "Glob" | "Grep" | "LS" => (ApprovalKind::FileRead, format!("Use {tool}")),
+        "WebFetch" => (
+            ApprovalKind::Network,
+            format!("Fetch {}", text("url").unwrap_or_default()),
+        ),
+        "WebSearch" => (
+            ApprovalKind::Network,
+            format!("Search the web for {}", text("query").unwrap_or_default()),
+        ),
+        _ if tool.starts_with("mcp__") => {
+            let mut parts = tool.splitn(3, "__").skip(1);
+            let server = parts.next().unwrap_or_default();
+            let name = parts.next().unwrap_or_default();
+            (ApprovalKind::McpTool, format!("Use {name} ({server})"))
+        }
+        _ => (ApprovalKind::Other, format!("Use {tool}")),
+    };
+    let mut approval = ApprovalRequest::new(kind, req.title.clone().unwrap_or(title));
+    approval.reason = req
+        .decision_reason
+        .clone()
+        .or_else(|| req.description.clone());
+    approval.cwd = (!cwd.is_empty()).then(|| cwd.to_owned());
+    match tool {
+        "Bash" => approval.command = text("command"),
+        "Edit" => {
+            if let Some(path) = text("file_path") {
+                approval.diff = Some(crate::approval::unified_diff(
+                    &display_path(&path, cwd),
+                    Some(&text("old_string").unwrap_or_default()),
+                    &text("new_string").unwrap_or_default(),
+                ));
+                approval.paths.push(path);
+            }
+        }
+        "MultiEdit" => {
+            if let Some(path) = text("file_path") {
+                let shown = display_path(&path, cwd);
+                let diff: String = input
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|edit| {
+                        let field = |k: &str| edit.get(k).and_then(Value::as_str).unwrap_or("");
+                        crate::approval::unified_diff(
+                            &shown,
+                            Some(field("old_string")),
+                            field("new_string"),
+                        )
+                    })
+                    .collect();
+                approval.diff = (!diff.is_empty()).then_some(diff);
+                approval.paths.push(path);
+            }
+        }
+        "Write" => {
+            if let Some(path) = text("file_path") {
+                let full = std::path::Path::new(cwd).join(&path);
+                let old = std::fs::metadata(&full)
+                    .ok()
+                    .filter(|m| m.is_file() && m.len() <= 1024 * 1024)
+                    .and_then(|_| std::fs::read_to_string(&full).ok());
+                approval.diff = Some(crate::approval::unified_diff(
+                    &display_path(&path, cwd),
+                    old.as_deref(),
+                    &text("content").unwrap_or_default(),
+                ));
+                approval.paths.push(path);
+            }
+        }
+        "NotebookEdit" => approval.paths.extend(text("notebook_path")),
+        "Read" | "LS" => approval
+            .paths
+            .extend(text("file_path").or_else(|| text("path"))),
+        "Glob" | "Grep" => approval.command = text("pattern"),
+        _ => {}
+    }
+    if let Some(blocked) = &req.blocked_path
+        && !approval.paths.contains(blocked)
+    {
+        approval.paths.push(blocked.clone());
+    }
+    if req.suppress_always_allow_rule {
+        approval =
+            approval.with_decisions(&[ApprovalDecision::Approve, ApprovalDecision::Decline]);
+    }
+    approval
+}
+
+fn display_path(path: &str, cwd: &str) -> String {
+    std::path::Path::new(path)
+        .strip_prefix(cwd)
+        .ok()
+        .filter(|_| !cwd.is_empty())
+        .map_or_else(|| path.to_owned(), |p| p.display().to_string())
+}
+
+/// The `PermissionResult` for a decision. "This session" echoes the CLI's
+/// own suggestions scoped to the session (in memory, never a settings
+/// file); without suggestions it allows this tool — this exact command, for
+/// Bash — for the session.
+fn permission_result(req: &wire::ControlRequestBody, decision: ApprovalDecision) -> Value {
+    match decision {
+        ApprovalDecision::Approve | ApprovalDecision::ApproveAlways => {
+            allow_response(req.input.clone())
+        }
+        ApprovalDecision::ApproveForSession => {
+            let mut response = allow_response(req.input.clone());
+            response["updatedPermissions"] = Value::Array(session_permissions(req));
+            response
+        }
+        ApprovalDecision::Decline | ApprovalDecision::DeclineAlways => serde_json::json!({
+            "behavior": "deny",
+            "message": "The user declined this action.",
+        }),
+        ApprovalDecision::Cancel => serde_json::json!({
+            "behavior": "deny",
+            "message": "The user declined this action and stopped the turn.",
+            "interrupt": true,
+        }),
+    }
+}
+
+fn session_permissions(req: &wire::ControlRequestBody) -> Vec<Value> {
+    let suggestions: Vec<Value> = req
+        .permission_suggestions
+        .iter()
+        .cloned()
+        .map(|mut update| {
+            update["destination"] = "session".into();
+            update
+        })
+        .collect();
+    if !suggestions.is_empty() {
+        return suggestions;
+    }
+    let mut rule = serde_json::json!({ "toolName": req.tool_name });
+    if req.tool_name == "Bash"
+        && let Some(command) = req.input.get("command").and_then(Value::as_str)
+    {
+        rule["ruleContent"] = command.into();
+    }
+    vec![serde_json::json!({
+        "type": "addRules",
+        "rules": [rule],
+        "behavior": "allow",
+        "destination": "session",
+    })]
 }
 
 /// Parse Claude's `AskUserQuestion` tool input into [`UserInputQuestion`]s
@@ -1406,6 +1622,7 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
                             .into(),
                     })
                     .collect(),
+                    approval: None,
             }
         })
         .collect()
@@ -1481,6 +1698,68 @@ mod tests {
         assert_eq!(updated["answers"]["Pick one"], json!("B"));
         // Original input is preserved alongside the answers.
         assert!(updated["questions"].is_array());
+    }
+
+    fn tool_request(tool: &str, input: Value) -> wire::ControlRequestBody {
+        wire::ControlRequestBody {
+            subtype: "can_use_tool".into(),
+            tool_name: tool.into(),
+            input,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decisions_map_to_permission_results() {
+        let req = tool_request("Bash", json!({"command": "make"}));
+        let cancel = permission_result(&req, ApprovalDecision::Cancel);
+        assert_eq!(cancel["behavior"], "deny");
+        assert_eq!(cancel["interrupt"], true);
+        let once = permission_result(&req, ApprovalDecision::Approve);
+        assert_eq!(once["behavior"], "allow");
+        assert!(once.get("updatedPermissions").is_none());
+        // No suggestions: allow this exact command for the session.
+        let session = permission_result(&req, ApprovalDecision::ApproveForSession);
+        assert_eq!(
+            session["updatedPermissions"],
+            json!([{
+                "type": "addRules",
+                "rules": [{"toolName": "Bash", "ruleContent": "make"}],
+                "behavior": "allow",
+                "destination": "session",
+            }])
+        );
+    }
+
+    #[test]
+    fn approvals_describe_writes_mcp_tools_and_suppressed_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "old\n").unwrap();
+        let cwd = dir.path().to_str().unwrap();
+        let write = approval_request(
+            &tool_request(
+                "Write",
+                json!({"file_path": dir.path().join("a.txt"), "content": "new\n"}),
+            ),
+            cwd,
+        );
+        assert_eq!(write.kind, ApprovalKind::FileChange);
+        assert_eq!(write.title, "Edit a.txt");
+        assert!(write.diff.unwrap().contains("-old\n+new"));
+        let mcp = approval_request(&tool_request("mcp__linear__search", json!({})), cwd);
+        assert_eq!(mcp.kind, ApprovalKind::McpTool);
+        assert_eq!(mcp.title, "Use search (linear)");
+        let mut suppressed = tool_request("Bash", json!({"command": "x"}));
+        suppressed.suppress_always_allow_rule = true;
+        let decisions: Vec<_> = approval_request(&suppressed, cwd)
+            .decisions
+            .iter()
+            .map(|d| d.decision)
+            .collect();
+        assert_eq!(
+            decisions,
+            [ApprovalDecision::Approve, ApprovalDecision::Decline]
+        );
     }
 }
 

@@ -128,6 +128,33 @@ case "$first" in
   esac
   ;;
 
+*scenario:approvals*)
+  # Access modes ride `--permission-mode`; every `can_use_tool` the CLI
+  # still raises is the user's to answer. Shapes follow the Agent SDK
+  # typings for 2.1.295. The fake records its argv and every response it
+  # reads into its cwd for the test to inspect.
+  printf '%s\n' "$@" > args.log
+  : > responses.log
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":["Bash","Edit"],"cwd":"/tmp","session_id":"sess-ap"}'
+  emit '{"type":"control_request","request_id":"cr-bash","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu-1","input":{"command":"rm -rf build","description":"Clean the build"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf build"}],"behavior":"allow","destination":"localSettings"}],"decision_reason":"Deletes files"}}'
+  read -r resp || exit 1
+  printf '%s\n' "$resp" >> responses.log
+  emit '{"type":"control_request","request_id":"cr-edit","request":{"subtype":"can_use_tool","tool_name":"Edit","tool_use_id":"tu-2","input":{"file_path":"src/lib.rs","old_string":"fn a() {}\n","new_string":"fn b() {}\n"}}}'
+  read -r resp || exit 1
+  printf '%s\n' "$resp" >> responses.log
+  emit '{"type":"result","subtype":"success","result":"first","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-ap"}'
+  # A follow-up in another (non-bypass) mode switches the live process.
+  read -r next || exit 0
+  case "$next" in
+  *'"subtype":"set_permission_mode"'*)
+    printf '%s\n' "$next" >> responses.log
+    read -r next || exit 1
+    ;;
+  esac
+  emit "$next"
+  emit '{"type":"result","subtype":"success","result":"second","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-ap"}'
+  ;;
+
 *scenario:steer*)
   emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-steer"}'
   emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"first"}}}'

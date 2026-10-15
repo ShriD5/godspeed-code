@@ -1278,6 +1278,7 @@ impl SessionsEngine {
                             attachments: Vec::new(),
                             resume: None,
                             worktree: None,
+                            access: None,
                         })
                     });
                 let Some(mut request) = request else {
@@ -1514,6 +1515,23 @@ impl Inner {
         fresh_start: bool,
         completed_turn: Option<String>,
     ) {
+        self.write_status(chat_id, status, fresh_start, completed_turn, false);
+    }
+
+    /// `AwaitingInput`, flagged when the pending request is a permission
+    /// approval ("Needs approval" on every device's sidebar).
+    fn set_awaiting_input(&self, chat_id: &str, approval: bool) {
+        self.write_status(chat_id, SessionStatus::AwaitingInput, false, None, approval);
+    }
+
+    fn write_status(
+        &self,
+        chat_id: &str,
+        status: SessionStatus,
+        fresh_start: bool,
+        completed_turn: Option<String>,
+        awaiting_approval: bool,
+    ) {
         let now = Utc::now();
         let session = {
             let mut statuses = lock(&self.statuses);
@@ -1527,6 +1545,7 @@ impl Inner {
                     started_at: None,
                     updated_at: now,
                     running_subagents: 0,
+                    awaiting_approval: false,
                 });
             // `started_at` is the elapsed-timer base and must only ever mean
             // "this turn". Entering Working from a settled state always
@@ -1543,6 +1562,7 @@ impl Inner {
             }
             entry.status = status;
             entry.updated_at = now;
+            entry.awaiting_approval = status == SessionStatus::AwaitingInput && awaiting_approval;
             match status {
                 SessionStatus::Working if fresh_start || !was_active => {
                     entry.started_at = Some(now);
@@ -3210,10 +3230,11 @@ async fn drive_run(
                 inner.remember_harness_session(&chat_id, session_id, &run_cwd);
                 note_fork_history_session(&doc, carried_history, session_id);
             }
-            AgentEvent::InputRequested { .. } => {
+            AgentEvent::InputRequested { questions, .. } => {
                 // Known-id guaranteed: the unknown-id twin was dropped above,
                 // before the parked gate.
-                inner.set_status(&chat_id, SessionStatus::AwaitingInput, false);
+                let approval = questions.iter().any(UserInputQuestion::is_approval);
+                inner.set_awaiting_input(&chat_id, approval);
             }
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
@@ -3773,6 +3794,7 @@ mod tests {
             resume: None,
             attachments: Vec::new(),
             worktree: None,
+            access: None,
         }
     }
 
@@ -3984,10 +4006,11 @@ mod tests {
         initial
             .model_options
             .insert("fastMode".into(), serde_json::json!(false));
+        initial.set_access_mode(zeron_proto::AccessMode::AutoAcceptEdits);
         let config = RuntimeConfig::new(HarnessId::ClaudeCode, &initial, claude());
 
-        // The CLI never reads the sandbox level; an option that launches no
-        // flag in either spelling is the same runtime.
+        // The CLI reads the sandbox level only through the access mode; an
+        // option that launches no flag in either spelling is the same runtime.
         let mut follow_up = initial.clone();
         follow_up.sandbox = SandboxLevel::DangerFullAccess;
         follow_up.model_options.clear();

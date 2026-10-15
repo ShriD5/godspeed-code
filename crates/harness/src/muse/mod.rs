@@ -4,6 +4,14 @@
 //! prompt is a `turn/start` with `ifBusy: "steer"`, which Muse atomically
 //! folds into the running turn or starts as the next one, so an idle race
 //! can never strand a steer the way a separate status read + steer could.
+//!
+//! Access modes ride Muse's own approval modes and built-in permission
+//! profiles (`:read-only`, `:ask-me`, `:auto-review`, `:unrestricted` —
+//! read from the 1.4.8 binary and `muse serve --help`): supervised and
+//! auto-accept edits are `promptUnmatched` + `:ask-me` (auto-accept edits
+//! then approves in-workspace file writes here), auto is `:auto-review`
+//! (Muse's AI reviewer decides), full access `allowAll` + `:unrestricted`
+//! with the shell sandbox off. Approvals surface with Muse's own choices.
 mod normalize;
 
 use crate::{
@@ -27,7 +35,7 @@ use tokio::{
     task::JoinSet,
 };
 use zeron_proto::{
-    AgentEvent, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
+    AccessMode, AgentEvent, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
     UserInputAnswer, UserInputQuestion,
 };
 
@@ -171,23 +179,24 @@ impl MuseHarness {
 }
 
 /// `muse serve` flags for a run. Sandbox posture is fixed for the host's
-/// lifetime; approval mode is selected on the wire instead.
+/// lifetime; approval mode is selected on the wire instead. Every mode but
+/// full access keeps the shell sandbox.
 fn serve_args(request: &RunRequest) -> Vec<&'static str> {
-    match request.sandbox {
-        SandboxLevel::ReadOnly => vec!["--disable-shell", "--disable-write"],
-        SandboxLevel::WorkspaceWrite => vec!["--trust-workspace"],
-        SandboxLevel::DangerFullAccess => vec!["--trust-workspace", "--disable-sandbox"],
+    match request.access_mode() {
+        AccessMode::FullAccess => vec!["--trust-workspace", "--disable-sandbox"],
+        _ => vec!["--trust-workspace"],
     }
 }
 
 /// The approval mode and permission profile a session selects. Without an
 /// explicit profile Muse applies its own default, which can be
-/// `:auto-review` — an AI reviewer deciding approvals instead of the user.
-fn approval(auto_approve: bool) -> (&'static str, &'static str) {
-    if auto_approve {
-        ("allowAll", ":unrestricted")
-    } else {
-        ("promptUnmatched", ":ask-me")
+/// `:auto-review` — an AI reviewer deciding approvals instead of the user —
+/// so every mode names one.
+fn approval(mode: AccessMode) -> (&'static str, &'static str) {
+    match mode {
+        AccessMode::Supervised | AccessMode::AutoAcceptEdits => ("promptUnmatched", ":ask-me"),
+        AccessMode::Auto => ("promptUnmatched", ":auto-review"),
+        AccessMode::FullAccess => ("allowAll", ":unrestricted"),
     }
 }
 
@@ -350,15 +359,15 @@ impl Harness for MuseHarness {
             && live.reasoning == next.reasoning
             && crate::same_model_options(&live.model_options, &next.model_options)
             && live.cwd == next.cwd
-            && live.sandbox == next.sandbox
-            && live.auto_approve == next.auto_approve
+            && live.access_mode() == next.access_mode()
+            && live.writable_roots() == next.writable_roots()
     }
     /// `session/setModel` switches the live session, and effort rides each
     /// turn. Clearing back to the default model cannot be expressed that way.
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
         live.cwd == next.cwd
-            && live.sandbox == next.sandbox
-            && live.auto_approve == next.auto_approve
+            && live.access_mode() == next.access_mode()
+            && live.writable_roots() == next.writable_roots()
             && (picked_model(next).is_some() || picked_model(live).is_none())
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
@@ -586,7 +595,7 @@ impl Runner {
         } else {
             None
         };
-        let (mode, profile) = approval(self.request.auto_approve);
+        let (mode, profile) = approval(self.request.access_mode());
         if let Some(id) = self.request.resume.clone() {
             let mut params = json!({
                 "commandId": command_id(),
@@ -966,8 +975,19 @@ impl Runner {
                 )
             }
         };
-        // allowAll does not reach a workflow child's approvals; auto-approve does.
-        if self.request.auto_approve {
+        let (question, choices) = normalize::approval_question(params);
+        // allowAll does not reach a workflow child's approvals; full access
+        // approves them here. Auto-accept edits approves in-workspace writes.
+        let mode = self.request.access_mode();
+        let auto = question.approval.as_ref().is_some_and(|approval| {
+            let in_workspace = crate::approval::paths_within(
+                approval.paths.iter().map(String::as_str),
+                &self.request.cwd,
+                self.request.writable_roots(),
+            );
+            crate::approval::auto_decision(mode, approval.kind, in_workspace)
+        });
+        if auto {
             if let Some(choice) = normalize::default_choice(params, true) {
                 self.dialogs.open(id, async move {
                     let _ = decide(choice).await;
@@ -975,18 +995,32 @@ impl Runner {
             }
             return;
         }
-        let (question, choices) = normalize::approval_question(params);
         let fallback = normalize::default_choice(params, false);
         let input = self.input.clone();
         self.dialogs.open(id, async move {
             // A dropped answer (the turn stopped) declines; never a silent allow.
             let answers = (input)(vec![question.clone()]).await.unwrap_or_default();
+            // By label; a decision spelled another way (an orchestrator's
+            // wire name, an old client's yes/no) by its matching choice.
             let picked = answers
                 .iter()
                 .find(|a| a.question_id == question.id)
                 .and_then(|a| a.labels.first())
-                .and_then(|label| choices.iter().find(|(l, _)| l == label))
-                .map(|(_, choice)| choice.clone());
+                .and_then(|label| {
+                    choices
+                        .iter()
+                        .find(|(l, _)| l == label)
+                        .map(|(_, choice)| choice.clone())
+                        .or_else(|| {
+                            let approval = question.approval.as_ref()?;
+                            let decision = approval.decision_for(label)?;
+                            let option = approval.decisions.iter().find(|o| o.decision == decision)?;
+                            choices
+                                .iter()
+                                .find(|(l, _)| *l == option.label)
+                                .map(|(_, choice)| choice.clone())
+                        })
+                });
             if let Some(choice) = picked.or(fallback)
                 && let Err(error) = decide(choice).await
             {

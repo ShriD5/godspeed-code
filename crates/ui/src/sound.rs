@@ -331,14 +331,23 @@ use zeron_proto::{
 #[derive(Debug, Clone)]
 pub(crate) struct SessionNotificationState {
     indicator: Indicator,
+    /// The pending input is a permission approval.
+    approval: bool,
     last_completed_turn: Option<String>,
     fresh: bool,
 }
 
 impl SessionNotificationState {
+    /// Whether the ping is for a permission approval ("Needs your approval").
+    pub(crate) fn approval(&self) -> bool {
+        self.approval
+    }
+
     pub(crate) fn new(session: &Session, now: chrono::DateTime<chrono::Utc>) -> Self {
+        let indicator = effective_indicator(Some(session), now);
         Self {
-            indicator: effective_indicator(Some(session), now),
+            indicator,
+            approval: indicator == Indicator::AwaitingInput && session.awaiting_approval,
             last_completed_turn: session.last_completed_turn.clone(),
             fresh: now
                 .signed_duration_since(session.updated_at)
@@ -353,7 +362,9 @@ impl SessionNotificationState {
         if self.indicator == Indicator::Errored && prev.indicator != Indicator::Errored {
             return Some(Sound::Attention);
         }
-        if self.indicator == Indicator::AwaitingInput && prev.indicator != Indicator::AwaitingInput
+        // A question, or an approval landing behind one, asks for the user.
+        if self.indicator == Indicator::AwaitingInput
+            && (prev.indicator != Indicator::AwaitingInput || (self.approval && !prev.approval))
         {
             return Some(Sound::Request);
         }
@@ -448,9 +459,22 @@ mod tests {
     fn baseline(indicator: Indicator, turn: Option<&str>) -> SessionNotificationState {
         SessionNotificationState {
             indicator,
+            approval: false,
             last_completed_turn: turn.map(str::to_owned),
             fresh: true,
         }
+    }
+
+    #[test]
+    fn an_approval_chimes_even_behind_a_pending_question() {
+        let question = baseline(Indicator::AwaitingInput, None);
+        let approval = SessionNotificationState {
+            approval: true,
+            ..baseline(Indicator::AwaitingInput, None)
+        };
+        assert_eq!(approval.sound_since(&question, false), Some(Sound::Request));
+        assert!(approval.approval());
+        assert_eq!(approval.sound_since(&approval, false), None);
     }
 
     #[test]

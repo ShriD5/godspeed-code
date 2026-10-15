@@ -48,9 +48,9 @@ this audit. ✅ has it (equal or better) · 🟡 partial · ❌ missing · ⛔ o
 
 | Item | Status | Notes |
 |---|---|---|
-| Access modes (supervised / auto-accept edits / auto / full) | ❌ | **agents run without asking**: Codex `approvalPolicy: never`, Claude auto-allows, ACP auto-picks allow |
-| Approval UI (command, file, read, permission) | ❌ | |
-| Approval decisions (once / this session / always / decline) | ❌ | |
+| Access modes (supervised / auto-accept edits / auto / full) | ✅ | per chat (`ChatConfig.access_mode`), default in Settings → Providers, ⌘⇧M cycles; Cursor offers auto + full only, Pi full only (refused otherwise, never widened) |
+| Approval UI (command, file, read, permission) | ✅ | approval card over the composer (command, cwd, paths, diff), "Needs approval" sidebar state, sound + banner |
+| Approval decisions (once / this session / always / decline) | ✅ | the provider's own decisions; answered through `RespondInput` from any device, the phone, or an orchestrator within its own mode |
 | Secret request card | ❌ | |
 | Plan mode + proposed plan card (Implement / Refine) | ❌ | |
 | Todo / plan steps panel | ✅ | |

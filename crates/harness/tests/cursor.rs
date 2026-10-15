@@ -43,6 +43,7 @@ fn request(prompt: &str) -> RunRequest {
         attachments: Vec::new(),
         worktree: None,
         resume: None,
+        access: None,
     }
 }
 
@@ -513,5 +514,22 @@ async fn mcp_injection_reaches_shim_on_new_and_resumed_runs() {
         assert!(events.contains(&AgentEvent::TextDelta {
             text: "mcp configured".into()
         }));
+    }
+}
+
+#[tokio::test]
+async fn access_modes_cursor_cannot_honor_are_refused_not_widened() {
+    use zeron_proto::AccessMode;
+    for mode in [AccessMode::Supervised, AccessMode::AutoAcceptEdits] {
+        let mut req = request("hello");
+        req.set_access_mode(mode);
+        let (controls, _steer, _token) = controls();
+        match harness().run(req, controls).await {
+            Err(zeron_harness::HarnessError::Protocol(message)) => {
+                assert!(message.contains(mode.label()), "{message}")
+            }
+            Err(other) => panic!("{mode:?}: unexpected error {other}"),
+            Ok(_) => panic!("{mode:?} ran with more access than it allows"),
+        }
     }
 }

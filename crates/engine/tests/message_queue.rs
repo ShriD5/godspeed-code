@@ -117,6 +117,7 @@ impl Harness for HeldHarness {
                 prefill: None,
                 multiline: false,
                 multi_select: false,
+                approval: None,
             }])
         });
         let finish = self.finish.subscribe();
@@ -1702,6 +1703,7 @@ async fn queued_turn_uses_current_config_at_turn_end_and_send_now() {
             reasoning: Some(ReasoningLevel::Medium),
             model_options: Default::default(),
             sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            access_mode: None,
         };
         core.workspace.set_chat_config(CHAT, &config).unwrap();
         core.doc_host

@@ -65,8 +65,31 @@ pub struct AgentDraft {
     /// an unattended run that needs a decision waits in the inbox instead.
     #[serde(default)]
     pub auto_approve: bool,
+    /// The agent's access mode. `None` (an agent saved before access modes)
+    /// reads it off `sandbox` + `auto_approve`; saving writes all three in
+    /// step (see [`Self::access_mode`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_mode: Option<crate::AccessMode>,
     #[serde(default)]
     pub triggers: Vec<AgentTrigger>,
+}
+
+impl AgentDraft {
+    /// The access mode every run of this agent uses.
+    pub fn access_mode(&self) -> crate::AccessMode {
+        self.access_mode
+            .unwrap_or_else(|| crate::AccessMode::from_legacy(self.sandbox, self.auto_approve))
+    }
+
+    /// Pin the access mode and keep the legacy pair in step with it, so an
+    /// older engine reading the stored draft runs with no more access.
+    pub fn normalize_access(&mut self) {
+        let mode = self.access_mode();
+        let (sandbox, auto_approve) = mode.legacy();
+        self.access_mode = Some(mode);
+        self.sandbox = sandbox;
+        self.auto_approve = auto_approve;
+    }
 }
 
 fn default_true() -> bool {
@@ -251,5 +274,22 @@ mod tests {
         assert!(!draft.auto_approve);
         assert_eq!(draft.sandbox, SandboxLevel::WorkspaceWrite);
         assert!(draft.triggers.is_empty());
+        assert_eq!(draft.access_mode(), crate::AccessMode::AutoAcceptEdits);
+    }
+
+    #[test]
+    fn agent_access_maps_onto_the_legacy_pair_both_ways() {
+        let mut draft: AgentDraft = serde_json::from_value(serde_json::json!({
+            "name": "Nightly", "harness": "mock", "spaceId": "s1", "instructions": "go",
+            "sandbox": "danger-full-access", "autoApprove": true,
+        }))
+        .unwrap();
+        assert_eq!(draft.access_mode(), crate::AccessMode::FullAccess);
+        draft.access_mode = Some(crate::AccessMode::Supervised);
+        draft.normalize_access();
+        assert_eq!(draft.sandbox, SandboxLevel::ReadOnly);
+        assert!(!draft.auto_approve);
+        let json = serde_json::to_value(&draft).unwrap();
+        assert_eq!(json["accessMode"], "supervised");
     }
 }

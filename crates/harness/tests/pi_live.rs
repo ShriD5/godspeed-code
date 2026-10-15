@@ -90,12 +90,13 @@ async fn real_pi_mock_lifecycle() {
             reasoning: None,
             model_options: Default::default(),
             cwd: cwd.display().to_string(),
-            sandbox: SandboxLevel::WorkspaceWrite,
+            sandbox: SandboxLevel::DangerFullAccess,
             auto_approve: true,
             resume: session.clone(),
             attachments: vec![],
             worktree: None,
             mcp: None,
+            access: None,
         };
         let previous_session = session.clone();
         let mut stream = harness.run(request, controls).await.unwrap();
@@ -191,12 +192,13 @@ async fn real_pi_mock_lifecycle() {
         reasoning: None,
         model_options: Default::default(),
         cwd: cwd.display().to_string(),
-        sandbox: SandboxLevel::WorkspaceWrite,
+        sandbox: SandboxLevel::DangerFullAccess,
         auto_approve: true,
         resume: session.clone(),
         attachments: vec![],
         worktree: None,
         mcp: None,
+        access: None,
     };
     let events: Vec<_> = tokio::time::timeout(
         Duration::from_secs(20),
@@ -264,12 +266,13 @@ async fn real_pi_steering_bursts_share_the_next_model_call() {
         reasoning: None,
         model_options: Default::default(),
         cwd: cwd.display().to_string(),
-        sandbox: SandboxLevel::WorkspaceWrite,
+        sandbox: SandboxLevel::DangerFullAccess,
         auto_approve: true,
         resume: None,
         attachments: vec![],
         worktree: None,
         mcp: None,
+        access: None,
     };
     let mut stream = harness.run(request, controls).await.unwrap();
     let calls = cwd.join("probe-model-calls.jsonl");

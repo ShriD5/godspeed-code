@@ -410,24 +410,71 @@ case "$turnline" in
   ;;
 
 *scenario:approve*)
-  # Wire policy is always "never" (unattended parity with the Claude
-  # adapter); the requests below are the STRAY-approval path, which must
-  # still round-trip as input questions.
-  has "$thread_line" '"approvalPolicy":"never"' ||
-    { fail_turn "$tid" "thread approvalPolicy should be never"; exit 0; }
-  has "$turnline" '"approvalPolicy":"never"' ||
-    { fail_turn "$tid" "turn approvalPolicy should be never"; exit 0; }
+  # Supervised: `untrusted` over a read-only sandbox, on the thread and the
+  # turn; every request is the user's. Shapes follow the app-server schema
+  # (0.155): a fileChange approval carries no diff — that rides the item.
+  for want in '"approvalPolicy":"untrusted"' '"sandbox":"read-only"'; do
+    has "$thread_line" "$want" || { fail_turn "$tid" "thread param missing: $want"; exit 0; }
+  done
+  for want in '"approvalPolicy":"untrusted"' '"sandboxPolicy":{"type":"readOnly"}'; do
+    has "$turnline" "$want" || { fail_turn "$tid" "turn param missing: $want"; exit 0; }
+  done
   emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
   emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
-  emit '{"id":101,"method":"item/commandExecution/requestApproval","params":{"itemId":"c1","command":"rm -rf /tmp/x"}}'
+  emit '{"id":101,"method":"item/commandExecution/requestApproval","params":{"threadId":"th-1","turnId":"t-1","itemId":"c1","startedAtMs":1,"environmentId":null,"command":"rm -rf /tmp/x","cwd":"/tmp","reason":"cleans up"}}'
   read -r a1 || exit 1
-  { has "$a1" '"id":101' && has "$a1" '"decision":"accept"'; } ||
-    { emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"command approval not accepted"}}}}'; exit 0; }
-  emit '{"id":102,"method":"item/fileChange/requestApproval","params":{"itemId":"f1","changes":[{"path":"/tmp/a.rs","kind":"update"}]}}'
+  { has "$a1" '"id":101' && has "$a1" '"decision":"acceptForSession"'; } ||
+    { emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"command approval not accepted for the session"}}}}'; exit 0; }
+  emit '{"method":"item/started","params":{"threadId":"th-1","item":{"id":"f1","type":"fileChange","status":"inProgress","changes":[{"path":"/tmp/a.rs","kind":{"type":"update","move_path":null},"diff":"@@ -1 +1 @@\n-old\n+new\n"}]}}}'
+  emit '{"id":102,"method":"item/fileChange/requestApproval","params":{"threadId":"th-1","turnId":"t-1","itemId":"f1","startedAtMs":2}}'
   read -r a2 || exit 1
-  { has "$a2" '"id":102' && has "$a2" '"decision":"accept"'; } ||
-    { emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"file approval not accepted"}}}}'; exit 0; }
+  { has "$a2" '"id":102' && has "$a2" '"decision":"decline"'; } ||
+    { emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"file approval not declined"}}}}'; exit 0; }
   emit '{"method":"turn/completed","params":{"turn":{"id":"t-1"}}}'
+  ;;
+
+*scenario:edits-auto*)
+  # Auto-accept edits: `untrusted` over workspace-write plus the run's extra
+  # writable root. Codex asks before every patch under `untrusted`; the
+  # driver accepts the in-workspace ones itself and asks for the rest.
+  for want in '"approvalPolicy":"untrusted"' '"sandbox":"workspace-write"'; do
+    has "$thread_line" "$want" || { fail_turn "$tid" "thread param missing: $want"; exit 0; }
+  done
+  has "$turnline" '"writableRoots":["/data/agents/a1"]' ||
+    { fail_turn "$tid" "turn writable roots missing"; exit 0; }
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  n=100
+  for path in src/a.rs /data/agents/a1/MEMORY.md /etc/hosts; do
+    n=$((n + 1))
+    emit "{\"method\":\"item/started\",\"params\":{\"threadId\":\"th-1\",\"item\":{\"id\":\"f$n\",\"type\":\"fileChange\",\"status\":\"inProgress\",\"changes\":[{\"path\":\"$path\",\"kind\":{\"type\":\"update\",\"move_path\":null},\"diff\":\"@@ -1 +1 @@\\\\n-a\\\\n+b\\\\n\"}]}}}"
+    emit "{\"id\":$n,\"method\":\"item/fileChange/requestApproval\",\"params\":{\"threadId\":\"th-1\",\"turnId\":\"t-1\",\"itemId\":\"f$n\",\"startedAtMs\":$n}}"
+    read -r answer || exit 1
+    { has "$answer" "\"id\":$n" && has "$answer" '"decision":"accept"'; } ||
+      { emit "{\"method\":\"turn/failed\",\"params\":{\"turn\":{\"id\":\"t-1\",\"error\":{\"message\":\"edit $path not accepted\"}}}}"; exit 0; }
+  done
+  emit '{"id":110,"method":"item/commandExecution/requestApproval","params":{"threadId":"th-1","turnId":"t-1","itemId":"c1","startedAtMs":9,"environmentId":null,"command":"make deploy"}}'
+  read -r answer || exit 1
+  { has "$answer" '"id":110' && has "$answer" '"decision":"decline"'; } ||
+    { emit '{"method":"turn/failed","params":{"turn":{"id":"t-1","error":{"message":"command not declined"}}}}'; exit 0; }
+  emit '{"method":"turn/completed","params":{"turn":{"id":"t-1"}}}'
+  ;;
+
+*scenario:mode-switch*)
+  # A mode change between turns rides the next turn/start in place.
+  has "$turnline" '"approvalPolicy":"never"' || { fail_turn "$tid" "first turn not full access"; exit 0; }
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-1"}}}'
+  emit '{"method":"turn/completed","params":{"turn":{"id":"t-1"}}}'
+  read -r t2 || exit 0
+  t2id=$(rid "$t2")
+  for want in '"method":"turn/start"' '"approvalPolicy":"on-request"' '"sandboxPolicy":{"networkAccess":true,"type":"workspaceWrite"}'; do
+    has "$t2" "$want" || { fail_turn "$t2id" "second turn param missing: $want"; exit 0; }
+  done
+  emit "{\"id\":$t2id,\"result\":{\"turn\":{\"id\":\"t-2\"}}}"
+  emit '{"method":"turn/started","params":{"turn":{"id":"t-2"}}}'
+  emit '{"method":"item/agentMessage/delta","params":{"itemId":"m2","delta":"switched"}}'
+  emit '{"method":"turn/completed","params":{"turn":{"id":"t-2"}}}'
   ;;
 
 *scenario:decline*)

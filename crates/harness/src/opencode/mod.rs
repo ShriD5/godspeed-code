@@ -38,6 +38,14 @@
 //!   after busy is authoritative, not a lull.
 //! - reasoning streams as reasoning parts on both wires →
 //!   [`AgentEvent::ReasoningDelta`], the thinking feed.
+//! - access modes: the server launches with an opencode `permission` config
+//!   (`OPENCODE_CONFIG_CONTENT`; the documented 1.x shape) that asks before
+//!   commands, web fetches and paths outside the workspace — and edits too
+//!   under supervised. Each owned `permission.asked` becomes an approval
+//!   answered `once` / `reject`; "for this session" grants are matched here
+//!   (permission + patterns) instead of opencode's `always`, which can
+//!   outlive the session. Full access keeps opencode's defaults and
+//!   approves every owned request once.
 //!
 //! Failure surfacing (the #169 class): a dying provider is VISIBLE here —
 //! `session.status{type:"retry", attempt, message}` streams per attempt.
@@ -60,9 +68,9 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
-    RunRequest, SlashCommand, SteeringMode, TodoItem, TodoStatus, ToolCall, UserInputAnswer,
-    UserInputQuestion,
+    AccessMode, AgentEvent, ApprovalDecision, ApprovalKind, ApprovalRequest, DoneStatus,
+    HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel, RunRequest, SlashCommand,
+    SteeringMode, TodoItem, TodoStatus, ToolCall, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::process::{Child, Command, Stdio};
@@ -283,19 +291,20 @@ impl OpencodeHarness {
         &self,
         cwd: Option<&str>,
         mcp: Option<&zeron_proto::McpServer>,
+        permission: Option<&Value>,
     ) -> Result<Server, HarnessError> {
         if let Some(base) = &self.base_url {
             return Ok(Server::attached(base.clone()));
         }
         let exe = self.resolve_executable()?;
-        Server::spawn(&exe, cwd, self.startup_timeout, mcp).await
+        Server::spawn(&exe, cwd, self.startup_timeout, mcp, permission).await
     }
 
     /// One short-lived server answers both discovery calls. Also primes the
     /// commands cache so concurrent picker/composer fetches share one boot.
     async fn probe_models(&self) -> Result<Vec<Model>, HarnessError> {
         let _guard = self.probe_lock.lock().await;
-        let mut server = self.server(None, None).await?;
+        let mut server = self.server(None, None, None).await?;
         let result = async {
             let providers = server.provider_catalog(None).await?;
             let mut models = models_from_providers(&providers);
@@ -327,7 +336,7 @@ impl OpencodeHarness {
         if let Some(commands) = self.commands_cache.get() {
             return Ok(commands.clone());
         }
-        let mut server = self.server(None, None).await?;
+        let mut server = self.server(None, None, None).await?;
         let result = server
             .commands_wire(None)
             .await
@@ -380,10 +389,14 @@ impl Harness for OpencodeHarness {
     /// The model and effort ride each prompt (1.x) or are set on the
     /// session (2.x), so a change applies from the next prompt without a new
     /// server. Clearing one back to the default cannot be expressed that way.
+    /// The permission config is fixed at server launch, so only access modes
+    /// sharing one (auto-accept edits and auto) switch in place.
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
         live.cwd == next.cwd
             && (next.model.is_some() || live.model.is_none())
             && (next.reasoning.is_some() || live.reasoning.is_none())
+            && permission_config(live.access_mode()) == permission_config(next.access_mode())
+            && live.writable_roots() == next.writable_roots()
     }
 
     /// Live discovery off `GET /provider` (what the desktop app populates its
@@ -421,7 +434,7 @@ impl Harness for OpencodeHarness {
         let directory = cwd
             .to_str()
             .ok_or_else(|| HarnessError::Protocol("Project path is not UTF-8".into()))?;
-        let mut server = self.server(Some(directory), None).await?;
+        let mut server = self.server(Some(directory), None, None).await?;
         let result = server.commands_wire(Some(directory)).await;
         server.shutdown(self.kill_grace).await;
         let commands = result?;
@@ -441,7 +454,7 @@ impl Harness for OpencodeHarness {
         let directory = cwd
             .to_str()
             .ok_or_else(|| HarnessError::Protocol("Project path is not UTF-8".into()))?;
-        let mut server = self.server(Some(directory), None).await?;
+        let mut server = self.server(Some(directory), None, None).await?;
         let result = server
             .commands_wire(Some(directory))
             .await
@@ -461,7 +474,10 @@ impl Harness for OpencodeHarness {
         let initial_native_command_selected = selected_native_command(&request.prompt, self.id());
         request.prompt = zeron_proto::invocation::harness_prompt(&request.prompt, self.id());
         let cwd = (!request.cwd.is_empty()).then(|| request.cwd.clone());
-        let server = self.server(cwd.as_deref(), request.mcp.as_ref()).await?;
+        let permission = permission_config(request.access_mode());
+        let server = self
+            .server(cwd.as_deref(), request.mcp.as_ref(), permission.as_ref())
+            .await?;
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
         tokio::spawn(run_session(Session {
             server,
@@ -608,6 +624,7 @@ impl Server {
         cwd: Option<&str>,
         startup: Duration,
         mcp: Option<&zeron_proto::McpServer>,
+        permission: Option<&Value>,
     ) -> Result<Self, HarnessError> {
         let port = free_localhost_port().ok_or_else(|| {
             HarnessError::Protocol("no free localhost port for opencode serve".into())
@@ -624,6 +641,7 @@ impl Server {
             .env("OPENCODE_PASSWORD", &password)
             .env("OPENCODE_SERVER_PASSWORD", &password)
             .env("OPENCODE_CLIENT", "godspeed");
+        let mut config_content = None;
         if let Some(mcp) = mcp {
             // The config shape differs by generation. If even the cold probe
             // can't tell, run without the Godspeed MCP server rather than fail.
@@ -634,20 +652,26 @@ impl Server {
                     } else {
                         Protocol::V1
                     };
-                    cmd.env(
-                        "OPENCODE_CONFIG_CONTENT",
-                        mcp_config(
-                            std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
-                            mcp,
-                            protocol,
-                        )?,
-                    );
+                    config_content = Some(mcp_config(
+                        std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
+                        mcp,
+                        protocol,
+                    )?);
                 }
                 None => tracing::warn!(
                     binary_path = %exe.display(),
                     "opencode version unknown; starting without the Godspeed MCP server"
                 ),
             }
+        }
+        if let Some(permission) = permission {
+            let inherited = config_content
+                .take()
+                .or_else(|| std::env::var("OPENCODE_CONFIG_CONTENT").ok());
+            config_content = Some(with_permission(inherited.as_deref(), permission)?);
+        }
+        if let Some(content) = config_content {
+            cmd.env("OPENCODE_CONFIG_CONTENT", content);
         }
         crate::compose_child_path(&mut cmd, exe);
         if let Some(cwd) = cwd {
@@ -1507,6 +1531,7 @@ async fn run_session(session: Session) {
     let request_input = Arc::new(request_input);
     let directory = (!request.cwd.is_empty()).then(|| request.cwd.clone());
     let dir = directory.as_deref();
+    let access = RunAccess::of(&request);
 
     let agent = request
         .model_options
@@ -2273,6 +2298,7 @@ async fn run_session(session: Session) {
                             turn: &mut turn,
                             pending_usage: &mut pending_usage,
                             context_windows: &context_windows,
+                            access: &access,
                         }).await;
                         match outcome {
                             BusOutcome::Continue => maybe_preempt!(),
@@ -2740,6 +2766,127 @@ fn native_command_request<'a>(
 // Bus event handling
 // ---------------------------------------------------------------------------
 
+/// What a run's permission requests are judged against: its access mode
+/// and workspace, plus the grants the user made "for this session".
+#[derive(Clone)]
+struct RunAccess {
+    mode: AccessMode,
+    cwd: String,
+    writable_roots: Vec<String>,
+    session_rules: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+}
+
+impl RunAccess {
+    fn of(request: &RunRequest) -> Self {
+        Self {
+            mode: request.access_mode(),
+            cwd: request.cwd.clone(),
+            writable_roots: request.writable_roots().to_vec(),
+            session_rules: Arc::default(),
+        }
+    }
+}
+
+fn lock_rules(
+    rules: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+    rules.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The opencode `permission` config an access mode launches the server
+/// with (documented 1.x shape, `{tool: "ask" | "allow" | "deny"}`), or
+/// `None` to keep opencode's own defaults under full access. Auto-accept
+/// edits and auto let edits through; edits outside the workspace still ask
+/// as `external_directory`.
+fn permission_config(mode: AccessMode) -> Option<Value> {
+    let edit = match mode {
+        AccessMode::FullAccess => return None,
+        AccessMode::Supervised => "ask",
+        AccessMode::AutoAcceptEdits | AccessMode::Auto => "allow",
+    };
+    Some(json!({
+        "edit": edit,
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": "ask",
+    }))
+}
+
+/// The key a "for this session" grant matches later requests by: the
+/// permission and its patterns (1.x `patterns`, 2.x `resources`).
+fn permission_rule(props: &Value) -> String {
+    let permission = props
+        .get("permission")
+        .or_else(|| props.get("action"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let patterns = string_list(props.get("patterns").or_else(|| props.get("resources")));
+    format!("{permission}\0{}", patterns.join("\0"))
+}
+
+fn string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Describe a `permission.asked` for the approval card. 1.x carries
+/// `permission`, `patterns` and `metadata` (`command` for bash, `filepath`
+/// and `diff` for edits); 2.x carries `action` and `resources` (the command
+/// for bash, paths for edits — asked before the diff exists).
+fn permission_approval(props: &Value, cwd: &str) -> ApprovalRequest {
+    let permission = props
+        .get("permission")
+        .or_else(|| props.get("action"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let metadata = props.get("metadata").unwrap_or(&Value::Null);
+    let meta = |key: &str| metadata.get(key).and_then(Value::as_str).map(str::to_owned);
+    let patterns = string_list(props.get("patterns"));
+    let resources = string_list(props.get("resources"));
+    let kind = match permission {
+        "edit" | "write" | "patch" | "multiedit" => ApprovalKind::FileChange,
+        "bash" | "shell" => ApprovalKind::Command,
+        "webfetch" | "websearch" | "codesearch" => ApprovalKind::Network,
+        "read" | "glob" | "grep" | "list" => ApprovalKind::FileRead,
+        _ => ApprovalKind::Other,
+    };
+    let title = props
+        .get("title")
+        .or_else(|| props.get("message"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| match permission {
+            "external_directory" => "Access files outside the workspace".to_owned(),
+            "" => kind.label().to_owned(),
+            other if kind == ApprovalKind::Other => format!("Use {other}"),
+            _ => kind.label().to_owned(),
+        });
+    let mut approval = ApprovalRequest::new(kind, title);
+    approval.cwd = (!cwd.is_empty()).then(|| cwd.to_owned());
+    match kind {
+        ApprovalKind::Command => {
+            approval.command = meta("command").or_else(|| resources.first().cloned());
+        }
+        _ => {
+            approval.paths = meta("filepath")
+                .into_iter()
+                .chain(if resources.is_empty() { patterns } else { resources })
+                .filter(|p| p != "*")
+                .collect();
+            approval.paths.dedup();
+            approval.diff = meta("diff");
+        }
+    }
+    approval
+}
+
+
 enum BusOutcome {
     Continue,
     /// Our session's turn reached idle.
@@ -2768,6 +2915,7 @@ struct BusCtx<'a> {
     turn: &'a mut TurnState,
     pending_usage: &'a mut Option<AgentEvent>,
     context_windows: &'a HashMap<String, u64>,
+    access: &'a RunAccess,
 }
 
 /// Wrap an event as subagent-attributed traffic.
@@ -2819,6 +2967,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         turn,
         pending_usage,
         context_windows,
+        access,
     } = ctx;
     // Envelope styles: /global/event wraps ({payload: {...}}); a bare
     // /event feed (tests) delivers the payload directly.
@@ -3164,6 +3313,22 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             } else {
                 "reply"
             };
+            // Full access approves every owned request once; the other
+            // modes put it to the user unless it matches a grant made "for
+            // this session" (held here, never written as a durable opencode
+            // rule) or is an in-workspace edit the mode lets through.
+            let approval = permission_approval(props, dir.unwrap_or_default());
+            let rule = permission_rule(props);
+            let in_workspace = crate::approval::paths_within(
+                approval.paths.iter().map(String::as_str),
+                &access.cwd,
+                &access.writable_roots,
+            );
+            let preapproved = access.mode == AccessMode::FullAccess
+                || lock_rules(&access.session_rules).contains(&rule)
+                || crate::approval::auto_decision(access.mode, approval.kind, in_workspace);
+            let request_input = Arc::clone(request_input);
+            let session_rules = Arc::clone(&access.session_rules);
             tokio::spawn(async move {
                 let server = Server {
                     child: None,
@@ -3174,11 +3339,15 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
                 };
-                // Like Claude and Codex, normal Godspeed sessions run unattended,
-                // regardless of RunRequest.auto_approve. Approve each owned
-                // request without writing durable permission rules via "always".
-                // Genuine agent questions use the separate question.asked path.
-                let reply = "once";
+                let decision = if preapproved {
+                    ApprovalDecision::Approve
+                } else {
+                    crate::approval::ask(request_input.as_ref(), approval).await
+                };
+                if decision == ApprovalDecision::ApproveForSession {
+                    lock_rules(&session_rules).insert(rule);
+                }
+                let reply = if decision.approves() { "once" } else { "reject" };
                 if server
                     .post_json(
                         &reply_path,
@@ -3721,6 +3890,7 @@ fn map_questions(props: &Value) -> Vec<UserInputQuestion> {
                         prefill: None,
                         multiline: false,
                         multi_select: q.get("multiple").and_then(Value::as_bool).unwrap_or(false),
+                        approval: None,
                     })
                 })
                 .collect()
@@ -4452,6 +4622,28 @@ async fn opencode_version(exe: &std::path::Path) -> Option<semver::Version> {
 
 /// Inline config is the final user config layer. Preserve inherited overrides
 /// and other MCP servers; never write chat identity into a shared config file.
+/// Layer the access mode's `permission` rules over the inherited config:
+/// ours win per tool, the user's other rules stay.
+fn with_permission(inherited: Option<&str>, permission: &Value) -> Result<String, HarnessError> {
+    let mut config: Value = match inherited.filter(|s| !s.trim().is_empty()) {
+        Some(raw) => deser_hjson::from_str(raw).map_err(|_| {
+            HarnessError::Protocol("OPENCODE_CONFIG_CONTENT must be a valid config object".into())
+        })?,
+        None => json!({}),
+    };
+    let object = config.as_object_mut().ok_or_else(|| {
+        HarnessError::Protocol("OPENCODE_CONFIG_CONTENT must be an object".into())
+    })?;
+    let rules = object.entry("permission").or_insert_with(|| json!({}));
+    if !rules.is_object() {
+        *rules = json!({});
+    }
+    if let (Some(rules), Some(ours)) = (rules.as_object_mut(), permission.as_object()) {
+        rules.extend(ours.clone());
+    }
+    Ok(config.to_string())
+}
+
 fn mcp_config(
     inherited: Option<&str>,
     mcp: &zeron_proto::McpServer,
@@ -4538,6 +4730,7 @@ http.createServer((req, res) => {{
                 fixture.path().to_str(),
                 Duration::from_secs(5),
                 Some(&first),
+                None,
             )
             .await
             .unwrap();
@@ -4546,6 +4739,7 @@ http.createServer((req, res) => {{
                 fixture.path().to_str(),
                 Duration::from_secs(5),
                 Some(&second),
+                None,
             )
             .await
             .unwrap();
@@ -4594,6 +4788,7 @@ http.createServer((req, res) => {
             fixture.path().to_str(),
             Duration::from_secs(5),
             Some(&mcp),
+            None,
         )
         .await
         .expect("an unknown version must not fail the run");
@@ -4652,6 +4847,7 @@ if (process.argv.includes('--version')) {{
                 fixture.path().to_str(),
                 Duration::from_secs(10),
                 Some(&mcp),
+                None,
             )
             .await
             .expect("a slow first --version must not fail the run");

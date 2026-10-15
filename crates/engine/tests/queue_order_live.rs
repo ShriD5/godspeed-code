@@ -104,6 +104,7 @@ impl Rig {
                     reasoning: None,
                     model_options: Default::default(),
                     sandbox: SandboxLevel::DangerFullAccess,
+                    access_mode: None,
                 },
             )
             .unwrap();
@@ -131,6 +132,7 @@ impl Rig {
             attachments: vec![],
             worktree: None,
             resume: None,
+            access: None,
         }
     }
 

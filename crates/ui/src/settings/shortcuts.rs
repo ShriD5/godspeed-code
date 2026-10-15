@@ -709,6 +709,7 @@ fn group(id: ShortcutId) -> &'static str {
         ShortcutId::NewProject => "Projects",
         ShortcutId::ToggleDictation => "Voice",
         ShortcutId::OpenModelPicker
+        | ShortcutId::CycleAccessMode
         | ShortcutId::NewSession
         | ShortcutId::NextSession
         | ShortcutId::PrevSession

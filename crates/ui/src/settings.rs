@@ -382,6 +382,13 @@ pub fn compact_model_picker(cx: &App) -> bool {
         .is_some_and(|store| store.current.compact_model_picker)
 }
 
+/// The access mode new sessions start in (Settings → Providers).
+pub fn default_access_mode(cx: &App) -> zeron_proto::AccessMode {
+    cx.try_global::<SettingsStore>()
+        .map(|store| store.current.default_access_mode)
+        .unwrap_or_default()
+}
+
 /// Copy a selected image into Godspeed's device-local data directory and make it
 /// the new-thread canvas background. A unique file name avoids stale image
 /// caches when the background is replaced.
@@ -829,6 +836,9 @@ pub struct UiSettings {
         std::collections::HashMap<zeron_proto::HarnessId, SkillCompletionSettings>,
     /// Open model selection with an effort slider and a separate model list.
     pub compact_model_picker: bool,
+    /// The access mode a new session starts in (each session keeps its own,
+    /// synced on its chat config).
+    pub default_access_mode: zeron_proto::AccessMode,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     /// Legacy: the grouped-by-project toggle predates spaces (which group by
@@ -1068,6 +1078,7 @@ impl Default for UiSettings {
             skills_in_slash_menu: false,
             skill_completion_by_harness: Default::default(),
             compact_model_picker: true,
+            default_access_mode: zeron_proto::AccessMode::default(),
             appshots_enabled: false,
             appshot_sound_enabled: true,
             appshot_destination: crate::appshots::AppshotDestination::Automatic,
@@ -1157,6 +1168,7 @@ pub enum ShortcutId {
     NewSession,
     NewProject,
     OpenModelPicker,
+    CycleAccessMode,
     NextSession,
     PrevSession,
     ArchiveSession,
@@ -1164,7 +1176,7 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 15 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 16 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
@@ -1177,6 +1189,7 @@ impl ShortcutId {
         ShortcutId::NewSession,
         ShortcutId::NewProject,
         ShortcutId::OpenModelPicker,
+        ShortcutId::CycleAccessMode,
         ShortcutId::NextSession,
         ShortcutId::PrevSession,
         ShortcutId::ArchiveSession,
@@ -1210,6 +1223,7 @@ impl ShortcutId {
             ShortcutId::NewSession => "New session",
             ShortcutId::NewProject => "New project",
             ShortcutId::OpenModelPicker => "Open model picker",
+            ShortcutId::CycleAccessMode => "Cycle access mode",
             ShortcutId::NextSession => "Next session or right pane tab",
             ShortcutId::PrevSession => "Previous session or right pane tab",
             ShortcutId::ArchiveSession => "Archive session",
@@ -1239,6 +1253,9 @@ impl ShortcutId {
             ShortcutId::NewSession => "mod-n",
             ShortcutId::NewProject => "mod-shift-n",
             ShortcutId::OpenModelPicker => "mod-/",
+            // M for mode. Shift+Tab (Claude Code's own cycle key) moves
+            // focus backwards in Godspeed's menus and forms.
+            ShortcutId::CycleAccessMode => "mod-shift-m",
             // Ctrl+Tab on every platform — but spelled the way THAT platform's
             // recorder spells ctrl (see `combo_from_keystroke`). Off macOS
             // ctrl IS the primary and stores as "mod"; on macOS it is its own
@@ -1288,6 +1305,7 @@ pub struct KeymapConfig {
     pub new_session: String,
     pub new_project: String,
     pub open_model_picker: String,
+    pub cycle_access_mode: String,
     pub next_session: String,
     pub prev_session: String,
     pub archive_session: String,
@@ -1354,6 +1372,7 @@ impl Default for KeymapConfig {
             new_session: ShortcutId::NewSession.default_combo().into(),
             new_project: ShortcutId::NewProject.default_combo().into(),
             open_model_picker: ShortcutId::OpenModelPicker.default_combo().into(),
+            cycle_access_mode: ShortcutId::CycleAccessMode.default_combo().into(),
             next_session: ShortcutId::NextSession.default_combo().into(),
             prev_session: ShortcutId::PrevSession.default_combo().into(),
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
@@ -1377,6 +1396,7 @@ impl KeymapConfig {
             ShortcutId::NewSession => &self.new_session,
             ShortcutId::NewProject => &self.new_project,
             ShortcutId::OpenModelPicker => &self.open_model_picker,
+            ShortcutId::CycleAccessMode => &self.cycle_access_mode,
             ShortcutId::NextSession => &self.next_session,
             ShortcutId::PrevSession => &self.prev_session,
             ShortcutId::ArchiveSession => &self.archive_session,
@@ -1402,6 +1422,7 @@ impl KeymapConfig {
             ShortcutId::NewSession => self.new_session = combo,
             ShortcutId::NewProject => self.new_project = combo,
             ShortcutId::OpenModelPicker => self.open_model_picker = combo,
+            ShortcutId::CycleAccessMode => self.cycle_access_mode = combo,
             ShortcutId::NextSession => self.next_session = combo,
             ShortcutId::PrevSession => self.prev_session = combo,
             ShortcutId::ArchiveSession => self.archive_session = combo,
@@ -1679,6 +1700,7 @@ impl UiSettings {
             skills_in_slash_menu,
             skill_completion_by_harness,
             compact_model_picker,
+            default_access_mode,
             sidebar_width,
             sidebar_collapsed,
             sidebar_grouped,
@@ -2710,6 +2732,7 @@ mod tests {
         let settings = UiSettings {
             dictation_enabled: false,
             dictation_input: Some("coreaudio:usb-mic".into()),
+            default_access_mode: zeron_proto::AccessMode::Supervised,
             window_geometry: None,
             codex_voice: Some("ember".into()),
             codex_voice_device: Some("fedora".into()),

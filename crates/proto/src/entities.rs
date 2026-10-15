@@ -166,6 +166,20 @@ pub struct ChatConfig {
     #[serde(default)]
     pub model_options: serde_json::Map<String, serde_json::Value>,
     pub sandbox: SandboxLevel,
+    /// The thread's access mode. `None` (a chat from before access modes)
+    /// follows the sending device's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_mode: Option<crate::AccessMode>,
+}
+
+impl ChatConfig {
+    /// The thread's access mode; a config from before access modes reads it
+    /// off the sandbox level (workspace-write → auto-accept edits, the
+    /// default).
+    pub fn effective_access_mode(&self) -> crate::AccessMode {
+        self.access_mode
+            .unwrap_or_else(|| crate::AccessMode::from_legacy(self.sandbox, false))
+    }
 }
 
 /// Immutable-at-run-start repository context owned by one conversation.
@@ -273,6 +287,8 @@ impl Chat {
 pub enum ChatIndicator {
     Working,
     AwaitingInput,
+    /// Waiting on a permission approval.
+    AwaitingApproval,
     Errored,
     /// Finished running (or errored out) but not seen yet on any device.
     Completed,
@@ -284,6 +300,9 @@ pub enum ChatIndicator {
 pub fn chat_indicator(chat: &Chat, live: Option<&Session>) -> ChatIndicator {
     match live.map(|s| s.status) {
         Some(SessionStatus::Working) => ChatIndicator::Working,
+        Some(SessionStatus::AwaitingInput) if live.is_some_and(|s| s.awaiting_approval) => {
+            ChatIndicator::AwaitingApproval
+        }
         Some(SessionStatus::AwaitingInput) => ChatIndicator::AwaitingInput,
         Some(SessionStatus::Errored) if chat.unseen() => ChatIndicator::Errored,
         _ if chat.unseen() => ChatIndicator::Completed,
@@ -321,6 +340,10 @@ pub struct Session {
     /// has not opened; read it through `view::running_subagents`.
     #[serde(default)]
     pub running_subagents: u32,
+    /// With `AwaitingInput`: the pending request is a permission approval
+    /// ("Needs approval" in the sidebar). Additive; older rows read false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_approval: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

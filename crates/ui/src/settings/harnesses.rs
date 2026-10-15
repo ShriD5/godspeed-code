@@ -1153,6 +1153,59 @@ impl popover::ScrollRailHost for HarnessesPage {
     }
 }
 
+impl HarnessesPage {
+    /// The access mode new sessions start in. Each session keeps (and syncs)
+    /// its own, chosen beside the model in the composer.
+    fn render_default_access(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let current = crate::settings::current(cx).default_access_mode;
+        let rows = zeron_proto::AccessMode::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(ix, mode)| {
+                widgets::card_row(theme, ix == 0)
+                    .id(("default-access-mode", ix))
+                    .cursor_pointer()
+                    .role(gpui::Role::RadioButton)
+                    .aria_label(mode.label())
+                    .aria_toggled(if mode == current {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .tab_index(0)
+                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |s| {
+                            s.default_access_mode = mode;
+                        });
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(widgets::row_title(theme, mode.label()))
+                            .child(
+                                div()
+                                    .mt(px(Theme::TEXT_STACK_GAP))
+                                    .text_size(crate::typography::ui_rems(12.0))
+                                    .text_color(theme.text_muted.opacity(0.65))
+                                    .child(SharedString::from(mode.description())),
+                            ),
+                    )
+                    .child(widgets::select_check(theme, mode == current))
+            });
+        widgets::section(
+            theme,
+            "Default access mode",
+            widgets::section_card(theme).mt(px(0.0)).children(rows),
+        )
+        .into_any_element()
+    }
+}
+
 impl Render for HarnessesPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).for_settings_surface();
@@ -1241,6 +1294,7 @@ impl Render for HarnessesPage {
             });
 
         let scrollbar = popover::rail(self, "harnesses-page-scrollbar", &theme, cx);
+        let access = self.render_default_access(&theme, cx);
 
         div()
             .id("harnesses-page-host")
@@ -1276,6 +1330,7 @@ impl Render for HarnessesPage {
                                         ),
                                 )
                                 .children(update_error)
+                                .child(access)
                                 .child(body),
                         ),
                 )

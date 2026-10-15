@@ -29,11 +29,12 @@ async fn pi_idle_crash_next_dispatch_loads_stored_session() {
             reasoning: None,
             model_options: Default::default(),
             cwd: dir.path().display().to_string(),
-            sandbox: SandboxLevel::WorkspaceWrite,
+            sandbox: SandboxLevel::DangerFullAccess,
             auto_approve: true,
             attachments: Vec::new(),
             worktree: None,
             resume: None,
+            access: None,
         };
         core.sessions
             .dispatch(chat, HarnessId::Pi, req, None)
@@ -80,12 +81,13 @@ async fn timed_out_native_question_resolves_and_finishes_without_user_input() {
                 reasoning: None,
                 model_options: Default::default(),
                 cwd: dir.path().display().to_string(),
-                sandbox: SandboxLevel::WorkspaceWrite,
+                sandbox: SandboxLevel::DangerFullAccess,
                 auto_approve: true,
                 attachments: vec![],
                 worktree: None,
                 resume: None,
                 mcp: None,
+                access: None,
             },
             None,
         )

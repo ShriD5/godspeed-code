@@ -107,6 +107,7 @@ async fn steer_now_interrupts_a_streaming_answer() {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::DangerFullAccess,
+                access_mode: None,
             },
         )
         .unwrap();
@@ -146,6 +147,7 @@ async fn steer_now_interrupts_a_streaming_answer() {
                     attachments: vec![],
                     worktree: None,
                     resume: None,
+                    access: None,
                 },
             },
         )

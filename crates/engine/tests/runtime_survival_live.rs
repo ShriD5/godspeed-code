@@ -111,6 +111,7 @@ fn run(
         attachments: vec![],
         worktree: None,
         resume: None,
+        access: None,
     }
 }
 
@@ -153,6 +154,7 @@ async fn agent_process_survives_sends_and_cancel() {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::DangerFullAccess,
+                access_mode: None,
             },
         )
         .unwrap();

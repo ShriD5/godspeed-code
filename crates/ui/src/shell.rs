@@ -124,6 +124,7 @@ actions!(
         AddSpacePalette,
         ToggleCommandPalette,
         OpenModelPicker,
+        CycleAccessMode,
         NewSession,
         OpenSettings,
         NextSession,
@@ -500,6 +501,14 @@ pub fn apply_keymap(
         KeyBinding::new(
             &valid_or_default(&keymap.open_model_picker, "mod-/"),
             OpenModelPicker,
+            None,
+        ),
+        KeyBinding::new(
+            &valid_or_default(
+                &keymap.cycle_access_mode,
+                ShortcutId::CycleAccessMode.default_combo(),
+            ),
+            CycleAccessMode,
             None,
         ),
     ]);
@@ -2983,6 +2992,9 @@ impl Shell {
                         let title = title.unwrap_or_else(|| "New session".into());
                         let body = match sound {
                             crate::sound::Sound::Done => "Run finished",
+                            crate::sound::Sound::Request if status.approval() => {
+                                "Needs your approval"
+                            }
                             crate::sound::Sound::Request => "Waiting on your input",
                             crate::sound::Sound::Attention => "Run failed",
                         };
@@ -8152,6 +8164,7 @@ impl Shell {
             match status {
                 zeron_proto::ChatIndicator::Working => Some("Working"),
                 zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
+                zeron_proto::ChatIndicator::AwaitingApproval => Some("Needs approval"),
                 zeron_proto::ChatIndicator::Errored => Some("Failed"),
                 zeron_proto::ChatIndicator::Completed => Some("Done"),
                 zeron_proto::ChatIndicator::Idle => None,
@@ -13716,6 +13729,12 @@ impl Render for Shell {
                     pickers.update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &CycleAccessMode, _, cx| {
+                if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
+                    let pickers = this.composer.read(cx).pickers().clone();
+                    pickers.update(cx, |pickers, cx| pickers.cycle_access_mode(cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &AddSpacePalette, _, cx| {
                 if matches!(this.route, Route::Settings(_)) {
                     return;
@@ -14462,6 +14481,7 @@ mod tests {
             started_at: Some(updated_at),
             updated_at,
             running_subagents: 0,
+            awaiting_approval: false,
         }
     }
 
