@@ -160,6 +160,36 @@ pub(crate) fn invalidate_versions(names: &[&str]) {
     }
 }
 
+/// An empty private directory for probes that have no project. CLIs read
+/// their working directory as a project: a probe left in the engine's cwd
+/// (the home directory for a desktop launch) made Claude load
+/// `~/.claude/settings.json` as PROJECT settings on top of an isolated
+/// `CLAUDE_CONFIG_DIR`. Falls back to the temp root, which holds no
+/// project configuration either.
+pub(crate) fn neutral_cwd() -> PathBuf {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        #[cfg(unix)]
+        // SAFETY: getuid has no failure mode.
+        let name = format!("godspeed-probe-{}", unsafe { libc::getuid() });
+        #[cfg(not(unix))]
+        let name = "godspeed-probe".to_owned();
+        let dir = std::env::temp_dir().join(name);
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&dir) {
+            Ok(()) if dir.is_dir() => dir,
+            _ => std::env::temp_dir(),
+        }
+    })
+    .clone()
+}
+
 /// Probe once per executable identity. Failures are cached too, including timeout.
 /// Keep the lock during the short probe so concurrent descriptor requests coalesce.
 pub fn binary_version(path: &Path) -> Option<semver::Version> {
@@ -187,6 +217,7 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         let mut command = Command::new(path);
         command
             .arg("--version")
+            .current_dir(neutral_cwd())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -252,6 +283,7 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
                     let mut command = crate::process::Command::new(&path);
                     command
                         .arg("--version")
+                        .current_dir(neutral_cwd())
                         .stdin(crate::process::Stdio::null())
                         .stdout(crate::process::Stdio::piped())
                         .stderr(crate::process::Stdio::piped())
@@ -654,6 +686,30 @@ mod tests {
             assert!(started.elapsed() < std::time::Duration::from_secs(3));
             assert_eq!(newest_candidate(vec![path.clone()]), Some(path));
         }
+    }
+
+    /// Version probes run outside any project (pingdotgg/t3code#8818): a
+    /// CLI reading the engine's cwd as a project picked up the home
+    /// directory's `.claude/settings.json` as project settings.
+    #[cfg(unix)]
+    #[test]
+    fn version_probes_run_from_the_neutral_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let neutral = neutral_cwd().canonicalize().unwrap();
+        assert!(neutral.is_dir());
+        assert!(!neutral.join(".claude").exists());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cwd-reporter");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n[ \"$(pwd -P)\" = \"{}\" ] && echo 1.2.3 || echo 9.9.9\n",
+                neutral.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(binary_version(&path).unwrap().to_string(), "1.2.3");
     }
 
     fn env(values: &[(&str, OsString)]) -> impl Fn(&str) -> Option<OsString> + use<> {

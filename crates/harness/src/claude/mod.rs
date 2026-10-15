@@ -319,9 +319,8 @@ impl ClaudeHarness {
     async fn probe_initialize(&self, cwd: Option<&std::path::Path>) -> Result<Value, HarnessError> {
         let exe = self.resolve_executable()?;
         let mut cmd = Command::new(&exe);
-        if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
-        }
+        // A project-less probe must not read the engine's cwd as a project.
+        cmd.current_dir(cwd.map_or_else(crate::executable::neutral_cwd, |c| c.to_path_buf()));
         crate::compose_child_path(&mut cmd, &exe);
         cmd.args([
             "--print",
