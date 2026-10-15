@@ -123,6 +123,7 @@ actions!(
         AddSpacePalette,
         ToggleCommandPalette,
         OpenModelPicker,
+        CycleAccessMode,
         NewSession,
         OpenSettings,
         NextSession,
@@ -499,6 +500,14 @@ pub fn apply_keymap(
         KeyBinding::new(
             &valid_or_default(&keymap.open_model_picker, "mod-/"),
             OpenModelPicker,
+            None,
+        ),
+        KeyBinding::new(
+            &valid_or_default(
+                &keymap.cycle_access_mode,
+                ShortcutId::CycleAccessMode.default_combo(),
+            ),
+            CycleAccessMode,
             None,
         ),
     ]);
@@ -2976,6 +2985,9 @@ impl Shell {
                         let title = title.unwrap_or_else(|| "New session".into());
                         let body = match sound {
                             crate::sound::Sound::Done => "Run finished",
+                            crate::sound::Sound::Request if status.approval() => {
+                                "Needs your approval"
+                            }
                             crate::sound::Sound::Request => "Waiting on your input",
                             crate::sound::Sound::Attention => "Run failed",
                         };
@@ -13698,6 +13710,12 @@ impl Render for Shell {
                 if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
                     let pickers = this.composer.read(cx).pickers().clone();
                     pickers.update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &CycleAccessMode, _, cx| {
+                if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
+                    let pickers = this.composer.read(cx).pickers().clone();
+                    pickers.update(cx, |pickers, cx| pickers.cycle_access_mode(cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &AddSpacePalette, _, cx| {

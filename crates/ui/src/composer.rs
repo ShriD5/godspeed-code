@@ -26,8 +26,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use zeron_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
 use zeron_proto::{
-    FileSearchMatch, HarnessId, RunRequest, SandboxLevel, SlashCommand, UserInputAnswer,
-    UserInputQuestion, capabilities,
+    FileSearchMatch, HarnessId, RunRequest, SlashCommand, UserInputAnswer, UserInputQuestion,
+    capabilities,
 };
 use zeron_rpc::{RpcError, methods};
 
@@ -623,6 +623,26 @@ fn escape_dismisses_completion(key: &str, completion_open: bool) -> bool {
 
 fn wizard_escape_goes_back(key: &str, input_focused: bool, input_empty: bool) -> bool {
     key == "escape" && (!input_focused || input_empty)
+}
+
+/// The decision Enter (`approve`) or Esc (decline) answers with: the first
+/// one-time approval (else any approval), or the plain decline (else the
+/// first refusal on offer).
+fn approval_default_index(approval: &zeron_proto::ApprovalRequest, approve: bool) -> Option<usize> {
+    use zeron_proto::ApprovalDecision as D;
+    let find = |want: &[D]| {
+        want.iter().find_map(|w| {
+            approval
+                .decisions
+                .iter()
+                .position(|option| option.decision == *w)
+        })
+    };
+    if approve {
+        find(&[D::Approve, D::ApproveForSession, D::ApproveAlways])
+    } else {
+        find(&[D::Decline, D::Cancel, D::DeclineAlways])
+    }
 }
 
 /// Find the unresolved input request the panel should serve, if any: an
@@ -6039,6 +6059,9 @@ pub struct Composer {
     failure_key: Option<String>,
     wizard: Option<Wizard>,
     wizard_focus: FocusHandle,
+    /// An approval card just opened: move keyboard focus onto it if the
+    /// editor (which the card hides) had it.
+    approval_focus_pending: bool,
     /// Requests already answered locally (suppresses the panel until the doc
     /// frame marks them resolved).
     answered_requests: HashSet<String>,
@@ -6339,6 +6362,7 @@ impl Composer {
             failure: None,
             wizard: None,
             wizard_focus: cx.focus_handle(),
+            approval_focus_pending: false,
             answered_requests: HashSet::new(),
             failure_key: None,
             action_task: None,
@@ -8574,10 +8598,14 @@ impl Composer {
                         .first()
                         .and_then(|q| q.prefill.clone())
                         .unwrap_or_default();
+                    let approval = questions.first().is_some_and(UserInputQuestion::is_approval);
                     self.wizard = Some(Wizard::new(request_id, questions));
                     self.input
                         .update(cx, |input, cx| input.set_text(prefill, cx));
                     self.advance_task = None;
+                    // The card has no editor: keys go to the card when the
+                    // user was typing in this composer.
+                    self.approval_focus_pending = approval;
                     // The shared input becomes the panel's free-text override.
                     self.input.update(cx, |input, cx| {
                         input.set_placeholder("Type your own answer, or pick an option above", cx)
@@ -8715,6 +8743,16 @@ impl Composer {
         if self.commit_queue_edit(cx) {
             return;
         }
+        if let Some(ix) = self
+            .wizard
+            .as_ref()
+            .and_then(Wizard::current)
+            .and_then(|q| q.approval.as_ref())
+            .and_then(|approval| approval_default_index(approval, true))
+        {
+            self.approval_decide(ix, cx);
+            return;
+        }
         if self.wizard.is_some() {
             // Enter inside the panel's free-text input submits the page.
             let typed = self.input.read(cx).text().to_string();
@@ -8807,6 +8845,19 @@ impl Composer {
         // Fully-resolved model/reasoning/options — concrete values (chat config
         // or defaults), so the engine never has to guess a "default".
         let resolved = self.pickers.read(cx).resolved(cx);
+        // Never widen: a mode the agent can't honor is the user's to change.
+        if !resolved.access_supported() {
+            self.failure = Some(
+                format!(
+                    "This agent can't run in {}. Pick another access mode beside the model. Your draft is preserved.",
+                    resolved.access_mode.label()
+                )
+                .into(),
+            );
+            self.failure_key = Some(self.current_key.clone());
+            cx.notify();
+            return;
+        }
         let existing_cwd = self
             .state
             .read(cx)
@@ -9415,12 +9466,12 @@ impl Composer {
                         reasoning: resolved.reasoning,
                         model_options: resolved.model_options.clone(),
                         cwd,
-                        sandbox: SandboxLevel::WorkspaceWrite,
-                        auto_approve: false,
+                        sandbox: resolved.access_mode.legacy().0,
+                        auto_approve: resolved.access_mode.legacy().1,
                         resume: None,
                         attachments: attachment_paths,
                         worktree: run_worktree,
-                        access: None,
+                        access: Some(zeron_proto::RunAccess::new(resolved.access_mode)),
                     },
                     message_id: message_id.clone(),
                 };
@@ -9780,6 +9831,30 @@ impl Composer {
         let input_focused = self.input.read(cx).focus_handle.is_focused(window);
         let input_empty = self.input.read(cx).is_empty();
         let key = event.keystroke.key.as_str();
+        let approval = self
+            .wizard
+            .as_ref()
+            .and_then(Wizard::current)
+            .and_then(|q| q.approval.clone());
+        if let Some(approval) = approval {
+            if event.keystroke.modifiers.modified() {
+                return;
+            }
+            let pick = match key {
+                "enter" => approval_default_index(&approval, true),
+                "escape" => approval_default_index(&approval, false),
+                digit => digit
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|d| (1..=approval.decisions.len().min(9)).contains(d))
+                    .map(|d| d - 1),
+            };
+            if let Some(ix) = pick {
+                self.approval_decide(ix, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
         // A BARE digit picks an option. With a modifier held the keystroke
         // belongs to an app shortcut — ⌘1..⌘9 jump to a sidebar row — and the
         // panel must not also consume it as a selection.
@@ -9822,6 +9897,9 @@ impl Composer {
         let Some(question) = wizard.current().cloned() else {
             return gpui::Empty.into_any_element();
         };
+        if let Some(approval) = question.approval.clone() {
+            return self.render_approval_card(&wizard, approval, cx);
+        }
         // The answer borrows the composer's editor, but the composer's own
         // sizing does not run while the panel shows. Without a limit of its
         // own the editor kept a stale one-line viewport, so new lines painted
@@ -10036,6 +10114,246 @@ impl Composer {
                     ),
             );
         crate::frost::frosted(COMPOSER_RADIUS, crate::frost::MENU_BLUR, panel).into_any_element()
+    }
+
+    /// The approval card: a permission request takes over the composer like
+    /// the question panel, but answers with one press — the exact command
+    /// (monospace, wrapped, never clipped), where it runs, the files it
+    /// touches and the edit's diff, then the provider's decisions with
+    /// number keys (Enter approves, Esc declines).
+    fn render_approval_card(
+        &mut self,
+        wizard: &Wizard,
+        approval: zeron_proto::ApprovalRequest,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let theme = Theme::of(cx).clone();
+        let mono = theme.font_mono.clone();
+        let code_block = |text: SharedString| {
+            div()
+                .mt(px(10.0))
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(10.0))
+                .bg(crate::theme::ink(0.05))
+                .font_family(mono.clone())
+                .text_size(crate::typography::ui_rems(12.5))
+                .line_height(px(18.0))
+                .text_color(theme.text)
+                .whitespace_normal()
+                .child(text)
+        };
+        let meta = |label: &'static str, value: SharedString| {
+            div()
+                .mt(px(6.0))
+                .flex()
+                .flex_row()
+                .gap(px(6.0))
+                .text_size(crate::typography::ui_rems(12.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.text_muted.opacity(0.65))
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .font_family(mono.clone())
+                        .text_color(theme.text_muted)
+                        .child(value),
+                )
+        };
+        const MAX_PATHS: usize = 6;
+        const MAX_DIFF_LINES: usize = 400;
+        let paths = (!approval.paths.is_empty()).then(|| {
+            let mut shown: Vec<String> = approval.paths.iter().take(MAX_PATHS).cloned().collect();
+            if approval.paths.len() > MAX_PATHS {
+                shown.push(format!("+{} more", approval.paths.len() - MAX_PATHS));
+            }
+            shown.join("\n")
+        });
+        let diff = approval.diff.as_deref().map(|diff| {
+            let lines = diff.lines().take(MAX_DIFF_LINES).enumerate().map(|(ix, line)| {
+                let color = if line.starts_with("+++") || line.starts_with("---") {
+                    theme.text_muted
+                } else if line.starts_with('+') {
+                    theme.success
+                } else if line.starts_with('-') {
+                    theme.danger
+                } else if line.starts_with("@@") {
+                    theme.accent
+                } else {
+                    theme.text.opacity(0.85)
+                };
+                div()
+                    .id(("approval-diff-line", ix))
+                    .text_color(color)
+                    .child(SharedString::from(if line.is_empty() {
+                        " ".to_owned()
+                    } else {
+                        line.to_owned()
+                    }))
+            });
+            div()
+                .id("approval-diff")
+                .mt(px(10.0))
+                .max_h(px(220.0))
+                .overflow_y_scroll()
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(10.0))
+                .bg(crate::theme::ink(0.05))
+                .font_family(mono.clone())
+                .text_size(crate::typography::ui_rems(12.0))
+                .line_height(px(17.0))
+                .children(lines)
+        });
+        let approve_ix = approval_default_index(&approval, true);
+        let decline_ix = approval_default_index(&approval, false);
+        let buttons = approval.decisions.iter().enumerate().map(|(ix, option)| {
+            let primary = Some(ix) == approve_ix;
+            let hint = if Some(ix) == approve_ix {
+                Some("Enter")
+            } else if Some(ix) == decline_ix {
+                Some("Esc")
+            } else {
+                None
+            };
+            let label = option.label.as_str();
+            let button = if primary {
+                crate::popover::btn_primary(&theme, label)
+            } else {
+                crate::popover::btn_ghost(&theme, label, format!("approval-option-{ix}"))
+            };
+            button
+                .id(("approval-option", ix))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .on_click(cx.listener(move |this, _, _, cx| this.approval_decide(ix, cx)))
+                .when(ix < 9, |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .size(px(18.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .bg(crate::theme::ink(0.08))
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(format!("{}", ix + 1))),
+                    )
+                })
+                .when_some(hint, |el, hint| {
+                    el.child(
+                        div()
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from(hint)),
+                    )
+                })
+        });
+        let panel = div()
+            .id("approval-card")
+            .track_focus(&self.wizard_focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.on_wizard_key(event, window, cx)
+            }))
+            .occlude()
+            .rounded(px(COMPOSER_RADIUS))
+            .border_1()
+            .border_color(theme.warning.opacity(0.45))
+            .bg(theme.composer_surface_bg())
+            .when(!theme.is_frost(), |el| el.shadow_lg())
+            .flex()
+            .flex_col()
+            .px(px(16.0))
+            .py(px(16.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                            .size(px(13.0))
+                            .text_color(theme.warning),
+                    )
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(10.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_muted.opacity(0.7))
+                            .child(SharedString::from(crate::popover::tracked_upper(
+                                approval.kind.label(),
+                            ))),
+                    )
+                    .when(wizard.questions.len() > 1, |el| {
+                        el.child(
+                            div()
+                                .text_size(crate::typography::ui_rems(10.0))
+                                .text_color(theme.text_muted.opacity(0.6))
+                                .child(SharedString::from(wizard.counter())),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .text_size(crate::typography::ui_rems(15.0))
+                    .line_height(px(20.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(SharedString::from(approval.title.clone())),
+            )
+            .when_some(approval.reason.clone(), |el, reason| {
+                el.child(
+                    div()
+                        .mt(px(4.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.text_muted.opacity(0.75))
+                        .child(SharedString::from(reason)),
+                )
+            })
+            .when_some(approval.command.clone(), |el, command| {
+                el.child(code_block(command.into()))
+            })
+            .when_some(approval.cwd.clone(), |el, cwd| el.child(meta("in", cwd.into())))
+            .when_some(paths, |el, paths| el.child(meta("files", paths.into())))
+            .children(diff)
+            .child(
+                div()
+                    .mt(px(14.0))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(8.0))
+                    .children(buttons),
+            );
+        crate::frost::frosted(COMPOSER_RADIUS, crate::frost::MENU_BLUR, panel).into_any_element()
+    }
+
+    /// Answer the approval on the current page with decision `ix`, at once
+    /// (no auto-advance pause: a permission is one press).
+    fn approval_decide(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(wizard) = self.wizard.as_mut() else {
+            return;
+        };
+        if wizard.current().and_then(|q| q.approval.as_ref()).is_none() {
+            return;
+        }
+        if !matches!(wizard.select(ix), WizardStep::AutoAdvance) {
+            return;
+        }
+        self.advance_task = None;
+        self.input.update(cx, |input, cx| input.set_text(String::new(), cx));
+        self.wizard_advance(cx);
     }
 
     /// `refocus` returns focus to the editor afterwards. Enter/Space on the
@@ -10690,6 +11008,11 @@ impl Render for Composer {
             self.focus_pending = false;
             let focus = self.input.focus_handle(cx);
             window.focus(&focus, cx);
+        }
+        if std::mem::take(&mut self.approval_focus_pending)
+            && self.input.focus_handle(cx).is_focused(window)
+        {
+            window.focus(&self.wizard_focus, cx);
         }
         let theme = Theme::of(cx).clone();
         let wizard_active = self.wizard.is_some();
@@ -15915,6 +16238,34 @@ mod tests {
         assert!(wizard_escape_goes_back("escape", true, true));
         assert!(!wizard_escape_goes_back("escape", true, false));
         assert!(!wizard_escape_goes_back("enter", false, true));
+    }
+
+    #[test]
+    fn approval_keys_pick_the_providers_own_approve_and_decline() {
+        use zeron_proto::{ApprovalDecision as D, ApprovalKind, ApprovalOption, ApprovalRequest};
+        let mut approval = ApprovalRequest::new(ApprovalKind::Command, "Run make");
+        assert_eq!(approval_default_index(&approval, true), Some(0));
+        assert_eq!(approval_default_index(&approval, false), Some(2));
+        // ACP order: allow always first, reject once last.
+        approval.decisions = [D::ApproveAlways, D::Approve, D::DeclineAlways, D::Decline]
+            .into_iter()
+            .map(ApprovalOption::new)
+            .collect();
+        assert_eq!(approval_default_index(&approval, true), Some(1));
+        assert_eq!(approval_default_index(&approval, false), Some(3));
+        // A shell approval that only offers stopping the turn.
+        approval.decisions = vec![ApprovalOption::new(D::Approve), ApprovalOption::new(D::Cancel)];
+        assert_eq!(approval_default_index(&approval, false), Some(1));
+        // An approval answers in one press: picking finishes the page.
+        let question = ApprovalRequest::new(ApprovalKind::Command, "Run make").into_question("q");
+        let mut wizard = Wizard::new("req".into(), vec![question]);
+        assert_eq!(wizard.select(1), WizardStep::AutoAdvance);
+        match wizard.advance() {
+            WizardStep::Done(answers) => {
+                assert_eq!(answers[0].labels, ["Approve for this session"])
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ use gpui::{
 
 use zeron_engine::registry::{HarnessDescriptor, TitleSettings};
 use zeron_proto::{
-    ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, RepoRef, SandboxLevel, Space,
+    AccessMode, ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, RepoRef, Space,
 };
 use zeron_rpc::methods;
 
@@ -103,6 +103,8 @@ pub struct DraftConfig {
     pub branch: Option<String>,
     /// Where the new session runs (the t3code env-mode).
     pub checkout: CheckoutKind,
+    /// The new session's access mode; `None` = the Settings default.
+    pub access_mode: Option<AccessMode>,
 }
 
 /// Where a new session runs (t3code's env-mode: `local | worktree`). "Current
@@ -142,6 +144,8 @@ pub struct ResolvedRunConfig {
     pub model: Option<String>,
     pub reasoning: Option<ReasoningLevel>,
     pub model_options: serde_json::Map<String, serde_json::Value>,
+    /// What the agent may do before it asks; synced on the chat config.
+    pub access_mode: AccessMode,
 }
 
 impl ResolvedRunConfig {
@@ -152,9 +156,17 @@ impl ResolvedRunConfig {
             model: self.model.clone(),
             reasoning: self.reasoning,
             model_options: self.model_options.clone(),
-            sandbox: SandboxLevel::WorkspaceWrite,
-            access_mode: None,
+            // Kept in step so an older host runs with no more access.
+            sandbox: self.access_mode.legacy().0,
+            access_mode: Some(self.access_mode),
         })
+    }
+
+    /// Whether the harness can honor the access mode (the picker greys out
+    /// the rest; a run in one would be refused).
+    pub fn access_supported(&self) -> bool {
+        self.harness
+            .is_none_or(|harness| zeron_proto::access_mode_supported(harness, self.access_mode))
     }
 }
 
@@ -674,6 +686,9 @@ pub enum PickerKind {
     /// New-session canvas only: the device project-less sessions run on (a
     /// project pick implies its own host and overrides this).
     Device,
+    /// The access-mode menu beside the model chip (supervised / auto-accept
+    /// edits / auto / full access), modes the harness can't honor greyed.
+    Access,
 }
 
 pub(crate) struct ReturnComposerFocus;
@@ -1021,6 +1036,7 @@ impl Pickers {
             Some("checkout") => Some(PickerKind::Checkout),
             Some("project") => Some(PickerKind::Space),
             Some("device") => Some(PickerKind::Device),
+            Some("access") => Some(PickerKind::Access),
             _ => None,
         };
         let mut open = popover::Popup::default();
@@ -1399,6 +1415,7 @@ impl Pickers {
                 model: self.effective_model_id(cx).map(str::to_string),
                 reasoning: self.explicit_reasoning(cx),
                 model_options: self.explicit_options(cx),
+                access_mode: self.effective_access_mode(cx),
             };
         }
         ResolvedRunConfig {
@@ -1410,6 +1427,53 @@ impl Pickers {
                 .or_else(|| self.effective_model_id(cx).map(str::to_string)),
             reasoning: self.effective_reasoning(cx),
             model_options: self.explicit_options(cx),
+            access_mode: self.effective_access_mode(cx),
+        }
+    }
+
+    /// The access mode the next run uses: the chat's own (synced on its
+    /// config), else this draft's pick, else the Settings default.
+    pub fn effective_access_mode(&self, cx: &App) -> AccessMode {
+        if let Some(chat) = self.state.read(cx).selected_chat_row() {
+            if let Some(config) = &chat.config {
+                return config.effective_access_mode();
+            }
+        }
+        self.config
+            .access_mode
+            .unwrap_or_else(|| crate::settings::default_access_mode(cx))
+    }
+
+    /// Choose an access mode: the selected chat's config (synced, applies
+    /// from its next turn — in place where the agent supports it), else the
+    /// new-session draft.
+    pub fn pick_access_mode(&mut self, mode: AccessMode, cx: &mut Context<Self>) {
+        if self.state.read(cx).selected_chat.is_some() {
+            self.update_chat_config(cx, move |config| {
+                config.access_mode = Some(mode);
+                config.sandbox = mode.legacy().0;
+            });
+        } else {
+            self.config.access_mode = Some(mode);
+        }
+        if self.open_kind() == Some(PickerKind::Access) {
+            self.animate_close(cx);
+        }
+        cx.notify();
+    }
+
+    /// Step to the next access mode the harness supports (the shortcut).
+    pub fn cycle_access_mode(&mut self, cx: &mut Context<Self>) {
+        let current = self.effective_access_mode(cx);
+        let next = match self.effective_harness(cx) {
+            Some(harness) => current.cycle(harness),
+            None => {
+                let at = AccessMode::ALL.iter().position(|m| *m == current).unwrap_or(0);
+                AccessMode::ALL[(at + 1) % AccessMode::ALL.len()]
+            }
+        };
+        if next != current {
+            self.pick_access_mode(next, cx);
         }
     }
 
@@ -1558,6 +1622,10 @@ impl Pickers {
             PickerKind::HarnessModel => self.selected_model_index(cx),
             PickerKind::Space => self.selected_project_index(cx),
             PickerKind::Device => self.selected_device_index(cx),
+            PickerKind::Access => {
+                let mode = self.effective_access_mode(cx);
+                AccessMode::ALL.iter().position(|m| *m == mode).unwrap_or(0)
+            }
         };
         if kind == PickerKind::HarnessModel {
             // scroll_to_item below may land anywhere; the first note of the
@@ -1617,7 +1685,7 @@ impl Pickers {
                 self.prefetch_models(true, cx);
             }
             // Projects and devices are already synced state — nothing to load.
-            PickerKind::Space | PickerKind::Device => {}
+            PickerKind::Space | PickerKind::Device | PickerKind::Access => {}
         }
         cx.notify();
     }
@@ -3213,6 +3281,7 @@ impl Pickers {
                     }
                     Some(PickerKind::Space) => self.filtered_project_rows(cx).len() + 1,
                     Some(PickerKind::Device) => self.filtered_device_rows(cx).len(),
+                    Some(PickerKind::Access) => AccessMode::ALL.len(),
                     None => 0,
                 };
                 let current = (self.active != NO_ACTIVE_ROW).then_some(self.active);
@@ -3240,6 +3309,11 @@ impl Pickers {
                         CheckoutKind::NewWorktree
                     };
                     self.pick_checkout(kind, cx);
+                } else if self.open_kind() == Some(PickerKind::Access) {
+                    let mode = AccessMode::ALL[self.active.min(AccessMode::ALL.len() - 1)];
+                    if self.access_mode_offered(mode, cx) {
+                        self.pick_access_mode(mode, cx);
+                    }
                 } else {
                     self.on_search_submit(cx);
                 }
@@ -3400,6 +3474,7 @@ impl Pickers {
             PickerKind::HarnessModel => "picker-model",
             PickerKind::Space => "picker-space",
             PickerKind::Device => "picker-device",
+            PickerKind::Access => "picker-access",
         };
         // Hover state is keyed globally: two composers on screen (main +
         // side chat) must not light each other's chips, so the key carries
@@ -4069,7 +4144,7 @@ impl Pickers {
                             this.ensure_harnesses(false, cx);
                         }
                         // Projects/devices load nothing; no retry surface exists.
-                        PickerKind::Space | PickerKind::Device => {}
+                        PickerKind::Space | PickerKind::Device | PickerKind::Access => {}
                     }))
                     .child(SharedString::from("Retry")),
             )
@@ -4314,6 +4389,82 @@ impl Pickers {
                         )
                     }),
             )
+            .into_any_element()
+    }
+
+    /// Whether the effective harness can honor `mode`.
+    fn access_mode_offered(&self, mode: AccessMode, cx: &App) -> bool {
+        self.effective_harness(cx)
+            .is_none_or(|harness| zeron_proto::access_mode_supported(harness, mode))
+    }
+
+    /// The access-mode menu: every mode with its one-line meaning; modes
+    /// the harness can't honor are shown, greyed, and say why.
+    fn render_access_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).for_popup();
+        let current = self.effective_access_mode(cx);
+        let harness_name = self
+            .effective_harness(cx)
+            .and_then(|id| {
+                self.harnesses
+                    .ready()
+                    .and_then(|list| list.iter().find(|d| d.id == id))
+                    .map(|d| d.name.clone())
+            })
+            .unwrap_or_else(|| "This agent".into());
+        let active = self.active;
+        let rows: Vec<AnyElement> = AccessMode::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(ix, mode)| {
+                let offered = self.access_mode_offered(mode, cx);
+                let detail: SharedString = if offered {
+                    mode.description().into()
+                } else {
+                    format!("Not available for {harness_name}").into()
+                };
+                popover::menu_row_nav(
+                    &theme,
+                    current == mode,
+                    ix == active,
+                    format!("access-row-{ix}"),
+                )
+                .id(("access-row", ix))
+                .items_start()
+                .when(!offered, |row| row.opacity(0.45))
+                .when(offered, |row| {
+                    row.on_click(cx.listener(move |this, _, _, cx| {
+                        this.pick_access_mode(mode, cx);
+                    }))
+                })
+                .child(
+                    crate::icons::icon(access_mode_icon(mode))
+                        .mt(px(1.0))
+                        .size(px(14.0))
+                        .text_color(theme.text_muted),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(SharedString::from(mode.label()))
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(11.0))
+                                .text_color(theme.text_muted)
+                                .child(detail),
+                        ),
+                )
+                .into_any_element()
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(rows)
             .into_any_element()
     }
 
@@ -6217,6 +6368,16 @@ fn attach_overlay_below(
 
 /// Attach the menu ABOVE and RIGHT-ALIGNED to the trigger (t3code
 /// `align="end"` — right-edge controls like the model picker open leftward).
+/// The access-mode chip and menu glyph.
+fn access_mode_icon(mode: AccessMode) -> &'static str {
+    match mode {
+        AccessMode::Supervised => crate::icons::EYE,
+        AccessMode::AutoAcceptEdits => crate::icons::PEN,
+        AccessMode::Auto => crate::icons::MAGIC_STICK_3,
+        AccessMode::FullAccess => crate::icons::KEY_MINIMALISTIC,
+    }
+}
+
 fn attach_overlay_end(
     chip: gpui::Stateful<gpui::Div>,
     overlay: &mut Option<(PickerKind, AnyElement)>,
@@ -6382,6 +6543,10 @@ impl Render for Pickers {
                 };
                 Some((PickerKind::HarnessModel, menu))
             }
+            Some(PickerKind::Access) => {
+                let content = self.render_access_popover(cx);
+                Some((PickerKind::Access, self.popover_frame(272.0, content, cx)))
+            }
             None => None,
         };
 
@@ -6451,6 +6616,39 @@ impl Render for Pickers {
             "model-popover",
             closing,
         );
+        // The access mode beside the model: what the agent may do before it
+        // asks. A mode the harness can't honor reads as a warning — a run in
+        // it is refused rather than widened.
+        let access_chip = (self.title.is_none()).then(|| {
+            let resolved = self.resolved(cx);
+            let mode = resolved.access_mode;
+            let unsupported = !resolved.access_supported();
+            let chip = self
+                .trigger_chip(
+                    PickerKind::Access,
+                    mode.label().into(),
+                    !unsupported,
+                    Some((
+                        access_mode_icon(mode),
+                        Some(if unsupported {
+                            theme.warning
+                        } else {
+                            theme.text_muted
+                        }),
+                    )),
+                    false,
+                    false,
+                    unsupported.then(|| ("unavailable".into(), Some(theme.warning))),
+                    &theme,
+                    cx,
+                )
+                .tooltip(crate::settings::widgets::text_tooltip(if unsupported {
+                    "This agent can't run in this access mode — pick another"
+                } else {
+                    mode.description()
+                }));
+            attach_overlay_end(chip, &mut overlay, PickerKind::Access, "access-popover", closing)
+        });
         div()
             .flex()
             .flex_row()
@@ -6462,6 +6660,7 @@ impl Render for Pickers {
             // instead of truncating (user report).
             .min_w_0()
             .gap(px(4.0))
+            .children(access_chip)
             .child(model_chip)
     }
 }
@@ -9736,7 +9935,15 @@ mod tests {
         let config = resolved.chat_config().expect("harness set");
         assert_eq!(config.harness, HarnessId::ClaudeCode);
         assert_eq!(config.model.as_deref(), Some("opus"));
-        assert_eq!(config.sandbox, SandboxLevel::WorkspaceWrite);
+        // The default access mode, with the legacy sandbox kept in step.
+        assert_eq!(config.access_mode, Some(AccessMode::AutoAcceptEdits));
+        assert_eq!(config.sandbox, zeron_proto::SandboxLevel::WorkspaceWrite);
+        resolved.access_mode = AccessMode::Supervised;
+        let config = resolved.chat_config().unwrap();
+        assert_eq!(config.sandbox, zeron_proto::SandboxLevel::ReadOnly);
+        assert!(resolved.access_supported());
+        resolved.harness = Some(HarnessId::Pi);
+        assert!(!resolved.access_supported(), "Pi runs in full access only");
     }
 
     #[test]
