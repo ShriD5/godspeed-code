@@ -49,12 +49,64 @@ struct LiveTerminal {
     reader_thread: Option<std::thread::JoinHandle<()>>,
     #[cfg(windows)]
     cleanup: Option<Arc<windows::Cleanup>>,
-    subscribers: Vec<mpsc::UnboundedSender<TerminalEvent>>,
+    subscribers: Vec<Subscriber>,
     replay: VecDeque<TerminalEvent>,
     replay_bytes: usize,
     seq: u64,
     last_active_at: std::time::Instant,
     exited: bool,
+}
+
+/// One attached stream's live tail: bounded, so a client that stops reading
+/// (a suspended phone, a stalled relay) never makes the engine queue output
+/// for it without limit.
+struct Subscriber {
+    tx: mpsc::Sender<TerminalEvent>,
+    /// Set when the tail overflowed and was cut; the stream resyncs.
+    lagged: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Live events a subscriber may fall behind by before its tail is cut.
+const SUBSCRIBER_BACKLOG: usize = 64;
+
+fn event_seq(event: &TerminalEvent) -> u64 {
+    match event {
+        TerminalEvent::Data { seq, .. } | TerminalEvent::Exit { seq, .. } => *seq,
+    }
+}
+
+/// A terminal stream: the replay, then the live tail. A subscriber that
+/// falls more than [`SUBSCRIBER_BACKLOG`] events behind is cut from the live
+/// fan-out; once it has drained what it held, the stream re-attaches from
+/// the last seq it delivered and catches up from the bounded replay window
+/// (anything older than the window is gone, as for any late subscriber).
+pub struct TerminalSubscription {
+    terminals: Weak<TerminalsInner>,
+    terminal_id: String,
+    rx: mpsc::Receiver<TerminalEvent>,
+    lagged: Arc<std::sync::atomic::AtomicBool>,
+    last_seq: u64,
+}
+
+impl TerminalSubscription {
+    /// The next event; `None` once the terminal exits or is closed.
+    pub async fn recv(&mut self) -> Option<TerminalEvent> {
+        loop {
+            if let Some(event) = self.rx.recv().await {
+                self.last_seq = event_seq(&event);
+                return Some(event);
+            }
+            if !self.lagged.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                return None;
+            }
+            let inner = self.terminals.upgrade()?;
+            let next = Terminals { inner }
+                .subscribe(&self.terminal_id, Some(self.last_seq))
+                .ok()?;
+            self.rx = next.rx;
+            self.lagged = next.lagged;
+        }
+    }
 }
 
 impl LiveTerminal {
@@ -77,7 +129,17 @@ impl LiveTerminal {
                 };
             }
         }
-        self.subscribers.retain(|tx| tx.send(event.clone()).is_ok());
+        self.subscribers.retain(|sub| match sub.tx.try_send(event.clone()) {
+            Ok(()) => true,
+            // A client that stopped reading: stop queueing for it. Its
+            // stream drains what it holds, then resyncs from the replay.
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                sub.lagged
+                    .store(true, std::sync::atomic::Ordering::Release);
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        });
         if matches!(event, TerminalEvent::Exit { .. }) {
             self.initial_script.take();
             self.exited = true;
@@ -389,25 +451,38 @@ impl Terminals {
         &self,
         terminal_id: &str,
         after_seq: Option<u64>,
-    ) -> Result<mpsc::UnboundedReceiver<TerminalEvent>, EngineError> {
+    ) -> Result<TerminalSubscription, EngineError> {
         let session = self.session(terminal_id)?;
         let mut session = lock(&session);
         session.last_active_at = std::time::Instant::now();
-        let (tx, rx) = mpsc::unbounded_channel();
         let after = after_seq.unwrap_or(0);
-        for event in &session.replay {
-            let seq = match event {
-                TerminalEvent::Data { seq, .. } | TerminalEvent::Exit { seq, .. } => *seq,
-            };
-            if seq > after {
-                let _ = tx.send(event.clone());
-            }
+        let replay: Vec<TerminalEvent> = session
+            .replay
+            .iter()
+            .filter(|event| event_seq(event) > after)
+            .cloned()
+            .collect();
+        // Room for the replay (already bounded by its byte window) plus the
+        // live backlog.
+        let (tx, rx) = mpsc::channel(replay.len() + SUBSCRIBER_BACKLOG);
+        for event in replay {
+            let _ = tx.try_send(event);
         }
+        let lagged = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if !session.exited {
-            session.subscribers.push(tx);
+            session.subscribers.push(Subscriber {
+                tx,
+                lagged: lagged.clone(),
+            });
         }
         // On an exited session `tx` drops here: the stream ends after the replay.
-        Ok(rx)
+        Ok(TerminalSubscription {
+            terminals: Arc::downgrade(&self.inner),
+            terminal_id: terminal_id.to_string(),
+            rx,
+            lagged,
+            last_seq: after,
+        })
     }
 
     /// Write input bytes; `data` is base64 (matching `Data` events), with a plain
@@ -760,7 +835,7 @@ mod windows_tests {
     }
 
     async fn collect_until(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<TerminalEvent>,
+        rx: &mut super::TerminalSubscription,
         events: &mut Vec<TerminalEvent>,
         predicate: impl Fn(&[TerminalEvent]) -> bool,
     ) {
@@ -1191,6 +1266,61 @@ mod initial_command_tests {
                 )
                 .is_err()
         );
+        assert!(!terminals.any_open());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod backpressure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stalled_subscriber_is_bounded_then_resyncs_from_the_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let terminals = Terminals::new();
+        let session = terminals
+            .open_session(
+                root.path().to_str().unwrap(),
+                80,
+                24,
+                Some("/bin/sh"),
+                &HashMap::new(),
+                Some("sleep 30"),
+            )
+            .unwrap();
+        let mut stalled = terminals.subscribe(&session.id, None).unwrap();
+        let live = terminals.session(&session.id).unwrap();
+        let flood = SUBSCRIBER_BACKLOG * 4;
+        let last = {
+            let mut live = lock(&live);
+            let mut last = 0;
+            for i in 0..flood {
+                last = live.next_seq();
+                live.emit(TerminalEvent::Data {
+                    seq: last,
+                    data: BASE64.encode(format!("line {i}\n")),
+                });
+            }
+            last
+        };
+        // The stalled stream was cut from the fan-out instead of queueing
+        // every chunk for it.
+        assert!(lock(&live).subscribers.is_empty());
+        assert!(stalled.lagged.load(std::sync::atomic::Ordering::Acquire));
+
+        // Reading again delivers every seq once, in order, via the replay.
+        let mut seqs = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while seqs.last() != Some(&last) {
+                seqs.push(event_seq(&stalled.recv().await.expect("stream alive")));
+            }
+        })
+        .await
+        .expect("caught up");
+        assert_eq!(seqs, (1..=last).collect::<Vec<_>>());
+        // And it is back on the live tail.
+        assert_eq!(lock(&live).subscribers.len(), 1);
+        terminals.close(&session.id).unwrap();
         assert!(!terminals.any_open());
     }
 }

@@ -98,7 +98,7 @@ fn decoded(events: &[TerminalEvent]) -> String {
 /// Drain a terminal subscription until `predicate` matches the decoded transcript
 /// (or the deadline hits).
 async fn drain_until(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<TerminalEvent>,
+    rx: &mut zeron_engine::terminals::TerminalSubscription,
     events: &mut Vec<TerminalEvent>,
     predicate: impl Fn(&[TerminalEvent]) -> bool,
 ) {
