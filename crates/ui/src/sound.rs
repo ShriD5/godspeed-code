@@ -335,6 +335,12 @@ pub(crate) struct SessionNotificationState {
     approval: bool,
     last_completed_turn: Option<String>,
     fresh: bool,
+    /// Background work still live ("waiting on N tasks"): a turn that
+    /// settles meanwhile is not done yet.
+    waiting: u32,
+    /// This baseline holds back a completion that landed while work was
+    /// live (`last_completed_turn` is the one before it).
+    held: bool,
 }
 
 impl SessionNotificationState {
@@ -353,7 +359,30 @@ impl SessionNotificationState {
                 .signed_duration_since(session.updated_at)
                 .num_milliseconds()
                 <= zeron_proto::view::SESSION_STALE_MS,
+            waiting: zeron_proto::view::background_work(Some(session), now),
+            held: false,
         }
+    }
+
+    /// A completion the user hasn't heard about since `prev`.
+    fn completed_since(&self, prev: &Self, send_pending: bool) -> bool {
+        !send_pending
+            && self.fresh
+            && self.last_completed_turn.is_some()
+            && self.last_completed_turn != prev.last_completed_turn
+    }
+
+    /// The baseline to keep after `self` arrives on top of `prev`. A
+    /// completion while background work is live is held back (the old
+    /// marker kept) so it can chime once the work ends — and not at all if
+    /// that work wakes the agent into another turn, whose own end chimes.
+    pub(crate) fn baseline_after(&self, prev: &Self, send_pending: bool) -> Self {
+        let mut next = self.clone();
+        if self.completed_since(prev, send_pending) && self.waiting > 0 {
+            next.last_completed_turn = prev.last_completed_turn.clone();
+            next.held = true;
+        }
+        next
     }
 
     /// Call after saving the new baseline, including when delivery is pending
@@ -368,11 +397,13 @@ impl SessionNotificationState {
         {
             return Some(Sound::Request);
         }
-        if !send_pending
-            && self.fresh
-            && self.last_completed_turn.is_some()
-            && self.last_completed_turn != prev.last_completed_turn
-        {
+        if self.completed_since(prev, send_pending) {
+            // Not done while subagents, background shells or monitors still
+            // run; and a held completion whose work woke the agent into a
+            // new turn is superseded by that turn's own end.
+            if self.waiting > 0 || (prev.held && self.indicator == Indicator::Working) {
+                return None;
+            }
             return Some(Sound::Done);
         }
         None
@@ -462,7 +493,55 @@ mod tests {
             approval: false,
             last_completed_turn: turn.map(str::to_owned),
             fresh: true,
+            waiting: 0,
+            held: false,
         }
+    }
+
+    /// The shell's step: the sound for `next`, then the baseline it keeps.
+    fn step(
+        prev: &SessionNotificationState,
+        next: &SessionNotificationState,
+    ) -> (Option<Sound>, SessionNotificationState) {
+        (next.sound_since(prev, false), next.baseline_after(prev, false))
+    }
+
+    #[test]
+    fn completion_waits_for_background_work_and_chimes_once_it_ends() {
+        let working = baseline(Indicator::Working, Some("t0"));
+        // The turn settles while a background shell still runs: silent.
+        let waiting = SessionNotificationState {
+            waiting: 1,
+            ..baseline(Indicator::None, Some("t1"))
+        };
+        let (sound, held) = step(&working, &waiting);
+        assert_eq!(sound, None);
+        assert!(held.held);
+        // A heartbeat with the work still live stays silent.
+        let (sound, held) = step(&held, &waiting);
+        assert_eq!(sound, None);
+        // The work ends without waking the agent: now it is done.
+        let (sound, settled) = step(&held, &baseline(Indicator::None, Some("t1")));
+        assert_eq!(sound, Some(Sound::Done));
+        assert!(!settled.held);
+        assert_eq!(step(&settled, &baseline(Indicator::None, Some("t1"))).0, None);
+    }
+
+    #[test]
+    fn background_work_that_wakes_the_agent_chimes_only_for_the_follow_up() {
+        let working = baseline(Indicator::Working, Some("t0"));
+        let waiting = SessionNotificationState {
+            waiting: 2,
+            ..baseline(Indicator::None, Some("t1"))
+        };
+        let (_, held) = step(&working, &waiting);
+        // The work ends and the agent wakes into another turn: no chime.
+        let (sound, resumed) = step(&held, &baseline(Indicator::Working, Some("t1")));
+        assert_eq!(sound, None);
+        assert!(!resumed.held);
+        // That turn's own end is the one completion.
+        let (sound, _) = step(&resumed, &baseline(Indicator::None, Some("t2")));
+        assert_eq!(sound, Some(Sound::Done));
     }
 
     #[test]
