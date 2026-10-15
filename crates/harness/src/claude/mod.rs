@@ -1437,6 +1437,18 @@ fn handle_control_request(
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
     user_denials: &Denials,
 ) {
+    if req.request.subtype == "elicitation" {
+        // The CLI blocks the MCP call until an answer arrives; unanswered,
+        // the tool hung until the server gave up.
+        let request_input = Arc::clone(request_input);
+        let stdin_tx = stdin_tx.clone();
+        tokio::spawn(async move {
+            let result = answer_elicitation(&req.request, request_input.as_ref()).await;
+            let line = control_response_line(&req.request_id, result);
+            let _ = stdin_tx.send(StdinMsg::Line(line));
+        });
+        return;
+    }
     if req.request.subtype != "can_use_tool" {
         tracing::debug!(
             target: "zeron_harness::claude",
@@ -1487,6 +1499,199 @@ fn handle_control_request(
         let line = control_response_line(&request_id, allow_response(updated));
         let _ = stdin_tx.send(StdinMsg::Line(line));
     });
+}
+
+/// Answer an MCP `elicitation` with the user's input. A form that asks for
+/// nothing (an MCP server requesting access, say) is an approval; a form
+/// with fields becomes questions, one per field; a URL is an approval whose
+/// card shows the link. Anything the user leaves unanswered declines, and a
+/// run that ends first cancels — never a silent accept.
+async fn answer_elicitation(
+    req: &wire::ControlRequestBody,
+    request_input: &crate::approval::RequestInputFn,
+) -> Value {
+    let server = req
+        .display_name
+        .as_deref()
+        .or(req.mcp_server_name.as_deref())
+        .unwrap_or("An MCP server");
+    let message = req.message.as_deref().unwrap_or_default().trim();
+    let schema = req.requested_schema.clone().unwrap_or_default();
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .filter(|p| !p.is_empty());
+    let Some(properties) = properties.filter(|_| req.mode.as_deref() != Some("url")) else {
+        let url = req.url.as_deref().filter(|_| req.mode.as_deref() == Some("url"));
+        let title = req
+            .title
+            .clone()
+            .unwrap_or_else(|| match url {
+                Some(_) => format!("{server} asks you to open a link"),
+                None => format!("{server} asks for your approval"),
+            });
+        let mut approval = ApprovalRequest::new(ApprovalKind::McpTool, title);
+        let reason = [Some(message), req.description.as_deref(), url]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        approval.reason = (!reason.is_empty()).then_some(reason);
+        approval = approval.with_decisions(&[
+            ApprovalDecision::Approve,
+            ApprovalDecision::Decline,
+            ApprovalDecision::Cancel,
+        ]);
+        return match crate::approval::ask(request_input, approval).await {
+            ApprovalDecision::Cancel => serde_json::json!({ "action": "cancel" }),
+            decision if decision.approves() => match url {
+                Some(_) => serde_json::json!({ "action": "accept" }),
+                None => serde_json::json!({ "action": "accept", "content": {} }),
+            },
+            _ => serde_json::json!({ "action": "decline" }),
+        };
+    };
+    // The server's own field order when the CLI reports it.
+    let mut names: Vec<&String> = req
+        .property_order
+        .iter()
+        .flatten()
+        .filter(|name| properties.contains_key(*name))
+        .collect();
+    let rest: Vec<&String> = properties.keys().filter(|k| !names.contains(k)).collect();
+    names.extend(rest);
+    let fields: Vec<(String, &Value, UserInputQuestion)> = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let field = &properties[name];
+            let text = |key: &str| field.get(key).and_then(Value::as_str).map(str::to_owned);
+            let (options, multi_select) = elicitation_choices(field);
+            let mut question = text("description").unwrap_or_else(|| name.clone());
+            if index == 0 && !message.is_empty() {
+                question = format!("{message}\n\n{question}");
+            }
+            let q = UserInputQuestion {
+                id: uuid::Uuid::new_v4().to_string(),
+                header: text("title").unwrap_or_else(|| server.to_owned()),
+                question,
+                options: options.iter().map(|(label, _)| label.clone()).collect(),
+                multi_select,
+                prefill: field.get("default").map(|d| match d {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                }),
+                multiline: false,
+                approval: None,
+            };
+            (name.clone(), field, q)
+        })
+        .collect();
+    let questions: Vec<UserInputQuestion> = fields.iter().map(|(_, _, q)| q.clone()).collect();
+    let Ok(answers) = request_input(questions).await else {
+        return serde_json::json!({ "action": "cancel" });
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut content = serde_json::Map::new();
+    for (name, field, q) in &fields {
+        let labels: Vec<String> = answers
+            .iter()
+            .find(|a| a.question_id == q.id)
+            .map(|a| a.labels.iter().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect())
+            .unwrap_or_default();
+        let Some(value) = elicitation_value(field, &labels) else {
+            if required.contains(&name.as_str()) {
+                return serde_json::json!({ "action": "decline" });
+            }
+            continue;
+        };
+        content.insert(name.clone(), value);
+    }
+    serde_json::json!({ "action": "accept", "content": content })
+}
+
+/// A field's choices as (label, value) pairs, and whether several may be
+/// picked: `enum` (with `enumNames`), `oneOf`/`anyOf` consts, booleans, and
+/// arrays of those.
+fn elicitation_choices(field: &Value) -> (Vec<(String, Value)>, bool) {
+    let consts = |schema: &Value| -> Vec<(String, Value)> {
+        if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            let names = schema.get("enumNames").and_then(Value::as_array);
+            return values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let label = names
+                        .and_then(|n| n.get(i))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+                    (label, v.clone())
+                })
+                .collect();
+        }
+        ["oneOf", "anyOf"]
+            .iter()
+            .find_map(|k| schema.get(*k).and_then(Value::as_array))
+            .map(|variants| {
+                variants
+                    .iter()
+                    .filter_map(|v| {
+                        let value = v.get("const")?.clone();
+                        let label = v
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.as_str().map_or_else(|| value.to_string(), str::to_owned));
+                        Some((label, value))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    match field.get("type").and_then(Value::as_str) {
+        Some("boolean") => (
+            vec![("Yes".into(), Value::Bool(true)), ("No".into(), Value::Bool(false))],
+            false,
+        ),
+        Some("array") => (consts(field.get("items").unwrap_or(&Value::Null)), true),
+        _ => (consts(field), false),
+    }
+}
+
+/// The value a field's answer labels stand for, typed per the schema;
+/// `None` when unanswered or not a valid value.
+fn elicitation_value(field: &Value, labels: &[String]) -> Option<Value> {
+    let (choices, multi) = elicitation_choices(field);
+    let pick = |label: &String| {
+        choices
+            .iter()
+            .find(|(l, _)| l == label)
+            .map(|(_, v)| v.clone())
+    };
+    if multi {
+        let values: Vec<Value> = labels.iter().filter_map(pick).collect();
+        return (!values.is_empty()).then_some(Value::Array(values));
+    }
+    let label = labels.first()?;
+    if !choices.is_empty() {
+        return pick(label);
+    }
+    match field.get("type").and_then(Value::as_str) {
+        Some("integer") => label.parse::<i64>().ok().map(Value::from),
+        Some("number") => label
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        _ => Some(Value::String(label.clone())),
+    }
 }
 
 /// `--permission-mode` for an access mode. `default` is the CLI's own
@@ -1937,6 +2142,97 @@ mod tests {
         assert!(text.ends_with("\n    …"));
         // Nothing to add: the question is unchanged.
         assert_eq!(question_with_option_details("Q", &[json!("A"), json!({"label": "B"})]), "Q");
+    }
+
+    /// An answering bridge that records the questions and replies with
+    /// `reply(questions)`; `None` drops the sender (the run went away).
+    fn bridge(
+        reply: impl Fn(&[UserInputQuestion]) -> Option<Vec<UserInputAnswer>> + Send + Sync + 'static,
+    ) -> Box<crate::approval::RequestInputFn> {
+        Box::new(move |questions| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if let Some(answers) = reply(&questions) {
+                let _ = tx.send(answers);
+            }
+            rx
+        })
+    }
+
+    fn elicitation(raw: Value) -> wire::ControlRequestBody {
+        serde_json::from_value(raw).unwrap()
+    }
+
+    /// pingdotgg/t3code#14878: an MCP server's `elicitation` was never
+    /// answered, so the tool hung. An approval-only form becomes an approval
+    /// card; a form with fields becomes questions whose answers go back
+    /// typed per the schema; nothing is accepted without the user.
+    #[tokio::test]
+    async fn mcp_elicitations_reach_the_user_and_answer_the_server() {
+        let access = elicitation(json!({
+            "subtype": "elicitation", "mcp_server_name": "codex-cua",
+            "message": "Allow access to Dia?", "mode": "form",
+            "requested_schema": {"type": "object", "properties": {}},
+        }));
+        let approve = bridge(|qs| {
+            assert!(qs[0].approval.is_some(), "an approval card");
+            assert!(qs[0].question.contains("codex-cua"));
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["approve".into()] }])
+        });
+        assert_eq!(
+            answer_elicitation(&access, approve.as_ref()).await,
+            json!({"action": "accept", "content": {}})
+        );
+        let decline = bridge(|qs| {
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["decline".into()] }])
+        });
+        assert_eq!(answer_elicitation(&access, decline.as_ref()).await, json!({"action": "decline"}));
+        let gone = bridge(|_| None);
+        assert_eq!(
+            answer_elicitation(&access, gone.as_ref()).await,
+            json!({"action": "decline"}),
+            "a dropped approval declines"
+        );
+
+        let form = elicitation(json!({
+            "subtype": "elicitation", "mcp_server_name": "deploy", "message": "Configure the deploy",
+            "requested_schema": {"type": "object", "required": ["env", "replicas"], "properties": {
+                "replicas": {"type": "integer", "title": "Replicas"},
+                "env": {"type": "string", "enum": ["prod", "dev"], "enumNames": ["Production", "Development"]},
+                "notify": {"type": "boolean", "description": "Notify the team?"},
+                "note": {"type": "string"},
+            }},
+            "property_order": ["env", "replicas", "notify", "note"],
+        }));
+        let answer = bridge(|qs| {
+            assert_eq!(qs.len(), 4);
+            assert!(qs[0].question.starts_with("Configure the deploy"));
+            assert_eq!(qs[0].options, ["Production", "Development"]);
+            assert_eq!(qs[1].header, "Replicas");
+            assert_eq!(qs[2].options, ["Yes", "No"]);
+            let label = |i: usize, l: &str| UserInputAnswer { question_id: qs[i].id.clone(), labels: vec![l.into()] };
+            Some(vec![label(0, "Development"), label(1, " 3 "), label(2, "No")])
+        });
+        assert_eq!(
+            answer_elicitation(&form, answer.as_ref()).await,
+            json!({"action": "accept", "content": {"env": "dev", "replicas": 3, "notify": false}})
+        );
+        // A required field left blank declines; a run that ends cancels.
+        let blank = bridge(|qs| {
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["Production".into()] }])
+        });
+        assert_eq!(answer_elicitation(&form, blank.as_ref()).await, json!({"action": "decline"}));
+        assert_eq!(answer_elicitation(&form, gone.as_ref()).await, json!({"action": "cancel"}));
+
+        let url = elicitation(json!({
+            "subtype": "elicitation", "mcp_server_name": "github", "mode": "url",
+            "message": "Sign in", "url": "https://example.com/auth",
+        }));
+        let open = bridge(|qs| {
+            let approval = qs[0].approval.as_ref().unwrap();
+            assert!(approval.reason.as_deref().unwrap().contains("https://example.com/auth"));
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["approve".into()] }])
+        });
+        assert_eq!(answer_elicitation(&url, open.as_ref()).await, json!({"action": "accept"}));
     }
 
     #[test]

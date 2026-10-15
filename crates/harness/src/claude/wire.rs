@@ -303,6 +303,23 @@ pub(crate) struct ControlRequestBody {
     /// `permission_denials`.
     #[serde(default)]
     pub tool_use_id: Option<String>,
+    /// `elicitation`: an MCP server asking the user (`form` with a JSON
+    /// schema of what it wants, or `url` to open), answered with an MCP
+    /// `ElicitResult` (`{action: accept|decline|cancel, content?}`).
+    #[serde(default)]
+    pub mcp_server_name: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub requested_schema: Option<Value>,
+    #[serde(default)]
+    pub property_order: Option<Vec<String>>,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// Parse one stdout JSONL line. `Err` = not JSON; unknown types = `Other`.
