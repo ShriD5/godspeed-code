@@ -338,9 +338,11 @@ impl Uploads {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        let scratch = harness_scratch_roots();
         let roots: Vec<&PathBuf> = std::iter::once(&self.inner.dir)
             .chain(read_roots.iter())
             .chain(extra_roots.iter())
+            .chain(scratch.iter())
             .collect();
         // Jail lexically BEFORE any filesystem call: tool chips send paths an
         // agent printed, and merely opening `\\host\share\a.png` (or an autofs
@@ -400,6 +402,37 @@ impl Uploads {
             resolved,
         })
     }
+}
+
+/// The per-user temp roots agent CLIs keep scratch files in (Claude Code's
+/// scratchpad and the screenshots its browser tools save), so tool-chip image
+/// previews of them resolve. Named dirs only, never the temp dir itself; on
+/// Unix the shared `/tmp` dir must carry this user's uid AND be owned by
+/// them, so another account can't plant one. Like every non-uploads root,
+/// they serve images only.
+pub(crate) fn harness_scratch_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let name = format!("claude-{uid}");
+        for base in [PathBuf::from("/tmp"), std::env::temp_dir()] {
+            let root = base.join(&name);
+            if !roots.contains(&root)
+                && std::fs::symlink_metadata(&root).is_ok_and(|m| m.is_dir() && m.uid() == uid)
+            {
+                roots.push(root);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // `%LOCALAPPDATA%\Temp\claude\<project>\<session>\…`: per-user already.
+        roots.push(std::env::temp_dir().join("claude"));
+    }
+    roots
 }
 
 struct InspectedFile {
@@ -727,6 +760,42 @@ mod tests {
                 "{path:?}: {error}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn harness_scratch_images_preview_but_the_temp_dir_stays_jailed() {
+        let dir = tempfile::tempdir().unwrap();
+        let uploads = Uploads::from_root(dir.path());
+        // SAFETY: getuid has no preconditions.
+        let scratch_root = std::env::temp_dir().join(format!("claude-{}", unsafe { libc::getuid() }));
+        let created = !scratch_root.exists();
+        std::fs::create_dir_all(&scratch_root).unwrap();
+        let session = tempfile::tempdir_in(&scratch_root).unwrap();
+        let shot = session.path().join("shot.png");
+        std::fs::write(&shot, b"\x89PNG\r\n\x1a\n").unwrap();
+        std::fs::write(session.path().join("notes.txt"), b"secret").unwrap();
+        let outside = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
+        std::fs::write(outside.path().join("shot.png"), b"png").unwrap();
+
+        let chunk = uploads.read_chunk(shot.to_str().unwrap(), 0, &[]);
+        let not_image = uploads.read_chunk(
+            session.path().join("notes.txt").to_str().unwrap(),
+            0,
+            &[],
+        );
+        let elsewhere = uploads.read_chunk(
+            outside.path().join("shot.png").to_str().unwrap(),
+            0,
+            &[],
+        );
+        drop(session);
+        if created {
+            let _ = std::fs::remove_dir(&scratch_root);
+        }
+        assert_eq!(chunk.unwrap().mime_type, "image/png");
+        assert!(not_image.unwrap_err().to_string().contains("not a supported image"));
+        assert!(elsewhere.unwrap_err().to_string().contains("outside the upload cache"));
     }
 
     #[test]
