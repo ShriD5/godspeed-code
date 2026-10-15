@@ -408,14 +408,19 @@ fn at_completion_offers_staged_files_by_name(cx: &mut gpui::TestAppContext) {
     );
 }
 
+/// T3 17471: a folder for a chat on this device goes in as its path for the
+/// agent to list, not as a refusal; nothing is staged.
 #[gpui::test]
-fn a_folder_is_refused_without_staging(cx: &mut gpui::TestAppContext) {
+fn a_folder_is_referenced_by_path_without_staging(cx: &mut gpui::TestAppContext) {
     let (dir, handle) = composer_focus_window(cx);
     add_file(&handle, cx, dir.path().to_path_buf());
     assert!(staged_names(&handle, cx).is_empty());
-    assert_eq!(text(&handle, cx), "");
+    assert_eq!(
+        text(&handle, cx),
+        format!("{} ", attachments::path_reference(dir.path()))
+    );
     handle
-        .read_with(cx, |composer, _| assert!(composer.failure().is_some()))
+        .read_with(cx, |composer, _| assert!(composer.failure().is_none()))
         .unwrap();
 }
 

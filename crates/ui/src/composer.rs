@@ -6761,9 +6761,39 @@ impl Composer {
     }
 
     /// Stage files (picker / drop / pasted paths): images with thumbnails, any
-    /// other file as opaque bytes. Folders, read failures and oversize files
-    /// surface in the failure notice.
+    /// other file as opaque bytes. Read failures surface in the failure
+    /// notice.
+    ///
+    /// Folders and files past the upload cap used to be refused too, though
+    /// the agent CLIs read both by path (T3 17471). When the chat runs on this
+    /// device they now go into the draft as their absolute paths for the
+    /// agent to open itself. A chat on another device can't see this disk, so
+    /// there they still fail as before.
     pub(crate) fn add_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let (references, paths): (Vec<_>, Vec<_>) = if self.targets_this_device(cx) {
+            paths
+                .into_iter()
+                .partition(|path| attachments::read_by_path(path))
+        } else {
+            (Vec::new(), paths)
+        };
+        if !references.is_empty() {
+            let text = references
+                .iter()
+                .map(|path| attachments::path_reference(path))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let inserted = self
+                .input
+                .update(cx, |input, cx| input.insert_reference(&text, cx));
+            if inserted {
+                self.focus_pending = true;
+            }
+            cx.notify();
+        }
+        if paths.is_empty() {
+            return;
+        }
         self.stage_in_background(
             move || {
                 paths
@@ -7519,6 +7549,19 @@ impl Composer {
             Some(params)
         } else {
             None
+        }
+    }
+
+    /// Whether the selected chat (or the new chat's target) runs on this
+    /// device, so a local path in the prompt names a file its agent can read.
+    fn targets_this_device(&self, cx: &App) -> bool {
+        let target = self
+            .completion_workspace_params(cx)
+            .and_then(|params| params["targetDeviceId"].as_str().map(str::to_owned))
+            .or_else(|| self.state.read(cx).effective_device_id());
+        match (target, self.state.read(cx).local_device_id.as_deref()) {
+            (Some(target), Some(local)) => target == local,
+            _ => true,
         }
     }
 
