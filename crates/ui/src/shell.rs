@@ -7234,6 +7234,15 @@ impl Shell {
     ) -> gpui::Stateful<gpui::Div> {
         el.id(id)
             .window_control_area(WindowControlArea::Drag)
+            // The titlebar is glass over full-height content (the transcript
+            // list scrolls under it), and a plain hitbox doesn't stop the
+            // text below from counting as hovered: a press meant to drag the
+            // window also anchored a markdown selection there, and the
+            // window move then dragged that selection out, auto-scrolling
+            // the transcript (Zeron #431). Presses stop at the strip; the
+            // wheel still reaches the list beneath. The strip's own children
+            // (tabs, buttons) paint above it and stay clickable.
+            .block_mouse_except_scroll()
             .on_mouse_down_out(cx.listener(|this, _, _, _| this.titlebar_should_move = false))
             .on_mouse_up(
                 MouseButton::Left,
