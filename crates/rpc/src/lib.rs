@@ -295,6 +295,13 @@ pub mod methods {
     /// `{chatId, action: LimitRecoveryAction, resetAt?}` → `{limit: ChatLimit | null}`.
     pub const SET_CHAT_LIMIT_RECOVERY: &str = "SetChatLimitRecovery";
 
+    // Thread lifecycle (`zeron_proto::ChatLifecycle`). Relay-forwardable: the
+    // host device runs the snooze and auto-settle timer for its chats.
+    /// `{}` → `ChatLifecycleSettings`.
+    pub const GET_CHAT_LIFECYCLE_SETTINGS: &str = "GetChatLifecycleSettings";
+    /// `ChatLifecycleSettings` → `ChatLifecycleSettings`.
+    pub const SET_CHAT_LIFECYCLE_SETTINGS: &str = "SetChatLifecycleSettings";
+
     // Git write actions (ControlRpc, relay-forwardable — they run on the
     // device that owns the checkout). Params carry the checkout `cwd`.
     /// Branch, upstream, ahead/behind and remote facts for one checkout.

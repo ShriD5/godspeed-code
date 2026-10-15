@@ -3711,6 +3711,7 @@ mod tests {
             harness_session_cwd: None,
             parent_chat_id: None,
             limit: None,
+            lifecycle: Default::default(),
             space_id: Some(space.into()),
             last_seen_at: None,
             room_gen: None,

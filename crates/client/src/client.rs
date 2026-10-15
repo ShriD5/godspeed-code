@@ -768,6 +768,7 @@ impl Client {
             room_gen: Some(2),
             parent_chat_id: None,
             limit: None,
+            lifecycle: Default::default(),
         };
         let id = chat.id.clone();
         self.inner.registry_write(|doc| doc.upsert_chat(&chat))?;

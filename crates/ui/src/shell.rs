@@ -14384,6 +14384,7 @@ mod tests {
             room_gen: None,
             parent_chat_id: None,
             limit: None,
+            lifecycle: Default::default(),
         }
     }
 
@@ -17502,6 +17503,7 @@ mod exit_regressions {
                         harness_session_cwd: None,
                         parent_chat_id: None,
                         limit: None,
+                        lifecycle: Default::default(),
                         space_id: Some("other".into()),
                         last_seen_at: None,
                         room_gen: None,

@@ -11,7 +11,8 @@
 //! - `WatchSessions` → stream of `Session[]`: this engine's live statuses merged with
 //!   remote devices' workspace session rows
 //! - `Mutate {op, …}` → `{ok}` — workspace entity mutations (createChat, renameChat,
-//!   setChatArchived, deleteChat, renameDevice, markChatSeen)
+//!   setChatArchived, deleteChat, renameDevice, markChatSeen, markChatUnread,
+//!   setChatLifecycle)
 //! - `EngineInfo` → `{deviceId, workspaceScope}` — this runtime's fixed identity
 //!   and data boundary (never forwarded)
 //! - `LocalDevice` → `{deviceId}` — legacy engine identity (never forwarded)
@@ -51,6 +52,7 @@
 //! whose checkout always lives on the routed target device.
 
 mod agents;
+mod chat_lifecycle;
 mod limit_recovery;
 mod git_actions;
 mod message_search;
@@ -705,6 +707,18 @@ enum MutateParams {
         #[serde(default)]
         at: Option<i64>,
     },
+    /// Clear the synced seen marker: unread on every device.
+    #[serde(rename_all = "camelCase")]
+    MarkChatUnread { chat_id: String },
+    /// Settle, snooze or wake a chat. `expected` guards an undo: it applies
+    /// only while the chat is still in that state.
+    #[serde(rename_all = "camelCase")]
+    SetChatLifecycle {
+        chat_id: String,
+        lifecycle: zeron_proto::LifecycleState,
+        #[serde(default)]
+        expected: Option<zeron_proto::LifecycleState>,
+    },
 }
 
 #[derive(Clone)]
@@ -733,6 +747,7 @@ pub struct EngineRpc {
     message_index: Option<crate::MessageIndex>,
     agents: Option<crate::agents::Agents>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
+    chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
     engine_info: EngineInfo,
 }
 
@@ -785,6 +800,7 @@ impl EngineRpc {
             message_index: None,
             agents: None,
             limit_recovery: None,
+            chat_lifecycle: None,
             engine_info,
         }
     }
@@ -838,7 +854,14 @@ impl EngineRpc {
         self
     }
 
-    /// Attach the always-on agents service (agent RPCs + webhooks).
+    pub fn with_chat_lifecycle(
+        mut self,
+        lifecycle: crate::chat_lifecycle::ChatLifecycleService,
+    ) -> Self {
+        self.chat_lifecycle = Some(lifecycle);
+        self
+    }
+
     pub fn with_limit_recovery(
         mut self,
         recovery: crate::limit_recovery::LimitRecoveryService,
@@ -847,6 +870,7 @@ impl EngineRpc {
         self
     }
 
+    /// Attach the always-on agents service (agent RPCs + webhooks).
     pub fn with_agents(mut self, agents: crate::agents::Agents) -> Self {
         self.agents = Some(agents);
         self
@@ -1509,6 +1533,24 @@ impl EngineRpc {
                     .map_err(failed)
                     .map(drop)
             }
+            MutateParams::MarkChatUnread { chat_id } => self
+                .workspace
+                .mark_chat_unread(&chat_id)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::SetChatLifecycle {
+                chat_id,
+                lifecycle,
+                expected,
+            } => {
+                self.workspace
+                    .change_chat_lifecycle(&chat_id, lifecycle, expected, chrono::Utc::now())
+                    .map_err(failed)?;
+                if let Some(timer) = &self.chat_lifecycle {
+                    timer.wake();
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -2082,6 +2124,9 @@ impl RpcService for EngineRpc {
         }
         if limit_recovery::handles(method) {
             return self.limit_recovery_rpc(method, params).await;
+        }
+        if chat_lifecycle::handles(method) {
+            return self.chat_lifecycle_rpc(method, params);
         }
         if git_actions::handles(method) {
             return self.git_action(method, params).await;

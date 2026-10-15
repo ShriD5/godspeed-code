@@ -35,13 +35,14 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use zeron_proto::{
-    AgentUsageWindow, Chat, ChatLimit, HarnessId, LimitLogin, LimitRecovery as Recovery,
-    LimitRecoveryAction, LimitRecoverySettings, LimitResetSource,
+    AgentUsageWindow, Chat, ChatLimit, HarnessId, LifecycleState, LimitLogin,
+    LimitRecovery as Recovery, LimitRecoveryAction, LimitRecoverySettings, LimitResetSource,
 };
 
 use crate::EngineError;
 use crate::agent_accounts::AgentAccounts;
 use crate::agents::{Clock, SystemClock};
+use crate::device_settings;
 use crate::doc_host::DocHost;
 use crate::workspace_host::WorkspaceHost;
 
@@ -174,10 +175,7 @@ impl LimitRecoveryService {
         clock: Arc<dyn Clock>,
     ) -> Self {
         let settings_path = data_dir.join(SETTINGS_FILE);
-        let settings = std::fs::read(&settings_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let settings = device_settings::load(&settings_path);
         Self {
             inner: Arc::new(Inner {
                 settings_path,
@@ -229,11 +227,7 @@ impl LimitRecoveryService {
         &self,
         settings: LimitRecoverySettings,
     ) -> Result<LimitRecoverySettings, EngineError> {
-        let bytes = serde_json::to_vec_pretty(&settings)
-            .map_err(|err| failed(format!("limit recovery settings: {err}")))?;
-        let tmp = self.inner.settings_path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &self.inner.settings_path)?;
+        device_settings::save(&self.inner.settings_path, &settings)?;
         *lock(&self.inner.settings) = settings;
         Ok(settings)
     }
@@ -312,6 +306,7 @@ impl LimitRecoveryService {
         let recovery = match action {
             LimitRecoveryAction::Dismiss => {
                 inner.clear(chat_id);
+                inner.follow_limit_snooze(chat_id, &limit, None);
                 return Ok(None);
             }
             LimitRecoveryAction::Ask => Recovery::Ask,
@@ -343,6 +338,7 @@ impl LimitRecoveryService {
             }
             Some(next)
         })?;
+        inner.follow_limit_snooze(chat_id, &limit, updated.as_ref());
         inner.wake.notify_one();
         Ok(updated)
     }
@@ -367,6 +363,35 @@ impl Inner {
             return;
         }
         self.doc_host.release_queue(chat_id);
+    }
+
+    /// "Snooze until reset" snoozes the chat itself until that reset; any
+    /// other choice afterwards wakes a snooze that was only waiting for it.
+    fn follow_limit_snooze(&self, chat_id: &str, before: &ChatLimit, after: Option<&ChatLimit>) {
+        let snoozed_until = |limit: &ChatLimit| {
+            limit
+                .reset_at
+                .filter(|_| limit.recovery == Recovery::Snoozed)
+        };
+        let now = self.clock.now();
+        let changed = match (after.and_then(snoozed_until), snoozed_until(before)) {
+            (Some(until), _) => self.workspace.change_chat_lifecycle(
+                chat_id,
+                LifecycleState::Snoozed { until },
+                None,
+                now,
+            ),
+            (None, Some(until)) => self.workspace.change_chat_lifecycle(
+                chat_id,
+                LifecycleState::Active,
+                Some(LifecycleState::Snoozed { until }),
+                now,
+            ),
+            (None, None) => return,
+        };
+        if let Err(err) = changed {
+            tracing::debug!(chat = %chat_id, %err, "limit recovery: chat snooze not followed");
+        }
     }
 
     fn logins(&self) -> Option<Arc<dyn ActiveLogins>> {

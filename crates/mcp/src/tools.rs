@@ -1111,6 +1111,7 @@ impl Tools {
                 harness_session_cwd: None,
                 parent_chat_id: parent_chat_id.clone(),
                 limit: None,
+                lifecycle: Default::default(),
                 space_id: space.as_ref().map(|s| s.id.clone()),
                 last_seen_at: None,
                 room_gen: None,

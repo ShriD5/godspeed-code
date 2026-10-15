@@ -1517,6 +1517,51 @@ impl RegistryDoc {
         Ok(true)
     }
 
+    /// Settle, snooze or wake the chat (LWW as one field).
+    pub fn set_chat_lifecycle(
+        &mut self,
+        chat_id: &str,
+        lifecycle: &zeron_proto::ChatLifecycle,
+    ) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("lifecycle", serde_json::to_value(lifecycle)?)]),
+        );
+        Ok(true)
+    }
+
+    /// New activity on a settled or snoozed chat brings it back to the
+    /// active list. False when it already was.
+    pub fn wake_chat(&mut self, chat_id: &str, now: DateTime<Utc>) -> Result<bool, DocError> {
+        let asleep = self
+            .chat(chat_id)?
+            .is_some_and(|chat| chat.lifecycle.state != zeron_proto::LifecycleState::Active);
+        if !asleep {
+            return Ok(false);
+        }
+        let active = zeron_proto::ChatLifecycle::new(zeron_proto::LifecycleState::Active, now);
+        self.set_chat_lifecycle(chat_id, &active)
+    }
+
+    /// Mark the chat unread everywhere: clear the synced seen marker.
+    pub fn clear_chat_seen(&mut self, chat_id: &str) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("lastSeenAt", Value::Null)]),
+        );
+        Ok(true)
+    }
+
     /// Host-side sidebar freshness: preview + timestamp of the latest message.
     pub fn set_chat_last_message(
         &mut self,
@@ -1565,6 +1610,12 @@ impl RegistryDoc {
         ]);
         self.write(KIND_SESSIONS, &session.chat_id.clone(), OpKind::Upsert, set);
         Ok(())
+    }
+
+    pub fn session(&self, chat_id: &str) -> Option<Session> {
+        self.overlay_row(KIND_SESSIONS, chat_id)
+            .and_then(|row| row_to::<crate::workspace::RawSession>(&row))
+            .map(Session::from)
     }
 
     pub fn read_sessions(&self) -> Result<Vec<Session>, DocError> {
@@ -1731,6 +1782,7 @@ impl RegistryDoc {
                             .transpose()?
                             .unwrap_or(Value::Null),
                     ),
+                    ("lifecycle", serde_json::to_value(chat.lifecycle)?),
                 ]),
             );
         }

@@ -261,6 +261,10 @@ pub struct Chat {
     /// clear it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<ChatLimit>,
+    /// Settled or snoozed out of the active list. Written only through
+    /// `set_chat_lifecycle`, like `limit`.
+    #[serde(default)]
+    pub lifecycle: ChatLifecycle,
 }
 
 impl Chat {
@@ -285,6 +289,62 @@ impl Chat {
             (None, _) => false,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Thread lifecycle
+// ---------------------------------------------------------------------------
+
+/// Where a chat sits in the user's attention.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum LifecycleState {
+    #[default]
+    Active,
+    /// Done for now: out of the active list until new activity or a wake.
+    Settled,
+    /// Out of the active list until `until`, or until new activity.
+    Snoozed { until: DateTime<Utc> },
+}
+
+/// A chat's lifecycle on its registry row: one field, so concurrent settle
+/// and snooze writes resolve to one state rather than a hybrid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLifecycle {
+    #[serde(flatten)]
+    pub state: LifecycleState,
+    /// When the state was set. Auto-settle counts inactivity from the later
+    /// of this and the last message, so waking a thread restarts its clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_at: Option<DateTime<Utc>>,
+}
+
+impl ChatLifecycle {
+    pub fn new(state: LifecycleState, at: DateTime<Utc>) -> Self {
+        Self {
+            state,
+            changed_at: Some(at),
+        }
+    }
+
+    /// The state as of `now`: a snooze that has run out reads Active.
+    pub fn at(&self, now: DateTime<Utc>) -> LifecycleState {
+        match self.state {
+            LifecycleState::Snoozed { until } if until <= now => LifecycleState::Active,
+            state => state,
+        }
+    }
+}
+
+/// Device setting for chats this engine hosts (`GetChatLifecycleSettings`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatLifecycleSettings {
+    /// Settle idle threads after this many days without activity; `None`
+    /// (the default) never does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_settle_after_days: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1734,6 +1794,7 @@ mod tests {
             room_gen: None,
             parent_chat_id: None,
             limit: None,
+            lifecycle: Default::default(),
         };
         let session = |status| Session {
             last_completed_turn: None,

@@ -275,6 +275,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         harness_session_cwd: None,
         parent_chat_id: Some("parent-chat".into()),
         limit: None,
+        lifecycle: Default::default(),
         space_id: None,
         last_seen_at: None,
         room_gen: None,
@@ -2261,7 +2262,10 @@ fn chat_limit_marker_has_its_own_writer() {
         }),
     };
     assert!(ws.set_chat_limit("chat-1", Some(&limit)).unwrap());
-    assert_eq!(ws.chat("chat-1").unwrap().unwrap().limit.as_ref(), Some(&limit));
+    assert_eq!(
+        ws.chat("chat-1").unwrap().unwrap().limit.as_ref(),
+        Some(&limit)
+    );
     let mut stale = chat("chat-1", "dev-a");
     stale.title = Some("renamed".into());
     ws.upsert_chat(&stale).unwrap();
@@ -2276,9 +2280,51 @@ fn chat_limit_marker_has_its_own_writer() {
         KIND_CHATS,
         "chat-1",
         OpKind::Update,
-        fields([("limit", json!({"limitedAt": 5000, "recovery": "fromTheFuture"}))]),
+        fields([(
+            "limit",
+            json!({"limitedAt": 5000, "recovery": "fromTheFuture"}),
+        )]),
     );
     let row = ws.chat("chat-1").unwrap().unwrap();
     assert_eq!(row.limit, None);
     assert_eq!(row.title.as_deref(), Some("renamed"));
+}
+
+/// The lifecycle reads Active on rows that never had one, round-trips
+/// through its own setter, survives a stale whole-row upsert, wakes on
+/// activity, and a state from a newer peer shows the row as active.
+#[test]
+fn chat_lifecycle_has_its_own_writer_and_defaults_to_active() {
+    use zeron_proto::{ChatLifecycle, LifecycleState};
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    assert_eq!(
+        ws.chat("chat-1").unwrap().unwrap().lifecycle,
+        ChatLifecycle::default()
+    );
+
+    let snoozed = ChatLifecycle::new(LifecycleState::Snoozed { until: ts(9_000) }, ts(5_000));
+    assert!(ws.set_chat_lifecycle("chat-1", &snoozed).unwrap());
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    assert_eq!(ws.chat("chat-1").unwrap().unwrap().lifecycle, snoozed);
+
+    assert!(ws.wake_chat("chat-1", ts(6_000)).unwrap());
+    assert_eq!(
+        ws.chat("chat-1").unwrap().unwrap().lifecycle,
+        ChatLifecycle::new(LifecycleState::Active, ts(6_000))
+    );
+    assert!(
+        !ws.wake_chat("chat-1", ts(7_000)).unwrap(),
+        "already active"
+    );
+
+    ws.write(
+        KIND_CHATS,
+        "chat-1",
+        OpKind::Update,
+        fields([("lifecycle", json!({"state": "fromTheFuture"}))]),
+    );
+    let row = ws.chat("chat-1").unwrap().unwrap();
+    assert_eq!(row.lifecycle.state, LifecycleState::Active);
+    assert_eq!(row.id, "chat-1");
 }

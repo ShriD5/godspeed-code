@@ -19,8 +19,8 @@ use zeron_engine::limit_recovery::{ActiveLogins, HarnessLogin, RESUME_PROMPT, re
 use zeron_engine::{EngineCore, EngineError, HarnessRegistry};
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::{
-    AgentEvent, ChatIndicator, ChatLimit, DoneStatus, HarnessId, LimitRecovery, LimitResetSource,
-    Model, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
+    AgentEvent, ChatIndicator, ChatLimit, DoneStatus, HarnessId, LifecycleState, LimitRecovery,
+    LimitResetSource, Model, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
 };
 use zeron_rpc::methods;
 
@@ -214,6 +214,10 @@ fn send(core: &EngineCore, world: &World, prompt: &str) {
 
 fn limit(core: &EngineCore) -> Option<ChatLimit> {
     core.workspace.chat(CHAT).unwrap().and_then(|c| c.limit)
+}
+
+fn lifecycle(core: &EngineCore) -> LifecycleState {
+    core.workspace.chat(CHAT).unwrap().unwrap().lifecycle.state
 }
 
 fn queue_texts(core: &EngineCore) -> Vec<String> {
@@ -456,6 +460,11 @@ async fn snooze_and_asking_markers_clear_at_the_reset_without_a_continuation() {
     let reset = limited_chat(&world, &core).await;
     let reply = set_recovery(&core, "snooze", None).await;
     assert_eq!(reply["limit"]["recovery"], "snoozed");
+    assert_eq!(
+        lifecycle(&core),
+        LifecycleState::Snoozed { until: reset },
+        "snoozing until the reset snoozes the chat"
+    );
     send(&core, &world, "later");
     wait_for(|| queue_texts(&core) == ["later"], "the send to be held").await;
 
@@ -465,6 +474,11 @@ async fn snooze_and_asking_markers_clear_at_the_reset_without_a_continuation() {
     wait_for(|| world.count("later") == 1, "the held send at the reset").await;
     assert!(limit(&core).is_none());
     assert_eq!(world.count(RESUME_PROMPT), 0);
+    assert_eq!(
+        lifecycle(&core),
+        LifecycleState::Active,
+        "the activity wakes it"
+    );
 
     // An asking marker with nothing held stays up past the reset (the
     // banner offers the resume) and holds nothing any more.

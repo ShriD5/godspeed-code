@@ -23,12 +23,15 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tokio::sync::watch;
 
 use zeron_doc::{DeletedSpace, REGISTRY_DOC_ID, RegistryDoc, WorkspaceDoc};
 use zeron_proto::projectless;
-use zeron_proto::{Chat, ChatConfig, Device, Session, SidebarPreferencesState, Space};
+use zeron_proto::{
+    Chat, ChatConfig, ChatIndicator, ChatLifecycle, Device, LifecycleState, Session,
+    SidebarPreferencesState, Space,
+};
 use zeron_sync::{DocsStore, RegistryClient, RegistryTuning};
 
 use crate::doc_host::EdgeConfig;
@@ -723,6 +726,14 @@ impl WorkspaceHost {
         Ok(())
     }
 
+    pub fn pinned_chat_ids(&self) -> Vec<String> {
+        self.read(|doc| {
+            doc.sidebar_preferences()
+                .map(|prefs| prefs.pinned_session_ids)
+                .unwrap_or_default()
+        })
+    }
+
     // ── watches (WatchChats / WatchDevices / merged WatchSessions) ──────────
 
     pub fn watch_chats(&self) -> watch::Receiver<Vec<Chat>> {
@@ -885,8 +896,12 @@ impl WorkspaceHost {
     pub fn note_message(&self, chat_id: &str, text: &str) {
         let preview: String = text.chars().take(120).collect();
         let result = self.claim_chat(chat_id, None).and_then(|_| {
-            self.mutate(|doc| doc.set_chat_last_message(chat_id, &preview, Utc::now()))
-                .map_err(EngineError::from)
+            self.mutate(|doc| {
+                let now = Utc::now();
+                doc.set_chat_last_message(chat_id, &preview, now)?;
+                doc.wake_chat(chat_id, now)
+            })
+            .map_err(EngineError::from)
         });
         if let Err(err) = result {
             tracing::warn!(chat = %chat_id, error = %err, "registry last-message write failed");
@@ -926,7 +941,17 @@ impl WorkspaceHost {
     /// Session-status row upsert (sessions engine transitions land here too, in
     /// addition to the local watch channel).
     pub fn record_session(&self, session: &Session) {
-        if let Err(err) = self.mutate(|doc| doc.upsert_session(session)) {
+        let recorded = self.mutate(|doc| {
+            let changed = doc
+                .session(&session.chat_id)
+                .is_none_or(|before| before.status != session.status);
+            doc.upsert_session(session)?;
+            if changed && session.status != zeron_proto::SessionStatus::Idle {
+                doc.wake_chat(&session.chat_id, Utc::now())?;
+            }
+            Ok::<_, zeron_doc::DocError>(())
+        });
+        if let Err(err) = recorded {
             tracing::warn!(chat = %session.chat_id, error = %err, "registry session write failed");
         }
     }
@@ -1085,6 +1110,7 @@ impl WorkspaceHost {
                 last_seen_at: None,
                 parent_chat_id: parent_chat_id.filter(|p| !p.trim().is_empty()),
                 limit: None,
+                lifecycle: Default::default(),
             })
         })?;
         if notify_parent {
@@ -1261,6 +1287,65 @@ impl WorkspaceHost {
     /// when the chat doesn't exist.
     pub fn set_chat_config(&self, chat_id: &str, config: &ChatConfig) -> Result<bool, EngineError> {
         Ok(self.mutate(|doc| doc.set_chat_config(chat_id, config))?)
+    }
+
+    /// Settle, snooze or wake a chat on the user's say-so. Refuses to hide a
+    /// thread that is running or waiting on the user, or a snooze that does
+    /// not end in the coming year. With `expected`, applies only while the
+    /// chat is still in that state: false for a stale undo, so nothing newer
+    /// is overwritten.
+    pub fn change_chat_lifecycle(
+        &self,
+        chat_id: &str,
+        state: LifecycleState,
+        expected: Option<LifecycleState>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, EngineError> {
+        let mut reg = lock(&self.inner.reg);
+        let chat = reg
+            .chat(chat_id)?
+            .ok_or_else(|| EngineError::Other(format!("no such chat: {chat_id}")))?;
+        if expected.is_some_and(|expected| chat.lifecycle.at(now) != expected) {
+            return Ok(false);
+        }
+        validate_lifecycle_change(&chat, reg.session(chat_id).as_ref(), state, now)?;
+        let written = reg.set_chat_lifecycle(chat_id, &ChatLifecycle::new(state, now))?;
+        drop(reg);
+        self.announce_write();
+        Ok(written)
+    }
+
+    /// Write a lifecycle as is (the host's own timers and recovery flows).
+    pub fn set_chat_lifecycle(
+        &self,
+        chat_id: &str,
+        lifecycle: &ChatLifecycle,
+    ) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.set_chat_lifecycle(chat_id, lifecycle))?)
+    }
+
+    /// Swap the chat's lifecycle from `from` to `to` in one registry
+    /// transaction; false when it is no longer `from` (changed meanwhile).
+    pub fn replace_chat_lifecycle(
+        &self,
+        chat_id: &str,
+        from: &ChatLifecycle,
+        to: &ChatLifecycle,
+    ) -> Result<bool, EngineError> {
+        let mut reg = lock(&self.inner.reg);
+        let current = reg.chat(chat_id)?.map(|chat| chat.lifecycle);
+        if current.as_ref() != Some(from) {
+            return Ok(false);
+        }
+        let written = reg.set_chat_lifecycle(chat_id, to)?;
+        drop(reg);
+        self.announce_write();
+        Ok(written)
+    }
+
+    /// Clear the synced seen marker: the chat reads unread on every device.
+    pub fn mark_chat_unread(&self, chat_id: &str) -> Result<bool, EngineError> {
+        Ok(self.mutate(|doc| doc.clear_chat_seen(chat_id))?)
     }
 
     /// Set or clear the chat's usage-limit marker (`limit_recovery`).
@@ -1874,6 +1959,33 @@ impl zeron_sync::RegistryTransport for WsDerivedRegistryTransport {
                 .map_err(|e| zeron_sync::SyncError::WebSocket(describe_http_error(e)))
         })
     }
+}
+
+/// The furthest ahead a snooze may end.
+const MAX_SNOOZE: chrono::TimeDelta = chrono::TimeDelta::days(366);
+
+fn validate_lifecycle_change(
+    chat: &Chat,
+    session: Option<&Session>,
+    state: LifecycleState,
+    now: DateTime<Utc>,
+) -> Result<(), EngineError> {
+    let refuse = |message: &str| Err(EngineError::Other(message.into()));
+    match state {
+        LifecycleState::Active => return Ok(()),
+        LifecycleState::Snoozed { until } if until <= now || until > now + MAX_SNOOZE => {
+            return refuse("Pick a time within the next year");
+        }
+        _ => {}
+    }
+    let live = matches!(
+        zeron_proto::view::display_status(chat, session, now),
+        ChatIndicator::Working | ChatIndicator::AwaitingInput | ChatIndicator::AwaitingApproval
+    );
+    if live {
+        return refuse("A thread that is running or waiting on you stays in the list");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

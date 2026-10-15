@@ -920,6 +920,7 @@ impl ChatImporter {
             room_gen: Some(CHAT2_DOC_EPOCH),
             parent_chat_id: None,
             limit: None,
+            lifecycle: Default::default(),
         }
     }
 }

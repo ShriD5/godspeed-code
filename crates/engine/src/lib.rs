@@ -22,6 +22,7 @@ mod change_request_store;
 pub mod change_requests;
 pub mod chat2_host;
 pub mod chat_import;
+pub mod chat_lifecycle;
 mod chat_persistence;
 pub mod delegation;
 pub mod diff_sync;
@@ -30,6 +31,7 @@ mod fs_watch;
 pub mod git_actions;
 pub mod harness_updates;
 pub(crate) mod home_index;
+mod device_settings;
 mod http_error;
 pub mod instance_lock;
 pub mod limit_recovery;
@@ -164,6 +166,8 @@ pub struct EngineCore {
     pub delegations: delegation::DelegationNotifications,
     /// Usage-limit recovery: Limited markers, held sends, resume at reset.
     pub limit_recovery: limit_recovery::LimitRecoveryService,
+    /// Snooze wake and opt-in auto-settle for the chats hosted here.
+    pub chat_lifecycle: chat_lifecycle::ChatLifecycleService,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -393,6 +397,8 @@ impl EngineCore {
         let agent_run = agents.owns_chat_probe();
         limit_recovery.set_auto_resume_filter(Arc::new(move |chat_id| !agent_run(chat_id)));
         limit_recovery.start();
+        let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());
+        chat_lifecycle.start();
         let delegations = delegation::DelegationNotifications::start(
             data_dir,
             workspace.clone(),
@@ -419,6 +425,7 @@ impl EngineCore {
             agents,
             delegations,
             limit_recovery,
+            chat_lifecycle,
             device_id,
             local_import,
             chat_import,
@@ -558,6 +565,7 @@ impl EngineCore {
         .with_harness_updates(self.harness_updates.clone())
         .with_agents(self.agents.clone())
         .with_limit_recovery(self.limit_recovery.clone())
+        .with_chat_lifecycle(self.chat_lifecycle.clone())
         .with_chat_import(self.chat_import.clone())
         .with_message_index(self.message_index.clone());
         if let Some(links) = self.links() {
@@ -592,6 +600,7 @@ impl EngineCore {
         self.delegations.shutdown().await;
         self.agents.shutdown().await;
         self.limit_recovery.shutdown().await;
+        self.chat_lifecycle.shutdown().await;
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally
