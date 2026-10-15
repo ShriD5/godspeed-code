@@ -568,6 +568,11 @@ impl Runner {
             self.norm.status()
         };
         self.stopping = false;
+        if status == zeron_proto::DoneStatus::Errored
+            && let Some(reset) = self.norm.limit
+        {
+            self.emit(crate::limits::event(reset, None)).await?;
+        }
         self.emit(AgentEvent::Done {
             status,
             result: None,

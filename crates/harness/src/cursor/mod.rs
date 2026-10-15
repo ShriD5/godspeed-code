@@ -985,12 +985,23 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
             } else {
                 DoneStatus::Completed
             };
-            vec![AgentEvent::Done {
-                status,
-                result: None,
-                error,
-                session_id: None,
-            }]
+            // The SDK reports a plan limit only as error text.
+            let limit = (status == DoneStatus::Errored)
+                .then(|| {
+                    error
+                        .as_deref()
+                        .and_then(|e| crate::limits::event_from_text(e, chrono::Utc::now()))
+                })
+                .flatten();
+            limit
+                .into_iter()
+                .chain([AgentEvent::Done {
+                    status,
+                    result: None,
+                    error,
+                    session_id: None,
+                }])
+                .collect()
         }
         "fatal" => vec![AgentEvent::Done {
             status: if interrupted {
@@ -1082,5 +1093,28 @@ mod tests {
                 }),
             }]
         );
+    }
+
+    /// Cursor names a plan limit only in the error text; a context overflow
+    /// stays an ordinary failure.
+    #[test]
+    fn errored_turns_with_limit_text_end_limited() {
+        let frame: Value = serde_json::from_str(
+            r#"{"ev":"turn","status":"error","error":"You've hit your usage limit. Resets in 3h."}"#,
+        )
+        .unwrap();
+        let events = map_shim_frame(&frame, false);
+        assert!(
+            matches!(events.as_slice(), [AgentEvent::UsageLimit { reset_at: Some(_), .. }, AgentEvent::Done { status: DoneStatus::Errored, .. }]),
+            "{events:?}"
+        );
+        let frame: Value = serde_json::from_str(
+            r#"{"ev":"turn","status":"error","error":"Prompt is too long for the context window"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            map_shim_frame(&frame, false).as_slice(),
+            [AgentEvent::Done { status: DoneStatus::Errored, .. }]
+        ));
     }
 }

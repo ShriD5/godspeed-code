@@ -492,6 +492,34 @@ async fn interrupt_escalates_to_sigterm_and_ends_with_interrupted_done() {
     );
 }
 
+/// A blocked window ends the turn as one usage limit carrying the window's
+/// reset — the rejected event's, not a second one from the assistant code
+/// or the result text that follow it.
+#[tokio::test]
+async fn a_rejected_window_reports_one_usage_limit_with_its_reset() {
+    let (controls, _steer, _token) = controls("A");
+    let events = run_to_end(&harness(), request("scenario:limit"), controls).await;
+    let limits: Vec<&AgentEvent> = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::UsageLimit { .. }))
+        .collect();
+    assert_eq!(
+        limits,
+        vec![&AgentEvent::UsageLimit {
+            reset_at: chrono::DateTime::from_timestamp(4_102_444_800, 0),
+            window: Some("5-hour".into()),
+        }],
+        "{events:?}"
+    );
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::Done {
+            status: DoneStatus::Errored,
+            ..
+        })
+    ));
+}
+
 #[tokio::test]
 async fn error_codes_map_to_readable_messages() {
     let (controls, _steer, _token) = controls("A");

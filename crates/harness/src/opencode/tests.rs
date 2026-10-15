@@ -2051,6 +2051,94 @@ async fn prompt_error_and_interrupt_before_busy_still_settle() {
     assert_eq!(wire.done().await.0, DoneStatus::Interrupted);
 }
 
+/// Every event up to and including the turn's Done.
+async fn turn_events(wire: &mut TurnWire) -> Vec<AgentEvent> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut events = Vec::new();
+        loop {
+            let event = wire.events.recv().await.unwrap().unwrap();
+            let done = matches!(event, AgentEvent::Done { .. });
+            events.push(event);
+            if done {
+                return events;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+fn usage_limits(events: &[AgentEvent]) -> Vec<&AgentEvent> {
+    events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::UsageLimit { .. }))
+        .collect()
+}
+
+/// A 429 `APIError` ends the turn limited, with the `retry-after` wait as
+/// its reset; one without a header has no reset; a context overflow that
+/// mentions limits is still just an error.
+#[tokio::test]
+async fn session_error_429s_end_the_turn_usage_limited() {
+    let mut wire = TurnWire::start(false).await;
+    wire.request("/prompt_async").await;
+    let before = chrono::Utc::now();
+    wire.bus.send(json!({"type":"session.error", "properties":{"sessionID":"fixture", "error":{"name":"APIError", "data":{"message":"Rate limit exceeded", "statusCode":429, "isRetryable":false, "responseHeaders":{"retry-after":"3600"}}}}})).unwrap();
+    wire.idle();
+    let events = turn_events(&mut wire).await;
+    let limits = usage_limits(&events);
+    assert_eq!(limits.len(), 1, "{events:?}");
+    let AgentEvent::UsageLimit { reset_at: Some(reset), .. } = limits[0] else {
+        panic!("a reset from retry-after: {limits:?}");
+    };
+    let wait = *reset - before;
+    assert!(wait >= chrono::TimeDelta::seconds(3590) && wait <= chrono::TimeDelta::seconds(3610));
+    assert!(matches!(events.last(), Some(AgentEvent::Done { status: DoneStatus::Errored, .. })));
+
+    let mut wire = TurnWire::start(false).await;
+    wire.request("/prompt_async").await;
+    wire.bus.send(json!({"type":"session.error", "properties":{"sessionID":"fixture", "error":{"name":"APIError", "data":{"message":"Too Many Requests", "statusCode":429}}}})).unwrap();
+    wire.idle();
+    let events = turn_events(&mut wire).await;
+    assert_eq!(
+        usage_limits(&events),
+        vec![&AgentEvent::UsageLimit { reset_at: None, window: None }]
+    );
+
+    let mut wire = TurnWire::start(false).await;
+    wire.request("/prompt_async").await;
+    wire.bus.send(json!({"type":"session.error", "properties":{"sessionID":"fixture", "error":{"name":"APIError", "data":{"message":"prompt is too long: context window exceeded (rate limit tier 2)", "statusCode":400}}}})).unwrap();
+    wire.idle();
+    let events = turn_events(&mut wire).await;
+    assert!(usage_limits(&events).is_empty(), "{events:?}");
+    assert!(matches!(events.last(), Some(AgentEvent::Done { status: DoneStatus::Errored, .. })));
+}
+
+/// OpenCode Go retries a plan limit forever; the driver gives up at the
+/// report threshold and ends the turn limited with the wait the message
+/// names, not after the generic retry cap.
+#[tokio::test]
+async fn retried_usage_limits_abort_early_as_limited() {
+    let mut wire = TurnWire::start_proto(false, true).await;
+    wire.request("/api/model").await;
+    wire.request("/prompt").await;
+    let before = chrono::Utc::now();
+    wire.v2("session.retry.scheduled", json!({"sessionID":"fixture","assistantMessageID":"m","attempt":RETRY_REPORT_ATTEMPT,"at":123,"error":{"type":"provider.api","message":"Usage limit reached for OpenCode Go. Try again in 2 hours."}}));
+    wire.request("/interrupt").await;
+    wire.v2(
+        "session.execution.succeeded",
+        json!({"sessionID":"fixture"}),
+    );
+    let events = turn_events(&mut wire).await;
+    let limits = usage_limits(&events);
+    let [AgentEvent::UsageLimit { reset_at: Some(reset), .. }] = limits.as_slice() else {
+        panic!("one limited end with a reset: {events:?}");
+    };
+    let wait = *reset - before;
+    assert!(wait >= chrono::TimeDelta::minutes(119) && wait <= chrono::TimeDelta::minutes(121));
+    assert!(matches!(events.last(), Some(AgentEvent::Done { status: DoneStatus::Errored, .. })));
+}
+
 #[tokio::test]
 async fn v2_model_selection_and_prompt_use_the_documented_bodies() {
     let mut wire = TurnWire::start_proto(false, true).await;

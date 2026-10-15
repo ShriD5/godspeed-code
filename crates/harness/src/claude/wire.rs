@@ -215,9 +215,19 @@ pub(crate) struct RateLimitInfo {
     pub is_using_overage: bool,
     #[serde(rename = "overageInUse", default)]
     pub overage_in_use: bool,
+    /// When the window reopens, in epoch seconds.
+    #[serde(rename = "resetsAt", default)]
+    pub resets_at: Option<f64>,
 }
 
 impl RateLimitInfo {
+    /// [`Self::resets_at`] as a time; tolerates milliseconds.
+    pub fn reset_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        let raw = self.resets_at.filter(|v| v.is_finite() && *v > 0.0)?;
+        let secs = if raw > 1e11 { raw / 1000.0 } else { raw };
+        chrono::DateTime::from_timestamp(secs as i64, 0)
+    }
+
     /// A rejected window that actually blocks the turn: an account spending
     /// provisioned overage keeps running despite the reject.
     pub fn blocks(&self) -> bool {

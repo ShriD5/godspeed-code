@@ -253,6 +253,11 @@ pub(crate) struct Normalizer {
     /// This turn already surfaced an assistant-level error; the result's own
     /// copy of it would only repeat the same failure.
     turn_error_shown: bool,
+    /// This turn already emitted its [`AgentEvent::UsageLimit`].
+    turn_limited: bool,
+    /// The latest window reset any `rate_limit_event` named, rejected or
+    /// not: the reset for a limit error that arrives without its own.
+    window_reset: Option<chrono::DateTime<chrono::Utc>>,
     /// Tool calls the user declined through an approval card. The result's
     /// `permission_denials` lists them too; only the rest were denied
     /// without the user ever seeing them.
@@ -266,6 +271,11 @@ pub(crate) struct Normalizer {
 }
 
 impl Normalizer {
+    /// The last window reset a `rate_limit_event` named, while still ahead.
+    fn known_reset(&self, now: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.window_reset.filter(|at| *at > now)
+    }
+
     pub fn new() -> Self {
         Self {
             saw_init: false,
@@ -276,6 +286,8 @@ impl Normalizer {
             assistant_message_id: new_message_id(),
             streamed_text: false,
             turn_error_shown: false,
+            turn_limited: false,
+            window_reset: None,
             user_denials: Default::default(),
             denial_reasons: Default::default(),
             reported_denials: Default::default(),
@@ -786,9 +798,19 @@ impl Normalizer {
                 // and no `result` error — so surface it visibly.
                 if let Some(code) = &f.error {
                     self.turn_error_shown = true;
+                    let text = frame_text(&f.message);
                     out.push(AgentEvent::Error {
-                        message: assistant_error_message(code, &frame_text(&f.message)),
+                        message: assistant_error_message(code, &text),
                     });
+                    // "You've hit your limit · resets 3pm (Europe/London)":
+                    // the text's reset, else the last window event's.
+                    if code == "rate_limit" && !is_prompt_too_long(&text) && !self.turn_limited {
+                        self.turn_limited = true;
+                        let now = chrono::Utc::now();
+                        let reset = crate::limits::parse_reset(&text, now)
+                            .or_else(|| self.known_reset(now));
+                        out.push(crate::limits::event(reset, None));
+                    }
                 }
                 // The enclosing assistant frame closes the streamed message
                 // item; rotate so post-boundary deltas get a fresh id.
@@ -878,16 +900,28 @@ impl Normalizer {
             // turn — make it visible; allowed/allowed_warning stay quiet, and
             // so does a reject the account's overage carries past.
             Frame::RateLimit(f) => {
+                let reset = f.rate_limit_info.reset_at();
+                if reset.is_some() {
+                    self.window_reset = reset;
+                }
                 if !f.rate_limit_info.blocks() {
                     return Vec::new();
                 }
                 let window =
                     rate_window_label(f.rate_limit_info.rate_limit_type.as_deref().unwrap_or(""));
-                vec![AgentEvent::Error {
+                let mut out = vec![AgentEvent::Error {
                     message: format!(
                         "Claude {window} limit reached — the turn was blocked. Try again after it resets."
                     ),
-                }]
+                }];
+                if !self.turn_limited {
+                    self.turn_limited = true;
+                    out.push(crate::limits::event(
+                        reset,
+                        (window != "usage").then(|| window.to_owned()),
+                    ));
+                }
+                out
             }
 
             Frame::Result(f) => {
@@ -919,8 +953,20 @@ impl Normalizer {
                     output_tokens: f.usage.output_tokens,
                 };
                 let error_shown = std::mem::take(&mut self.turn_error_shown);
+                let limited = std::mem::take(&mut self.turn_limited);
                 let context_full = f.terminal_reason.as_deref() == Some("prompt_too_long")
                     || f.result.as_deref().is_some_and(is_prompt_too_long);
+                // A limit only the result reports (no assistant code, no
+                // window event): read it from the result's own text.
+                let limit_text = (!limited && !context_full && (f.is_error || f.subtype != "success"))
+                    .then(|| {
+                        let mut text = f.result.clone().unwrap_or_default();
+                        for error in &f.errors {
+                            text.push(' ');
+                            text.push_str(error.as_str().unwrap_or_default());
+                        }
+                        text
+                    });
                 let done = if f.subtype == "success" && f.is_error {
                     // A failed API call still reports subtype `success`: an
                     // over-long prompt, an auth or quota failure. The
@@ -1032,7 +1078,21 @@ impl Normalizer {
                         window: Some(window),
                     });
                 }
-                out.extend([usage, done]);
+                let errored = matches!(
+                    done,
+                    AgentEvent::Done {
+                        status: DoneStatus::Errored,
+                        ..
+                    }
+                );
+                let now = chrono::Utc::now();
+                let limit = limit_text
+                    .filter(|_| errored && !limited)
+                    .and_then(|text| crate::limits::classify(&text, now))
+                    .map(|hit| crate::limits::event(hit.reset_at.or_else(|| self.known_reset(now)), None));
+                out.push(usage);
+                out.extend(limit);
+                out.push(done);
                 out
             }
 
@@ -1122,7 +1182,10 @@ mod tests {
         let blocked = normalize_one(
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","overageStatus":"rejected"}}"#,
         );
-        assert!(matches!(blocked.as_slice(), [AgentEvent::Error { .. }]));
+        assert!(matches!(
+            blocked.as_slice(),
+            [AgentEvent::Error { .. }, AgentEvent::UsageLimit { reset_at: None, .. }]
+        ));
         for overage in [
             r#""overageStatus":"allowed""#,
             r#""overageStatus":"allowed_warning""#,
@@ -1827,6 +1890,102 @@ mod tests {
         assert_eq!(
             assistant_error_message("invalid_request", "API Error: 400 bad image"),
             "API Error: 400 bad image"
+        );
+    }
+
+    fn limits_of(events: &[AgentEvent]) -> Vec<&AgentEvent> {
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::UsageLimit { .. }))
+            .collect()
+    }
+
+    /// An assistant `rate_limit` code reads its reset from the CLI's text,
+    /// falls back to the last window event's reset, and reports once per
+    /// turn: the result that repeats the failure adds nothing.
+    #[test]
+    fn rate_limit_codes_carry_the_reset_they_name() {
+        let mut norm = Normalizer::new();
+        let frame = |raw: &str| crate::claude::wire::parse_frame(raw).unwrap();
+        let events = norm.normalize(
+            frame(
+                r#"{"type":"assistant","error":"rate_limit","message":{"model":"<synthetic>","content":[{"type":"text","text":"You've hit your session limit · resets 2099-01-01T15:40:00Z"}]}}"#,
+            ),
+            false,
+        );
+        assert_eq!(
+            limits_of(&events),
+            vec![&AgentEvent::UsageLimit {
+                reset_at: chrono::DateTime::parse_from_rfc3339("2099-01-01T15:40:00Z")
+                    .ok()
+                    .map(|t| t.with_timezone(&chrono::Utc)),
+                window: None,
+            }]
+        );
+        let events = norm.normalize(
+            frame(
+                r#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your session limit","session_id":"s"}"#,
+            ),
+            false,
+        );
+        assert!(limits_of(&events).is_empty(), "{events:?}");
+
+        // No reset in the text: the earlier allowed-window event's.
+        let mut norm = Normalizer::new();
+        norm.normalize(
+            frame(
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","resetsAt":4102444800}}"#,
+            ),
+            false,
+        );
+        let events = norm.normalize(
+            frame(r#"{"type":"assistant","error":"rate_limit","message":{"content":[]}}"#),
+            false,
+        );
+        assert_eq!(
+            limits_of(&events),
+            vec![&AgentEvent::UsageLimit {
+                reset_at: chrono::DateTime::from_timestamp(4_102_444_800, 0),
+                window: None,
+            }]
+        );
+    }
+
+    /// A limit only the result reports still classifies, without a reset
+    /// when nothing names one; a full context window never does, whatever
+    /// `terminal_reason` says (t3code #19832's `blocking_limit`).
+    #[test]
+    fn result_only_limits_classify_and_context_full_stays_distinct() {
+        let events = normalize_one(
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: 429 rate_limit_error"}"#,
+        );
+        assert_eq!(
+            limits_of(&events),
+            vec![&AgentEvent::UsageLimit {
+                reset_at: None,
+                window: None
+            }]
+        );
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done {
+                status: DoneStatus::Errored,
+                ..
+            })
+        ));
+        for raw in [
+            r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"blocking_limit","result":"Prompt is too long"}"#,
+            r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"prompt_too_long","result":"Prompt is too long: 1000123 tokens > 1000000 maximum"}"#,
+            r#"{"type":"assistant","error":"invalid_request","message":{"model":"<synthetic>","content":[{"type":"text","text":"Prompt is too long"}]}}"#,
+        ] {
+            assert!(limits_of(&normalize_one(raw)).is_empty(), "{raw}");
+        }
+        // A completed turn is never limited, whatever its text says.
+        assert!(
+            limits_of(&normalize_one(
+                r#"{"type":"result","subtype":"success","is_error":false,"result":"I looked into the rate limit bug."}"#,
+            ))
+            .is_empty()
         );
     }
 

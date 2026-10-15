@@ -4480,6 +4480,16 @@ async fn run_session(session: Session) {
                     if interrupted {
                         done_after_interrupt = true;
                     }
+                    // ACP has no limit vocabulary: agents (Gemini's quota
+                    // errors, Grok's 429s) only say so in the error text.
+                    if status == DoneStatus::Errored
+                        && let Some(limit) = error.as_deref().and_then(|text| {
+                            crate::limits::event_from_text(text, chrono::Utc::now())
+                        })
+                        && !send(&event_tx, limit).await
+                    {
+                        break 'main;
+                    }
                     if !send(
                         &event_tx,
                         AgentEvent::Done {
