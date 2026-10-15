@@ -16,6 +16,9 @@ pub enum HarnessId {
     Hermes,
     /// The Pi coding agent (pi.dev), driven over its native JSONL RPC protocol.
     Pi,
+    /// Meta's Muse Code, driven natively over MSP (the Muse Session
+    /// Protocol `muse serve` speaks on stdio — the wire its own SDK uses).
+    Muse,
     /// SST's opencode agent, driven natively over its own HTTP/SSE server
     /// protocol (`opencode serve` — the same wire the opencode desktop app
     /// speaks).

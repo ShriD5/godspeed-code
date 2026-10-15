@@ -252,6 +252,14 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: Some(&["update", "--self"]),
             manual_command: "pi update --self",
         },
+        // Muse Code ships as a Homebrew cask (upgraded through `brew`, like
+        // any cask install) and has no self-update command or release feed.
+        HarnessId::Muse => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Manual,
+            update_args: None,
+            manual_command: "brew upgrade --cask muse-code",
+        },
         HarnessId::Opencode => ProviderSpec {
             version_args: &["--version"],
             latest: LatestSource::Opencode,

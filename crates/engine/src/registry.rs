@@ -713,6 +713,23 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::PiHarness::new().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::PiHarness::new()) as Arc<dyn Harness>)),
     );
+    // Native Muse Code over MSP (`muse serve`), same lazy pattern: the static
+    // descriptor mirrors MuseHarness exactly. `ifBusy: "steer"` lands a
+    // prompt at the running turn's next model call; efforts are per model.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Muse,
+            name: "Muse Code".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::StepBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            can_install: false,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::MuseHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::MuseHarness::new()) as Arc<dyn Harness>)),
+    );
     // opencode over its NATIVE HTTP/SSE protocol (the one the opencode
     // desktop app speaks — `opencode serve` + the /global/event bus), same
     // lazy pattern: the static descriptor mirrors OpencodeHarness exactly.
@@ -837,6 +854,7 @@ mod tests {
                 HarnessId::Grok,
                 HarnessId::Hermes,
                 HarnessId::Pi,
+                HarnessId::Muse,
                 HarnessId::Opencode,
                 HarnessId::Antigravity
             ]
@@ -901,6 +919,11 @@ mod tests {
         assert_eq!(pi.display_name(), "Pi");
         assert_eq!(pi.steering_mode(), SteeringMode::StepBoundary);
         assert!(pi.reasoning_levels().is_empty());
+        let muse = registry.resolve(HarnessId::Muse).unwrap();
+        assert_eq!(muse.id(), HarnessId::Muse);
+        assert_eq!(muse.display_name(), "Muse Code");
+        assert_eq!(muse.steering_mode(), SteeringMode::StepBoundary);
+        assert!(muse.reasoning_levels().is_empty());
     }
 
     /// Catalogs serialized by engines that predate the `installed`/`enabled`
