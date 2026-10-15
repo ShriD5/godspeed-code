@@ -5,8 +5,8 @@
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use zeron_proto::{
-    AgentEvent, DoneStatus, Model, ReasoningLevel, TodoItem, TodoStatus, ToolCall, ToolDiff,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, ApprovalDecision, ApprovalKind, ApprovalOption, ApprovalRequest, DoneStatus, Model,
+    ReasoningLevel, TodoItem, TodoStatus, ToolCall, ToolDiff, UserInputAnswer, UserInputQuestion,
 };
 
 /// Tools whose work already renders elsewhere: the todo list arrives as
@@ -632,25 +632,26 @@ pub(super) fn approval_question(params: &Value) -> (UserInputQuestion, Vec<(Stri
         .into_iter()
         .find(|s| !s.is_empty())
         .unwrap_or("a tool");
-    let (header, question) = match string(subject, "kind") {
-        "shell" => (
-            "Approve command",
-            match string(subject, "command") {
-                "" => "Muse wants to run a command. Allow it?".to_owned(),
-                command => format!("Muse wants to run `{command}`. Allow it?"),
-            },
-        ),
-        "fileAccess" => (
-            "Approve file access",
-            format!(
-                "Muse wants to {} {}. Allow it?",
-                match string(subject, "access") {
-                    "" => "access",
-                    access => access,
-                },
-                string(subject, "path")
-            ),
-        ),
+    let mut approval = match string(subject, "kind") {
+        "shell" => {
+            let mut approval = ApprovalRequest::new(ApprovalKind::Command, "Run a command");
+            approval.command = Some(string(subject, "command").to_owned()).filter(|c| !c.is_empty());
+            approval.cwd = Some(string(subject, "cwd").to_owned()).filter(|c| !c.is_empty());
+            approval
+        }
+        "fileAccess" => {
+            let access = string(subject, "access");
+            let kind = if matches!(access, "" | "read" | "list") {
+                ApprovalKind::FileRead
+            } else {
+                ApprovalKind::FileChange
+            };
+            let path = string(subject, "path");
+            let verb = if access.is_empty() { "Access" } else { access };
+            let mut approval = ApprovalRequest::new(kind, format!("{} {path}", capitalize(verb)));
+            approval.paths = vec![path.to_owned()].into_iter().filter(|p| !p.is_empty()).collect();
+            approval
+        }
         "network" | "unixSocket" => {
             let target = [
                 string(subject, "host"),
@@ -664,34 +665,50 @@ pub(super) fn approval_question(params: &Value) -> (UserInputQuestion, Vec<(Stri
                 .as_u64()
                 .map(|p| format!(":{p}"))
                 .unwrap_or_default();
-            (
-                "Approve network access",
-                format!("Muse wants to reach {target}{port}. Allow it?"),
-            )
+            ApprovalRequest::new(ApprovalKind::Network, format!("Reach {target}{port}"))
         }
-        _ => (
-            "Approve tool",
-            format!("Muse wants to use {tool}. Allow it?"),
+        _ => ApprovalRequest::new(
+            if tool.starts_with("mcp") {
+                ApprovalKind::McpTool
+            } else {
+                ApprovalKind::Other
+            },
+            format!("Use {tool}"),
         ),
     };
+    let available: Vec<&Value> = params["availableChoices"].as_array().into_iter().flatten().collect();
+    let offers_denied = available.iter().any(|c| c["decision"] == "denied");
     let mut choices: Vec<(String, String)> = Vec::new();
-    for choice in params["availableChoices"].as_array().into_iter().flatten() {
+    approval.decisions.clear();
+    for choice in available {
         let label = string(choice, "label");
-        if !label.is_empty() && !choices.iter().any(|(l, _)| l == label) {
-            choices.push((label.into(), string(choice, "choiceId").into()));
+        if label.is_empty() || choices.iter().any(|(l, _)| l == label) {
+            continue;
         }
+        let decision = match string(choice, "decision") {
+            "approved" => ApprovalDecision::Approve,
+            "approvedForSession" => ApprovalDecision::ApproveForSession,
+            "denied" => ApprovalDecision::Decline,
+            // Shell approvals say no only with `abort`.
+            "abort" if !offers_denied => ApprovalDecision::Decline,
+            "abort" => ApprovalDecision::Cancel,
+            _ => continue,
+        };
+        approval.decisions.push(ApprovalOption {
+            decision,
+            label: label.to_owned(),
+        });
+        choices.push((label.into(), string(choice, "choiceId").into()));
     }
-    let question = UserInputQuestion {
-        id: uuid::Uuid::new_v4().to_string(),
-        header: header.into(),
-        question,
-        options: choices.iter().map(|(label, _)| label.clone()).collect(),
-        multi_select: false,
-        prefill: None,
-        multiline: false,
-        approval: None,
-    };
-    (question, choices)
+    (approval.into_question(uuid::Uuid::new_v4().to_string()), choices)
+}
+
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// The choice to answer with when nobody picked one: an approval for

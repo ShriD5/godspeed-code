@@ -3,7 +3,9 @@
 use super::normalize::{self, Normalizer};
 use super::*;
 use serde_json::json;
-use zeron_proto::{DoneStatus, TodoItem, TodoStatus, ToolCall};
+use zeron_proto::{
+    ApprovalDecision, ApprovalKind, DoneStatus, SandboxLevel, TodoItem, TodoStatus, ToolCall,
+};
 
 fn item(method: &str, item: Value) -> (String, Value) {
     (
@@ -344,11 +346,22 @@ fn approvals_offer_native_choices_and_never_default_to_allow() {
         {"choiceId":"3","decision":"abort","label":"Reject","scope":"once"},
     ]));
     let (question, choices) = normalize::approval_question(&params);
-    assert_eq!(question.header, "Approve command");
-    assert!(question.question.contains("`rm -rf build`"));
+    assert_eq!(question.header, "Run command");
+    let approval = question.approval.as_ref().unwrap();
+    assert_eq!(approval.kind, ApprovalKind::Command);
+    assert_eq!(approval.command.as_deref(), Some("rm -rf build"));
     assert_eq!(
         question.options,
         ["Allow once", "Allow for session", "Reject"]
+    );
+    let decisions: Vec<_> = approval.decisions.iter().map(|d| d.decision).collect();
+    assert_eq!(
+        decisions,
+        [
+            ApprovalDecision::Approve,
+            ApprovalDecision::ApproveForSession,
+            ApprovalDecision::Decline,
+        ]
     );
     assert_eq!(choices[1], ("Allow for session".into(), "2".into()));
     // Shell approvals offer only `abort` to say no.
@@ -369,6 +382,54 @@ fn approvals_offer_native_choices_and_never_default_to_allow() {
         Some("d")
     );
     assert_eq!(normalize::default_choice(&params, true), None);
+}
+
+#[test]
+fn approvals_classify_file_writes_network_and_stop_choices() {
+    let mut params = approval_params(json!([
+        {"choiceId":"1","decision":"approved","label":"Allow once","scope":"once"},
+        {"choiceId":"d","decision":"denied","label":"Deny","scope":"once"},
+        {"choiceId":"x","decision":"abort","label":"Stop","scope":"once"},
+    ]));
+    params["subject"] = json!({"kind": "fileAccess", "access": "write", "path": "/repo/a.rs"});
+    let (question, choices) = normalize::approval_question(&params);
+    let approval = question.approval.unwrap();
+    assert_eq!(approval.kind, ApprovalKind::FileChange);
+    assert_eq!(approval.title, "Write /repo/a.rs");
+    assert_eq!(approval.paths, ["/repo/a.rs"]);
+    // With `denied` on offer, `abort` is the stop-the-turn choice.
+    let decisions: Vec<_> = approval.decisions.iter().map(|d| d.decision).collect();
+    assert_eq!(
+        decisions,
+        [
+            ApprovalDecision::Approve,
+            ApprovalDecision::Decline,
+            ApprovalDecision::Cancel,
+        ]
+    );
+    assert_eq!(choices.len(), 3);
+    // Auto-accept edits lets an in-workspace write through; supervised asks.
+    let in_workspace = crate::approval::paths_within(
+        approval.paths.iter().map(String::as_str),
+        "/repo",
+        &[],
+    );
+    assert!(crate::approval::auto_decision(
+        AccessMode::AutoAcceptEdits,
+        approval.kind,
+        in_workspace
+    ));
+    assert!(!crate::approval::auto_decision(
+        AccessMode::Supervised,
+        approval.kind,
+        in_workspace
+    ));
+
+    params["subject"] = json!({"kind": "network", "host": "example.com", "port": 443});
+    let (question, _) = normalize::approval_question(&params);
+    let approval = question.approval.unwrap();
+    assert_eq!(approval.kind, ApprovalKind::Network);
+    assert_eq!(approval.title, "Reach example.com:443");
 }
 
 #[test]
@@ -451,12 +512,20 @@ fn launch_settings_follow_the_sandbox_and_approval_posture() {
     };
     assert_eq!(serve_args(&request), ["--trust-workspace"]);
     assert_eq!(picked_model(&request), None);
-    assert_eq!(approval(false), ("promptUnmatched", ":ask-me"));
-    assert_eq!(approval(true), ("allowAll", ":unrestricted"));
-    request.sandbox = SandboxLevel::ReadOnly;
-    assert_eq!(serve_args(&request), ["--disable-shell", "--disable-write"]);
-    request.sandbox = SandboxLevel::DangerFullAccess;
+    for (mode, expected) in [
+        (AccessMode::Supervised, ("promptUnmatched", ":ask-me")),
+        (AccessMode::AutoAcceptEdits, ("promptUnmatched", ":ask-me")),
+        (AccessMode::Auto, ("promptUnmatched", ":auto-review")),
+        (AccessMode::FullAccess, ("allowAll", ":unrestricted")),
+    ] {
+        assert_eq!(approval(mode), expected, "{mode:?}");
+    }
+    // Supervised asks; it no longer disables the shell outright.
+    request.set_access_mode(AccessMode::Supervised);
+    assert_eq!(serve_args(&request), ["--trust-workspace"]);
+    request.set_access_mode(AccessMode::FullAccess);
     assert!(serve_args(&request).contains(&"--disable-sandbox"));
+    request.set_access_mode(AccessMode::AutoAcceptEdits);
 
     let harness = MuseHarness::new();
     let mut next = request.clone();
@@ -467,7 +536,7 @@ fn launch_settings_follow_the_sandbox_and_approval_posture() {
     // Going back to the default model, or flipping approvals, needs a new host.
     assert!(!harness.reconfigures_in_place(&next, &request));
     next.model = request.model.clone();
-    next.auto_approve = true;
+    next.set_access_mode(AccessMode::FullAccess);
     assert!(!harness.reconfigures_in_place(&request, &next));
 
     let config = session_config(Some(&zeron_proto::McpServer {
