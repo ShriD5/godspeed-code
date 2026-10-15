@@ -72,7 +72,7 @@ Known flaky only under heavy load (pass alone): `version_probe_bounds_hangs_and_
 
 ## In progress when this was written
 
-Two worktree agents were mid-way. If the session that ran them has ended, they stopped: inspect,
+One worktree agent was mid-way (search has since been merged). If the session that ran them has ended, they stopped: inspect,
 finish per the spec below, test, then merge into `main` with `git merge --no-ff`.
 
 1. **Resume at reset**: branch `worktree-agent-af021430c3f06d38a`, worktree
@@ -84,13 +84,9 @@ finish per the spec below, test, then merge into `main` with `git merge --no-ff`
    default setting; hold queued messages while limited; always-on runs that hit a limit are Limited,
    don't count toward auto-pause, and wait for the reset. Same chat and account only (no fallback).
    Tests with an injected clock.
-2. **Instant local search**: branch `worktree-agent-a05c4f8780ce82a4e`, worktree
-   `.claude/worktrees/agent-a05c4f8780ce82a4e`, cache `/Volumes/Lexar/build/godspeed-target-search`.
-   Done: `SearchMessages` wire types; engine transcript index. Uncommitted: UI work (palette, shell,
-   markdown highlighting). Remaining spec: palette searches message text from the first character
-   with highlighted snippets that open the chat at that message; Cmd/Ctrl+F find bar across the
-   whole virtualized transcript (count, Enter/Shift+Enter, case toggle, Esc); perf test under 50 ms
-   on a synthetic ~360-chat corpus.
+2. **Instant local search**: DONE and merged into `main` (`4d4eeea4`). Message index in
+   `crates/engine/src/message_index.rs`, palette message search, Cmd/Ctrl+F find bar. Gaps: no
+   accent folding, word-start matching only, find skips closed folds and tool cards.
 
 After merging, remove the worktree (`git worktree remove -f -f <path>`), delete the branch and the
 cache directory.
