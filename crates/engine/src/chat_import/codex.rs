@@ -156,9 +156,13 @@ pub(crate) fn scan_file(
         return Ok(None);
     }
     let project_path = project_root_for(&cwd);
+    // A saved name can carry an injected block too when Codex named the
+    // thread from its first message.
     let title = titles
         .get(&thread_id)
-        .cloned()
+        .map(|name| strip_tagged_blocks(name).trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
         .or_else(|| first_prompt.as_deref().and_then(title_from_prompt))
         .unwrap_or_else(|| "Codex thread".into());
     Ok(Some(SourceChat {
@@ -203,21 +207,56 @@ fn message_text(payload: &Value) -> Option<String> {
 }
 
 /// Context Codex injects as user messages (instructions, environment,
-/// turn bookkeeping) — not things the user typed.
+/// turn bookkeeping) — not things the user typed. Codex keeps adding new
+/// `<tag>…</tag>` wrappers (`<recommended_plugins>` was the first we missed),
+/// so any leading tagged block goes, not just the known ones; the text the
+/// user typed after it stays.
 fn clean_user_text(text: &str) -> Option<String> {
     let trimmed = text.trim_start();
-    let injected = [
-        "<environment_context>",
-        "<user_instructions>",
-        "<permissions instructions>",
-        "<turn_aborted>",
-        "<user_shell_command>",
-        "<collaboration_mode>",
-        "# AGENTS.md instructions",
-    ]
-    .iter()
-    .any(|p| trimmed.starts_with(p));
-    (!injected && !trimmed.is_empty()).then(|| text.to_string())
+    if trimmed.starts_with("# AGENTS.md instructions") {
+        return None;
+    }
+    let rest = strip_tagged_blocks(trimmed);
+    if rest.is_empty() {
+        return None;
+    }
+    Some(if rest.len() == trimmed.len() {
+        text.to_string()
+    } else {
+        rest.to_string()
+    })
+}
+
+/// `text` past any leading `<name …>…</name>` blocks (and the whitespace
+/// between them). An opening tag with no matching close is the user's own
+/// text and stops the strip.
+fn strip_tagged_blocks(text: &str) -> &str {
+    let mut rest = text.trim_start();
+    while let Some(after_lt) = rest.strip_prefix('<') {
+        let Some(end) = after_lt.find('>') else {
+            break;
+        };
+        let tag = &after_lt[..end];
+        let name = tag.split_whitespace().next().unwrap_or_default();
+        let plausible = (1..=64).contains(&tag.len())
+            && name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && !tag.contains(['<', '/', '\n']);
+        if !plausible {
+            break;
+        }
+        let body = &after_lt[end + 1..];
+        // Codex closes with the full opening text (`</permissions
+        // instructions>`); markup closes with the bare name.
+        let close = [format!("</{tag}>"), format!("</{name}>")]
+            .into_iter()
+            .filter_map(|close| body.find(&close).map(|at| at + close.len()))
+            .min();
+        let Some(close) = close else {
+            break;
+        };
+        rest = body[close..].trim_start();
+    }
+    rest
 }
 
 /// A rollout tool call as a typed call.
@@ -425,6 +464,29 @@ mod tests {
         );
         assert_eq!(clean_user_text("# AGENTS.md instructions for /x"), None);
         assert!(clean_user_text("ship it").is_some());
+        // Any leading tagged block is injected context, known or not.
+        assert_eq!(
+            clean_user_text("<recommended_plugins>\n- gh\n</recommended_plugins>"),
+            None
+        );
+        assert_eq!(
+            clean_user_text(
+                "<recommended_plugins>gh</recommended_plugins>\n\
+                 <permissions instructions>x</permissions instructions>\n\nfix the login bug"
+            )
+            .as_deref(),
+            Some("fix the login bug")
+        );
+        assert_eq!(
+            clean_user_text("<skill name=\"x\">body</skill> then this").as_deref(),
+            Some("then this")
+        );
+        // An unclosed tag or a comparison is the user's own text.
+        assert_eq!(
+            clean_user_text("<div> is broken").as_deref(),
+            Some("<div> is broken")
+        );
+        assert_eq!(clean_user_text("<3 thanks").as_deref(), Some("<3 thanks"));
         assert_eq!(
             patch_path("*** Begin Patch\n*** Update File: src/a.rs\n@@").as_deref(),
             Some("src/a.rs")
