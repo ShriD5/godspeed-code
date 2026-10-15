@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use zeron_proto::{AuthState, WorkspaceScope};
 
 pub mod accounts;
+pub mod agents;
 pub mod appearance;
 pub mod archived;
 pub mod composer;
