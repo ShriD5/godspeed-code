@@ -136,6 +136,9 @@ pub struct Column {
     pub label: String,
     pub align: Align,
     pub width: Option<f32>,
+    /// The row field this column reads when rows are records
+    /// (`{ plan = "Pro" }`) instead of arrays of cells.
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -746,14 +749,31 @@ impl Parser {
             .unwrap_or_default()
         {
             columns.push(match column {
-                Value::Table(t) => Column {
-                    label: t.get::<Option<String>>("label")?.unwrap_or_default(),
-                    align: match t.get::<Option<String>>("align")? {
-                        Some(a) => Align::parse(&a)?,
-                        None => Align::Start,
-                    },
-                    width: t.get::<Option<f64>>("width")?.map(|w| w as f32),
-                },
+                Value::Table(t) => {
+                    let key = match t.get::<Value>("key")? {
+                        Value::Nil => None,
+                        key => Some(value_text(&key)),
+                    };
+                    Column {
+                        // Scripts written against web table libraries say
+                        // `header`; take it as the label so the header row
+                        // isn't silently dropped (Zeron #913). An explicit
+                        // `label` still wins, and a bare `key` titles itself.
+                        label: match t.get::<Option<String>>("label")? {
+                            Some(label) => label,
+                            None => t
+                                .get::<Option<String>>("header")?
+                                .or_else(|| key.clone())
+                                .unwrap_or_default(),
+                        },
+                        align: match t.get::<Option<String>>("align")? {
+                            Some(a) => Align::parse(&a)?,
+                            None => Align::Start,
+                        },
+                        width: t.get::<Option<f64>>("width")?.map(|w| w as f32),
+                        key,
+                    }
+                }
                 other => Column {
                     label: value_text(&other),
                     ..Default::default()
@@ -761,10 +781,38 @@ impl Parser {
             });
         }
         let mut rows = Vec::new();
-        for row in props.get::<Option<Vec<Table>>>("rows")?.unwrap_or_default() {
+        for (r, row) in props
+            .get::<Option<Vec<Table>>>("rows")?
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+        {
+            // A row is either an array of cells or a record read through the
+            // columns' keys. Records used to come out as rows of nothing (a
+            // hairline per row, no error), so a record the columns can't read
+            // fails loudly instead.
+            let values: Vec<Value> = if row.raw_len() > 0 {
+                row.sequence_values::<Value>()
+                    .collect::<mlua::Result<_>>()?
+            } else if columns.iter().any(|c| c.key.is_some()) {
+                columns
+                    .iter()
+                    .map(|c| match &c.key {
+                        Some(key) => row.raw_get::<Value>(key.as_str()),
+                        None => Ok(Value::Nil),
+                    })
+                    .collect::<mlua::Result<_>>()?
+            } else if row.pairs::<Value, Value>().next().is_some() {
+                return Err(props.error(&format!(
+                    "row {} is a record, so each column needs a key \
+                     (columns = {{ {{ key = \"name\", header = \"Name\" }} }})",
+                    r + 1
+                )));
+            } else {
+                Vec::new()
+            };
             let mut cells = Vec::new();
-            for cell in row.sequence_values::<Value>() {
-                let cell = cell?;
+            for cell in values {
                 let numeric = matches!(cell, Value::Integer(_) | Value::Number(_));
                 let mut out = Vec::new();
                 self.children_into(cell, &mut out, depth + 1)?;

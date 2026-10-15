@@ -226,6 +226,62 @@ fn charts_and_tables_parse() {
     assert_eq!(table.columns[1].align, Align::End);
 }
 
+/// Zeron #913: `{ key, header }` columns over record rows used to paint a
+/// hairline per row with no header and no cells.
+#[test]
+fn tables_read_keyed_columns_from_record_rows() {
+    let mut visual = Visual::load(
+        r#"
+        local rows = {
+          { plan = "Claude Pro or Max", harness = "Claude Code", state = "Ready" },
+          { plan = "ChatGPT Plus or Pro", harness = "Codex", state = "Ready" },
+        }
+        return function()
+          return ui.table {
+            columns = {
+              { key = "plan", header = "Plan" },
+              { key = "harness", header = "Harness" },
+              { key = "state", header = "This Mac" },
+            },
+            rows = rows,
+          }
+        end
+        "#,
+        1,
+    )
+    .unwrap();
+    let tree = visual.render().unwrap();
+    let table = find(&tree, &|n| matches!(n.kind, NodeKind::Table(_))).unwrap();
+    let NodeKind::Table(table) = &table.kind else {
+        unreachable!()
+    };
+    let headers: Vec<_> = table.columns.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(headers, ["Plan", "Harness", "This Mac"]);
+    let rows: Vec<Vec<String>> = table
+        .rows
+        .iter()
+        .map(|row| row.iter().map(text_of).collect())
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ["Claude Pro or Max", "Claude Code", "Ready"],
+            ["ChatGPT Plus or Pro", "Codex", "Ready"],
+        ]
+    );
+}
+
+#[test]
+fn record_rows_without_column_keys_are_an_error() {
+    let error = Visual::load(
+        r#"return ui.table { columns = { "Plan" }, rows = { { plan = "Pro" } } }"#,
+        1,
+    )
+    .and_then(|mut v| v.render())
+    .unwrap_err();
+    assert!(error.to_string().contains("needs a key"), "{error}");
+}
+
 #[test]
 fn check_exercises_every_control_and_reports_where_it_broke() {
     let report = check(
