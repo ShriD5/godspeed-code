@@ -17,10 +17,8 @@ drivers. Go star it.
 What Godspeed adds on top (in progress, tracked in the roadmap):
 
 - **Muse Code** support (native MSP driver).
-- **T3 Code-level depth**: plan mode, rewind to any checkpoint, fork and merge back, generated
-  titles, commit messages and PR descriptions, a full command palette.
-- **Account fallback**: when one account hits its limit, the thread continues on the next account
-  or provider instead of stalling.
+- **Approvals and access modes**: supervised, auto-accept edits, auto, or full access, per thread.
+- **Git from the app**: commit, push, pull and open PRs with generated messages and descriptions.
 - **Always-on agents**: agents with memory, triggered by cron, webhooks, file changes or GitHub
   events, with an inbox and Telegram approvals.
 

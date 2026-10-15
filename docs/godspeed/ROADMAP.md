@@ -28,13 +28,8 @@ Providers
 T3 depth zeron lacks (audited in PARITY-T3.md)
 - [ ] **Access modes + approvals** (supervised / auto-accept edits / auto / full): today every agent runs without asking. Highest priority.
 - [ ] **Git write actions**: commit, push, pull, sync, create PR with generated text (none exist today).
-- [ ] Plan mode with Implement / Refine on the proposed plan.
-- [ ] Checkpoints as hidden git refs + rewind + "edit from here" (T3: `CheckpointService.ts`).
 - [ ] Fork thread from a response, merge back to source.
 - [ ] Queue: reorder, edit, promote-to-steer.
-- [ ] Model routing: per-account instances, mid-thread switch with context handoff
-      (T3 caps handoff at 16k tokens of collapsed items), and **automatic fallback** when an account
-      hits its usage limit (T3 only snoozes; we continue on the next account/provider).
 - [ ] Text generation on a cheap model: titles, commit messages, PR bodies, branch names.
 - [ ] Command palette (`mod+k`) with actions/projects/threads; keybindings file with `when` clauses.
 - [ ] Access modes: supervised / auto-accept edits / auto / full access.
@@ -53,6 +48,13 @@ Design pass
 - [ ] Animate panels at 120fps (T3 ships panel animation at 0ms because DOM layout is expensive).
 - [ ] Show raw tool output (T3 hides command stdout).
 - [ ] Local thread search index (T3 needs a server round trip and 2+ chars).
+
+## Cut or deferred (decided 2026-10-15)
+
+- Plan mode: cut.
+- Account fallback and mid-thread provider switching: cut. Switching providers throws away the
+  prompt cache, so every following turn is slower and costs more.
+- Checkpoints, rewind, edit-from-here: maybe later.
 
 ## v0.2
 
