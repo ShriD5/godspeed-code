@@ -233,10 +233,6 @@ impl ClaudeHarness {
             "--verbose",
             "--include-partial-messages",
             "--replay-user-messages",
-            // Newer Claude models emit no readable thinking text unless a
-            // summary is asked for (raw reasoning stays provider-private).
-            "--thinking-display",
-            "summarized",
             // Route permission prompts to the stdio control channel so
             // `can_use_tool` (and AskUserQuestion in particular) reaches us.
             // Undocumented flag; validated live against 2.1.228.
@@ -277,10 +273,16 @@ impl ClaudeHarness {
         args
     }
 
-    fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
+    fn build_command(&self, exe: &PathBuf, request: &RunRequest, thinking_display: bool) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
         cmd.args(Self::launch_args(request));
+        // Newer Claude models emit no readable thinking text unless a
+        // summary is asked for (raw reasoning stays provider-private). A CLI
+        // without the flag exits on it, so it rides only where supported.
+        if thinking_display {
+            cmd.args(["--thinking-display", "summarized"]);
+        }
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
         }
@@ -319,9 +321,8 @@ impl ClaudeHarness {
     async fn probe_initialize(&self, cwd: Option<&std::path::Path>) -> Result<Value, HarnessError> {
         let exe = self.resolve_executable()?;
         let mut cmd = Command::new(&exe);
-        if let Some(cwd) = cwd {
-            cmd.current_dir(cwd);
-        }
+        // A project-less probe must not read the engine's cwd as a project.
+        cmd.current_dir(cwd.map_or_else(crate::executable::neutral_cwd, |c| c.to_path_buf()));
         crate::compose_child_path(&mut cmd, &exe);
         cmd.args([
             "--print",
@@ -392,6 +393,64 @@ impl ClaudeHarness {
             Err(_) => Err(HarnessError::Protocol("Claude initialize timed out".into())),
         }
     }
+}
+
+/// Whether this CLI accepts `--thinking-display` (2.1.81 rejects it and
+/// exits). The flag is hidden from `claude --help` (`hideHelp()`, 2.1.300),
+/// so help text can't tell; the option parser can: given the flag and then
+/// a sentinel unknown option, the CLI reports whichever it doesn't know
+/// first and exits before any session, network or config write. One probe
+/// per executable identity; an inconclusive probe (timeout, no output)
+/// assumes support, as every current CLI has it, and is retried next run.
+async fn supports_thinking_display(exe: &std::path::Path) -> bool {
+    type Key = (PathBuf, Option<std::time::SystemTime>, u64);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<Key, bool>>> =
+        std::sync::OnceLock::new();
+    const SENTINEL: &str = "--godspeed-capability-probe";
+    let key = std::fs::metadata(exe)
+        .ok()
+        .map(|m| (exe.to_path_buf(), m.modified().ok(), m.len()));
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(known) = key.as_ref().and_then(|k| {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(k)
+            .copied()
+    }) {
+        return known;
+    }
+    let mut cmd = Command::new(exe);
+    crate::compose_child_path(&mut cmd, exe);
+    cmd.args(["--thinking-display", "summarized", SENTINEL])
+        .current_dir(crate::executable::neutral_cwd())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
+        Ok(Ok(output)) => output,
+        _ => return true,
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let verdict = if text.contains("unknown option '--thinking-display'") {
+        false
+    } else if text.contains(SENTINEL) {
+        true
+    } else {
+        return true;
+    };
+    if let Some(key) = key {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, verdict);
+    }
+    verdict
 }
 
 /// `commands` out of an `initialize` control_response payload
@@ -502,6 +561,7 @@ impl Harness for ClaudeHarness {
                 || async {
                     let response = self.initialize().await?;
                     catalog::with_discovered_models(catalog::configured_models(), &response)
+                        .map(catalog::clamp_discovered)
                 },
             )
             .await
@@ -601,7 +661,8 @@ impl ClaudeHarness {
         title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
-        let mut cmd = self.build_command(&exe, &request);
+        let thinking_display = supports_thinking_display(&exe).await;
+        let mut cmd = self.build_command(&exe, &request, thinking_display);
         if title_only {
             cmd.args([
                 "--system-prompt",
@@ -637,6 +698,7 @@ impl ClaudeHarness {
             }
         })?;
 
+        let child_pid = child.id();
         let stdin = child
             .stdin
             .take()
@@ -694,6 +756,7 @@ impl ClaudeHarness {
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             stderr_tail,
+            registration: crate::process::registry::register(child_pid, "claude"),
         }));
 
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
@@ -824,6 +887,9 @@ struct Session {
     kill_grace: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
     stderr_tail: crate::StderrTail,
+    /// The agent's crash record ([`crate::process::registry`]), held until
+    /// the child is reaped.
+    registration: Option<crate::process::registry::Registration>,
 }
 
 /// The per-run event loop: one task multiplexing stdout frames, the steering
@@ -842,6 +908,7 @@ async fn run_session(session: Session) {
         interrupt_grace,
         kill_grace,
         stderr_tail,
+        registration: _registration,
     } = session;
     let RunControls {
         realtime: _,
@@ -903,6 +970,7 @@ async fn run_session(session: Session) {
         tokio::select! {
             line = stdout_lines.next_line() => match line {
                 Ok(Some(line)) => {
+                    let line = crate::executable::strip_terminal_escapes(&line);
                     let line = line.trim();
                     if line.is_empty() {
                         continue;
@@ -930,12 +998,21 @@ async fn run_session(session: Session) {
                     }
                     if let Frame::ControlRequest(req) = frame {
                         if title_only {
+                            if let Some(id) = &req.request.tool_use_id {
+                                lock_denials(&norm.user_denials).insert(id.clone());
+                            }
                             let line = control_response_line(&req.request_id, serde_json::json!({
                                 "behavior": "deny", "message": "Tools are disabled for title generation"
                             }));
                             let _ = stdin_tx.send(StdinMsg::Line(line));
                         } else {
-                            handle_control_request(req, &config, &request_input, &stdin_tx);
+                            handle_control_request(
+                                req,
+                                &config,
+                                &request_input,
+                                &stdin_tx,
+                                &norm.user_denials,
+                            );
                         }
                         continue;
                     }
@@ -1353,12 +1430,33 @@ type RequestInputFn = Box<
 /// approval (allowed outright only under full access, as a belt to the
 /// CLI's own bypass). Both wait in a subtask so the frame loop keeps flowing
 /// — the CLI blocks the tool until SOME response arrives.
+type Denials = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+fn lock_denials(denials: &Denials) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+    denials
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn handle_control_request(
     req: ControlRequestFrame,
     config: &RunRequest,
     request_input: &Arc<RequestInputFn>,
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
+    user_denials: &Denials,
 ) {
+    if req.request.subtype == "elicitation" {
+        // The CLI blocks the MCP call until an answer arrives; unanswered,
+        // the tool hung until the server gave up.
+        let request_input = Arc::clone(request_input);
+        let stdin_tx = stdin_tx.clone();
+        tokio::spawn(async move {
+            let result = answer_elicitation(&req.request, request_input.as_ref()).await;
+            let line = control_response_line(&req.request_id, result);
+            let _ = stdin_tx.send(StdinMsg::Line(line));
+        });
+        return;
+    }
     if req.request.subtype != "can_use_tool" {
         tracing::debug!(
             target: "zeron_harness::claude",
@@ -1375,8 +1473,14 @@ fn handle_control_request(
         let approval = approval_request(&req.request, &config.cwd);
         let request_input = Arc::clone(request_input);
         let stdin_tx = stdin_tx.clone();
+        let user_denials = Arc::clone(user_denials);
         tokio::spawn(async move {
             let decision = crate::approval::ask(request_input.as_ref(), approval).await;
+            if !decision.approves()
+                && let Some(id) = &req.request.tool_use_id
+            {
+                lock_denials(&user_denials).insert(id.clone());
+            }
             let response = permission_result(&req.request, decision);
             let line = control_response_line(&req.request_id, response);
             let _ = stdin_tx.send(StdinMsg::Line(line));
@@ -1403,6 +1507,199 @@ fn handle_control_request(
         let line = control_response_line(&request_id, allow_response(updated));
         let _ = stdin_tx.send(StdinMsg::Line(line));
     });
+}
+
+/// Answer an MCP `elicitation` with the user's input. A form that asks for
+/// nothing (an MCP server requesting access, say) is an approval; a form
+/// with fields becomes questions, one per field; a URL is an approval whose
+/// card shows the link. Anything the user leaves unanswered declines, and a
+/// run that ends first cancels — never a silent accept.
+async fn answer_elicitation(
+    req: &wire::ControlRequestBody,
+    request_input: &crate::approval::RequestInputFn,
+) -> Value {
+    let server = req
+        .display_name
+        .as_deref()
+        .or(req.mcp_server_name.as_deref())
+        .unwrap_or("An MCP server");
+    let message = req.message.as_deref().unwrap_or_default().trim();
+    let schema = req.requested_schema.clone().unwrap_or_default();
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .filter(|p| !p.is_empty());
+    let Some(properties) = properties.filter(|_| req.mode.as_deref() != Some("url")) else {
+        let url = req.url.as_deref().filter(|_| req.mode.as_deref() == Some("url"));
+        let title = req
+            .title
+            .clone()
+            .unwrap_or_else(|| match url {
+                Some(_) => format!("{server} asks you to open a link"),
+                None => format!("{server} asks for your approval"),
+            });
+        let mut approval = ApprovalRequest::new(ApprovalKind::McpTool, title);
+        let reason = [Some(message), req.description.as_deref(), url]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        approval.reason = (!reason.is_empty()).then_some(reason);
+        approval = approval.with_decisions(&[
+            ApprovalDecision::Approve,
+            ApprovalDecision::Decline,
+            ApprovalDecision::Cancel,
+        ]);
+        return match crate::approval::ask(request_input, approval).await {
+            ApprovalDecision::Cancel => serde_json::json!({ "action": "cancel" }),
+            decision if decision.approves() => match url {
+                Some(_) => serde_json::json!({ "action": "accept" }),
+                None => serde_json::json!({ "action": "accept", "content": {} }),
+            },
+            _ => serde_json::json!({ "action": "decline" }),
+        };
+    };
+    // The server's own field order when the CLI reports it.
+    let mut names: Vec<&String> = req
+        .property_order
+        .iter()
+        .flatten()
+        .filter(|name| properties.contains_key(*name))
+        .collect();
+    let rest: Vec<&String> = properties.keys().filter(|k| !names.contains(k)).collect();
+    names.extend(rest);
+    let fields: Vec<(String, &Value, UserInputQuestion)> = names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let field = &properties[name];
+            let text = |key: &str| field.get(key).and_then(Value::as_str).map(str::to_owned);
+            let (options, multi_select) = elicitation_choices(field);
+            let mut question = text("description").unwrap_or_else(|| name.clone());
+            if index == 0 && !message.is_empty() {
+                question = format!("{message}\n\n{question}");
+            }
+            let q = UserInputQuestion {
+                id: uuid::Uuid::new_v4().to_string(),
+                header: text("title").unwrap_or_else(|| server.to_owned()),
+                question,
+                options: options.iter().map(|(label, _)| label.clone()).collect(),
+                multi_select,
+                prefill: field.get("default").map(|d| match d {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                }),
+                multiline: false,
+                approval: None,
+            };
+            (name.clone(), field, q)
+        })
+        .collect();
+    let questions: Vec<UserInputQuestion> = fields.iter().map(|(_, _, q)| q.clone()).collect();
+    let Ok(answers) = request_input(questions).await else {
+        return serde_json::json!({ "action": "cancel" });
+    };
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut content = serde_json::Map::new();
+    for (name, field, q) in &fields {
+        let labels: Vec<String> = answers
+            .iter()
+            .find(|a| a.question_id == q.id)
+            .map(|a| a.labels.iter().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect())
+            .unwrap_or_default();
+        let Some(value) = elicitation_value(field, &labels) else {
+            if required.contains(&name.as_str()) {
+                return serde_json::json!({ "action": "decline" });
+            }
+            continue;
+        };
+        content.insert(name.clone(), value);
+    }
+    serde_json::json!({ "action": "accept", "content": content })
+}
+
+/// A field's choices as (label, value) pairs, and whether several may be
+/// picked: `enum` (with `enumNames`), `oneOf`/`anyOf` consts, booleans, and
+/// arrays of those.
+fn elicitation_choices(field: &Value) -> (Vec<(String, Value)>, bool) {
+    let consts = |schema: &Value| -> Vec<(String, Value)> {
+        if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            let names = schema.get("enumNames").and_then(Value::as_array);
+            return values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let label = names
+                        .and_then(|n| n.get(i))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| v.as_str().map_or_else(|| v.to_string(), str::to_owned));
+                    (label, v.clone())
+                })
+                .collect();
+        }
+        ["oneOf", "anyOf"]
+            .iter()
+            .find_map(|k| schema.get(*k).and_then(Value::as_array))
+            .map(|variants| {
+                variants
+                    .iter()
+                    .filter_map(|v| {
+                        let value = v.get("const")?.clone();
+                        let label = v
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.as_str().map_or_else(|| value.to_string(), str::to_owned));
+                        Some((label, value))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    match field.get("type").and_then(Value::as_str) {
+        Some("boolean") => (
+            vec![("Yes".into(), Value::Bool(true)), ("No".into(), Value::Bool(false))],
+            false,
+        ),
+        Some("array") => (consts(field.get("items").unwrap_or(&Value::Null)), true),
+        _ => (consts(field), false),
+    }
+}
+
+/// The value a field's answer labels stand for, typed per the schema;
+/// `None` when unanswered or not a valid value.
+fn elicitation_value(field: &Value, labels: &[String]) -> Option<Value> {
+    let (choices, multi) = elicitation_choices(field);
+    let pick = |label: &String| {
+        choices
+            .iter()
+            .find(|(l, _)| l == label)
+            .map(|(_, v)| v.clone())
+    };
+    if multi {
+        let values: Vec<Value> = labels.iter().filter_map(pick).collect();
+        return (!values.is_empty()).then_some(Value::Array(values));
+    }
+    let label = labels.first()?;
+    if !choices.is_empty() {
+        return pick(label);
+    }
+    match field.get("type").and_then(Value::as_str) {
+        Some("integer") => label.parse::<i64>().ok().map(Value::from),
+        Some("number") => label
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        _ => Some(Value::String(label.clone())),
+    }
 }
 
 /// `--permission-mode` for an access mode. `default` is the CLI's own
@@ -1588,9 +1885,71 @@ fn session_permissions(req: &wire::ControlRequestBody) -> Vec<Value> {
     })]
 }
 
+/// A question's text as the tool input wrote it: the key its answer goes
+/// back under.
+fn question_text(q: &Value) -> &str {
+    ["question", "prompt"]
+        .iter()
+        .find_map(|k| q.get(*k).and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+/// The option descriptions and `preview`s (a draft, a code snippet, a
+/// mockup the user is asked to approve) appended to the question text: the
+/// wire type carries option labels only, and a card showing "Post / Skip"
+/// without the draft asks the user to approve text they cannot see.
+fn question_with_option_details(question: &str, options: &[Value]) -> String {
+    const PREVIEW_LINES: usize = 40;
+    const PREVIEW_CHARS: usize = 4000;
+    let mut details = Vec::new();
+    for option in options {
+        let text = |key: &str| {
+            option
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        };
+        let Some(label) = text("label").or_else(|| text("value")) else {
+            continue;
+        };
+        let (description, preview) = (text("description"), text("preview"));
+        if description.is_none() && preview.is_none() {
+            continue;
+        }
+        let mut entry = match description {
+            Some(description) => format!("• {label}: {description}"),
+            None => format!("• {label}"),
+        };
+        if let Some(preview) = preview {
+            let mut truncated = preview.lines().count() > PREVIEW_LINES;
+            let mut shown: String = preview
+                .lines()
+                .take(PREVIEW_LINES)
+                .map(|line| format!("\n    {line}"))
+                .collect();
+            if shown.chars().count() > PREVIEW_CHARS {
+                shown = shown.chars().take(PREVIEW_CHARS).collect();
+                truncated = true;
+            }
+            if truncated {
+                shown.push_str("\n    …");
+            }
+            entry.push_str(&shown);
+        }
+        details.push(entry);
+    }
+    if details.is_empty() {
+        question.to_owned()
+    } else {
+        format!("{question}\n\n{}", details.join("\n"))
+    }
+}
+
 /// Parse Claude's `AskUserQuestion` tool input into [`UserInputQuestion`]s
 /// (tolerant of `header`/`title`, `question`/`prompt`, string or object
-/// options — option descriptions are dropped, the wire type carries labels).
+/// options). Options carry their labels; descriptions and previews ride the
+/// question text ([`question_with_option_details`]).
 fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
     let raw = input.get("questions").and_then(Value::as_array);
     raw.map(|a| a.as_slice())
@@ -1599,10 +1958,15 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
         .map(|q| {
             let field =
                 |keys: [&str; 2]| keys.iter().find_map(|k| q.get(*k).and_then(Value::as_str));
+            let options = q
+                .get("options")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             UserInputQuestion {
                 id: uuid::Uuid::new_v4().to_string(),
                 header: field(["header", "title"]).unwrap_or("Question").into(),
-                question: field(["question", "prompt"]).unwrap_or("").into(),
+                question: question_with_option_details(question_text(q), options),
                 prefill: None,
                 multiline: false,
                 multi_select: ["multiSelect", "multi_select"]
@@ -1631,8 +1995,9 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
         .collect()
 }
 
-/// Merge the user's answers back into the tool input, keyed by question text
-/// (single-select ⇒ a string, multi-select ⇒ an array), as the tool expects.
+/// Merge the user's answers back into the tool input, keyed by the input's
+/// own question text (single-select ⇒ a string, multi-select ⇒ an array),
+/// as the tool expects. `questions` are [`parse_questions`]'s, in order.
 fn updated_input_with_answers(
     input: &Value,
     questions: &[UserInputQuestion],
@@ -1642,8 +2007,13 @@ fn updated_input_with_answers(
         Value::Object(map) => map.clone(),
         _ => serde_json::Map::new(),
     };
+    let raw = input
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let mut by_question = serde_json::Map::new();
-    for q in questions {
+    for (index, q) in questions.iter().enumerate() {
         let labels: Vec<String> = answers
             .iter()
             .find(|a| a.question_id == q.id)
@@ -1654,7 +2024,8 @@ fn updated_input_with_answers(
         } else {
             Value::String(labels.into_iter().next().unwrap_or_default())
         };
-        by_question.insert(q.question.clone(), value);
+        let key = raw.get(index).map_or(q.question.as_str(), question_text);
+        by_question.insert(key.to_owned(), value);
     }
     updated.insert("answers".into(), Value::Object(by_question));
     Value::Object(updated)
@@ -1686,6 +2057,190 @@ mod tests {
         assert_eq!(qs[1].header, "Alt");
         assert_eq!(qs[1].question, "Pick many");
         assert!(qs[1].multi_select);
+    }
+
+    /// zeronsh/zeron#477: a CLI that predates `--thinking-display` exits on
+    /// it, failing every run. Probed against the parser's own error, since
+    /// the flag is hidden from `--help` on current CLIs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn thinking_display_rides_only_clis_that_accept_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        // Commander reports the first option it doesn't know.
+        let old = script(
+            "claude-2.1.81",
+            r#"echo "error: unknown option '$1'" >&2; exit 1"#,
+        );
+        let new = script(
+            "claude-2.1.300",
+            r#"echo "error: unknown option '$3'" >&2; exit 1"#,
+        );
+        let silent = script("claude-silent", "exit 1");
+        assert!(!supports_thinking_display(&old).await);
+        assert!(supports_thinking_display(&new).await);
+        assert!(supports_thinking_display(&silent).await, "inconclusive keeps the flag");
+
+        let harness = ClaudeHarness::new();
+        let request = RunRequest {
+            mcp: None,
+            prompt: "hi".into(),
+            harness: None,
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: zeron_proto::SandboxLevel::DangerFullAccess,
+            auto_approve: true,
+            attachments: Vec::new(),
+            worktree: None,
+            resume: None,
+            access: None,
+        };
+        let args = |cmd: &Command| -> Vec<String> {
+            cmd.as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert!(
+            !args(&harness.build_command(&old, &request, false))
+                .contains(&"--thinking-display".to_owned())
+        );
+        let with = args(&harness.build_command(&new, &request, true));
+        let at = with.iter().position(|a| a == "--thinking-display").unwrap();
+        assert_eq!(with[at + 1], "summarized");
+    }
+
+    /// pingdotgg/t3code#14237: an option's `preview` (the draft the user is
+    /// asked to post, a code snippet) and its description reach the card,
+    /// and the answer still goes back under the tool input's own question.
+    #[test]
+    fn option_descriptions_and_previews_reach_the_question() {
+        let input = json!({"questions": [{
+            "header": "Review",
+            "question": "Post this comment?",
+            "options": [
+                {"label": "Post", "description": "Publish as written", "preview": "Looks good,\nbut rename `foo`."},
+                {"label": "Skip"},
+            ],
+        }]});
+        let qs = parse_questions(&input);
+        assert_eq!(qs[0].options, ["Post", "Skip"]);
+        assert_eq!(
+            qs[0].question,
+            "Post this comment?\n\n• Post: Publish as written\n    Looks good,\n    but rename `foo`."
+        );
+        let answers = vec![UserInputAnswer {
+            question_id: qs[0].id.clone(),
+            labels: vec!["Post".into()],
+        }];
+        let updated = updated_input_with_answers(&input, &qs, &answers);
+        assert_eq!(updated["answers"], json!({"Post this comment?": "Post"}));
+        // Long previews are capped, visibly.
+        let long = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text = question_with_option_details("Q", &[json!({"label": "A", "preview": long})]);
+        assert!(text.contains("line 39") && !text.contains("line 40"));
+        assert!(text.ends_with("\n    …"));
+        // Nothing to add: the question is unchanged.
+        assert_eq!(question_with_option_details("Q", &[json!("A"), json!({"label": "B"})]), "Q");
+    }
+
+    /// An answering bridge that records the questions and replies with
+    /// `reply(questions)`; `None` drops the sender (the run went away).
+    fn bridge(
+        reply: impl Fn(&[UserInputQuestion]) -> Option<Vec<UserInputAnswer>> + Send + Sync + 'static,
+    ) -> Box<crate::approval::RequestInputFn> {
+        Box::new(move |questions| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if let Some(answers) = reply(&questions) {
+                let _ = tx.send(answers);
+            }
+            rx
+        })
+    }
+
+    fn elicitation(raw: Value) -> wire::ControlRequestBody {
+        serde_json::from_value(raw).unwrap()
+    }
+
+    /// pingdotgg/t3code#14878: an MCP server's `elicitation` was never
+    /// answered, so the tool hung. An approval-only form becomes an approval
+    /// card; a form with fields becomes questions whose answers go back
+    /// typed per the schema; nothing is accepted without the user.
+    #[tokio::test]
+    async fn mcp_elicitations_reach_the_user_and_answer_the_server() {
+        let access = elicitation(json!({
+            "subtype": "elicitation", "mcp_server_name": "codex-cua",
+            "message": "Allow access to Dia?", "mode": "form",
+            "requested_schema": {"type": "object", "properties": {}},
+        }));
+        let approve = bridge(|qs| {
+            assert!(qs[0].approval.is_some(), "an approval card");
+            assert!(qs[0].question.contains("codex-cua"));
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["approve".into()] }])
+        });
+        assert_eq!(
+            answer_elicitation(&access, approve.as_ref()).await,
+            json!({"action": "accept", "content": {}})
+        );
+        let decline = bridge(|qs| {
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["decline".into()] }])
+        });
+        assert_eq!(answer_elicitation(&access, decline.as_ref()).await, json!({"action": "decline"}));
+        let gone = bridge(|_| None);
+        assert_eq!(
+            answer_elicitation(&access, gone.as_ref()).await,
+            json!({"action": "decline"}),
+            "a dropped approval declines"
+        );
+
+        let form = elicitation(json!({
+            "subtype": "elicitation", "mcp_server_name": "deploy", "message": "Configure the deploy",
+            "requested_schema": {"type": "object", "required": ["env", "replicas"], "properties": {
+                "replicas": {"type": "integer", "title": "Replicas"},
+                "env": {"type": "string", "enum": ["prod", "dev"], "enumNames": ["Production", "Development"]},
+                "notify": {"type": "boolean", "description": "Notify the team?"},
+                "note": {"type": "string"},
+            }},
+            "property_order": ["env", "replicas", "notify", "note"],
+        }));
+        let answer = bridge(|qs| {
+            assert_eq!(qs.len(), 4);
+            assert!(qs[0].question.starts_with("Configure the deploy"));
+            assert_eq!(qs[0].options, ["Production", "Development"]);
+            assert_eq!(qs[1].header, "Replicas");
+            assert_eq!(qs[2].options, ["Yes", "No"]);
+            let label = |i: usize, l: &str| UserInputAnswer { question_id: qs[i].id.clone(), labels: vec![l.into()] };
+            Some(vec![label(0, "Development"), label(1, " 3 "), label(2, "No")])
+        });
+        assert_eq!(
+            answer_elicitation(&form, answer.as_ref()).await,
+            json!({"action": "accept", "content": {"env": "dev", "replicas": 3, "notify": false}})
+        );
+        // A required field left blank declines; a run that ends cancels.
+        let blank = bridge(|qs| {
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["Production".into()] }])
+        });
+        assert_eq!(answer_elicitation(&form, blank.as_ref()).await, json!({"action": "decline"}));
+        assert_eq!(answer_elicitation(&form, gone.as_ref()).await, json!({"action": "cancel"}));
+
+        let url = elicitation(json!({
+            "subtype": "elicitation", "mcp_server_name": "github", "mode": "url",
+            "message": "Sign in", "url": "https://example.com/auth",
+        }));
+        let open = bridge(|qs| {
+            let approval = qs[0].approval.as_ref().unwrap();
+            assert!(approval.reason.as_deref().unwrap().contains("https://example.com/auth"));
+            Some(vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["approve".into()] }])
+        });
+        assert_eq!(answer_elicitation(&url, open.as_ref()).await, json!({"action": "accept"}));
     }
 
     #[test]

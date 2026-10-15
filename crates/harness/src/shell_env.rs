@@ -10,8 +10,13 @@
 //! and keep the PATH it reports. If `codex`/`claude` runs in their terminal,
 //! it resolves here too.
 //!
-//! The snapshot is captured once per process (cached, including a negative
-//! result) and is defensive about hostile shell init:
+//! The snapshot is captured once per process and cached, including a
+//! definitive negative result (no usable shell, no PATH in its output). A
+//! TIMEOUT is not an answer: heavy init (a slow corporate profile, a cold
+//! disk after login) can outlast the first attempt, and caching that as
+//! "no PATH" left every agent "not found" until restart. A timed-out
+//! capture reads as unknown for now and is retried in the background with
+//! a longer budget. It is defensive about hostile shell init:
 //! - `-lic` first (interactive login — nvm and friends load in rc files),
 //!   falling back to `-lc` if that produces nothing (some rc files hang or
 //!   `exec` a multiplexer when interactive).
@@ -25,15 +30,20 @@
 use std::ffi::{OsStr, OsString};
 use std::sync::OnceLock;
 
+/// The settled answer: a PATH, or definitively none.
 static CACHE: OnceLock<Option<OsString>> = OnceLock::new();
 
 /// The PATH the user's login shell reports, captured once and cached for the
-/// life of the process. `None` when disabled, non-unix, no usable shell, or
-/// the shell never produced a parseable snapshot.
+/// life of the process. `None` when disabled, non-unix, no usable shell, the
+/// shell never produced a parseable snapshot, or — for now — the capture
+/// timed out and a background retry is pending.
 pub fn login_shell_path() -> Option<&'static OsStr> {
     #[cfg(unix)]
     {
-        CACHE.get_or_init(unix::capture).as_deref()
+        if let Some(settled) = CACHE.get() {
+            return settled.as_deref();
+        }
+        unix::resolve(&CACHE)
     }
     #[cfg(not(unix))]
     {
@@ -56,8 +66,9 @@ pub fn prewarm() {
 
 #[cfg(unix)]
 mod unix {
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::io::Read;
+    use std::sync::OnceLock;
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::path::{Path, PathBuf};
     use std::process::Stdio;
@@ -69,15 +80,110 @@ mod unix {
     /// Enough for any sane environment; a runaway rc file can't OOM us.
     const MAX_OUTPUT: usize = 2 * 1024 * 1024;
     const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
+    /// Background retries after a timeout get a longer budget.
+    const RETRY_TIMEOUT: Duration = Duration::from_secs(20);
+    const RETRY_FIRST_DELAY: Duration = Duration::from_secs(30);
+    const RETRY_MAX_DELAY: Duration = Duration::from_secs(600);
     /// After the shell exits, wait this long for the pipe to flush.
     const EXIT_FLUSH_GRACE: Duration = Duration::from_millis(250);
 
-    pub(super) fn capture() -> Option<OsString> {
-        if std::env::var_os("GODSPEED_NO_LOGIN_SHELL").is_some_and(|v| !v.is_empty()) {
-            return None;
+    /// What one capture learned.
+    #[derive(Debug, PartialEq)]
+    pub(super) enum Snapshot {
+        Path(OsString),
+        /// The shell answered, or can't be asked: there is no PATH to add.
+        NoPath,
+        /// Every attempt ran out of time: unknown, ask again later.
+        TimedOut,
+    }
+
+    #[derive(Default)]
+    struct Retry {
+        /// The first (synchronous) capture has run.
+        started: bool,
+        attempts: u32,
+        retry_at: Option<Instant>,
+        running: bool,
+    }
+
+    static RETRY: Mutex<Retry> = Mutex::new(Retry {
+        started: false,
+        attempts: 0,
+        retry_at: None,
+        running: false,
+    });
+
+    fn retry_delay(attempts: u32) -> Duration {
+        RETRY_FIRST_DELAY
+            .saturating_mul(1 << attempts.saturating_sub(1).min(5))
+            .min(RETRY_MAX_DELAY)
+    }
+
+    /// The first caller captures inline (concurrent first callers wait for
+    /// it, as before); a timeout schedules background retries, and callers
+    /// meanwhile get `None` at once instead of paying the shell again.
+    pub(super) fn resolve(cache: &'static OnceLock<Option<OsString>>) -> Option<&'static OsStr> {
+        let mut retry = RETRY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(settled) = cache.get() {
+            return settled.as_deref();
         }
-        let shell = user_shell()?;
-        snapshot_path(&shell, ATTEMPT_TIMEOUT)
+        if !retry.started {
+            retry.started = true;
+            match capture(ATTEMPT_TIMEOUT) {
+                Snapshot::TimedOut => {
+                    retry.attempts = 1;
+                    retry.retry_at = Some(Instant::now() + retry_delay(1));
+                    return None;
+                }
+                settled => {
+                    let _ = cache.set(match settled {
+                        Snapshot::Path(path) => Some(path),
+                        _ => None,
+                    });
+                    return cache.get().and_then(|s| s.as_deref());
+                }
+            }
+        }
+        if !retry.running && retry.retry_at.is_some_and(|at| Instant::now() >= at) {
+            retry.running = true;
+            let spawned = std::thread::Builder::new()
+                .name("godspeed-shell-env-retry".into())
+                .spawn(move || {
+                    let outcome = capture(RETRY_TIMEOUT);
+                    let mut retry = RETRY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    retry.running = false;
+                    match outcome {
+                        Snapshot::TimedOut => {
+                            retry.attempts += 1;
+                            retry.retry_at = Some(Instant::now() + retry_delay(retry.attempts));
+                            tracing::warn!(
+                                attempts = retry.attempts,
+                                "login shell PATH capture timed out again; retrying later"
+                            );
+                        }
+                        Snapshot::Path(path) => {
+                            let _ = cache.set(Some(path));
+                        }
+                        Snapshot::NoPath => {
+                            let _ = cache.set(None);
+                        }
+                    }
+                });
+            if spawned.is_err() {
+                retry.running = false;
+            }
+        }
+        None
+    }
+
+    fn capture(timeout: Duration) -> Snapshot {
+        if std::env::var_os("GODSPEED_NO_LOGIN_SHELL").is_some_and(|v| !v.is_empty()) {
+            return Snapshot::NoPath;
+        }
+        let Some(shell) = user_shell() else {
+            return Snapshot::NoPath;
+        };
+        snapshot(&shell, timeout)
     }
 
     /// The user's shell: `$SHELL`, then the passwd entry, then well-known
@@ -120,32 +226,60 @@ mod unix {
         std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     }
 
-    /// Flag sets to try, most-loaded first. csh/tcsh reject `-l` combined with
-    /// `-c`; fish runs config.fish for every invocation, so `-l` alone loads
-    /// everything without interactive-mode side effects.
-    fn attempt_flag_sets(shell: &Path) -> Vec<Vec<&'static str>> {
-        let name = shell
+    fn shell_name(shell: &Path) -> String {
+        shell
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        match name.as_str() {
+            .unwrap_or_default()
+    }
+
+    /// Flag sets to try, most-loaded first. csh/tcsh reject `-l` combined with
+    /// `-c`; fish runs config.fish for every invocation, so `-l` alone loads
+    /// everything without interactive-mode side effects; nushell's `-l` loads
+    /// its env and config files for a `-c` command too.
+    fn attempt_flag_sets(shell: &Path) -> Vec<Vec<&'static str>> {
+        match shell_name(shell).as_str() {
             "csh" | "tcsh" => vec![vec!["-c"]],
-            "fish" => vec![vec!["-l", "-c"], vec!["-c"]],
+            "fish" | "nu" => vec![vec!["-l", "-c"], vec!["-c"]],
             _ => vec![vec!["-l", "-i", "-c"], vec!["-l", "-c"]],
         }
     }
 
-    /// Run `<shell> <flags> 'echo BEGIN; env; echo END'` per flag set until one
-    /// yields a parseable PATH.
-    pub(super) fn snapshot_path(shell: &Path, timeout: Duration) -> Option<OsString> {
-        let script = format!("echo {BEGIN_MARKER}; env; echo {END_MARKER}");
-        for flags in attempt_flag_sets(shell) {
-            let output = run_and_capture(shell, &flags, &script, timeout);
-            if let Some(path) = parse_snapshot_path(&output) {
-                return Some(path);
-            }
+    /// The probe command in the shell's own language. Nushell prints only a
+    /// pipeline's final value and keeps PATH as a list, so it prints the
+    /// markers explicitly and lets an external `env` render the environment
+    /// the way any child process sees it.
+    fn probe_script(shell: &Path) -> String {
+        match shell_name(shell).as_str() {
+            "nu" => format!("print '{BEGIN_MARKER}'; print (^env); print '{END_MARKER}'"),
+            _ => format!("echo {BEGIN_MARKER}; env; echo {END_MARKER}"),
         }
-        None
+    }
+
+    /// Run the probe per flag set until one yields a parseable PATH.
+    pub(super) fn snapshot(shell: &Path, timeout: Duration) -> Snapshot {
+        let script = probe_script(shell);
+        let mut timed_out = false;
+        for flags in attempt_flag_sets(shell) {
+            let (output, expired) = run_and_capture(shell, &flags, &script, timeout);
+            if let Some(path) = parse_snapshot_path(&output) {
+                return Snapshot::Path(path);
+            }
+            timed_out |= expired;
+        }
+        if timed_out {
+            Snapshot::TimedOut
+        } else {
+            Snapshot::NoPath
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshot_path(shell: &Path, timeout: Duration) -> Option<OsString> {
+        match snapshot(shell, timeout) {
+            Snapshot::Path(path) => Some(path),
+            _ => None,
+        }
     }
 
     /// Spawn the shell and collect stdout until the end marker appears, the
@@ -153,7 +287,13 @@ mod unix {
     /// lives on its own thread appending into a shared buffer, so a shell that
     /// blocks after printing — or a grandchild that inherits the pipe and
     /// never closes it — can't hang us on EOF.
-    fn run_and_capture(shell: &Path, flags: &[&str], script: &str, timeout: Duration) -> Vec<u8> {
+    /// Also reports whether the attempt was cut off by the timeout.
+    fn run_and_capture(
+        shell: &Path,
+        flags: &[&str],
+        script: &str,
+        timeout: Duration,
+    ) -> (Vec<u8>, bool) {
         let mut cmd = std::process::Command::new(shell);
         cmd.args(flags)
             .arg(script)
@@ -165,8 +305,9 @@ mod unix {
             .env("GODSPEED_RESOLVING_ENVIRONMENT", "1")
             .env("TERM", "dumb");
         let Ok(mut child) = cmd.spawn() else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
+        let mut timed_out = false;
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         if let Some(mut stdout) = child.stdout.take() {
             let buf = Arc::clone(&buf);
@@ -213,6 +354,7 @@ mod unix {
                     Ok(None) if Instant::now() >= deadline => {
                         let _ = child.kill();
                         let _ = child.wait();
+                        timed_out = true;
                         break;
                     }
                     Ok(None) => {}
@@ -228,7 +370,7 @@ mod unix {
         let b = buf
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        b.clone()
+        (b.clone(), timed_out)
     }
 
     /// Extract PATH from the `env` dump between the LAST begin marker and the
@@ -344,8 +486,43 @@ exit 1
             let dir = tempfile::tempdir().unwrap();
             let shell = fake_shell(dir.path(), "#!/bin/sh\nsleep 60\n");
             let start = Instant::now();
-            assert!(snapshot_path(&shell, Duration::from_millis(300)).is_none());
+            // Unknown, not "no PATH": the caller retries later (T3 Code's
+            // #10534 cached this as success and lost PATH until restart).
+            assert_eq!(snapshot(&shell, Duration::from_millis(300)), Snapshot::TimedOut);
             assert!(start.elapsed() < Duration::from_secs(5));
+            // A shell that answers without a PATH is a real answer.
+            let quiet = fake_shell(dir.path(), "#!/bin/sh\necho hello\n");
+            assert_eq!(snapshot(&quiet, Duration::from_secs(5)), Snapshot::NoPath);
+        }
+
+        #[test]
+        fn retries_back_off_and_cap() {
+            assert_eq!(retry_delay(1), Duration::from_secs(30));
+            assert_eq!(retry_delay(2), Duration::from_secs(60));
+            assert_eq!(retry_delay(9), RETRY_MAX_DELAY);
+        }
+
+        /// pingdotgg/t3code#7846: nushell rejects the POSIX probe and keeps
+        /// PATH as a list. It gets `nu -l -c` and a probe in its own syntax
+        /// whose external `env` prints PATH the way children see it.
+        #[test]
+        fn nushell_gets_its_own_probe() {
+            let dir = tempfile::tempdir().unwrap();
+            let shell = dir.path().join("nu");
+            std::fs::write(
+                &shell,
+                format!(
+                    "#!/bin/sh\n[ \"$1\" = -l ] && [ \"$2\" = -c ] || exit 1\n\
+                     [ \"$3\" = \"print '{BEGIN_MARKER}'; print (^env); print '{END_MARKER}'\" ] || exit 1\n\
+                     echo {BEGIN_MARKER}; echo PATH=/nu/bin:/usr/bin; echo {END_MARKER}\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(
+                snapshot(&shell, Duration::from_secs(5)),
+                Snapshot::Path("/nu/bin:/usr/bin".into())
+            );
         }
     }
 }

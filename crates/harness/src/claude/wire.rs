@@ -82,6 +82,19 @@ pub(crate) struct SystemFrame {
     /// now (agents and shells) — the authoritative set, not a delta.
     #[serde(default)]
     pub tasks: Option<Vec<Value>>,
+    /// `status` (`status: "compacting"` → null): how a compaction ended,
+    /// `success` or `failed`, with the failure's reason.
+    #[serde(default)]
+    pub compact_result: Option<String>,
+    #[serde(default)]
+    pub compact_error: Option<String>,
+    /// `compact_boundary`: `trigger` (`manual`/`auto`), `pre_tokens`,
+    /// `post_tokens`.
+    #[serde(default)]
+    pub compact_metadata: Option<Value>,
+    /// `permission_denied`: the reason the deciding component gave.
+    #[serde(default)]
+    pub decision_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -162,6 +175,24 @@ pub(crate) struct ContentBlock {
     pub tool_use_id: String,
     #[serde(default)]
     pub is_error: Option<bool>,
+    /// `tool_result` content: a string or text blocks.
+    #[serde(default)]
+    pub content: Value,
+}
+
+impl ContentBlock {
+    /// A `tool_result`'s text, whichever shape its content took.
+    pub fn result_text(&self) -> String {
+        match &self.content {
+            Value::String(text) => text.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -210,6 +241,18 @@ pub(crate) struct ResultFrame {
     pub result: Option<String>,
     #[serde(default)]
     pub errors: Vec<Value>,
+    /// Set on a `success`-subtype result whose turn actually failed (an API
+    /// error such as "Prompt is too long").
+    #[serde(default)]
+    pub is_error: bool,
+    /// Why the turn ended (`prompt_too_long`, `blocking_limit`, …).
+    #[serde(default)]
+    pub terminal_reason: Option<String>,
+    /// Tool calls denied without the user (`{tool_name, tool_use_id,
+    /// tool_input}`): the auto-mode classifier, deny rules, hooks — plus
+    /// the ones the user declined through us.
+    #[serde(default)]
+    pub permission_denials: Vec<Value>,
     #[serde(default)]
     pub usage: UsageBody,
     #[serde(default)]
@@ -256,6 +299,27 @@ pub(crate) struct ControlRequestBody {
     /// The CLI forbids remembering this approval.
     #[serde(default)]
     pub suppress_always_allow_rule: bool,
+    /// The call being decided; a denial here reappears in the result's
+    /// `permission_denials`.
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    /// `elicitation`: an MCP server asking the user (`form` with a JSON
+    /// schema of what it wants, or `url` to open), answered with an MCP
+    /// `ElicitResult` (`{action: accept|decline|cancel, content?}`).
+    #[serde(default)]
+    pub mcp_server_name: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub requested_schema: Option<Value>,
+    #[serde(default)]
+    pub property_order: Option<Vec<String>>,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// Parse one stdout JSONL line. `Err` = not JSON; unknown types = `Other`.

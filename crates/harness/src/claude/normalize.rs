@@ -14,6 +14,9 @@ fn assistant_error_text(code: &str) -> String {
     match code {
         "authentication_failed" => "Authentication failed — sign in to Claude again.".into(),
         "oauth_org_not_allowed" => "This organization isn't allowed to use Claude here.".into(),
+        "account_on_hold" => "This Claude account is on hold.".into(),
+        "verification_required" => "Claude needs you to verify this account first.".into(),
+        "cloud_credential_error" => "Your cloud provider credentials were rejected.".into(),
         "billing_error" => "Billing error — check your Claude plan or payment method.".into(),
         "rate_limit" => "Claude usage limit reached — try again after the limit resets.".into(),
         "overloaded" => "Claude is overloaded right now — try again shortly.".into(),
@@ -23,6 +26,32 @@ fn assistant_error_text(code: &str) -> String {
         "max_output_tokens" => "The reply hit the maximum output length.".into(),
         "unknown" => "Claude returned an unspecified error.".into(),
         other => format!("Claude error: {other}"),
+    }
+}
+
+/// A full context window is not a usage limit: retrying never helps, and the
+/// way out is compacting or starting over.
+const CONTEXT_FULL: &str = "The conversation no longer fits in the model's context window. \
+     Run /compact to summarize it, or start a new chat.";
+
+/// The CLI's own wording for an over-long prompt (`invalid_request` on the
+/// assistant frame, the result text, or `terminal_reason: prompt_too_long`).
+fn is_prompt_too_long(text: &str) -> bool {
+    text.trim_start()
+        .get(..18)
+        .is_some_and(|head| head.eq_ignore_ascii_case("prompt is too long"))
+}
+
+/// The visible text for an errored assistant frame: the code's wording,
+/// except where the CLI's own text names something more specific.
+fn assistant_error_message(code: &str, text: &str) -> String {
+    if is_prompt_too_long(text) {
+        return CONTEXT_FULL.into();
+    }
+    match code {
+        // These codes cover many causes; the CLI's text says which one.
+        "invalid_request" | "unknown" if !text.trim().is_empty() => text.trim().to_owned(),
+        _ => assistant_error_text(code),
     }
 }
 
@@ -143,6 +172,16 @@ pub fn decode_tool_use(name: &str, input: &Value) -> ToolCall {
     }
 }
 
+/// An assistant frame's text blocks, joined.
+fn frame_text(message: &super::wire::MessageBody) -> String {
+    message
+        .blocks()
+        .filter(|b: &ContentBlock| b.kind == "text")
+        .map(|b| b.text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn new_message_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -206,6 +245,22 @@ pub(crate) struct Normalizer {
     /// Rotates at each assistant-frame close and at each steer; SessionStarted
     /// carries the first value so folds can attribute deltas from the start.
     assistant_message_id: String,
+    /// A parent text delta streamed since the last assistant frame closed.
+    /// Replies the CLI synthesizes itself (local slash commands like
+    /// `/usage` and `/context`, model `<synthetic>`) stream no deltas at
+    /// all: their only text is the assistant frame's text blocks.
+    streamed_text: bool,
+    /// This turn already surfaced an assistant-level error; the result's own
+    /// copy of it would only repeat the same failure.
+    turn_error_shown: bool,
+    /// Tool calls the user declined through an approval card. The result's
+    /// `permission_denials` lists them too; only the rest were denied
+    /// without the user ever seeing them.
+    pub user_denials: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// `permission_denied` reasons by tool call, for the denial notice.
+    denial_reasons: std::collections::HashMap<String, String>,
+    /// Denials already reported, in case a result repeats earlier ones.
+    reported_denials: std::collections::HashSet<String>,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
 }
@@ -219,6 +274,11 @@ impl Normalizer {
             agent_tool_spawns: std::collections::HashMap::new(),
             agent_spawn_tools: std::collections::HashSet::new(),
             assistant_message_id: new_message_id(),
+            streamed_text: false,
+            turn_error_shown: false,
+            user_denials: Default::default(),
+            denial_reasons: Default::default(),
+            reported_denials: Default::default(),
             session_id: None,
         }
     }
@@ -333,6 +393,67 @@ impl Normalizer {
         (prev, self.assistant_message_id.clone())
     }
 
+    /// The notice for tool calls the CLI denied on its own this turn (the
+    /// auto-mode classifier, a deny rule, a hook), or `None` when every
+    /// denial was the user's own answer or was already reported.
+    fn denial_notice(&mut self, denials: &[Value]) -> Option<String> {
+        let declined = self
+            .user_denials
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut lines = Vec::new();
+        for denial in denials {
+            let id = denial
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if declined.contains(id) || (!id.is_empty() && !self.reported_denials.insert(id.to_owned())) {
+                continue;
+            }
+            let tool = denial
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .unwrap_or("a tool");
+            let input = denial.get("tool_input").unwrap_or(&Value::Null);
+            let target = ["command", "file_path", "url", "path", "pattern"]
+                .iter()
+                .find_map(|k| input.get(*k).and_then(Value::as_str))
+                .map(|t| {
+                    let t = t.lines().next().unwrap_or_default();
+                    let short: String = t.chars().take(80).collect();
+                    if short.len() < t.len() {
+                        format!(" `{short}…`")
+                    } else {
+                        format!(" `{short}`")
+                    }
+                })
+                .unwrap_or_default();
+            let reason = self
+                .denial_reasons
+                .get(id)
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default();
+            lines.push(format!("- {tool}{target}{reason}"));
+        }
+        if lines.is_empty() {
+            return None;
+        }
+        const SHOWN: usize = 5;
+        let total = lines.len();
+        let more = total.saturating_sub(SHOWN);
+        lines.truncate(SHOWN);
+        if more > 0 {
+            lines.push(format!("- and {more} more"));
+        }
+        let what = if total == 1 { "action was" } else { "actions were" };
+        Some(format!(
+            "{total} {what} blocked without asking, so this turn may be unfinished:\n{}\n\
+             Allow them in Claude's permission settings or use a different access mode, then ask again.",
+            lines.join("\n")
+        ))
+    }
+
     /// Normalize one stdout frame into 0+ unified events. `interrupted` folds
     /// a post-interrupt `result` into `Done { status: Interrupted }`.
     pub fn normalize(&mut self, frame: Frame, interrupted: bool) -> Vec<AgentEvent> {
@@ -402,6 +523,56 @@ impl Normalizer {
                         .insert(tool.to_owned(), spawn.clone());
                     return Vec::new();
                 }
+                // Compaction (manual /compact or automatic) runs for up to a
+                // minute with nothing else on the wire: `status: compacting`
+                // keeps the turn visibly alive, `compact_boundary` notes the
+                // result in the transcript (as Codex's contextCompaction item
+                // does) and resets the context measurement to what is left.
+                if f.subtype == "status" {
+                    if f.status.as_deref() == Some("compacting") {
+                        return vec![AgentEvent::ReasoningDelta {
+                            text: String::new(),
+                        }];
+                    }
+                    if f.compact_result.as_deref() == Some("failed") {
+                        let message = match f.compact_error.as_deref().map(str::trim) {
+                            Some(reason) if !reason.is_empty() => {
+                                format!("Context compaction failed: {reason}")
+                            }
+                            _ => "Context compaction failed.".to_owned(),
+                        };
+                        return vec![AgentEvent::Error { message }];
+                    }
+                    return Vec::new();
+                }
+                if f.subtype == "permission_denied" {
+                    if let (Some(id), Some(reason)) = (
+                        f.tool_use_id.filter(|id| !id.is_empty()),
+                        f.decision_reason.filter(|r| !r.trim().is_empty()),
+                    ) {
+                        self.denial_reasons.insert(id, reason.trim().to_owned());
+                    }
+                    return Vec::new();
+                }
+                if f.subtype == "compact_boundary" {
+                    let meta = f.compact_metadata.unwrap_or_default();
+                    let mut out = Vec::new();
+                    if let Some(tokens) = meta.get("post_tokens").and_then(Value::as_u64) {
+                        out.push(AgentEvent::ContextUsage {
+                            tokens: Some(tokens),
+                            window: None,
+                        });
+                    }
+                    let note = if meta.get("trigger").and_then(Value::as_str) == Some("auto") {
+                        "Context compacted automatically."
+                    } else {
+                        "Context compacted."
+                    };
+                    out.push(AgentEvent::TextDelta {
+                        text: format!("\n\n{note}\n\n"),
+                    });
+                    return out;
+                }
                 if f.subtype != "init" || self.saw_init {
                     return Vec::new();
                 }
@@ -450,9 +621,12 @@ impl Normalizer {
                     };
                 }
                 match f.event.delta.kind.as_str() {
-                    "text_delta" => vec![AgentEvent::TextDelta {
-                        text: f.event.delta.text,
-                    }],
+                    "text_delta" => {
+                        self.streamed_text = true;
+                        vec![AgentEvent::TextDelta {
+                            text: f.event.delta.text,
+                        }]
+                    }
                     "thinking_delta" => vec![AgentEvent::ReasoningDelta {
                         text: f.event.delta.thinking,
                     }],
@@ -500,7 +674,7 @@ impl Normalizer {
                         out.push(tag(
                             parent,
                             AgentEvent::Error {
-                                message: assistant_error_text(code),
+                                message: assistant_error_message(code, &frame_text(&f.message)),
                             },
                         ));
                     }
@@ -513,7 +687,24 @@ impl Normalizer {
                         self.agent_spawn_tools.insert(b.id.clone());
                     }
                 }
-                let mut out: Vec<AgentEvent> = f
+                // Text normally arrives as deltas; a reply that streamed none
+                // (a local command's synthetic answer) has only these blocks.
+                // An errored frame's text is the CLI's error wording, which
+                // the error event below already carries.
+                let mut out: Vec<AgentEvent> = Vec::new();
+                if !std::mem::take(&mut self.streamed_text) && f.error.is_none() {
+                    let text = f
+                        .message
+                        .blocks()
+                        .filter(|b: &ContentBlock| b.kind == "text" && !b.text.trim().is_empty())
+                        .map(|b| b.text.trim_end().to_owned())
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if !text.is_empty() {
+                        out.push(AgentEvent::TextDelta { text });
+                    }
+                }
+                out.extend(f
                     .message
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_use")
@@ -564,9 +755,12 @@ impl Normalizer {
                             })
                             .flatten();
                         std::iter::once(call).chain(opening).chain(steer)
-                    })
-                    .collect();
-                self.last_model = f.message.model.clone().or(self.last_model.take());
+                    }));
+                // A synthetic reply names no real model: keep the last one
+                // for the result's context-window lookup.
+                if let Some(model) = f.message.model.as_ref().filter(|m| *m != "<synthetic>") {
+                    self.last_model = Some(model.clone());
+                }
                 if let Some(usage) = &f.message.usage {
                     let fields = [
                         "input_tokens",
@@ -591,8 +785,9 @@ impl Normalizer {
                 // carries a terse `error` code here — often with empty content
                 // and no `result` error — so surface it visibly.
                 if let Some(code) = &f.error {
+                    self.turn_error_shown = true;
                     out.push(AgentEvent::Error {
-                        message: assistant_error_text(code),
+                        message: assistant_error_message(code, &frame_text(&f.message)),
                     });
                 }
                 // The enclosing assistant frame closes the streamed message
@@ -645,11 +840,36 @@ impl Normalizer {
                 f.message
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_result")
-                    .map(|b| AgentEvent::ToolResult {
-                        id: b.tool_use_id.clone(),
-                        is_error: b.is_error.unwrap_or(false),
-                        output: None,
-                        diff: None,
+                    .flat_map(|b| {
+                        let is_error = b.is_error.unwrap_or(false);
+                        // A spawn that errored never ran, or stopped with its
+                        // call (a PreToolUse hook denying `Agent`, an invalid
+                        // subagent type): no `task_notification` follows, so
+                        // its error result is the subagent's end.
+                        let settled = (is_error && self.agent_spawn_tools.contains(&b.tool_use_id))
+                            .then(|| {
+                                let status = if b.result_text().contains("[Request interrupted") {
+                                    DoneStatus::Interrupted
+                                } else {
+                                    DoneStatus::Errored
+                                };
+                                tag(
+                                    &b.tool_use_id,
+                                    AgentEvent::Done {
+                                        status,
+                                        result: None,
+                                        error: None,
+                                        session_id: None,
+                                    },
+                                )
+                            });
+                        std::iter::once(AgentEvent::ToolResult {
+                            id: b.tool_use_id.clone(),
+                            is_error,
+                            output: None,
+                            diff: None,
+                        })
+                        .chain(settled)
                     })
                     .collect()
             }
@@ -698,7 +918,51 @@ impl Normalizer {
                     input_tokens: f.usage.input_tokens,
                     output_tokens: f.usage.output_tokens,
                 };
-                let done = if f.subtype == "success" {
+                let error_shown = std::mem::take(&mut self.turn_error_shown);
+                let context_full = f.terminal_reason.as_deref() == Some("prompt_too_long")
+                    || f.result.as_deref().is_some_and(is_prompt_too_long);
+                let done = if f.subtype == "success" && f.is_error {
+                    // A failed API call still reports subtype `success`: an
+                    // over-long prompt, an auth or quota failure. The
+                    // assistant frame usually surfaced it already.
+                    let error = if error_shown {
+                        None
+                    } else if context_full {
+                        Some(CONTEXT_FULL.to_owned())
+                    } else {
+                        Some(
+                            f.result
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|r| !r.is_empty())
+                                .unwrap_or(result_error_text(""))
+                                .to_owned(),
+                        )
+                    };
+                    AgentEvent::Done {
+                        status: if interrupted {
+                            DoneStatus::Interrupted
+                        } else {
+                            DoneStatus::Errored
+                        },
+                        result: None,
+                        error,
+                        session_id: f.session_id,
+                    }
+                } else if f.subtype == "success"
+                    && !interrupted
+                    && let Some(notice) = self.denial_notice(&f.permission_denials)
+                {
+                    // The turn "succeeded" only in that it ended: the agent
+                    // was blocked and nobody was asked. Ending Errored makes
+                    // the chat ask for attention instead of reading done.
+                    AgentEvent::Done {
+                        status: DoneStatus::Errored,
+                        result: f.result,
+                        error: Some(notice),
+                        session_id: f.session_id,
+                    }
+                } else if f.subtype == "success" {
                     AgentEvent::Done {
                         status: if interrupted {
                             DoneStatus::Interrupted
@@ -727,7 +991,9 @@ impl Normalizer {
                             "internal CLI diagnostic (not surfaced): {diagnostic}"
                         );
                     }
-                    let error = if !errors.is_empty() {
+                    let error = if context_full || errors.iter().any(|e| is_prompt_too_long(e)) {
+                        (!error_shown).then(|| CONTEXT_FULL.to_owned())
+                    } else if !errors.is_empty() {
                         // Real user-relevant errors — surface verbatim.
                         Some(errors.join("; "))
                     } else {
@@ -910,6 +1176,55 @@ mod tests {
             r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"abc"}}}"#,
         );
         assert!(ev.is_empty());
+    }
+
+    /// A local command (`/usage`, `/context`, …) is answered by the CLI
+    /// itself: one `<synthetic>` assistant frame, no deltas (shape from
+    /// zeronsh/zeron#734, CLI 2.1.288). Its text must still render once;
+    /// a streamed reply's closing frame must not repeat its text.
+    #[test]
+    fn synthetic_replies_without_deltas_render_their_text() {
+        let mut norm = Normalizer::new();
+        let synthetic = crate::claude::wire::parse_frame(
+            r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Current session: 50% used"}]}}"#,
+        )
+        .unwrap();
+        let events = norm.normalize(synthetic, false);
+        assert_eq!(
+            events.first(),
+            Some(&AgentEvent::TextDelta {
+                text: "Current session: 50% used".into()
+            }),
+            "{events:?}"
+        );
+        assert_eq!(norm.last_model, None, "<synthetic> is not a model");
+
+        let streamed: Vec<AgentEvent> = [
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}}"#,
+            r#"{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"Hi"}]}}"#,
+        ]
+        .into_iter()
+        .flat_map(|raw| norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false))
+        .collect();
+        assert_eq!(
+            streamed
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::TextDelta { .. }))
+                .count(),
+            1,
+            "{streamed:?}"
+        );
+        // The flag is per message: the next unstreamed frame renders again.
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(events.contains(&AgentEvent::TextDelta {
+            text: "No response requested.".into()
+        }));
     }
 
     #[test]
@@ -1310,6 +1625,74 @@ mod tests {
         );
     }
 
+    /// A spawn a PreToolUse hook rejects never starts: the CLI answers its
+    /// call with an error result and sends no `task_notification`
+    /// (zeronsh/zeron#893). That result must settle the subagent, or it
+    /// counts as running until the session ends. Ordinary failed tools and
+    /// successful (async-launched) spawns settle nothing.
+    #[test]
+    fn an_errored_spawn_result_settles_the_subagent() {
+        let mut norm = Normalizer::new();
+        norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_spawn","name":"Agent","input":{"description":"scan","prompt":"p","run_in_background":true}},{"type":"tool_use","id":"toolu_ok","name":"Agent","input":{"description":"ok"}},{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"false"}}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_spawn","is_error":true,"content":"PreToolUse:Agent hook error: blocked"},{"type":"tool_result","tool_use_id":"toolu_ok","content":[{"type":"text","text":"Async agent launched"}]},{"type":"tool_result","tool_use_id":"toolu_bash","is_error":true,"content":"exit 1"}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let settled: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Subagent { .. }))
+            .collect();
+        assert_eq!(
+            settled,
+            vec![&tag(
+                "toolu_spawn",
+                AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                }
+            )],
+            "{events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::ToolResult { .. }))
+                .count(),
+            3
+        );
+        // A spawn stopped with its turn ends interrupted, not failed.
+        let mut norm = Normalizer::new();
+        norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Task","input":{"description":"d"}}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","is_error":true,"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(events.iter().any(|e| matches!(e,
+            AgentEvent::Subagent { event, .. }
+                if matches!(event.as_ref(), AgentEvent::Done { status: DoneStatus::Interrupted, .. })
+        )), "{events:?}");
+    }
+
     #[test]
     fn shell_task_notification_never_settles_a_subagent() {
         // `Bash` with `run_in_background` settles through the SAME
@@ -1381,6 +1764,190 @@ mod tests {
             ),
             "wake turn settles with its own Done"
         );
+    }
+
+    /// A full context window ends the turn with a synthetic
+    /// `invalid_request` frame reading "Prompt is too long" and an errored
+    /// `success` result (pingdotgg/t3code#19832). That is neither a usage
+    /// limit nor a generic invalid request, and it is one failure: one
+    /// visible error, and a turn that ends Errored rather than Completed.
+    #[test]
+    fn a_full_context_window_is_its_own_error_once() {
+        let mut norm = Normalizer::new();
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","error":"invalid_request","message":{"model":"<synthetic>","content":[{"type":"text","text":"Prompt is too long"}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let errors: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Error { .. } | AgentEvent::TextDelta { .. }))
+            .collect();
+        assert_eq!(
+            errors,
+            vec![&AgentEvent::Error {
+                message: CONTEXT_FULL.into()
+            }],
+            "the error text is not also rendered as a reply"
+        );
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"blocking_limit","result":"Prompt is too long","session_id":"s"}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { status: DoneStatus::Errored, error: None, .. })
+        ), "{events:?}");
+        // Without the assistant frame the result carries the message itself.
+        let done = result_done(
+            r#"{"type":"result","subtype":"success","is_error":true,"terminal_reason":"prompt_too_long","result":"Prompt is too long: 1000123 tokens > 1000000 maximum"}"#,
+        );
+        assert!(matches!(
+            done,
+            AgentEvent::Done { status: DoneStatus::Errored, error: Some(ref e), .. } if e == CONTEXT_FULL
+        ));
+        // Other errored successes keep the CLI's wording.
+        let done = result_done(
+            r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: 500"}"#,
+        );
+        assert!(matches!(
+            done,
+            AgentEvent::Done { status: DoneStatus::Errored, error: Some(ref e), .. } if e == "API Error: 500"
+        ));
+        // A real usage limit still reads as one.
+        assert_eq!(
+            assistant_error_message("rate_limit", "You've hit your limit"),
+            assistant_error_text("rate_limit")
+        );
+        assert_eq!(
+            assistant_error_message("invalid_request", "API Error: 400 bad image"),
+            "API Error: 400 bad image"
+        );
+    }
+
+    /// `/compact` as the 2.1.289 CLI streams it (zeronsh/zeron#801): a
+    /// status pair around the work, a second init, the boundary, the summary
+    /// as a user frame and a zero-turn result. The transcript gets a note,
+    /// the ring drops to the post-compaction size, and neither the summary
+    /// nor the replayed `<local-command-stdout>` leaks into the chat.
+    #[test]
+    fn compaction_notes_the_transcript_and_resets_context_usage() {
+        let mut norm = Normalizer::new();
+        let mut events = Vec::new();
+        for raw in [
+            r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"status","status":"compacting"}"#,
+            r#"{"type":"system","subtype":"status","status":null,"compact_result":"success"}"#,
+            r#"{"type":"system","subtype":"init","model":"m","cwd":"/x","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":20544,"post_tokens":1995,"duration_ms":10996}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation. Summary: ..."}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"},"isReplay":true}"#,
+            r#"{"type":"result","subtype":"success","num_turns":0,"usage":{"input_tokens":0,"output_tokens":0},"session_id":"s"}"#,
+        ] {
+            events.extend(norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false));
+        }
+        let visible: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| {
+                !matches!(
+                    e,
+                    AgentEvent::SessionStarted { .. } | AgentEvent::Usage { .. }
+                )
+            })
+            .collect();
+        assert!(
+            matches!(
+                visible.as_slice(),
+                [
+                    AgentEvent::ReasoningDelta { text: heartbeat },
+                    AgentEvent::ContextUsage { tokens: Some(1995), window: None },
+                    AgentEvent::TextDelta { text: note },
+                    AgentEvent::Done { status: DoneStatus::Completed, .. },
+                ] if heartbeat.is_empty() && note.trim() == "Context compacted."
+            ),
+            "{visible:?}"
+        );
+        // Automatic compaction says so; a failed one is an error.
+        let auto = normalize_one(
+            r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":5}}"#,
+        );
+        assert!(matches!(
+            auto.as_slice(),
+            [AgentEvent::TextDelta { text }] if text.trim() == "Context compacted automatically."
+        ));
+        assert_eq!(
+            normalize_one(
+                r#"{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Prompt is too long"}"#,
+            ),
+            vec![AgentEvent::Error {
+                message: "Context compaction failed: Prompt is too long".into()
+            }]
+        );
+        assert!(normalize_one(r#"{"type":"system","subtype":"status","status":"requesting"}"#).is_empty());
+    }
+
+    /// Auto mode's classifier (or a deny rule) refuses a call inside the
+    /// CLI, the agent gives up, and the result still says `success`
+    /// (pingdotgg/t3code#18386). Its `permission_denials` must make the turn
+    /// ask for attention — except the calls the user declined themselves,
+    /// and denials an earlier result already reported.
+    #[test]
+    fn denials_nobody_was_asked_about_need_attention() {
+        let mut norm = Normalizer::new();
+        norm.user_denials.lock().unwrap().insert("toolu_declined".into());
+        norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_auto","decision_reason_type":"classifier","decision_reason":"cannot assess the action","message":"denied"}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let result = r#"{"type":"result","subtype":"success","result":"I could not continue.","session_id":"s","permission_denials":[
+            {"tool_name":"Bash","tool_use_id":"toolu_auto","tool_input":{"command":"gh issue create --title x"}},
+            {"tool_name":"Edit","tool_use_id":"toolu_declined","tool_input":{"file_path":"/a"}}
+        ]}"#;
+        let events = norm.normalize(crate::claude::wire::parse_frame(result).unwrap(), false);
+        match events.last() {
+            Some(AgentEvent::Done {
+                status: DoneStatus::Errored,
+                result: Some(result),
+                error: Some(error),
+                ..
+            }) => {
+                assert_eq!(result, "I could not continue.");
+                assert!(error.starts_with("1 action was blocked"), "{error}");
+                assert!(
+                    error.contains("- Bash `gh issue create --title x` (cannot assess the action)"),
+                    "{error}"
+                );
+                assert!(!error.contains("Edit"), "the user's own decline: {error}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // The same denial repeated by a later result is not news.
+        let events = norm.normalize(crate::claude::wire::parse_frame(result).unwrap(), false);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { status: DoneStatus::Completed, .. })
+        ));
+        // Only user declines, or an interrupted turn: plain endings.
+        let mut norm = Normalizer::new();
+        norm.user_denials.lock().unwrap().insert("toolu_declined".into());
+        let declined = r#"{"type":"result","subtype":"success","permission_denials":[{"tool_name":"Edit","tool_use_id":"toolu_declined","tool_input":{}}]}"#;
+        assert!(matches!(
+            norm.normalize(crate::claude::wire::parse_frame(declined).unwrap(), false).last(),
+            Some(AgentEvent::Done { status: DoneStatus::Completed, .. })
+        ));
+        let auto = r#"{"type":"result","subtype":"success","permission_denials":[{"tool_name":"Bash","tool_use_id":"x","tool_input":{}}]}"#;
+        assert!(matches!(
+            Normalizer::new().normalize(crate::claude::wire::parse_frame(auto).unwrap(), true).last(),
+            Some(AgentEvent::Done { status: DoneStatus::Interrupted, .. })
+        ));
     }
 
     #[test]

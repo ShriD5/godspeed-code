@@ -22,6 +22,50 @@ use tokio::sync::{mpsc, oneshot};
 use crate::HarnessError;
 use crate::process::{ChildStdin, ChildStdout};
 
+/// Ceiling on one newline-delimited message. A line is buffered whole and
+/// then parsed into a tree several times its size; without a bound a single
+/// runaway notification (Codex events carrying ~49 MB diff strings have been
+/// seen) can exhaust memory before parsing even starts. Past the ceiling the
+/// session ends with a clear error rather than a crash.
+const MAX_LINE_BYTES: usize = 128 * 1024 * 1024;
+
+/// One read off the agent's stdout.
+enum LineRead {
+    Line(Vec<u8>),
+    TooLong,
+    Eof,
+}
+
+/// Read up to the next newline without ever holding more than `max` bytes.
+async fn read_line_capped<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> std::io::Result<LineRead> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(if line.is_empty() {
+                LineRead::Eof
+            } else {
+                LineRead::Line(line)
+            });
+        }
+        let (take, done) = match available.iter().position(|b| *b == b'\n') {
+            Some(at) => (at, true),
+            None => (available.len(), false),
+        };
+        if line.len() + take > max {
+            return Ok(LineRead::TooLong);
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take + usize::from(done));
+        if done {
+            return Ok(LineRead::Line(line));
+        }
+    }
+}
+
 /// A non-response line from the app server, in stdout order.
 #[derive(Debug)]
 pub(crate) enum Incoming {
@@ -58,6 +102,8 @@ pub(crate) struct RpcClient {
     writer: mpsc::UnboundedSender<String>,
     closed: Arc<AtomicBool>,
     voice_router: Arc<Mutex<Option<VoiceRouter>>>,
+    /// Why the reader stopped, when it was not the agent exiting.
+    close_reason: Arc<Mutex<Option<String>>>,
 }
 
 impl RpcClient {
@@ -72,12 +118,22 @@ impl RpcClient {
         stdout: ChildStdout,
         observer: Option<StdoutObserver>,
     ) -> (Self, mpsc::Receiver<Incoming>) {
+        Self::with_line_limit(stdin, stdout, observer, MAX_LINE_BYTES)
+    }
+
+    fn with_line_limit(
+        stdin: ChildStdin,
+        stdout: ChildStdout,
+        observer: Option<StdoutObserver>,
+        max_line: usize,
+    ) -> (Self, mpsc::Receiver<Incoming>) {
         let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
         tokio::spawn(write_loop(stdin, writer_rx));
         let pending: Pending = Arc::default();
         let (incoming_tx, incoming_rx) = mpsc::channel(256);
         let closed = Arc::new(AtomicBool::new(false));
         let voice_router = Arc::default();
+        let close_reason = Arc::default();
         tokio::spawn(read_loop(
             stdout,
             Arc::clone(&pending),
@@ -85,6 +141,8 @@ impl RpcClient {
             closed.clone(),
             observer,
             Arc::clone(&voice_router),
+            Arc::clone(&close_reason),
+            max_line,
         ));
         (
             Self {
@@ -93,9 +151,19 @@ impl RpcClient {
                 writer: writer_tx,
                 closed,
                 voice_router,
+                close_reason,
             },
             incoming_rx,
         )
+    }
+
+    /// Why the connection closed when it was not the agent exiting (an
+    /// oversized message): the error to show instead of a crash message.
+    pub fn close_reason(&self) -> Option<String> {
+        self.close_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Route `thread/realtime/*` notifications (and `account/updated`) to a
@@ -269,11 +337,40 @@ async fn read_loop(
     closed: Arc<AtomicBool>,
     observer: Option<StdoutObserver>,
     voice_router: Arc<Mutex<Option<VoiceRouter>>>,
+    close_reason: Arc<Mutex<Option<String>>>,
+    max_line: usize,
 ) {
-    let mut lines = BufReader::new(stdout).lines();
+    let mut reader = BufReader::new(stdout);
     // A read error ends the loop like EOF: either way the child's stdout is
     // unusable, pending requests must fail, and the session loop must know.
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        let line = match read_line_capped(&mut reader, max_line).await {
+            Ok(LineRead::Line(bytes)) => bytes,
+            Ok(LineRead::TooLong) => {
+                let reason = format!(
+                    "the agent sent a single message larger than {} MiB, so Godspeed stopped \
+                     the session to protect memory",
+                    max_line / (1024 * 1024)
+                );
+                tracing::warn!(target: "zeron_harness::rpc", "{reason}");
+                *close_reason
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason.clone());
+                // Awaiting requests learn why instead of "exited".
+                closed.store(true, Ordering::Release);
+                for (_, sender) in pending.lock().expect("pending lock").drain() {
+                    let _ = sender.send(Err(reason.clone()));
+                }
+                break;
+            }
+            Ok(LineRead::Eof) | Err(_) => break,
+        };
+        let Ok(line) = std::str::from_utf8(&line) else {
+            tracing::debug!(target: "zeron_harness::rpc", "non-UTF-8 stdout line (skipped)");
+            continue;
+        };
+        // A title or color sequence glued to a frame would make it unparseable.
+        let line = crate::executable::strip_terminal_escapes(line);
         let line = line.trim();
         if let Some(url) =
             line.strip_prefix("Open the following link to authenticate the ACP server: ")
@@ -389,6 +486,7 @@ mod tests {
             writer,
             closed: Arc::new(AtomicBool::new(false)),
             voice_router: Arc::default(),
+            close_reason: Arc::default(),
         };
         client.notify("session/cancel", Some(json!({"sessionId": "parent"})));
         let frame: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
@@ -408,6 +506,7 @@ mod tests {
             writer: mpsc::unbounded_channel().0,
             closed: Arc::new(AtomicBool::new(false)),
             voice_router: Arc::default(),
+            close_reason: Arc::default(),
         };
         let (_old_rx, old) = client.subscribe_voice(|| {});
         let (_new_rx, new) = client.subscribe_voice(|| {});
@@ -426,6 +525,7 @@ mod tests {
             writer,
             closed: Arc::new(AtomicBool::new(true)),
             voice_router: Arc::default(),
+            close_reason: Arc::default(),
         };
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
@@ -436,6 +536,46 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("exited"));
         assert!(client.pending.lock().unwrap().is_empty());
         assert!(receiver.try_recv().is_err());
+    }
+
+    /// pingdotgg/t3code#12884: one newline-delimited message had no size
+    /// bound, so a runaway notification was buffered and parsed whole. Past
+    /// the ceiling the reader stops before holding the line, fails awaiting
+    /// requests with the reason, and ends the session; lines under it (split
+    /// across many reads) still parse.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_oversized_line_ends_the_session_with_a_clear_error() {
+        let script = "printf '{\"jsonrpc\":\"2.0\",\"method\":\"small\",\"params\":{\"pad\":\"'; \
+                      head -c 1500 /dev/zero | tr '\\0' a; printf '\"}}\\n'; \
+                      head -c 5000 /dev/zero | tr '\\0' b; printf '\\n'; sleep 5";
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (client, mut incoming) = RpcClient::with_line_limit(
+            child.stdin.take().unwrap(),
+            child.stdout.take().unwrap(),
+            None,
+            4096,
+        );
+        let request = client.request("turn/start", json!({}));
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), incoming.recv())
+            .await
+            .unwrap();
+        assert!(matches!(first, Some(Incoming::Notification { ref method, .. }) if method == "small"));
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("stopped the session"), "{error}");
+        assert!(matches!(incoming.recv().await, Some(Incoming::Eof)));
+        assert!(client.is_closed());
+        assert!(client.close_reason().unwrap().contains("single message larger than"));
     }
 
     #[test]

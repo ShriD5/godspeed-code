@@ -1860,6 +1860,85 @@ async fn permissions_do_not_auto_answer_agent_questions() {
     assert_eq!(body, json!({"answers": [["No"]]}));
 }
 
+/// zeronsh/zeron#668: on 2.x the `question` tool asks through a form
+/// (`form.created`), which the v2 normalizer dropped — the tool waited
+/// forever. Shape from opencode 2.0.29's question plugin (`toField`): one
+/// `q<n>` string/multiselect field per question, options by label/value,
+/// free text allowed. The answer goes back on the session's form route.
+#[tokio::test]
+async fn v2_question_forms_reach_the_user_and_are_answered() {
+    let mut wire = TurnWire::start_config(
+        false,
+        true,
+        false,
+        Some(true),
+        "2.0.20",
+        json!({"answerLabel": "Web app"}),
+        false,
+    )
+    .await;
+    wire.request("/api/model").await;
+    wire.request("/prompt").await;
+    wire.v2(
+        "form.created",
+        json!({"form": {
+            "id": "frm_1", "sessionID": "fixture", "title": "Questions",
+            "metadata": {"kind": "question"},
+            "fields": [{
+                "key": "q0", "title": "Codebase area", "type": "string", "custom": true,
+                "description": "Which part of the codebase would you like to explore?",
+                "options": [
+                    {"value": "API", "label": "API", "description": "Auth and uploads."},
+                    {"value": "Web app", "label": "Web app", "description": "Pages."},
+                ],
+            }],
+        }}),
+    );
+    let body = wire.posted("/api/session/fixture/form/frm_1/reply").await;
+    assert_eq!(body, json!({"answer": {"q0": "Web app"}}));
+    let asked = wire.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].header, "Codebase area");
+    assert_eq!(asked[0].options, ["API", "Web app"]);
+    // The engine's bridge owns the input lifecycle: no twin from the driver.
+    while let Ok(Some(Ok(event))) =
+        tokio::time::timeout(Duration::from_millis(100), wire.events.recv()).await
+    {
+        assert!(
+            !matches!(event, AgentEvent::InputRequested { .. } | AgentEvent::InputResolved { .. }),
+            "{event:?}"
+        );
+    }
+}
+
+#[test]
+fn v2_form_answers_are_typed_and_respect_conditions() {
+    let form = json!({"fields": [
+        {"key": "deploy", "type": "boolean"},
+        {"key": "env", "type": "string", "options": [{"value": "prod", "label": "Production"}],
+         "when": [{"key": "deploy", "op": "eq", "value": true}]},
+        {"key": "tags", "type": "multiselect", "custom": false,
+         "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
+        {"key": "count", "type": "integer"},
+        {"key": "why", "type": "string"},
+    ]});
+    let labels = |l: &[&[&str]]| -> Vec<Vec<String>> {
+        l.iter().map(|q| q.iter().map(|s| s.to_string()).collect()).collect()
+    };
+    assert_eq!(
+        v2_form_answer(&form, &labels(&[&["Yes"], &["Production"], &["Beta", "Other"], &[" 4 "], &[]])),
+        json!({"deploy": true, "env": "prod", "tags": ["b"], "count": 4})
+    );
+    // `env` is inactive once `deploy` is No: answering it would be rejected.
+    assert_eq!(
+        v2_form_answer(&form, &labels(&[&["No"], &["Production"], &[], &["x"], &["because"]])),
+        json!({"deploy": false, "why": "because"})
+    );
+    // An open-a-URL field has no question shape; the frame is left alone.
+    assert!(v2_form_question(&json!({"form": {"id": "f", "sessionID": "s", "title": "t",
+        "fields": [{"key": "k", "type": "external", "url": "https://x"}]}})).is_none());
+}
+
 #[test]
 fn v2_tools_are_scoped_and_retired_and_real_failures_are_visible() {
     let mut tools = HashMap::new();
@@ -2591,6 +2670,192 @@ async fn v2_spawn_names_bind_child_traffic_to_the_parent_chip() {
         );
         assert!(child_events.iter().any(|(id, event)| id == &calls[0].0 && matches!(event.as_ref(), AgentEvent::TextDelta { text } if text == "child answer")), "{name}: {child_events:?}");
     }
+}
+
+/// zeronsh/zeron#845, opencode 2.x `background: true`: the spawn's call
+/// completes at once with `metadata.status: "running"` while the child keeps
+/// working. The chip must stay live, stream the child, and settle once on the
+/// child's own end; then opencode re-invokes the parent with the completion
+/// notice (a busy with no prompt of ours), and that wake must end with its
+/// own Done instead of leaving the chat Working.
+#[tokio::test]
+async fn v2_background_subagents_settle_on_their_end_and_the_wake_turn_ends() {
+    let mut wire = TurnWire::start_config(
+        false,
+        true,
+        true,
+        None,
+        "2.0.26",
+        json!({"keepSteering": true}),
+        false,
+    )
+    .await;
+    wire.request("/api/model").await;
+    wire.request("/prompt").await;
+    let parent = |kind: &str, extra: Value| {
+        let mut data = json!({"sessionID": "fixture", "assistantMessageID": "pm"});
+        data.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        (kind.to_owned(), data)
+    };
+    for (kind, data) in [
+        parent("session.execution.started", json!({})),
+        parent("session.step.started", json!({})),
+        parent("session.tool.input.started", json!({"id": "spawn", "name": "subagent"})),
+        parent(
+            "session.tool.called",
+            json!({"id": "spawn", "input": {"description": "Sleep", "prompt": "sleep 5", "background": true}}),
+        ),
+    ] {
+        wire.v2(&kind, data);
+    }
+    wire.v2("session.created", json!({"sessionID": "child", "parentID": "fixture", "title": "Sleep"}));
+    for (kind, data) in [
+        parent(
+            "session.tool.success",
+            json!({"id": "spawn", "content": [{"type": "text", "text": "The subagent is working in the background (sessionID: child)."}],
+                   "metadata": {"sessionID": "child", "status": "running"}}),
+        ),
+        parent("session.text.delta", json!({"ordinal": 0, "delta": "Launched it."})),
+        parent("session.execution.succeeded", json!({})),
+    ] {
+        wire.v2(&kind, data);
+    }
+    let (status, text) = wire.done().await;
+    assert_eq!((status, text.as_str()), (DoneStatus::Completed, "Launched it."));
+
+    // The child works on after the parent turn ended, then finishes.
+    wire.v2("session.step.started", json!({"sessionID": "child", "assistantMessageID": "cm"}));
+    wire.v2(
+        "session.text.delta",
+        json!({"sessionID": "child", "assistantMessageID": "cm", "ordinal": 0, "delta": "slept"}),
+    );
+    wire.v2("session.execution.succeeded", json!({"sessionID": "child"}));
+    let mut child = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let AgentEvent::Subagent { event, .. } = wire.events.recv().await.unwrap().unwrap() {
+                let done = matches!(event.as_ref(), AgentEvent::Done { .. });
+                child.push(*event);
+                if done {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        child.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "slept")),
+        "the child streamed while running: {child:?}"
+    );
+    assert!(matches!(
+        child.last(),
+        Some(AgentEvent::Done { status: DoneStatus::Completed, .. })
+    ));
+    assert_eq!(
+        child
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Done { .. }))
+            .count(),
+        1
+    );
+
+    // The wake: opencode re-invokes the parent on its own.
+    let wake = |kind: &str, extra: Value| {
+        let mut data = json!({"sessionID": "fixture", "assistantMessageID": "wm"});
+        data.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        (kind.to_owned(), data)
+    };
+    for (kind, data) in [
+        wake("session.execution.started", json!({})),
+        wake("session.step.started", json!({})),
+        wake("session.text.delta", json!({"ordinal": 0, "delta": "The subagent finished."})),
+        wake("session.execution.succeeded", json!({})),
+    ] {
+        wire.v2(&kind, data);
+    }
+    let (status, text) = wire.done().await;
+    assert_eq!(status, DoneStatus::Completed);
+    assert_eq!(text, "The subagent finished.");
+}
+
+#[test]
+fn a_backgrounded_spawn_is_not_its_childs_end() {
+    let part = |state: Value| json!({"type": "tool", "tool": "subagent", "state": state});
+    assert_eq!(
+        task_completion(&part(json!({"status": "completed", "metadata": {"sessionID": "c", "status": "running"}}))),
+        None
+    );
+    assert_eq!(
+        task_completion(&part(json!({"status": "completed", "output": "The subagent is working in the background (sessionID: c)."}))),
+        None
+    );
+    assert_eq!(
+        task_completion(&part(json!({"status": "completed", "metadata": {"sessionID": "c", "status": "completed"}}))),
+        Some(("c".into(), false))
+    );
+    assert_eq!(
+        task_completion(&part(json!({"status": "error", "metadata": {"sessionID": "c"}}))),
+        Some(("c".into(), true))
+    );
+    // The 2.x normalizer carries the metadata that tells them apart.
+    let mut names = HashMap::new();
+    normalize_v2_frame(
+        json!({"type": "session.tool.input.started", "data": {"sessionID": "s", "assistantMessageID": "m", "id": "t", "name": "subagent"}}),
+        &mut names,
+    );
+    let frames = normalize_v2_frame(
+        json!({"type": "session.tool.success", "data": {"sessionID": "s", "assistantMessageID": "m", "id": "t",
+            "content": [{"type": "text", "text": "x"}], "metadata": {"sessionID": "c", "status": "running"}}}),
+        &mut names,
+    );
+    assert_eq!(frames[0]["properties"]["part"]["state"]["metadata"]["status"], "running");
+}
+
+/// pingdotgg/t3code#11458: Auto mode's injected `bash: "ask"` replaced the
+/// user's own patterns (`{"*": "allow", "git push *": "ask"}`), so every
+/// command asked. Auto now keeps the user's rule for every action they
+/// configured, in JSONC global/project files or 2.x `permissions` rules, and
+/// only fills the gaps.
+#[test]
+fn auto_mode_keeps_the_users_opencode_permission_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    let nested = repo.join("crates/app");
+    std::fs::create_dir_all(nested.join(".opencode")).unwrap();
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::write(
+        repo.join("opencode.jsonc"),
+        r#"{
+  // the user's own policy
+  "permission": { "bash": { "*": "allow", "git push *": "ask" } }
+}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        nested.join(".opencode/opencode.json"),
+        r#"{"permissions": [{"action": "webfetch", "resource": "*", "effect": "allow"}]}"#,
+    )
+    .unwrap();
+    // Above the git root: not this project's.
+    std::fs::write(dir.path().join("opencode.json"), r#"{"permission": "allow"}"#).unwrap();
+    let files = opencode_config_files(nested.to_str());
+    assert!(!files.contains(&dir.path().join("opencode.json")));
+    let configured = user_permission_actions(&files, Some(r#"{"permission": {"write": "ask"}}"#));
+    let mut rules = permission_config(AccessMode::Auto).unwrap();
+    keep_user_permissions(&mut rules, &configured);
+    assert_eq!(rules, json!({"external_directory": "ask"}), "{configured:?}");
+    let merged: Value =
+        serde_json::from_str(&with_permission(Some(r#"{"model": "keep"}"#), &rules).unwrap())
+            .unwrap();
+    assert_eq!(merged["permission"], json!({"external_directory": "ask"}));
+    // A single policy string covers every action; no config keeps ours.
+    let mut rules = permission_config(AccessMode::Auto).unwrap();
+    keep_user_permissions(&mut rules, &["*".to_owned()].into_iter().collect());
+    assert_eq!(rules, json!({}));
+    let mut rules = permission_config(AccessMode::Auto).unwrap();
+    keep_user_permissions(&mut rules, &Default::default());
+    assert_eq!(rules, permission_config(AccessMode::Auto).unwrap());
 }
 
 #[test]

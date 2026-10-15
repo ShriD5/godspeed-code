@@ -20,6 +20,9 @@ pub(crate) struct Child {
     inner: ProcessChild,
     #[cfg(unix)]
     group: Option<i32>,
+    /// Lets the next engine end this group if this one dies first
+    /// ([`crate::process::registry`]).
+    _registration: Option<crate::process::registry::Registration>,
 }
 
 impl Child {
@@ -27,6 +30,7 @@ impl Child {
         Self {
             #[cfg(unix)]
             group: Some(-(inner.id().expect("newly spawned child") as i32)),
+            _registration: crate::process::registry::register(inner.id(), "agent"),
             inner,
         }
     }

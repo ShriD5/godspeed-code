@@ -151,11 +151,96 @@ fn model(
 /// normalization borrows these labels so alias rows served by older engines
 /// still read with their version numbers ("Opus 5.5", not "Opus").
 pub(crate) fn configured_models() -> Vec<Model> {
-    let root = std::env::var_os("CLAUDE_CONFIG_DIR")
+    let mut models = models_with_settings(&user_settings_path());
+    clamp_to_max_effort(&mut models, &effort_cap_settings());
+    models
+}
+
+fn user_settings_path() -> std::path::PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".claude"));
-    models_with_settings(&root.join("settings.json"))
+        .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".claude"))
+        .join("settings.json")
+}
+
+/// Settings files that may cap effort: the user's own and the machine's
+/// managed policy (project settings vary by chat and the CLI enforces them
+/// at launch either way).
+fn effort_cap_settings() -> Vec<serde_json::Value> {
+    let managed = if cfg!(target_os = "macos") {
+        "/Library/Application Support/ClaudeCode/managed-settings.json"
+    } else if cfg!(windows) {
+        r"C:\Program Files\ClaudeCode\managed-settings.json"
+    } else {
+        "/etc/claude-code/managed-settings.json"
+    };
+    [user_settings_path(), std::path::PathBuf::from(managed)]
+        .iter()
+        .filter_map(|path| std::fs::read(path).ok())
+        .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
+        .collect()
+}
+
+/// [`clamp_to_max_effort`] for rows discovery appended.
+pub(crate) fn clamp_discovered(mut models: Vec<Model>) -> Vec<Model> {
+    clamp_to_max_effort(&mut models, &effort_cap_settings());
+    models
+}
+
+/// Effort rank for the `maxEffortLevel` comparison; levels that pass no
+/// effort (ultrathink is a prompt prefix) have none.
+fn effort_rank(level: ReasoningLevel) -> Option<u8> {
+    Some(match level {
+        ReasoningLevel::Minimal | ReasoningLevel::Low => 1,
+        ReasoningLevel::Medium => 2,
+        ReasoningLevel::High => 3,
+        // Ultracode runs as xhigh.
+        ReasoningLevel::XHigh | ReasoningLevel::Ultracode => 4,
+        ReasoningLevel::Max | ReasoningLevel::Ultra => 5,
+        ReasoningLevel::Ultrathink => return None,
+    })
+}
+
+fn effort_name_rank(name: &str) -> Option<u8> {
+    Some(match name {
+        "low" => 1,
+        "medium" => 2,
+        "high" => 3,
+        "xhigh" => 4,
+        "max" => 5,
+        _ => return None,
+    })
+}
+
+/// Drop the effort levels Claude Code would clamp anyway: `maxEffortLevel`
+/// caps every model, `modelSettings.<model>.maxEffortLevel` replaces it for
+/// one model (`max` exempts it), and across settings files the lowest value
+/// wins. Offering a level the CLI silently lowers made the picker lie.
+pub(crate) fn clamp_to_max_effort(models: &mut [Model], settings: &[serde_json::Value]) {
+    for model in models {
+        let base = model.id.strip_suffix("[1m]").unwrap_or(&model.id);
+        let undated = snapshot_base(base).unwrap_or(base);
+        let cap = settings
+            .iter()
+            .filter_map(|file| {
+                let per_model = file
+                    .get("modelSettings")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|m| m.get(base).or_else(|| m.get(undated)))
+                    .and_then(|s| s.get("maxEffortLevel"))
+                    .and_then(serde_json::Value::as_str);
+                per_model
+                    .or_else(|| file.get("maxEffortLevel").and_then(serde_json::Value::as_str))
+                    .and_then(effort_name_rank)
+            })
+            .min();
+        if let Some(cap) = cap {
+            model
+                .reasoning_levels
+                .retain(|level| effort_rank(*level).is_none_or(|rank| rank <= cap));
+        }
+    }
 }
 
 fn models_with_settings(path: &std::path::Path) -> Vec<Model> {
@@ -406,6 +491,57 @@ mod tests {
             Some("max")
         );
         assert_eq!(to_effort(Some(ReasoningLevel::XHigh), None), Some("max"));
+    }
+
+    /// T3 Code's effort-cap finding: Claude Code clamps every effort above
+    /// `maxEffortLevel`, so the picker must not offer those levels.
+    #[test]
+    fn max_effort_level_clamps_the_ladders() {
+        let ladder = |models: &[Model], id: &str| {
+            models
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .reasoning_levels
+                .clone()
+        };
+        let mut models = static_models();
+        clamp_to_max_effort(
+            &mut models,
+            &[
+                serde_json::json!({
+                    "maxEffortLevel": "high",
+                    "modelSettings": {
+                        "claude-opus-5-5": {"maxEffortLevel": "max"},
+                        "claude-sonnet-5": {"maxEffortLevel": "medium"},
+                    }
+                }),
+                // A managed policy below the user's cap wins for Opus 4.8.
+                serde_json::json!({"modelSettings": {"claude-opus-4-8": {"maxEffortLevel": "low"}}}),
+            ],
+        );
+        assert_eq!(
+            ladder(&models, "claude-fable-5"),
+            [
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High,
+                ReasoningLevel::Ultrathink
+            ]
+        );
+        assert_eq!(ladder(&models, "claude-opus-5-5"), FULL_LADDER, "max exempts");
+        assert_eq!(
+            ladder(&models, "claude-sonnet-5"),
+            [ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::Ultrathink]
+        );
+        assert_eq!(
+            ladder(&models, "claude-opus-4-8"),
+            [ReasoningLevel::Low, ReasoningLevel::Ultrathink]
+        );
+        // No cap, or an unknown value: untouched.
+        let mut models = static_models();
+        clamp_to_max_effort(&mut models, &[serde_json::json!({"maxEffortLevel": "turbo"})]);
+        assert_eq!(models, static_models());
     }
 
     #[test]

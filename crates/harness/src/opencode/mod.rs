@@ -73,7 +73,7 @@ use zeron_proto::{
     SteeringMode, TodoItem, TodoStatus, ToolCall, UserInputAnswer, UserInputQuestion,
 };
 
-use crate::process::{Child, Command, Stdio};
+use crate::process::{Command, Stdio};
 use crate::{Harness, HarnessError, RunControls};
 
 /// opencode loads plugins and MCP config before the server answers; cold
@@ -474,7 +474,17 @@ impl Harness for OpencodeHarness {
         let initial_native_command_selected = selected_native_command(&request.prompt, self.id());
         request.prompt = zeron_proto::invocation::harness_prompt(&request.prompt, self.id());
         let cwd = (!request.cwd.is_empty()).then(|| request.cwd.clone());
-        let permission = permission_config(request.access_mode());
+        let mut permission = permission_config(request.access_mode());
+        if request.access_mode() == AccessMode::Auto
+            && let Some(rules) = permission.as_mut()
+        {
+            let inherited = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+            let configured = user_permission_actions(
+                &opencode_config_files(cwd.as_deref()),
+                inherited.as_deref(),
+            );
+            keep_user_permissions(rules, &configured);
+        }
         let server = self
             .server(cwd.as_deref(), request.mcp.as_ref(), permission.as_ref())
             .await?;
@@ -501,7 +511,10 @@ impl Harness for OpencodeHarness {
 // ---------------------------------------------------------------------------
 
 struct Server {
-    child: Option<Child>,
+    /// The `serve` process, leading its own process group: npm/bun installs
+    /// launch it through a Node script that `spawnSync`s the real binary,
+    /// and signalling the launcher alone orphaned the server.
+    child: Option<crate::process::owned::Child>,
     base: String,
     /// `Authorization` header value (`Basic <b64>`), when we own the process.
     auth: Option<String>,
@@ -674,6 +687,7 @@ impl Server {
             cmd.env("OPENCODE_CONFIG_CONTENT", content);
         }
         crate::compose_child_path(&mut cmd, exe);
+        crate::process::owned::configure(&mut cmd);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
@@ -681,13 +695,13 @@ impl Server {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| {
+        let mut child = crate::process::owned::Child::new(cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(exe))
             } else {
                 HarnessError::Io(e)
             }
-        })?;
+        })?);
         let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
@@ -862,6 +876,27 @@ impl Server {
         Ok((status, text))
     }
 
+    async fn delete(&self, path: &str, directory: Option<&str>) -> Result<(), HarnessError> {
+        let req = self
+            .request(reqwest::Method::DELETE, path)
+            .timeout(CALL_TIMEOUT);
+        let resp = self
+            .scoped(req, directory)
+            .await
+            .send()
+            .await
+            .map_err(|e| HarnessError::Protocol(format!("opencode DELETE {path}: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(HarnessError::Protocol(format!(
+                "opencode DELETE {path}: {status} {}",
+                truncate_body(&body)
+            )));
+        }
+        Ok(())
+    }
+
     /// Directory scope: the server's per-request instance selector. V1 takes
     /// it as a query param (plus header, matching the official SDK); V2's
     /// strict query validation rejects unknown params — there the header
@@ -882,8 +917,9 @@ impl Server {
 
     async fn shutdown(&mut self, kill_grace: Duration) {
         if let Some(child) = self.child.as_mut() {
-            // The server and every command it started.
-            crate::shutdown_agent(child, Vec::new(), kill_grace).await;
+            // The server's group and every command it started. Dropping a
+            // Server unshut (a cancelled discovery) still kills the group.
+            child.shutdown(kill_grace).await;
         }
     }
 
@@ -1412,6 +1448,9 @@ struct ChildRun {
     feed: SessionFeed,
     /// Chip settled (tagged Done sent); late traffic drops.
     done: bool,
+    /// The child session reported an error; its terminal idle settles the
+    /// chip as failed.
+    failed: bool,
 }
 
 /// A `task` chip awaiting its child session id.
@@ -2812,6 +2851,110 @@ fn permission_config(mode: AccessMode) -> Option<Value> {
     }))
 }
 
+/// The opencode config files that may hold the user's own `permission`
+/// rules, as opencode discovers them (`packages/core/src/config/discovery.ts`,
+/// 2.0.29; same names on 1.x): the system and global directories, an
+/// explicit `OPENCODE_CONFIG`, and `opencode.json(c)` plus
+/// `.opencode/opencode.json(c)` from the project up to its git root.
+fn opencode_config_files(cwd: Option<&str>) -> Vec<PathBuf> {
+    const NAMES: [&str; 3] = ["opencode.json", "opencode.jsonc", "config.json"];
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    dirs.push(if cfg!(target_os = "macos") {
+        PathBuf::from("/Library/Application Support/opencode")
+    } else if cfg!(windows) {
+        PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into()))
+            .join("opencode")
+    } else {
+        PathBuf::from("/etc/opencode")
+    });
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::executable::home_dir().map(|h| h.join(".config")));
+    if let Some(home) = config_home {
+        dirs.push(home.join("opencode"));
+    }
+    let mut files: Vec<PathBuf> = dirs
+        .iter()
+        .flat_map(|dir| NAMES.iter().map(move |name| dir.join(name)))
+        .collect();
+    if let Some(explicit) = std::env::var_os("OPENCODE_CONFIG").filter(|v| !v.is_empty()) {
+        files.push(PathBuf::from(explicit));
+    }
+    let mut dir = cwd.map(PathBuf::from);
+    while let Some(current) = dir {
+        for base in [current.clone(), current.join(".opencode")] {
+            files.extend(NAMES[..2].iter().map(|name| base.join(name)));
+        }
+        if current.join(".git").exists() {
+            break;
+        }
+        dir = current.parent().map(PathBuf::from);
+    }
+    files
+}
+
+/// The permission actions the user configured anywhere: keys of the 1.x
+/// `permission` object (or every action when it is a single string) and the
+/// actions of 2.x `permissions` rules. Names are normalized the way 2.x
+/// migrates them (`bash` → `shell`, `write`/`patch` → `edit`).
+fn user_permission_actions(files: &[PathBuf], inherited: Option<&str>) -> std::collections::HashSet<String> {
+    let normalize = |action: &str| match action {
+        "bash" => "shell".to_owned(),
+        "write" | "patch" => "edit".to_owned(),
+        other => other.to_owned(),
+    };
+    let mut actions = std::collections::HashSet::new();
+    let sources = files
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .chain(inherited.map(str::to_owned));
+    for raw in sources {
+        let Ok(config) = deser_hjson::from_str::<Value>(&raw) else {
+            continue;
+        };
+        match config.get("permission") {
+            Some(Value::String(_)) => {
+                actions.insert("*".to_owned());
+            }
+            Some(Value::Object(rules)) => actions.extend(rules.keys().map(|k| normalize(k))),
+            _ => {}
+        }
+        for rule in config
+            .get("permissions")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if let Some(action) = rule.get("action").and_then(Value::as_str) {
+                actions.insert(normalize(action));
+            }
+        }
+    }
+    actions
+}
+
+/// Auto mode is the user's own opencode policy: drop our rule for every
+/// action the user configured (patterns like `{"*": "allow", "git push *":
+/// "ask"}` included), so ours only fill the gaps. Injected config layers
+/// over the user's files, and a flat `bash: "ask"` replaced their patterns.
+fn keep_user_permissions(rules: &mut Value, configured: &std::collections::HashSet<String>) {
+    let Some(rules) = rules.as_object_mut() else {
+        return;
+    };
+    if configured.contains("*") {
+        rules.clear();
+        return;
+    }
+    rules.retain(|action, _| {
+        let normalized = match action.as_str() {
+            "bash" => "shell",
+            other => other,
+        };
+        !configured.contains(normalized)
+    });
+}
+
 /// The key a "for this session" grant matches later requests by: the
 /// permission and its patterns (1.x `patterns`, 2.x `resources`).
 fn permission_rule(props: &Value) -> String {
@@ -3001,6 +3144,45 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         .get("status")
         .and_then(|s| s.get("type"))
         .and_then(Value::as_str);
+    // A child session's own end settles its chip. A background spawn's call
+    // completes at once (see [`task_completion`]), so these frames are its
+    // only end; a foreground child's arrive just before its call completes.
+    if !is_ours
+        && let Some(child) = event_session.and_then(|s| children.get_mut(s))
+        && !child.done
+    {
+        let ended = match kind {
+            "session.error" => {
+                child.failed = true;
+                None
+            }
+            "session.idle" => Some(if child.failed {
+                DoneStatus::Errored
+            } else {
+                DoneStatus::Completed
+            }),
+            "session.status" if status == Some("idle") => Some(if child.failed {
+                DoneStatus::Errored
+            } else {
+                DoneStatus::Completed
+            }),
+            "session.interrupted" => Some(DoneStatus::Interrupted),
+            _ => None,
+        };
+        if let Some(status) = ended {
+            child.done = true;
+            let done = tag(
+                &child.parent_tool_use_id,
+                AgentEvent::Done {
+                    status,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                },
+            );
+            return forward(event_tx, vec![done]).await;
+        }
+    }
     if is_ours && (kind == "session.idle" || (kind == "session.status" && status == Some("idle"))) {
         // OpenCode can emit both idle encodings for one completion. The first
         // may submit a queued prompt before we consume the second. Until that
@@ -3026,7 +3208,22 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         "session.status" if is_ours => {
             let status = props.get("status").unwrap_or(&Value::Null);
             match status.get("type").and_then(Value::as_str) {
-                Some("busy") => turn.idle_ready = true,
+                Some("busy") => {
+                    // Busy with no prompt of ours in flight: opencode woke
+                    // the session itself (a background subagent finished
+                    // and its notice re-invoked the parent). Arm a turn so
+                    // the wake's own idle ends it with a Done; unarmed, the
+                    // wake streamed into a chat that never left Working.
+                    // Until the wake shows activity of its own, the status
+                    // poll checks it is real, so a stray busy can't leave
+                    // the chat Working.
+                    if !turn.active {
+                        *turn = TurnState::begin(None);
+                        turn.note_activity();
+                        turn.status_poll = Some(tokio::time::Instant::now() + turn.status_backoff);
+                    }
+                    turn.idle_ready = true;
+                }
                 Some("retry") => {
                     turn.idle_ready = true;
                     let attempt = status.get("attempt").and_then(Value::as_u64).unwrap_or(0);
@@ -3384,24 +3581,22 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             if questions.is_empty() {
                 return BusOutcome::Continue;
             }
-            if !send(
-                event_tx,
-                AgentEvent::InputRequested {
-                    request_id: id.to_owned(),
-                    questions: questions.clone(),
-                },
-            )
-            .await
-            {
-                return BusOutcome::ConsumerGone;
-            }
+            // The engine's input bridge alone emits InputRequested and
+            // InputResolved (it mints the id the answer resolves); a copy
+            // keyed by opencode's id is an unanswerable twin.
             let rx = (request_input)(questions.clone());
             let base = server.base.clone();
             let auth = server.auth.clone();
             let dir_owned = dir.map(str::to_owned);
             let request_id = id.to_owned();
-            let tx = event_tx.clone();
             let protocol_cell = server.protocol.clone();
+            // 2.x asks through a form ([`v2_form_question`]), answered on the
+            // session's form route with typed values per field.
+            let form = props
+                .get("form")
+                .filter(|f| f.is_object())
+                .cloned()
+                .zip(event_session.map(str::to_owned));
             tokio::spawn(async move {
                 let server = Server {
                     child: None,
@@ -3412,18 +3607,38 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
                 };
-                let reply = match rx.await {
-                    Ok(answers) => {
-                        let ordered: Vec<Vec<String>> = questions
-                            .iter()
-                            .map(|q| {
-                                answers
-                                    .iter()
-                                    .find(|a| a.question_id == q.id)
-                                    .map(|a| a.labels.clone())
-                                    .unwrap_or_default()
-                            })
-                            .collect();
+                let answered = rx.await.map(|answers| {
+                    questions
+                        .iter()
+                        .map(|q| {
+                            answers
+                                .iter()
+                                .find(|a| a.question_id == q.id)
+                                .map(|a| a.labels.clone())
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<Vec<String>>>()
+                });
+                let reply = match (answered, form) {
+                    (Ok(ordered), Some((form, session))) => {
+                        server
+                            .post_json(
+                                &format!("/api/session/{session}/form/{request_id}/reply"),
+                                dir_owned.as_deref(),
+                                &json!({ "answer": v2_form_answer(&form, &ordered) }),
+                            )
+                            .await
+                            .map(drop)
+                    }
+                    (Err(_), Some((_, session))) => {
+                        server
+                            .delete(
+                                &format!("/api/session/{session}/form/{request_id}"),
+                                dir_owned.as_deref(),
+                            )
+                            .await
+                    }
+                    (Ok(ordered), None) => {
                         server
                             .post_json(
                                 &format!("/question/{request_id}/reply"),
@@ -3431,8 +3646,9 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                                 &json!({ "answers": ordered }),
                             )
                             .await
+                            .map(drop)
                     }
-                    Err(_) => {
+                    (Err(_), None) => {
                         server
                             .post_json(
                                 &format!("/question/{request_id}/reject"),
@@ -3440,19 +3656,15 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                                 &Value::Null,
                             )
                             .await
+                            .map(drop)
                     }
                 };
                 if let Err(e) = reply {
-                    tracing::debug!(
+                    tracing::warn!(
                         target: "zeron_harness::opencode",
                         "question reply failed: {e}"
                     );
                 }
-                let _ = tx
-                    .send(Ok(AgentEvent::InputResolved {
-                        request_id: request_id.clone(),
-                    }))
-                    .await;
             });
             BusOutcome::Continue
         }
@@ -3513,6 +3725,21 @@ fn task_completion(part: &Value) -> Option<(String, bool)> {
     if !matches!(status, "completed" | "error") {
         return None;
     }
+    // A `background: true` spawn completes its call at once, while the
+    // child keeps working (2.x `subagent`: metadata `status: "running"`).
+    // Its own terminal frames settle it, not this part.
+    let backgrounded = state
+        .get("metadata")
+        .and_then(|m| m.get("status"))
+        .and_then(Value::as_str)
+        == Some("running")
+        || state
+            .get("output")
+            .and_then(Value::as_str)
+            .is_some_and(|o| o.starts_with("The subagent is working in the background"));
+    if status == "completed" && backgrounded {
+        return None;
+    }
     let child = state
         .get("metadata")
         .and_then(|m| m.get("sessionId").or_else(|| m.get("sessionID")))
@@ -3541,6 +3768,7 @@ fn bind_child(
                     parent_tool_use_id: p.tool_part_id,
                     feed: SessionFeed::default(),
                     done: false,
+                    failed: false,
                 },
             );
             true
@@ -3781,6 +4009,7 @@ fn register_spawn(
                 parent_tool_use_id: part_id.to_owned(),
                 feed: SessionFeed::default(),
                 done: false,
+                failed: false,
             },
         );
         return;
@@ -3808,6 +4037,7 @@ fn register_spawn(
                 parent_tool_use_id: part_id.to_owned(),
                 feed: SessionFeed::default(),
                 done: false,
+                failed: false,
             },
         );
         return;
@@ -4042,6 +4272,10 @@ fn normalize_v2_frame_with_session_models(
 ) -> Vec<Value> {
     let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
     let data = event.get("data").cloned().unwrap_or(Value::Null);
+    // Its session rides inside the form, not at the top of the frame.
+    if kind == "form.created" {
+        return v2_form_question(&data).into_iter().collect();
+    }
     if data
         .get("sessionID")
         .and_then(Value::as_str)
@@ -4210,11 +4444,13 @@ fn normalize_v2_frame_with_session_models(
                         .join("\n")
                 })
                 .unwrap_or_default();
+            // `metadata` says whether a subagent call finished or only
+            // backgrounded its child (`{sessionID, status: "running"}`).
             vec![v2_tool_part(
                 &data,
                 id,
                 &name,
-                &json!({ "status": "completed", "output": output }),
+                &json!({ "status": "completed", "output": output, "metadata": data.get("metadata") }),
             )]
         }
         "session.tool.failed" | "session.tool.error" => {
@@ -4231,7 +4467,7 @@ fn normalize_v2_frame_with_session_models(
                 &data,
                 id,
                 &name,
-                &json!({ "status": "error", "error": message }),
+                &json!({ "status": "error", "error": message, "metadata": data.get("metadata") }),
             )]
         }
         "session.step.ended" => {
@@ -4298,6 +4534,153 @@ fn normalize_v2_frame_with_session_models(
         }
         _ => Vec::new(),
     }
+}
+
+/// A 2.x `form.created` (`{form: {id, sessionID, title, fields}}`) as a 1.x
+/// `question.asked`. 2.x has no question event: the `question` tool (and
+/// any other asker) opens a form and waits for its reply, so dropping the
+/// frame hung the tool forever (verified against opencode 2.0.20 and 2.0.29,
+/// `packages/core/src/tool/plugin/question.ts`, `schema/src/form.ts`). The
+/// fields ride along for the typed reply ([`v2_form_answer`]). A form with
+/// an `external` (open-a-URL) field has no question shape and is left to
+/// other clients.
+fn v2_form_question(data: &Value) -> Option<Value> {
+    let form = data.get("form")?;
+    let id = form.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+    let session = form
+        .get("sessionID")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let fields = form.get("fields").and_then(Value::as_array).filter(|f| !f.is_empty())?;
+    if fields
+        .iter()
+        .any(|f| f.get("type").and_then(Value::as_str) == Some("external"))
+    {
+        return None;
+    }
+    let title = form.get("title").and_then(Value::as_str).unwrap_or("Question");
+    let questions: Vec<Value> = fields
+        .iter()
+        .map(|field| {
+            let text = |key: &str| field.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
+            let kind = field.get("type").and_then(Value::as_str).unwrap_or("string");
+            let options: Vec<Value> = if kind == "boolean" {
+                vec![json!({"label": "Yes"}), json!({"label": "No"})]
+            } else {
+                string_options(field)
+                    .into_iter()
+                    .map(|(label, _, description)| json!({"label": label, "description": description}))
+                    .collect()
+            };
+            json!({
+                "question": text("description").or(text("title")).or(text("key")).unwrap_or(title),
+                "header": text("title").unwrap_or(title),
+                "options": options,
+                "multiple": kind == "multiselect",
+            })
+        })
+        .collect();
+    Some(json!({
+        "type": "question.asked",
+        "properties": {
+            "id": id,
+            "sessionID": session,
+            "questions": questions,
+            "form": {"fields": fields},
+        }
+    }))
+}
+
+/// A form field's `options` as (label, value, description).
+fn string_options(field: &Value) -> Vec<(String, String, Value)> {
+    field
+        .get("options")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|o| {
+            let value = o.get("value").and_then(Value::as_str)?;
+            let label = o.get("label").and_then(Value::as_str).unwrap_or(value);
+            Some((
+                label.to_owned(),
+                value.to_owned(),
+                o.get("description").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect()
+}
+
+/// The 2.x form answer (`{<field key>: value}`) for the labels picked per
+/// question, typed per field: option labels map to their values, free text
+/// passes where the field allows it, booleans and numbers parse. Fields left
+/// blank, unparsable, or switched off by their `when` conditions are left
+/// out — opencode rejects an answer to an inactive field.
+fn v2_form_answer(form: &Value, labels: &[Vec<String>]) -> Value {
+    let fields = form
+        .get("fields")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut answer = serde_json::Map::new();
+    for (field, picked) in fields.iter().zip(labels) {
+        let Some(key) = field.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        let active = field
+            .get("when")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .all(|when| {
+                let Some(value) = when.get("key").and_then(Value::as_str).and_then(|k| answer.get(k))
+                else {
+                    return false;
+                };
+                let target = when.get("value").unwrap_or(&Value::Null);
+                let hit = match value {
+                    Value::Array(items) => items.contains(target),
+                    other => other == target,
+                };
+                if when.get("op").and_then(Value::as_str) == Some("neq") { !hit } else { hit }
+            });
+        if !active {
+            continue;
+        }
+        let picked: Vec<&str> = picked.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+        let options = string_options(field);
+        let custom = field.get("custom").and_then(Value::as_bool) == Some(true) || options.is_empty();
+        let pick = |label: &str| -> Option<String> {
+            options
+                .iter()
+                .find(|(l, _, _)| l == label)
+                .map(|(_, v, _)| v.clone())
+                .or_else(|| custom.then(|| label.to_owned()))
+        };
+        let value = match field.get("type").and_then(Value::as_str).unwrap_or("string") {
+            "multiselect" => {
+                let values: Vec<Value> = picked.iter().filter_map(|l| pick(l)).map(Value::String).collect();
+                (!values.is_empty()).then_some(Value::Array(values))
+            }
+            "boolean" => picked.first().and_then(|l| match *l {
+                "Yes" => Some(Value::Bool(true)),
+                "No" => Some(Value::Bool(false)),
+                _ => None,
+            }),
+            "integer" => picked.first().and_then(|l| l.parse::<i64>().ok()).map(Value::from),
+            "number" => picked
+                .first()
+                .and_then(|l| l.parse::<f64>().ok())
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number),
+            _ => picked.first().and_then(|l| pick(l)).map(Value::String),
+        };
+        if let Some(value) = value {
+            answer.insert(key.to_owned(), value);
+        }
+    }
+    Value::Object(answer)
 }
 
 /// The 2.x error shape (`{type, message}`) folded into the 1.x
@@ -4753,6 +5136,76 @@ http.createServer((req, res) => {{
                 a_config["command"],
                 json!(["/path with spaces/godspeed", "mcp"])
             );
+        }
+    }
+
+    /// zeronsh/zeron#764: the npm/bun `opencode` is a Node launcher that
+    /// `spawnSync`s the real server. Signalling the launcher alone orphaned
+    /// the server (48 leaked in a day, ~200 MB each). Both an explicit
+    /// shutdown and a Server dropped unshut (a discovery cancelled by its
+    /// timeout) must end the real server too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_real_server_behind_a_launcher_dies_with_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let real = fixture.path().join("real-server.js");
+        std::fs::write(
+            &real,
+            r#"const http = require('node:http');
+const fs = require('node:fs');
+const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
+fs.writeFileSync(process.env.PID_FILE, String(process.pid));
+http.createServer((req, res) => {
+  res.setHeader('content-type', 'application/json');
+  if (req.url === '/api/info') { res.end(JSON.stringify({version: '2.0.20'})); return; }
+  res.statusCode = 404; res.end('{}');
+}).listen(port, '127.0.0.1');
+"#,
+        )
+        .unwrap();
+        let launcher = fixture.path().join("opencode");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/usr/bin/env node\nrequire('node:child_process').spawnSync(process.execPath, [{real:?}, ...process.argv.slice(2)], {{stdio: 'inherit'}});\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+        for explicit in [true, false] {
+            let pid_file = fixture.path().join(format!("pid-{explicit}"));
+            // SAFETY: test-local environment, read by the spawned child.
+            unsafe { std::env::set_var("PID_FILE", &pid_file) };
+            let mut server = Server::spawn(
+                &launcher,
+                fixture.path().to_str(),
+                Duration::from_secs(10),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+            assert!(alive(pid));
+            if explicit {
+                server.shutdown(Duration::from_millis(500)).await;
+            } else {
+                drop(server);
+            }
+            let mut gone = false;
+            for _ in 0..100 {
+                if !alive(pid) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if !gone {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+            assert!(gone, "the real server outlived its launcher (explicit: {explicit})");
         }
     }
 
