@@ -249,6 +249,28 @@ pub mod methods {
     pub const CANCEL_HARNESS_UPDATE: &str = "CancelHarnessUpdate";
     pub const DISMISS_HARNESS_UPDATE: &str = "DismissHarnessUpdate";
     pub const SET_HARNESS_UPDATE_POLICY: &str = "SetHarnessUpdatePolicy";
+    // Always-on agents (`zeron_proto::agents`). Device-scoped like repos, so
+    // relay-forwardable: a laptop manages the agents its VPS engine hosts.
+    /// `{}` → `AgentSummary[]`.
+    pub const LIST_AGENTS: &str = "ListAgents";
+    /// Stream of `AgentsSnapshot`: current first, then one per change.
+    pub const WATCH_AGENTS: &str = "WatchAgents";
+    /// `{draft}` → `AgentSummary`.
+    pub const CREATE_AGENT: &str = "CreateAgent";
+    /// `{id, draft}` → `AgentSummary`.
+    pub const UPDATE_AGENT: &str = "UpdateAgent";
+    /// `{id}` → `{deleted}`. Keeps the agent's chats; drops its inbox rows.
+    pub const DELETE_AGENT: &str = "DeleteAgent";
+    /// `{id, enabled}` → `AgentSummary`. Enabling also lifts an auto-pause.
+    pub const SET_AGENT_ENABLED: &str = "SetAgentEnabled";
+    /// `{id}` → `AgentRun` (the new run, or why it was skipped).
+    pub const RUN_AGENT_NOW: &str = "RunAgentNow";
+    /// `{id}` → `AgentSummary` with a fresh webhook token; the old URL dies.
+    pub const ROTATE_AGENT_WEBHOOK: &str = "RotateAgentWebhook";
+    /// `AgentRunFilter` → `AgentRun[]`, newest first.
+    pub const LIST_AGENT_RUNS: &str = "ListAgentRuns";
+    /// `{ids, read?, archived?}` → `{changed}`.
+    pub const MARK_AGENT_RUNS: &str = "MarkAgentRuns";
 }
 
 /// Stable capability error codes transported without provider stderr.
