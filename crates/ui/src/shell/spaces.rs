@@ -2248,6 +2248,12 @@ pub(super) fn working_duration_label(elapsed: chrono::TimeDelta) -> String {
     }
 }
 
+/// A settled turn's label while its background work is still running.
+pub(super) fn waiting_on_label(tasks: u32) -> String {
+    let plural = if tasks == 1 { "" } else { "s" };
+    format!("Waiting on {tasks} task{plural}")
+}
+
 fn snoozed_until(chat: &zeron_proto::Chat) -> Option<DateTime<Utc>> {
     match chat.lifecycle.state {
         zeron_proto::LifecycleState::Snoozed { until } => Some(until),

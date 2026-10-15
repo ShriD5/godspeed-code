@@ -8386,25 +8386,39 @@ impl Shell {
                 state.send_undelivered(&id, now),
             )
         };
+        let settled = matches!(
+            status,
+            zeron_proto::ChatIndicator::Completed | zeron_proto::ChatIndicator::Idle
+        );
+        let waiting_tasks = if settled && !queued && !undelivered {
+            self.state.read(cx).background_work_for(&id, Utc::now())
+        } else {
+            0
+        };
+        let waiting = waiting_tasks > 0;
         let status_color = if undelivered {
             theme.danger
         } else if queued {
             theme.warning
+        } else if waiting {
+            spaces::status_dot_color(zeron_proto::ChatIndicator::Working, theme)
         } else {
             spaces::status_dot_color(status, theme)
         };
-        let status_label: Option<&'static str> = if undelivered {
-            Some("Failed")
+        let status_label: Option<SharedString> = if undelivered {
+            Some("Failed".into())
         } else if queued {
-            Some("Queued")
+            Some("Queued".into())
+        } else if waiting {
+            Some(spaces::waiting_on_label(waiting_tasks).into())
         } else {
             match status {
-                zeron_proto::ChatIndicator::Working => Some("Working"),
-                zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
-                zeron_proto::ChatIndicator::AwaitingApproval => Some("Needs approval"),
-                zeron_proto::ChatIndicator::Errored => Some("Failed"),
-                zeron_proto::ChatIndicator::Limited => Some("Limited"),
-                zeron_proto::ChatIndicator::Completed => Some("Done"),
+                zeron_proto::ChatIndicator::Working => Some("Working".into()),
+                zeron_proto::ChatIndicator::AwaitingInput => Some("Input".into()),
+                zeron_proto::ChatIndicator::AwaitingApproval => Some("Needs approval".into()),
+                zeron_proto::ChatIndicator::Errored => Some("Failed".into()),
+                zeron_proto::ChatIndicator::Limited => Some("Limited".into()),
+                zeron_proto::ChatIndicator::Completed => Some("Done".into()),
                 zeron_proto::ChatIndicator::Idle => None,
             }
         };
@@ -8432,7 +8446,7 @@ impl Shell {
             })
         };
         let compact_status = compact.then(|| {
-            let glyph = if working {
+            let glyph = if working || waiting {
                 loaders::mini_glyph_spinner(
                     format!("{row_id}-working"),
                     2.0,
@@ -8464,7 +8478,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .aria_label(status_label.unwrap_or("Idle"))
+                .aria_label(status_label.clone().unwrap_or("Idle".into()))
                 .child(glyph)
                 .into_any_element()
         });
@@ -8532,18 +8546,20 @@ impl Shell {
                 div().into_any_element()
             }
         } else {
-            match status_label {
+            match status_label.clone() {
                 Some(label) => {
                     // Glyph slot: Working wears the preset's animated pixel
                     // glyph beside its label, Done wears the check, and the
                     // remaining statuses use a compact dot.
-                    let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed {
+                    let glyph: AnyElement = if status == zeron_proto::ChatIndicator::Completed
+                        && !waiting
+                    {
                         icon(icons::CHECK)
                             .size(px(11.0))
                             .flex_none()
                             .text_color(status_color)
                             .into_any_element()
-                    } else if working {
+                    } else if working || waiting {
                         loaders::mini_glyph_spinner(
                             format!("{row_id}-working"),
                             2.0,
@@ -8565,7 +8581,7 @@ impl Shell {
                         .flex_row()
                         .items_center()
                         .gap(px(6.0))
-                        .children(subagent_pill("label"))
+                        .children(subagent_pill("label").filter(|_| !waiting))
                         .child(
                             div()
                                 .flex()
@@ -8583,7 +8599,7 @@ impl Shell {
                                                 "{label} · {}",
                                                 spaces::working_duration_label(elapsed)
                                             ),
-                                            None => label.to_owned(),
+                                            None => label.to_string(),
                                         })),
                                 ),
                         )
@@ -8615,17 +8631,15 @@ impl Shell {
                     move || format!("{row_id}-corner")
                 })
                 .aria_label(if corner_hovered {
-                    if archived { "Unarchive" } else { "Archive" }
-                } else {
-                    if compact {
-                        if remote {
-                            "Remote session"
-                        } else {
-                            "Session actions"
-                        }
+                    SharedString::from(if archived { "Unarchive" } else { "Archive" })
+                } else if compact {
+                    SharedString::from(if remote {
+                        "Remote session"
                     } else {
-                        status_label.unwrap_or("Idle")
-                    }
+                        "Session actions"
+                    })
+                } else {
+                    status_label.unwrap_or("Idle".into())
                 })
                 .when(compact, |el| el.w(px(18.0)).justify_center())
                 .flex_none()

@@ -2282,6 +2282,11 @@ impl AppState {
         running_subagents(self.session_for(chat_id), now)
     }
 
+    /// Background work the chat is still waiting on ("waiting on N tasks").
+    pub fn background_work_for(&self, chat_id: &str, now: DateTime<Utc>) -> u32 {
+        zeron_proto::view::background_work(self.session_for(chat_id), now)
+    }
+
     /// Staleness-checked status dot for a chat row. A send in flight reads as
     /// Working (see [`Self::display_status_for`]).
     pub fn indicator_for(&self, chat_id: &str, now: DateTime<Utc>) -> Indicator {
