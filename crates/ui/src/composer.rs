@@ -90,6 +90,9 @@ const NEW_THREAD_SELECTOR_ROW_HEIGHT: f32 = 20.0;
 // Accommodate the 24px usage indicator and PR badge without overflowing the
 // row's equal 8px top/bottom gutters.
 pub(crate) const SESSION_FOOTER_HEIGHT: f32 = 24.0;
+/// The approval card's command box: about twelve 18px lines (padding
+/// included) before a long heredoc scrolls inside the box.
+const APPROVAL_COMMAND_MAX_HEIGHT: f32 = 12.0 * 18.0 + 16.0;
 
 /// Route chrome dissolves around the middle of the shared-element move. The
 /// two ramps never overlap, which avoids duplicate picker ids/popovers while
@@ -10132,8 +10135,19 @@ impl Composer {
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx).clone();
         let mono = theme.font_mono.clone();
+        // The command is what the user is approving, so all of it must be
+        // readable in place: `w_full` + `min_w_0` give the text a definite
+        // width to wrap against (gpui breaks mid-token when a pipeline or a
+        // path has no space to break at) instead of running off the card's
+        // edge, and a tall heredoc scrolls inside its own box rather than
+        // shoving the decision buttons out of the window (T3 16197).
         let code_block = |text: SharedString| {
             div()
+                .id("approval-command")
+                .w_full()
+                .min_w_0()
+                .max_h(px(APPROVAL_COMMAND_MAX_HEIGHT))
+                .overflow_y_scroll()
                 .mt(px(10.0))
                 .px(px(12.0))
                 .py(px(8.0))
@@ -10161,6 +10175,7 @@ impl Composer {
                 )
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
                         .font_family(mono.clone())
                         .text_color(theme.text_muted)
