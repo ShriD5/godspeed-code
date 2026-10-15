@@ -7580,8 +7580,11 @@ impl Shell {
             ),
         ) + CLUSTER_BUTTONS_WIDTH
             + TITLEBAR_ACTION_SLOT_WIDTH * self.titlebar_plus_alpha(cx);
-        let left = (sidebar - Theme::SPACE_SM - 24.0).max(cluster_end + TITLEBAR_GROUP_GAP);
+        // Search (threads and their messages), then the view options.
+        let left = (sidebar - Theme::SPACE_SM - 24.0 * 2.0 - 4.0)
+            .max(cluster_end + TITLEBAR_GROUP_GAP);
         let theme = Theme::of(cx).clone();
+        let search = self.render_sidebar_search_trigger(&theme, cx);
         let trigger = self.render_sidebar_view_trigger(&theme, cx);
         Some(
             div()
@@ -7592,7 +7595,9 @@ impl Shell {
                 .pt(px(Theme::TITLEBAR_TOP_PAD))
                 .flex()
                 .items_center()
+                .gap(px(4.0))
                 .opacity(reveal)
+                .child(search)
                 .child(trigger)
                 .into_any_element(),
         )

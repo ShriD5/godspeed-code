@@ -5,8 +5,9 @@ use super::*;
 use crate::appearance::AppearanceMode;
 use crate::files::client::{FilesClientError, FilesRequestContext, WorkspaceFilesClient};
 use zeron_proto::{
-    SearchWorkspaceContentRequest, SearchWorkspaceFilesRequest, WorkspaceContentMatch,
-    WorkspaceEntryKind, WorkspaceFileSearchMatch, WorkspaceSearchIndexState, WorkspaceTarget,
+    MessageSearchHit, SearchMessagesRequest, SearchMessagesResult, SearchWorkspaceContentRequest,
+    SearchWorkspaceFilesRequest, WorkspaceContentMatch, WorkspaceEntryKind,
+    WorkspaceFileSearchMatch, WorkspaceSearchIndexState, WorkspaceTarget,
 };
 
 /// Key context of the palette card: its mod-1…4 tab bindings live here.
@@ -27,6 +28,10 @@ const CONTENT_DEBOUNCE: Duration = Duration::from_millis(80);
 const CONTENT_INDEX_RETRY: Duration = Duration::from_millis(500);
 const CONTENT_INDEX_RETRY_MAX: Duration = Duration::from_secs(2);
 const FILE_INDEX_RETRY: Duration = Duration::from_millis(500);
+/// Message hits asked of each engine (one per chat).
+const MESSAGE_HITS_LIMIT: u16 = 60;
+/// Remote hosts are asked once typing pauses; this engine answers per key.
+const REMOTE_MESSAGE_DEBOUNCE: Duration = Duration::from_millis(120);
 const RESULTS_FADE_BAND: f32 = 18.0;
 
 pub(super) struct CommandPalette {
@@ -51,7 +56,41 @@ pub(super) struct CommandPalette {
     files_ready: Option<WorkspaceTarget>,
     /// Content matches in the focused chat's workspace.
     content: WorkspaceQuery<Vec<WorkspaceContentMatch>>,
+    /// Message-text matches across every chat (`SearchMessages`).
+    messages: MessageHits,
     _search_events: Subscription,
+}
+
+/// Message-text hits for the query: this engine's, plus each online remote
+/// host's answer for the chats it owns. The first answer to a newer query
+/// drops the older ones, so rows never mix queries.
+#[derive(Default)]
+struct MessageHits {
+    generation: u64,
+    answered: u64,
+    /// The query the hits answer.
+    query: String,
+    /// Per answering device (`None` = the engine this viewport talks to).
+    by_device: std::collections::HashMap<Option<String>, Vec<MessageSearchHit>>,
+    tasks: Vec<Task<()>>,
+}
+
+impl MessageHits {
+    /// The best hit per chat across answering engines, for `query` only.
+    fn best(&self, query: &str) -> std::collections::HashMap<&str, &MessageSearchHit> {
+        let mut best: std::collections::HashMap<&str, &MessageSearchHit> =
+            std::collections::HashMap::new();
+        if self.query != query {
+            return best;
+        }
+        for hit in self.by_device.values().flatten() {
+            let slot = best.entry(hit.chat_id.as_str()).or_insert(hit);
+            if hit.score > slot.score {
+                *slot = hit;
+            }
+        }
+        best
+    }
 }
 
 /// An asynchronous workspace section's request state. Rows from the last
@@ -495,6 +534,7 @@ impl Shell {
                     palette.scroll.set_offset(gpui::point(px(0.0), px(0.0)));
                 }
                 this.search_palette_workspace(cx);
+                this.search_palette_messages(cx);
                 cx.notify();
             }
         });
@@ -512,11 +552,57 @@ impl Shell {
             files: WorkspaceQuery::default(),
             files_ready: None,
             content: WorkspaceQuery::default(),
+            messages: MessageHits::default(),
             _search_events: events,
         });
         // Load the default Files list (recently changed files) right away.
         self.search_palette_workspace(cx);
         cx.notify();
+    }
+
+    /// The sidebar's search control: the palette on its Threads tab, where
+    /// titles and message text match from the first character.
+    pub(super) fn open_thread_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.command_palette.is_none() {
+            self.toggle_command_palette(window, cx);
+        }
+        self.select_palette_tab(Tab::Threads, cx);
+    }
+
+    /// The magnifier beside the sidebar's view options.
+    pub(super) fn render_sidebar_search_trigger(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("sidebar-search")
+            .role(gpui::Role::Button)
+            .aria_label("Search threads and messages")
+            .size(px(24.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .hover(|el| el.bg(theme.glass_hover()))
+            // Over the titlebar's drag strip, like the view options.
+            .occlude()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|_, _, window, _| window.prevent_default()),
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_thread_search(window, cx);
+            }))
+            .child(
+                icon(icons::MAGNIFER)
+                    .size(px(15.0))
+                    .text_color(theme.text_muted),
+            )
+            .into_any_element()
     }
 
     pub(super) fn select_palette_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
@@ -665,6 +751,110 @@ impl Shell {
         }));
     }
 
+    /// Look the query up in every chat's messages, from the first character:
+    /// this engine's local index at once, each online remote host (for the
+    /// chats it owns) once typing pauses.
+    fn search_palette_messages(&mut self, cx: &mut Context<Self>) {
+        let (engine, remotes) = {
+            let state = self.state.read(cx);
+            let Some(engine) = state.engine().cloned() else {
+                return;
+            };
+            let now = Utc::now();
+            let mut remotes: Vec<String> = state
+                .chats
+                .iter()
+                .filter(|chat| chat.is_top_level())
+                .map(|chat| chat.device_id.clone())
+                .filter(|device| state.local_device_id.as_ref() != Some(device))
+                .collect();
+            remotes.sort();
+            remotes.dedup();
+            remotes.retain(|device| state.device_online(device, now));
+            (engine, remotes)
+        };
+        let Some(palette) = self.command_palette.as_mut() else {
+            return;
+        };
+        let query = palette.search.read(cx).text().trim().to_owned();
+        let messages = &mut palette.messages;
+        messages.generation += 1;
+        messages.tasks.clear();
+        if query.is_empty() {
+            messages.by_device.clear();
+            messages.query.clear();
+            return;
+        }
+        let generation = messages.generation;
+        for device in std::iter::once(None).chain(remotes.into_iter().map(Some)) {
+            let request = SearchMessagesRequest {
+                query: query.clone(),
+                limit: Some(MESSAGE_HITS_LIMIT),
+                per_chat: Some(1),
+                hosted_only: device.is_some(),
+                chat_ids: None,
+            };
+            let Ok(mut params) = serde_json::to_value(&request) else {
+                continue;
+            };
+            if let Some(device) = &device {
+                params["targetDeviceId"] = device.clone().into();
+            }
+            let engine = engine.clone();
+            let query = query.clone();
+            messages.tasks.push(cx.spawn(async move |this, cx| {
+                if device.is_some() {
+                    cx.background_executor().timer(REMOTE_MESSAGE_DEBOUNCE).await;
+                }
+                let answer = engine
+                    .client()
+                    .call(methods::SEARCH_MESSAGES, params)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|value| {
+                        serde_json::from_value::<SearchMessagesResult>(value)
+                            .map_err(|error| error.to_string())
+                    });
+                let hits = match answer {
+                    Ok(result) => result.hits,
+                    // Older or unreachable hosts just contribute nothing.
+                    Err(error) => {
+                        tracing::debug!(?device, %error, "palette message search failed");
+                        return;
+                    }
+                };
+                this.update(cx, |shell, cx| {
+                    let Some(palette) = shell.command_palette.as_mut() else {
+                        return;
+                    };
+                    let messages = &mut palette.messages;
+                    if messages.generation != generation {
+                        return;
+                    }
+                    if messages.answered != generation {
+                        messages.answered = generation;
+                        messages.by_device.clear();
+                        messages.query = query;
+                    }
+                    messages.by_device.insert(device, hits);
+                    cx.notify();
+                })
+                .ok();
+            }));
+        }
+    }
+
+    /// The message hit shown under a chat row for the current query.
+    fn palette_message_hit(&self, chat_id: &str, cx: &App) -> Option<MessageSearchHit> {
+        let palette = self.command_palette.as_ref()?;
+        let query = palette.search.read(cx).text().trim().to_owned();
+        palette
+            .messages
+            .best(&query)
+            .get(chat_id)
+            .map(|hit| (*hit).clone())
+    }
+
     /// The open palette's sections for its tab and query.
     fn palette_sections(&self, cx: &App) -> Vec<PaletteSection> {
         let Some(palette) = &self.command_palette else {
@@ -794,6 +984,19 @@ impl Shell {
     fn thread_matches(&self, query: &str, limit: usize, cx: &App) -> Vec<String> {
         let state = self.state.read(cx);
         let terms = thread_search::search_terms(query);
+        // Message-text hits rank alongside the metadata scores (see
+        // `thread_search::message_score`).
+        let typed = self
+            .command_palette
+            .as_ref()
+            .map(|palette| palette.search.read(cx).text().trim().to_owned())
+            .unwrap_or_default();
+        let hits = self
+            .command_palette
+            .as_ref()
+            .map(|palette| palette.messages.best(&typed))
+            .unwrap_or_default();
+        let top_hit = hits.values().map(|hit| hit.score).fold(0.0, f32::max);
         // Global history deliberately ignores the sidebar's project filter and
         // collapsed groups. Archived conversations remain searchable too.
         // Like the sidebar, only list top-level sessions, not side chats or MCP workers.
@@ -823,7 +1026,14 @@ impl Shell {
                     pull_request: &pull_request,
                     archived: chat.archived,
                 };
-                let score = thread_search::score_thread(&fields, &terms)?;
+                let metadata = thread_search::score_thread(&fields, &terms);
+                let message = hits
+                    .get(chat.id.as_str())
+                    .map(|hit| thread_search::message_score(hit.score, top_hit, chat.archived));
+                if metadata.is_none() && message.is_none() {
+                    return None;
+                }
+                let score = metadata.unwrap_or(0) + message.unwrap_or(0);
                 let active = chat.last_message_at.unwrap_or(chat.created_at);
                 Some((chat.id.clone(), score, active.timestamp_millis()))
             })
@@ -899,6 +1109,13 @@ impl Shell {
             cx.notify();
             return;
         }
+        // Read the message hit before closing drops the palette's answers.
+        let reveal = match &row.kind {
+            RowKind::Chat(id) => self
+                .palette_message_hit(id, cx)
+                .map(|hit| (hit.chat_id, hit.message_id)),
+            _ => None,
+        };
         self.close_command_palette(window, cx);
         match row.kind {
             RowKind::Command(Command::NewChat) => self.open_new_session(None, cx),
@@ -912,7 +1129,14 @@ impl Shell {
             RowKind::Command(Command::GitCreatePullRequest) => {
                 self.palette_create_pull_request(window, cx)
             }
-            RowKind::Chat(id) => self.open_chat(id, cx),
+            RowKind::Chat(id) => {
+                self.open_chat(id, cx);
+                if let Some((chat_id, message_id)) = reveal {
+                    self.transcript.update(cx, |transcript, cx| {
+                        transcript.reveal_entry(chat_id, message_id, cx)
+                    });
+                }
+            }
             RowKind::File { path, is_dir } => {
                 self.open_palette_path(path, is_dir, None, window, cx)
             }
@@ -1111,6 +1335,7 @@ impl Shell {
                     .into_any_element()
             }
             RowKind::Chat(id) => {
+                let hit = self.palette_message_hit(id, cx);
                 let state = self.state.read(cx);
                 let chat = state.chats.iter().find(|chat| &chat.id == id)?;
                 // Project-less sessions name only their device.
@@ -1142,7 +1367,7 @@ impl Shell {
                     .sidebar_show_harness
                     .then(|| chat.config.as_ref().map(|c| c.harness))
                     .flatten();
-                self.render_chat_row(
+                let row = self.render_chat_row(
                     id.clone(),
                     transcript::single_line(chat.title.as_deref().unwrap_or("New session")).into(),
                     format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), Utc::now())
@@ -1161,7 +1386,16 @@ impl Shell {
                     Some(query),
                     theme,
                     cx,
-                )
+                );
+                match hit {
+                    Some(hit) => div()
+                        .flex()
+                        .flex_col()
+                        .child(row)
+                        .child(message_snippet(&hit, theme))
+                        .into_any_element(),
+                    None => row,
+                }
             }
         })
     }
@@ -1243,7 +1477,7 @@ impl Shell {
                 el.child(palette_empty(
                     &theme,
                     "No results",
-                    "Try a command, chat title, project, or device.",
+                    "Try a command, chat title, message text, project, or device.",
                 ))
             });
         let body = palette_results_fade(body, &scroll);
@@ -1335,6 +1569,38 @@ impl Shell {
             );
         Some(palette_overlay(viewport, card))
     }
+}
+
+/// The matched message under a chat row: who said it, then the engine's
+/// snippet with its match ranges washed like the other search rows.
+fn message_snippet(hit: &MessageSearchHit, theme: &Theme) -> gpui::Div {
+    let who = match (hit.role, hit.field) {
+        (_, zeron_proto::MessageSearchField::Tool) => "Tool",
+        (zeron_proto::MessageSearchRole::User, _) => "You",
+        (zeron_proto::MessageSearchRole::Assistant, _) => "Agent",
+    };
+    let ranges = hit
+        .ranges
+        .iter()
+        .map(|&(start, end)| start as usize..end as usize)
+        .collect();
+    div()
+        .pl(px(12.0))
+        .pr(px(8.0))
+        .pb(px(4.0))
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_size(crate::typography::ui_rems(12.0))
+        .text_color(theme.text_muted)
+        .child(div().flex_none().opacity(0.7).child(who))
+        .child(div().min_w_0().truncate().child(popover::search_highlight_ranges(
+            SharedString::from(hit.snippet.clone()),
+            ranges,
+            theme,
+        )))
 }
 
 /// A section's title, in the sidebar's secondary text style, with its
@@ -1976,12 +2242,83 @@ mod tests {
                     engine.reply(&request, serde_json::json!({ "state": warm }))
                 }
                 methods::SEARCH_WORKSPACE_FILES => engine.reply(&request, serde_json::json!([])),
+                methods::SEARCH_MESSAGES => {
+                    engine.reply(&request, serde_json::json!({ "hits": [], "indexing": false }))
+                }
                 _ => engine.reply(&request, content_answer(Vec::new(), false)),
             }
-            if method != methods::SEARCH_WORKSPACE_CONTENT {
+            if method != methods::SEARCH_WORKSPACE_CONTENT && method != methods::SEARCH_MESSAGES {
                 methods_seen.push(method);
             }
         }
+    }
+
+    fn message_hit(chat: &str, message: &str, snippet: &str) -> serde_json::Value {
+        serde_json::json!({
+            "chatId": chat,
+            "messageId": message,
+            "role": "assistant",
+            "createdAt": 1,
+            "field": "text",
+            "snippet": snippet,
+            "ranges": [[4, 7]],
+            "score": 2.5,
+        })
+    }
+
+    #[gpui::test]
+    fn message_hits_join_threads_from_the_first_character(cx: &mut TestAppContext) {
+        let (window, _dir, mut engine) = engine_palette(cx, false);
+        // No title, project or device holds a "z": only message text can.
+        type_query(window, "z", cx);
+        let asked = engine.take(methods::SEARCH_MESSAGES, cx);
+        assert_eq!(asked.len(), 1, "the local engine is asked at once");
+        assert_eq!(asked[0]["params"]["query"], "z");
+        assert_eq!(asked[0]["params"]["perChat"], 1);
+        assert!(asked[0]["params"].get("targetDeviceId").is_none());
+        engine.reply(
+            &asked[0],
+            serde_json::json!({
+                "hits": [message_hit("focused", "m7", "the zoo keeper")],
+                "indexing": false,
+            }),
+        );
+        cx.run_until_parked();
+        let threads = palette_section(window, Section::Threads, cx).expect("a message match");
+        assert_eq!(
+            threads.rows.iter().map(|row| row.kind.clone()).collect::<Vec<_>>(),
+            [RowKind::Chat("focused".into())]
+        );
+        let hit = window
+            .read_with(cx, |shell, cx| shell.palette_message_hit("focused", cx))
+            .unwrap()
+            .expect("the row carries its snippet");
+        assert_eq!(&hit.snippet[4..7], "zoo");
+
+        // A newer query hides the older answer until its own arrives.
+        type_query(window, "zz", cx);
+        assert!(palette_section(window, Section::Threads, cx).is_none());
+        let asked = engine.take(methods::SEARCH_MESSAGES, cx);
+        engine.reply(
+            &asked[0],
+            serde_json::json!({
+                "hits": [message_hit("focused", "m7", "the zzz keeper")],
+                "indexing": false,
+            }),
+        );
+        cx.run_until_parked();
+
+        // Opening the result reveals the message in its chat.
+        window
+            .update(cx, |shell, window, cx| shell.activate_palette_selection(window, cx))
+            .unwrap();
+        window
+            .read_with(cx, |shell, cx| {
+                assert!(shell.command_palette.is_none());
+                assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("focused"));
+                assert!(shell.transcript.read(cx).pending_reveal.is_some());
+            })
+            .unwrap();
     }
 
     #[gpui::test]
