@@ -18,6 +18,8 @@ struct TurnWire {
     steering: Option<mpsc::Sender<crate::SteerMessage>>,
     polls: Arc<std::sync::atomic::AtomicUsize>,
     command_failure_release: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Every question the run put to the user.
+    asked: Arc<std::sync::Mutex<Vec<UserInputQuestion>>>,
     server: tokio::task::JoinHandle<()>,
     run: tokio::task::JoinHandle<()>,
 }
@@ -248,7 +250,13 @@ impl TurnWire {
             .unwrap_or(false)
             .then_some(steer_tx);
         let interrupt = tokio_util::sync::CancellationToken::new();
-        let mut request = json!({"prompt": if native_command_reply.is_some() { "/project-review" } else { "first" }, "cwd":"", "sandbox":"workspace-write", "autoApprove": auto_approve, "model": if v2 { Some("opencode/muse") } else { None }, "reasoning": "low"});
+        // auto_approve = full access (the legacy pair); otherwise
+        // auto-accept edits, whose permission requests are the user's.
+        let sandbox = if auto_approve { "danger-full-access" } else { "workspace-write" };
+        let answer_label = overrides["answerLabel"].as_str().map(str::to_owned);
+        let asked: Arc<std::sync::Mutex<Vec<UserInputQuestion>>> = Arc::default();
+        let seen = asked.clone();
+        let mut request = json!({"prompt": if native_command_reply.is_some() { "/project-review" } else { "first" }, "cwd":"", "sandbox":sandbox, "autoApprove": auto_approve, "model": if v2 { Some("opencode/muse") } else { None }, "reasoning": "low"});
         request
             .as_object_mut()
             .unwrap()
@@ -261,13 +269,17 @@ impl TurnWire {
                 execution_lease: None,
                 request_input: Box::new(move |questions| {
                     let answer = answer.expect("fixture must not ask for input");
+                    seen.lock().unwrap().extend(questions.iter().cloned());
+                    let label = answer_label
+                        .clone()
+                        .unwrap_or_else(|| if answer { "Yes" } else { "No" }.into());
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     let _ = tx.send(
                         questions
                             .into_iter()
                             .map(|q| UserInputAnswer {
                                 question_id: q.id,
-                                labels: vec![if answer { "Yes" } else { "No" }.into()],
+                                labels: vec![label.clone()],
                             })
                             .collect(),
                     );
@@ -305,6 +317,7 @@ impl TurnWire {
                 Some(NativeCommandReply::DelayedHttp404)
             )
             .then_some(command_failure_release),
+            asked,
             server,
             run,
         }
@@ -1664,7 +1677,7 @@ fn prompt_body_v2_carries_text_and_files_only() {
 #[tokio::test]
 async fn permissions_stay_session_scoped_and_never_persist_grants() {
     for v2 in [false, true] {
-        let mut wire = TurnWire::start_policy(false, v2, false, None).await;
+        let mut wire = TurnWire::start_policy(false, v2, true, None).await;
         if v2 {
             wire.request("/api/model").await;
         }
@@ -1729,13 +1742,12 @@ async fn permissions_stay_session_scoped_and_never_persist_grants() {
 }
 
 #[tokio::test]
-async fn permissions_always_approve_without_user_input() {
+async fn full_access_approves_permissions_without_user_input() {
     for version in ["2.0.0", "2.0.3", "2.0.4", "2.0.11"] {
-        for auto_approve in [false, true] {
+        {
             // No input callback is available: any permission prompt fails the fixture.
             let mut wire =
-                TurnWire::start_config(false, true, auto_approve, None, version, json!({}), false)
-                    .await;
+                TurnWire::start_config(false, true, true, None, version, json!({}), false).await;
             wire.request("/api/model").await;
             wire.request("/prompt").await;
             let key = if version == "2.0.0" || version == "2.0.3" {
@@ -1750,6 +1762,89 @@ async fn permissions_always_approve_without_user_input() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn permissions_ask_outside_full_access_and_remember_session_grants() {
+    // Auto-accept edits: a command asks; "for this session" covers the same
+    // permission and patterns afterwards without asking again.
+    let mut wire = TurnWire::start_config(
+        false,
+        true,
+        false,
+        Some(true),
+        "2.0.11",
+        json!({"answerLabel": "Approve for this session"}),
+        false,
+    )
+    .await;
+    wire.request("/api/model").await;
+    wire.request("/prompt").await;
+    let bash = json!({"sessionID":"fixture", "action":"bash", "resources":["make deploy"]});
+    for id in ["cmd1", "cmd2"] {
+        let mut data = bash.clone();
+        data["id"] = json!(id);
+        wire.v2("permission.asked", data);
+        let body = wire.posted(&format!("/permission/{id}/reply")).await;
+        assert_eq!(body, json!({"decision": "once"}));
+    }
+    {
+        let asked = wire.asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "the session grant covered the repeat");
+        let approval = asked[0].approval.as_ref().unwrap();
+        assert_eq!(approval.kind, ApprovalKind::Command);
+        assert_eq!(approval.command.as_deref(), Some("make deploy"));
+    }
+
+    // A declined edit (1.x shape: path and diff in metadata) replies reject.
+    let mut wire = TurnWire::start_config(
+        false,
+        false,
+        false,
+        Some(false),
+        "2.0.3",
+        json!({}),
+        false,
+    )
+    .await;
+    wire.request("/prompt_async").await;
+    wire.bus
+        .send(json!({"type":"permission.asked","properties":{
+            "id":"edit1", "sessionID":"fixture", "permission":"external_directory",
+            "patterns":["/etc/*"], "metadata":{"filepath":"/etc/hosts", "diff":"-a\n+b\n"}
+        }}))
+        .unwrap();
+    let body = wire.posted("/permission/edit1/reply").await;
+    assert_eq!(body, json!({"reply": "reject"}));
+    let asked = wire.asked.lock().unwrap();
+    let approval = asked[0].approval.as_ref().unwrap();
+    assert_eq!(approval.title, "Access files outside the workspace");
+    assert_eq!(approval.paths, ["/etc/hosts", "/etc/*"]);
+    assert_eq!(approval.diff.as_deref(), Some("-a\n+b\n"));
+}
+
+#[test]
+fn access_modes_launch_with_permission_rules() {
+    assert_eq!(permission_config(AccessMode::FullAccess), None);
+    let supervised = permission_config(AccessMode::Supervised).unwrap();
+    assert_eq!(supervised["edit"], "ask");
+    assert_eq!(supervised["bash"], "ask");
+    let edits = permission_config(AccessMode::AutoAcceptEdits).unwrap();
+    assert_eq!(edits["edit"], "allow");
+    assert_eq!(edits["external_directory"], "ask");
+    assert_eq!(permission_config(AccessMode::Auto), Some(edits.clone()));
+    // Ours win per tool; the user's other rules and settings stay.
+    let merged: Value = serde_json::from_str(
+        &with_permission(
+            Some(r#"{"model":"keep","permission":{"bash":"allow","lsp":"deny"}}"#),
+            &edits,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(merged["model"], "keep");
+    assert_eq!(merged["permission"]["bash"], "ask");
+    assert_eq!(merged["permission"]["lsp"], "deny");
 }
 
 #[tokio::test]
