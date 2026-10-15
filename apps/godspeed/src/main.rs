@@ -6,6 +6,7 @@
 
 mod auth_cli;
 mod daemon;
+mod import_cli;
 mod paths;
 mod update_cli;
 
@@ -52,6 +53,19 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+    /// Import chats from T3 Code, Claude Code, Codex or Cursor into the running
+    /// engine's workspace. `--dry-run` only reports what would be imported.
+    Import {
+        /// Where to import from.
+        #[arg(value_parser = ["t3", "claude", "codex", "cursor"])]
+        source: String,
+        /// Report counts without importing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only this project folder (repeatable).
+        #[arg(long = "project", value_name = "PATH")]
+        projects: Vec<String>,
     },
     /// Check for a newer release and apply it (download → verify → swap →
     /// service restart). `--check` only reports (exits 1 when one is available).
@@ -261,6 +275,21 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Appshot) => {
             zeron_ui::appshots::request_running_appshot(&engine_config_from_env().data_dir)
                 .map_err(anyhow::Error::msg)
+        }
+        Some(Command::Import {
+            source,
+            dry_run,
+            projects,
+        }) => {
+            let source = zeron_proto::chat_import::ChatImportSource::from_slug(&source)
+                .ok_or_else(|| anyhow::anyhow!("unknown import source: {source}"))?;
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(import_cli::import(
+                engine_config_from_env().ipc_port,
+                source,
+                dry_run,
+                projects,
+            ))
         }
         Some(Command::Update { check }) => {
             let runtime = tokio::runtime::Runtime::new()?;

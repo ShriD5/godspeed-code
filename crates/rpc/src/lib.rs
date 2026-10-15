@@ -145,6 +145,14 @@ pub mod methods {
     pub const LOCAL_IMPORT_STATUS: &str = "LocalImportStatus";
     /// One-time local→synced profile import: run it (stream of progress items).
     pub const IMPORT_LOCAL_WORKSPACE: &str = "ImportLocalWorkspace";
+    // Chat import from other agent apps (`zeron_proto::chat_import`). IPC-only:
+    // the sources are this device's files and the chats land on this device.
+    /// `{}` → `ChatImportPreview[]`, one per source (T3 Code, Claude Code, Codex).
+    pub const SCAN_CHAT_IMPORT_SOURCES: &str = "ScanChatImportSources";
+    /// `{source}` → `ChatImportPreview`.
+    pub const PREVIEW_CHAT_IMPORT: &str = "PreviewChatImport";
+    /// `ChatImportRequest` → stream of `ChatImportProgress`, ending in `summary`.
+    pub const RUN_CHAT_IMPORT: &str = "RunChatImport";
     // Repos / worktrees / folders (ControlRpc, relay-forwardable).
     pub const LIST_REPOS: &str = "ListRepos";
     pub const ADD_REPO: &str = "AddRepo";

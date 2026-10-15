@@ -702,6 +702,7 @@ pub struct EngineRpc {
     updater: Option<zeron_update::Updater>,
     harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
     local_import: Option<crate::local_import::LocalImporter>,
+    chat_import: Option<crate::chat_import::ChatImporter>,
     agents: Option<crate::agents::Agents>,
     engine_info: EngineInfo,
 }
@@ -751,6 +752,7 @@ impl EngineRpc {
             updater: None,
             harness_updates: None,
             local_import: None,
+            chat_import: None,
             agents: None,
             engine_info,
         }
@@ -793,6 +795,12 @@ impl EngineRpc {
         self
     }
 
+    /// Attach the chat importer (T3 Code / Claude Code / Codex history).
+    pub fn with_chat_import(mut self, importer: crate::chat_import::ChatImporter) -> Self {
+        self.chat_import = Some(importer);
+        self
+    }
+
     /// Attach the always-on agents service (agent RPCs + webhooks).
     pub fn with_agents(mut self, agents: crate::agents::Agents) -> Self {
         self.agents = Some(agents);
@@ -823,6 +831,12 @@ impl EngineRpc {
         self.harness_updates
             .as_ref()
             .ok_or_else(|| RpcError::Failed("agent updates unavailable".into()))
+    }
+
+    fn chat_importer(&self) -> Result<crate::chat_import::ChatImporter, RpcError> {
+        self.chat_import
+            .clone()
+            .ok_or_else(|| RpcError::Failed("chat import unavailable".into()))
     }
 
     fn local_importer(&self) -> Result<&crate::local_import::LocalImporter, RpcError> {
@@ -2549,6 +2563,46 @@ impl RpcService for EngineRpc {
                         }));
                     }
                     // tx drops here — the stream ends after the summary item.
+                });
+                Ok(RpcReply::Stream(Box::pin(futures::stream::poll_fn(
+                    move |cx| rx.poll_recv(cx),
+                ))))
+            }
+            methods::SCAN_CHAT_IMPORT_SOURCES => {
+                let importer = self.chat_importer()?;
+                let previews = tokio::task::spawn_blocking(move || {
+                    zeron_proto::chat_import::ChatImportSource::ALL
+                        .map(|source| importer.preview(source))
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&previews)
+            }
+            methods::PREVIEW_CHAT_IMPORT => {
+                #[derive(Deserialize)]
+                struct PreviewParams {
+                    source: zeron_proto::chat_import::ChatImportSource,
+                }
+                let p: PreviewParams = parse_params(params)?;
+                let importer = self.chat_importer()?;
+                let preview = tokio::task::spawn_blocking(move || importer.preview(p.source))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&preview)
+            }
+            methods::RUN_CHAT_IMPORT => {
+                let request: zeron_proto::chat_import::ChatImportRequest = parse_params(params)?;
+                let importer = self.chat_importer()?;
+                // Same shape as the local→synced import: the importer is
+                // blocking (sqlite + fs), progress rides an unbounded channel,
+                // and the stream ends after the summary item.
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+                tokio::task::spawn_blocking(move || {
+                    importer.run(&request, |progress| {
+                        if let Ok(item) = serde_json::to_value(&progress) {
+                            let _ = tx.send(item);
+                        }
+                    });
                 });
                 Ok(RpcReply::Stream(Box::pin(futures::stream::poll_fn(
                     move |cx| rx.poll_recv(cx),

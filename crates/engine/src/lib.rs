@@ -21,6 +21,7 @@ pub mod auth;
 mod change_request_store;
 pub mod change_requests;
 pub mod chat2_host;
+pub mod chat_import;
 mod chat_persistence;
 pub mod diff_sync;
 pub mod doc_host;
@@ -159,6 +160,8 @@ pub struct EngineCore {
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
+    /// Chat import from T3 Code / Claude Code / Codex history on this device.
+    pub chat_import: chat_import::ChatImporter,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -316,6 +319,14 @@ impl EngineCore {
                 uploads.clone(),
             )
         });
+        let chat_import = chat_import::ChatImporter::new(
+            &device_id,
+            store_for_import.clone(),
+            workspace.clone(),
+            doc_host.clone(),
+            uploads.clone(),
+            chat_import::ImportRoots::detect(),
+        );
         // Logins started from another device publish their callback port to
         // the P2P service, which serves it to that device alone.
         let agent_accounts =
@@ -362,6 +373,7 @@ impl EngineCore {
             agents,
             device_id,
             local_import,
+            chat_import,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -495,7 +507,8 @@ impl EngineCore {
         .with_auth(self.auth())
         .with_previews(self.previews.clone())
         .with_harness_updates(self.harness_updates.clone())
-        .with_agents(self.agents.clone());
+        .with_agents(self.agents.clone())
+        .with_chat_import(self.chat_import.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }
