@@ -7,6 +7,7 @@ use zeron_proto::{
 };
 use zeron_rpc::methods;
 
+use super::orphan_worktrees::OrphanWorktreesList;
 use super::widgets;
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::icons;
@@ -31,6 +32,7 @@ pub(super) struct WorktreeSettingsCard {
     folder_task: Option<Task<()>>,
     prefix_input: Entity<ComposerInput>,
     _prefix_events: Subscription,
+    orphans: Entity<OrphanWorktreesList>,
 }
 
 impl WorktreeSettingsCard {
@@ -46,6 +48,7 @@ impl WorktreeSettingsCard {
                 ComposerInputEvent::Edited => cx.notify(),
                 _ => {}
             });
+        let orphans = cx.new(|_| OrphanWorktreesList::new(state.clone()));
         let mut card = Self {
             state,
             target: None,
@@ -60,6 +63,7 @@ impl WorktreeSettingsCard {
             folder_task: None,
             prefix_input,
             _prefix_events: prefix_events,
+            orphans,
         };
         card.load(None, cx);
         card
@@ -155,6 +159,9 @@ impl WorktreeSettingsCard {
         self.browsing = false;
         self.folders = Loadable::Idle;
         self.request(None, cx);
+        let target = self.target.clone();
+        self.orphans
+            .update(cx, |orphans, cx| orphans.load(target, cx));
     }
 
     fn request(&mut self, save: Option<WorktreeSettings>, cx: &mut Context<Self>) {
@@ -728,7 +735,8 @@ impl Render for WorktreeSettingsCard {
             )
             .children(browser)
             .child(self.render_prefix_row(&theme, interactive, cx))
-            .children(error);
+            .children(error)
+            .child(self.orphans.clone());
         widgets::section(&theme, "Worktrees", card).into_any_element()
     }
 }

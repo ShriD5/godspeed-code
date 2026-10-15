@@ -33,6 +33,7 @@ pub mod usage_limits;
 pub mod wallpaper;
 pub mod wallpaper_colors;
 pub mod widgets;
+mod orphan_worktrees;
 mod worktrees;
 
 /// Sidebar drag-resize bounds (px). The minimum keeps the sidebar options
