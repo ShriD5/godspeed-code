@@ -675,6 +675,7 @@ mod tests {
             id: store.next_id,
             kind: ToastKind::Error,
             message: message.to_owned().into(),
+            link: None,
             created: now,
             remaining: DURATION,
             resumed: Some(now),
