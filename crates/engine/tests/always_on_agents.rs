@@ -753,6 +753,65 @@ async fn an_error_after_partial_text_fails_the_run() {
     w.core.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_copied_from_another_install_pauses_its_agents() {
+    let w = world();
+    let dir = w._tmp.path().join("copied");
+    let open = || {
+        Agents::open(
+            &dir,
+            w.core.workspace.clone(),
+            w.core.doc_host.clone(),
+            w.core.sessions.clone(),
+            w.core.registry.clone(),
+        )
+        .unwrap()
+    };
+    let agents = open();
+    let agent = agents
+        .create(
+            serde_json::from_value(draft(
+                "Hourly",
+                "Check the build.",
+                json!([{ "kind": "interval", "everySecs": 3600 }]),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    drop(agents);
+    // The same install reopening its own database changes nothing.
+    let agents = open();
+    assert!(agents.list().unwrap()[0].paused_reason.is_none());
+    drop(agents);
+
+    // Another install wrote this database: its agents must not fire here.
+    let conn = rusqlite::Connection::open(dir.join("agents.sqlite3")).unwrap();
+    conn.execute(
+        "UPDATE meta SET value = 'another-install' WHERE key = 'install_id'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let agents = open();
+    let paused = &agents.list().unwrap()[0];
+    assert_eq!(
+        paused.paused_reason.as_deref(),
+        Some(zeron_engine::agents::COPIED_INSTALL_REASON)
+    );
+    assert!(paused.next_fire_at.is_none());
+    agents
+        .tick_at(Utc::now() + chrono::TimeDelta::hours(3))
+        .await;
+    assert!(runs_of(&agents, &agent.id).is_empty());
+
+    // Resuming adopts the agent here, and it stays adopted across restarts.
+    let resumed = agents.set_enabled(&agent.id, true).unwrap();
+    assert!(resumed.paused_reason.is_none());
+    drop(agents);
+    assert!(open().list().unwrap()[0].paused_reason.is_none());
+    w.core.shutdown().await;
+}
+
 async fn post(port: u16, path: &str, headers: &[(&str, &str)], body: &str) -> (u16, Value) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))

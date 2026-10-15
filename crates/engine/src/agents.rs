@@ -187,6 +187,32 @@ fn human_duration(delta: chrono::TimeDelta) -> String {
     }
 }
 
+/// Why every agent of a database copied from another install is paused.
+pub const COPIED_INSTALL_REASON: &str =
+    "Copied from another Godspeed install. Resume it to run here.";
+
+/// Stamp the database with this install's id (its device id, which lives in
+/// its own file). A database stamped by another install was copied here (a
+/// dev home seeded from real data, a restored backup): its agents belong to
+/// that install and could act on its real workspaces, so each one is paused
+/// until someone resumes it on this install.
+fn adopt_install(store: &AgentStore, install_id: &str) -> Result<(), EngineError> {
+    match store.install_id()? {
+        Some(owner) if owner == install_id => return Ok(()),
+        Some(owner) => {
+            for agent in store.agents()? {
+                if agent.paused_reason.is_none() {
+                    store.set_paused(&agent.id, Some(COPIED_INSTALL_REASON))?;
+                }
+            }
+            tracing::warn!(%owner, "agents: database copied from another install; agents paused");
+        }
+        // Unstamped: brand new, or written before install ids. Adopt it.
+        None => {}
+    }
+    store.set_install_id(install_id)
+}
+
 impl Agents {
     pub fn open(
         data_dir: &Path,
@@ -214,6 +240,7 @@ impl Agents {
         clock: Arc<dyn Clock>,
     ) -> Result<Self, EngineError> {
         let store = AgentStore::open(data_dir)?;
+        adopt_install(&store, workspace.device_id())?;
         Ok(Self {
             inner: Arc::new(Inner {
                 store,
