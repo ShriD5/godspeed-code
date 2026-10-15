@@ -717,7 +717,9 @@ fn group(id: ShortcutId) -> &'static str {
         ShortcutId::ToggleSidebar
         | ShortcutId::ToggleChanges
         | ShortcutId::ToggleFiles
-        | ShortcutId::ToggleTerminal => "Panels",
+        | ShortcutId::ToggleTerminal
+        | ShortcutId::ToggleDiffPane
+        | ShortcutId::ReopenClosedTab => "Panels",
         ShortcutId::NewProject => "Projects",
         ShortcutId::ToggleDictation => "Voice",
         ShortcutId::OpenModelPicker
@@ -725,7 +727,10 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::NewSession
         | ShortcutId::NextSession
         | ShortcutId::PrevSession
-        | ShortcutId::ArchiveSession => "Sessions",
+        | ShortcutId::ArchiveSession
+        | ShortcutId::SettleSession
+        | ShortcutId::NavigateBack
+        | ShortcutId::NavigateForward => "Sessions",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }

@@ -39,7 +39,10 @@ pub(crate) fn bind_keys(cx: &mut App, keymap: &crate::settings::KeymapConfig) {
     };
     macro_rules! bind {
         ($combo:literal, $action:ident) => {
-            if available($combo, None) {
+            bind!($combo, $action, None)
+        };
+        ($combo:literal, $action:ident, $yields:expr) => {
+            if available($combo, $yields) {
                 cx.bind_keys([gpui::KeyBinding::new(
                     &platform_combo($combo),
                     $action,
@@ -51,8 +54,9 @@ pub(crate) fn bind_keys(cx: &mut App, keymap: &crate::settings::KeymapConfig) {
     bind!("mod-l", FocusAddress);
     bind!("mod-t", NewTab);
     bind!("mod-w", CloseTab);
-    bind!("mod-[", Back);
-    bind!("mod-]", Forward);
+    // The page's own history wins over chat history inside the browser.
+    bind!("mod-[", Back, Some(ShortcutId::NavigateBack));
+    bind!("mod-]", Forward, Some(ShortcutId::NavigateForward));
     let reload = keymap.get(ShortcutId::BrowserReload);
     if available(reload, Some(ShortcutId::BrowserReload))
         && gpui::Keystroke::parse(&platform_combo(reload)).is_ok()
@@ -219,6 +223,10 @@ impl BrowserSurface {
 
     pub fn title(&self) -> gpui::SharedString {
         self.page.label().into()
+    }
+
+    pub fn url(&self) -> Option<String> {
+        self.page.url.clone()
     }
     pub fn set_remote(&mut self, remote: bool) {
         self.remote = remote;

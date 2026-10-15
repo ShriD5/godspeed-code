@@ -72,6 +72,7 @@ mod chat_dropzone_tests;
 mod chat_pull_requests;
 #[cfg(test)]
 mod chat_rename_tests;
+mod closed_tabs;
 mod command_palette;
 mod delete_chat;
 mod file_mutations;
@@ -134,7 +135,12 @@ actions!(
         OpenSettings,
         NextSession,
         PrevSession,
-        ArchiveSession
+        ArchiveSession,
+        SettleSession,
+        NavigateBack,
+        NavigateForward,
+        ToggleDiffPane,
+        ReopenClosedTab
     ]
 );
 
@@ -545,6 +551,20 @@ pub fn apply_keymap(
             None,
         ),
     ]);
+    bind_unless_taken(cx, keymap, ShortcutId::SettleSession, SettleSession);
+    bind_unless_taken(cx, keymap, ShortcutId::NavigateBack, NavigateBack);
+    bind_unless_taken(cx, keymap, ShortcutId::NavigateForward, NavigateForward);
+    bind_unless_taken(cx, keymap, ShortcutId::ToggleDiffPane, ToggleDiffPane);
+    bind_unless_taken(cx, keymap, ShortcutId::ReopenClosedTab, ReopenClosedTab);
+    // Off macOS the primary is ctrl, and ctrl+[ is Escape to a terminal.
+    if !cfg!(target_os = "macos") {
+        for id in [ShortcutId::NavigateBack, ShortcutId::NavigateForward] {
+            let combo = platform_combo(keymap.get(id));
+            if Keystroke::parse(&combo).is_ok() {
+                cx.bind_keys([KeyBinding::new(&combo, gpui::NoAction, Some("Terminal"))]);
+            }
+        }
+    }
     crate::browser::bind_keys(cx, keymap);
     // Fixed: ⌘F finds in the open thread, unless a remapped shortcut took it.
     let find = Keystroke::parse(&platform_combo(find_bar::COMBO)).ok();
@@ -588,6 +608,32 @@ pub fn apply_keymap(
             ),
         ]
     }));
+}
+
+/// Bind a shortcut that older keymaps may already use for another action:
+/// on a clash the existing binding keeps the key and this one stays unbound.
+fn bind_unless_taken<A: gpui::Action>(
+    cx: &mut App,
+    keymap: &KeymapConfig,
+    id: ShortcutId,
+    action: A,
+) {
+    let keystroke = |combo: &str| Keystroke::parse(&platform_combo(combo)).ok();
+    let Some(combo) = [keymap.get(id), id.default_combo()]
+        .into_iter()
+        .find(|combo| keystroke(combo).is_some())
+    else {
+        return;
+    };
+    let own = keystroke(combo);
+    let taken = ShortcutId::ALL
+        .iter()
+        .any(|other| *other != id && keystroke(keymap.get(*other)) == own);
+    if taken {
+        tracing::warn!(?id, "shortcut combo already in use; leaving it unbound");
+        return;
+    }
+    cx.bind_keys([KeyBinding::new(&platform_combo(combo), action, None)]);
 }
 
 /// The settings sections (feature-inventory §1.5 routes).
@@ -2204,6 +2250,7 @@ pub struct Shell {
     /// The chat title being edited in place on its row.
     chat_rename: Option<ChatRename>,
     delete_confirm: Option<delete_chat::DeleteChatConfirm>,
+    closed_tabs: closed_tabs::ClosedTabs,
     /// Global confirmation/error dialog for the Changes-pane trash action. The
     /// RPC task is retained separately so rerenders do not cancel it.
     discard_working_tree: Option<DiscardWorkingTreeFlow>,
@@ -2732,6 +2779,7 @@ impl Shell {
             chat_submenu_left: false,
             chat_rename: None,
             delete_confirm: None,
+            closed_tabs: closed_tabs::ClosedTabs::default(),
             discard_working_tree: None,
             discard_working_tree_task: None,
             create_pull_request: None,
@@ -4667,6 +4715,7 @@ impl Shell {
             }
             return;
         }
+        self.remember_closed_surface(surface, &key, cx);
         if let Some(tabs) = self.right_tabs.get_mut(&key) {
             tabs.retain(|s| *s != surface);
         }
@@ -4948,6 +4997,7 @@ impl Shell {
         panel_key: &str,
         cx: &mut Context<Self>,
     ) {
+        self.remember_closed_surface(surface, panel_key, cx);
         if let Some(tabs) = self.right_tabs.get_mut(panel_key) {
             tabs.retain(|candidate| *candidate != surface);
         }
@@ -13989,6 +14039,31 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ArchiveSession, _, cx| {
                 if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
                     this.archive_selected_chat(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SettleSession, _, cx| {
+                if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
+                    this.settle_selected_chat(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NavigateBack, _, cx| {
+                if !this.overlay_owns_keyboard(cx) {
+                    this.navigate_back(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &NavigateForward, _, cx| {
+                if !this.overlay_owns_keyboard(cx) {
+                    this.navigate_forward(cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ToggleDiffPane, window, cx| {
+                if matches!(this.route, Route::Chat) {
+                    this.toggle_diff_pane(window, cx)
+                }
+            }))
+            .on_action(cx.listener(|this, _: &ReopenClosedTab, window, cx| {
+                if matches!(this.route, Route::Chat) {
+                    this.reopen_closed_surface(window, cx)
                 }
             }))
             // An Undo that reaches the shell found no text field to edit:

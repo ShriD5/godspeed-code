@@ -1180,11 +1180,16 @@ pub enum ShortcutId {
     NextSession,
     PrevSession,
     ArchiveSession,
+    SettleSession,
+    NavigateBack,
+    NavigateForward,
+    ToggleDiffPane,
+    ReopenClosedTab,
     JumpSession(usize),
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 16 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 21 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
@@ -1201,6 +1206,11 @@ impl ShortcutId {
         ShortcutId::NextSession,
         ShortcutId::PrevSession,
         ShortcutId::ArchiveSession,
+        ShortcutId::SettleSession,
+        ShortcutId::NavigateBack,
+        ShortcutId::NavigateForward,
+        ShortcutId::ToggleDiffPane,
+        ShortcutId::ReopenClosedTab,
         ShortcutId::JumpSession(0),
         ShortcutId::JumpSession(1),
         ShortcutId::JumpSession(2),
@@ -1235,6 +1245,11 @@ impl ShortcutId {
             ShortcutId::NextSession => "Next session or right pane tab",
             ShortcutId::PrevSession => "Previous session or right pane tab",
             ShortcutId::ArchiveSession => "Archive session",
+            ShortcutId::SettleSession => "Settle session",
+            ShortcutId::NavigateBack => "Go back",
+            ShortcutId::NavigateForward => "Go forward",
+            ShortcutId::ToggleDiffPane => "Toggle changes pane",
+            ShortcutId::ReopenClosedTab => "Reopen closed tab",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1282,6 +1297,11 @@ impl ShortcutId {
             // Mod+A is the composer's Select all, so archiving takes the
             // shifted combo.
             ShortcutId::ArchiveSession => "mod-shift-a",
+            ShortcutId::SettleSession => "mod-shift-d",
+            ShortcutId::NavigateBack => "mod-[",
+            ShortcutId::NavigateForward => "mod-]",
+            ShortcutId::ToggleDiffPane => "mod-shift-g",
+            ShortcutId::ReopenClosedTab => "mod-shift-t",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1317,6 +1337,11 @@ pub struct KeymapConfig {
     pub next_session: String,
     pub prev_session: String,
     pub archive_session: String,
+    pub settle_session: String,
+    pub navigate_back: String,
+    pub navigate_forward: String,
+    pub toggle_diff_pane: String,
+    pub reopen_closed_tab: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
     /// [`UiSettings::load`] discards the WHOLE file on a parse error, so a
     /// fixed-length array would let one malformed entry reset every unrelated
@@ -1384,6 +1409,11 @@ impl Default for KeymapConfig {
             next_session: ShortcutId::NextSession.default_combo().into(),
             prev_session: ShortcutId::PrevSession.default_combo().into(),
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
+            settle_session: ShortcutId::SettleSession.default_combo().into(),
+            navigate_back: ShortcutId::NavigateBack.default_combo().into(),
+            navigate_forward: ShortcutId::NavigateForward.default_combo().into(),
+            toggle_diff_pane: ShortcutId::ToggleDiffPane.default_combo().into(),
+            reopen_closed_tab: ShortcutId::ReopenClosedTab.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
         }
     }
@@ -1408,6 +1438,11 @@ impl KeymapConfig {
             ShortcutId::NextSession => &self.next_session,
             ShortcutId::PrevSession => &self.prev_session,
             ShortcutId::ArchiveSession => &self.archive_session,
+            ShortcutId::SettleSession => &self.settle_session,
+            ShortcutId::NavigateBack => &self.navigate_back,
+            ShortcutId::NavigateForward => &self.navigate_forward,
+            ShortcutId::ToggleDiffPane => &self.toggle_diff_pane,
+            ShortcutId::ReopenClosedTab => &self.reopen_closed_tab,
             ShortcutId::JumpSession(slot) => self
                 .jump_session
                 .get(slot)
@@ -1434,6 +1469,11 @@ impl KeymapConfig {
             ShortcutId::NextSession => self.next_session = combo,
             ShortcutId::PrevSession => self.prev_session = combo,
             ShortcutId::ArchiveSession => self.archive_session = combo,
+            ShortcutId::SettleSession => self.settle_session = combo,
+            ShortcutId::NavigateBack => self.navigate_back = combo,
+            ShortcutId::NavigateForward => self.navigate_forward = combo,
+            ShortcutId::ToggleDiffPane => self.toggle_diff_pane = combo,
+            ShortcutId::ReopenClosedTab => self.reopen_closed_tab = combo,
             ShortcutId::JumpSession(slot) => {
                 if slot < JUMP_SLOTS {
                     if self.jump_session.len() < JUMP_SLOTS {

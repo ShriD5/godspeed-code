@@ -532,6 +532,37 @@ impl Shell {
         );
     }
 
+    /// The settle shortcut: settles the open chat, or unsettles it when it
+    /// already is. A chat still running can't settle.
+    pub(super) fn settle_selected_chat(&mut self, cx: &mut Context<Self>) {
+        let now = Utc::now();
+        let target = {
+            let state = self.state.read(cx);
+            state
+                .selected_chat_row()
+                .filter(|chat| !chat.archived)
+                .map(|chat| {
+                    (
+                        chat.id.clone(),
+                        chat.lifecycle.at(now) == LifecycleState::Settled,
+                        live(state.display_status_for(chat, now)),
+                    )
+                })
+        };
+        match target {
+            Some((chat_id, true, _)) => self.change_lifecycle(chat_id, LifecycleState::Active, cx),
+            Some((_, false, true)) => self.show_notice(
+                crate::toast::ToastKind::Info,
+                "Can't settle a session while it's running",
+                cx,
+            ),
+            Some((chat_id, false, false)) => {
+                self.change_lifecycle(chat_id, LifecycleState::Settled, cx)
+            }
+            None => {}
+        }
+    }
+
     fn toggle_chat_unread(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.close_chat_menu(cx);
         let unseen = self

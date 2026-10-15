@@ -1887,6 +1887,10 @@ impl Changes {
         self.scope == DiffScope::History
     }
 
+    pub fn commit(&self) -> Option<&GitHistoryCommit> {
+        self.commit.as_ref()
+    }
+
     /// A diff tab (not a commit pin or History) — it can host the git strip.
     pub fn can_commit(&self) -> bool {
         self.commit.is_none() && self.scope != DiffScope::History
