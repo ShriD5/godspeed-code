@@ -223,6 +223,17 @@ impl RpcService for DeferredEngineRpc {
             state.changed().await.map_err(|_| RpcError::Closed)?;
         }
     }
+
+    /// Agent webhooks reach the embedded engine through this port too.
+    async fn handle_http(&self, request: zeron_rpc::HttpRequest) -> zeron_rpc::HttpResponse {
+        match self.service.get() {
+            Some(service) => service.handle_http(request).await,
+            None => zeron_rpc::HttpResponse::json(
+                503,
+                &serde_json::json!({ "error": "engine is starting" }),
+            ),
+        }
+    }
 }
 
 async fn wait_for_deferred_engine(

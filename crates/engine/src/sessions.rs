@@ -296,6 +296,18 @@ impl SessionsEngine {
             .store(port, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// The loopback IPC port recorded by [`Self::set_ipc_port`], if any.
+    pub fn ipc_port(&self) -> Option<u16> {
+        match self
+            .inner
+            .ipc_port
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            port => Some(port),
+        }
+    }
+
     /// Wire the doc host (called once at engine assembly; the two services are mutually
     /// referential by design — sessions stream into docs, docs execute commands here).
     pub fn set_doc_host(&self, host: DocHost) {

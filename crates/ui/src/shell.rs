@@ -42,6 +42,7 @@ use crate::pull_requests::PullRequestsPage;
 use crate::rail;
 use crate::settings::accounts::AccountsPage;
 use crate::settings::appearance::{AppearancePage, AppearanceSettingsEvent};
+use crate::settings::agents::{AgentsPage, AgentsPageEvent};
 use crate::settings::archived::ArchivedPage;
 use crate::settings::devices::DevicesPage;
 use crate::settings::files::{FilesSettingsEvent, FilesSettingsPage};
@@ -553,11 +554,14 @@ pub enum SettingsSection {
     General,
     Appshots,
     Archived,
+    /// Always-on agents and their run inbox. (`Agents` above is the legacy
+    /// Accounts alias, so this page needs its own name.)
+    AlwaysOn,
 }
 
 impl SettingsSection {
     /// Sections shown in Settings. `Agents` is a legacy Accounts route alias.
-    pub const ALL: [SettingsSection; 10] = [
+    pub const ALL: [SettingsSection; 11] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
@@ -566,6 +570,7 @@ impl SettingsSection {
         SettingsSection::Harnesses,
         SettingsSection::Devices,
         SettingsSection::Files,
+        SettingsSection::AlwaysOn,
         SettingsSection::Appshots,
         SettingsSection::Archived,
     ];
@@ -610,6 +615,7 @@ impl SettingsSection {
             SettingsSection::General => "general",
             SettingsSection::Appshots => "appshots",
             SettingsSection::Archived => "archived",
+            SettingsSection::AlwaysOn => "always-on",
         }
     }
 
@@ -627,6 +633,7 @@ impl SettingsSection {
             "general" | "conversations" => SettingsSection::General,
             "appshots" => SettingsSection::Appshots,
             "archived" => SettingsSection::Archived,
+            "always-on" => SettingsSection::AlwaysOn,
             _ => return None,
         })
     }
@@ -652,6 +659,7 @@ impl SettingsSection {
             SettingsSection::General => "General",
             SettingsSection::Appshots => "Appshots",
             SettingsSection::Archived => "Archived sessions",
+            SettingsSection::AlwaysOn => "Agents",
         }
     }
 }
@@ -2067,6 +2075,8 @@ pub struct Shell {
         std::rc::Rc<std::cell::RefCell<crate::pull_request_detail::PullRequestCache>>,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
+    agents_page: Option<Entity<AgentsPage>>,
+    agents_page_sub: Option<Subscription>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
@@ -2582,6 +2592,8 @@ impl Shell {
             pull_request_cache: Default::default(),
             devices_page: None,
             archived_page: None,
+            agents_page: None,
+            agents_page_sub: None,
             appearance_page: None,
             files_settings_page: None,
             notifications_page: None,
@@ -5431,6 +5443,10 @@ impl Shell {
                 .archived_page
                 .as_ref()
                 .is_some_and(|page| page.update(cx, |page, cx| page.dismiss_on_escape(cx))),
+            SettingsSection::AlwaysOn => self
+                .agents_page
+                .as_ref()
+                .is_some_and(|page| page.update(cx, |page, cx| page.dismiss_on_escape(cx))),
             _ => false,
         }
     }
@@ -5790,6 +5806,25 @@ impl Shell {
                     self.archived_page = Some(cx.new(|cx| ArchivedPage::new(state, cx)));
                 }
                 match &self.archived_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::AlwaysOn => {
+                if self.agents_page.is_none() {
+                    let state = self.state.clone();
+                    let page = cx.new(|cx| AgentsPage::new(state, cx));
+                    self.agents_page_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell, _, event: &AgentsPageEvent, cx| match event {
+                            AgentsPageEvent::OpenChat(chat_id) => {
+                                this.open_chat(chat_id.clone(), cx);
+                            }
+                        },
+                    ));
+                    self.agents_page = Some(page);
+                }
+                match &self.agents_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -7901,6 +7936,7 @@ impl Shell {
             SettingsSection::General => icons::SETTINGS,
             SettingsSection::Appshots => icons::MONITOR,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
+            SettingsSection::AlwaysOn => icons::CLOCK_CIRCLE,
         };
         settings::widgets::scroll_faded(
             "settings-nav-scroll",
@@ -18741,6 +18777,7 @@ mod settings_modal_regressions {
             ("settings/files", SettingsSection::Files),
             ("settings/appshots", SettingsSection::Appshots),
             ("settings/archived", SettingsSection::Archived),
+            ("settings/always-on", SettingsSection::AlwaysOn),
         ] {
             assert_eq!(
                 settings_open_route(route, remembered),
