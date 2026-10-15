@@ -47,6 +47,7 @@ use crate::settings::archived::ArchivedPage;
 use crate::settings::devices::DevicesPage;
 use crate::settings::files::{FilesSettingsEvent, FilesSettingsPage};
 use crate::settings::harnesses::HarnessesPage;
+use crate::settings::import::ImportPage;
 use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
@@ -567,11 +568,13 @@ pub enum SettingsSection {
     /// Always-on agents and their run inbox. (`Agents` above is the legacy
     /// Accounts alias, so this page needs its own name.)
     AlwaysOn,
+    /// Chats brought over from T3 Code, Claude Code and Codex.
+    Import,
 }
 
 impl SettingsSection {
     /// Sections shown in Settings. `Agents` is a legacy Accounts route alias.
-    pub const ALL: [SettingsSection; 11] = [
+    pub const ALL: [SettingsSection; 12] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
@@ -583,6 +586,7 @@ impl SettingsSection {
         SettingsSection::AlwaysOn,
         SettingsSection::Appshots,
         SettingsSection::Archived,
+        SettingsSection::Import,
     ];
 
     /// The former Accounts page is folded into Providers. Keep its route alias
@@ -626,6 +630,7 @@ impl SettingsSection {
             SettingsSection::Appshots => "appshots",
             SettingsSection::Archived => "archived",
             SettingsSection::AlwaysOn => "always-on",
+            SettingsSection::Import => "import",
         }
     }
 
@@ -644,6 +649,7 @@ impl SettingsSection {
             "appshots" => SettingsSection::Appshots,
             "archived" => SettingsSection::Archived,
             "always-on" => SettingsSection::AlwaysOn,
+            "import" => SettingsSection::Import,
             _ => return None,
         })
     }
@@ -670,6 +676,7 @@ impl SettingsSection {
             SettingsSection::Appshots => "Appshots",
             SettingsSection::Archived => "Archived sessions",
             SettingsSection::AlwaysOn => "Agents",
+            SettingsSection::Import => "Import",
         }
     }
 }
@@ -2085,6 +2092,7 @@ pub struct Shell {
         std::rc::Rc<std::cell::RefCell<crate::pull_request_detail::PullRequestCache>>,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
+    import_page: Option<Entity<ImportPage>>,
     agents_page: Option<Entity<AgentsPage>>,
     agents_page_sub: Option<Subscription>,
     appearance_page: Option<Entity<AppearancePage>>,
@@ -2607,6 +2615,7 @@ impl Shell {
             pull_request_cache: Default::default(),
             devices_page: None,
             archived_page: None,
+            import_page: None,
             agents_page: None,
             agents_page_sub: None,
             appearance_page: None,
@@ -5832,6 +5841,16 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
+            SettingsSection::Import => {
+                if self.import_page.is_none() {
+                    let state = self.state.clone();
+                    self.import_page = Some(cx.new(|cx| ImportPage::new(state, cx)));
+                }
+                match &self.import_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
             SettingsSection::AlwaysOn => {
                 if self.agents_page.is_none() {
                     let state = self.state.clone();
@@ -7959,6 +7978,7 @@ impl Shell {
             SettingsSection::Appshots => icons::MONITOR,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
             SettingsSection::AlwaysOn => icons::CLOCK_CIRCLE,
+            SettingsSection::Import => icons::ARCHIVE_UP_MINIMALISTIC,
         };
         settings::widgets::scroll_faded(
             "settings-nav-scroll",
@@ -9297,12 +9317,36 @@ impl Shell {
                 )
                 .into_any_element()
         } else {
+            // A brand-new workspace offers the chats this device already has
+            // in other agent apps, once.
+            let offer_import = !self.settings.chat_import_prompt_dismissed
+                && self.state.read(cx).chats.is_empty();
             div()
                 .px(px(Theme::SPACE_SM))
                 .pb(px(Theme::SPACE_SM))
                 .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_faint)
                 .child(SharedString::from("No sessions yet"))
+                .when(offer_import, |el| {
+                    el.child(
+                        div()
+                            .id("sidebar-import-prompt")
+                            .mt(px(4.0))
+                            .text_color(theme.accent)
+                            .cursor_pointer()
+                            .hover(|s| s.underline())
+                            .tab_index(0)
+                            .role(gpui::Role::Link)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.chat_import_prompt_dismissed = true;
+                                this.schedule_save(cx);
+                                this.open_settings(SettingsSection::Import, cx);
+                            }))
+                            .child(SharedString::from(
+                                "Import chats from T3 Code, Claude Code or Codex",
+                            )),
+                    )
+                })
                 .into_any_element()
         };
 
@@ -18815,6 +18859,7 @@ mod settings_modal_regressions {
             ("settings/appshots", SettingsSection::Appshots),
             ("settings/archived", SettingsSection::Archived),
             ("settings/always-on", SettingsSection::AlwaysOn),
+            ("settings/import", SettingsSection::Import),
         ] {
             assert_eq!(
                 settings_open_route(route, remembered),

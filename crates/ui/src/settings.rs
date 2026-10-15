@@ -24,6 +24,7 @@ pub mod composer;
 pub mod devices;
 pub mod files;
 pub mod harnesses;
+pub mod import;
 pub mod notifications;
 pub mod shortcuts;
 pub mod thread_naming;
@@ -863,6 +864,9 @@ pub struct UiSettings {
     /// The sidebar's "Star on GitHub" banner was dismissed (its close button
     /// or following the link). Device-local; never shown again once set.
     pub github_star_banner_dismissed: bool,
+    /// The empty sidebar's "Import chats" prompt was followed. Device-local;
+    /// shown only while the workspace has no chats at all.
+    pub chat_import_prompt_dismissed: bool,
     /// The last selected space — restored on boot when the row still exists;
     /// also the new-tab default when the sidebar filter is "All".
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1050,6 +1054,7 @@ impl Default for UiSettings {
             sidebar_show_project_filter: true,
             sidebar_show_archived: true,
             github_star_banner_dismissed: false,
+            chat_import_prompt_dismissed: false,
             last_space_id: None,
             last_project_action_by_space_id: std::collections::HashMap::new(),
             open_tabs: None,
@@ -1715,6 +1720,7 @@ impl UiSettings {
             sidebar_show_project_filter,
             sidebar_show_archived,
             github_star_banner_dismissed,
+            chat_import_prompt_dismissed,
             last_space_id,
             last_project_action_by_space_id,
             open_tabs,
