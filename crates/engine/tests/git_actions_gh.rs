@@ -70,6 +70,7 @@ fn register(core: &EngineCore, id: &str, path: &Path) {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                access_mode: None,
             }),
             Some(path.to_string_lossy().into_owned()),
         )
