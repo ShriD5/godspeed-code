@@ -50,6 +50,7 @@
 //! handlers stay transport-agnostic. This includes the workspace file surface,
 //! whose checkout always lives on the routed target device.
 
+mod git_actions;
 mod voice_chat;
 mod voice_remote;
 use async_trait::async_trait;
@@ -1458,6 +1459,9 @@ fn forward_deadline(method: &str) -> std::time::Duration {
     if method == methods::NEGOTIATE_VOICE_V2 {
         return Duration::from_secs(95);
     }
+    if git_actions::handles(method) {
+        return git_actions::deadline(method);
+    }
     use std::time::Duration;
     match method {
         methods::CLONE_REPO | methods::FETCH_ALL | methods::APPLY_UPDATE => {
@@ -1486,6 +1490,10 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 /// device-addressable — the handlers themselves need no changes.
 fn forwardable(method: &str) -> bool {
     if voice_remote::handles(method) {
+        return true;
+    }
+    // Git write actions run where the checkout lives.
+    if git_actions::handles(method) {
         return true;
     }
     matches!(
@@ -1882,6 +1890,9 @@ impl RpcService for EngineRpc {
         }
         if voice_remote::handles(method) {
             return self.voice_remote(method, params).await;
+        }
+        if git_actions::handles(method) {
+            return self.git_action(method, params).await;
         }
         if AuthRpc::handles(method) {
             return AuthRpc::new(self.auth()?.clone())

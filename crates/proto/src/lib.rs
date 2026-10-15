@@ -10,6 +10,7 @@ pub mod change_request_assessment;
 pub mod device_paths;
 pub mod entities;
 pub mod file_mentions;
+pub mod git_actions;
 pub mod invocation;
 pub mod motion;
 pub mod preview;
@@ -21,6 +22,7 @@ pub mod workspace;
 
 pub use agent::*;
 pub use entities::*;
+pub use git_actions::*;
 pub use preview::*;
 pub use sidebar_pins::*;
 pub use workspace::*;

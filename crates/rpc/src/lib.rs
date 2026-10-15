@@ -249,6 +249,28 @@ pub mod methods {
     pub const CANCEL_HARNESS_UPDATE: &str = "CancelHarnessUpdate";
     pub const DISMISS_HARNESS_UPDATE: &str = "DismissHarnessUpdate";
     pub const SET_HARNESS_UPDATE_POLICY: &str = "SetHarnessUpdatePolicy";
+
+    // Git write actions (ControlRpc, relay-forwardable — they run on the
+    // device that owns the checkout). Params carry the checkout `cwd`.
+    /// Branch, upstream, ahead/behind and remote facts for one checkout.
+    pub const GIT_BRANCH_STATUS: &str = "GitBranchStatus";
+    /// Stage all changes (or `files`) and commit; an empty message is generated.
+    pub const GIT_COMMIT: &str = "GitCommit";
+    /// Push the current branch, creating its upstream on first push. Never forces.
+    pub const GIT_PUSH: &str = "GitPush";
+    /// Fast-forward the current branch to its upstream; divergence is an error.
+    pub const GIT_PULL: &str = "GitPull";
+    /// Pull (fast-forward) then push.
+    pub const GIT_SYNC: &str = "GitSync";
+    /// `git init` an existing project folder.
+    pub const GIT_INIT: &str = "GitInit";
+    pub const GENERATE_COMMIT_MESSAGE: &str = "GenerateCommitMessage";
+    pub const GENERATE_PULL_REQUEST: &str = "GeneratePullRequest";
+    pub const GENERATE_BRANCH_NAME: &str = "GenerateBranchName";
+    /// Push if needed, then `gh pr create` (generated title/body when empty).
+    pub const CREATE_PULL_REQUEST: &str = "CreatePullRequest";
+    /// `gh repo create --source . --push`; only on an explicit user request.
+    pub const PUBLISH_REPOSITORY: &str = "PublishRepository";
 }
 
 /// Stable capability error codes transported without provider stderr.
