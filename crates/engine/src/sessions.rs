@@ -4006,10 +4006,11 @@ mod tests {
         initial
             .model_options
             .insert("fastMode".into(), serde_json::json!(false));
+        initial.set_access_mode(zeron_proto::AccessMode::AutoAcceptEdits);
         let config = RuntimeConfig::new(HarnessId::ClaudeCode, &initial, claude());
 
-        // The CLI never reads the sandbox level; an option that launches no
-        // flag in either spelling is the same runtime.
+        // The CLI reads the sandbox level only through the access mode; an
+        // option that launches no flag in either spelling is the same runtime.
         let mut follow_up = initial.clone();
         follow_up.sandbox = SandboxLevel::DangerFullAccess;
         follow_up.model_options.clear();
