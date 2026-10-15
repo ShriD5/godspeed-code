@@ -73,7 +73,7 @@ use zeron_proto::{
     SteeringMode, TodoItem, TodoStatus, ToolCall, UserInputAnswer, UserInputQuestion,
 };
 
-use crate::process::{Child, Command, Stdio};
+use crate::process::{Command, Stdio};
 use crate::{Harness, HarnessError, RunControls};
 
 /// opencode loads plugins and MCP config before the server answers; cold
@@ -501,7 +501,10 @@ impl Harness for OpencodeHarness {
 // ---------------------------------------------------------------------------
 
 struct Server {
-    child: Option<Child>,
+    /// The `serve` process, leading its own process group: npm/bun installs
+    /// launch it through a Node script that `spawnSync`s the real binary,
+    /// and signalling the launcher alone orphaned the server.
+    child: Option<crate::process::owned::Child>,
     base: String,
     /// `Authorization` header value (`Basic <b64>`), when we own the process.
     auth: Option<String>,
@@ -674,6 +677,7 @@ impl Server {
             cmd.env("OPENCODE_CONFIG_CONTENT", content);
         }
         crate::compose_child_path(&mut cmd, exe);
+        crate::process::owned::configure(&mut cmd);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
@@ -681,13 +685,13 @@ impl Server {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| {
+        let mut child = crate::process::owned::Child::new(cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(exe))
             } else {
                 HarnessError::Io(e)
             }
-        })?;
+        })?);
         let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
@@ -882,8 +886,9 @@ impl Server {
 
     async fn shutdown(&mut self, kill_grace: Duration) {
         if let Some(child) = self.child.as_mut() {
-            // The server and every command it started.
-            crate::shutdown_agent(child, Vec::new(), kill_grace).await;
+            // The server's group and every command it started. Dropping a
+            // Server unshut (a cancelled discovery) still kills the group.
+            child.shutdown(kill_grace).await;
         }
     }
 
@@ -4753,6 +4758,76 @@ http.createServer((req, res) => {{
                 a_config["command"],
                 json!(["/path with spaces/godspeed", "mcp"])
             );
+        }
+    }
+
+    /// zeronsh/zeron#764: the npm/bun `opencode` is a Node launcher that
+    /// `spawnSync`s the real server. Signalling the launcher alone orphaned
+    /// the server (48 leaked in a day, ~200 MB each). Both an explicit
+    /// shutdown and a Server dropped unshut (a discovery cancelled by its
+    /// timeout) must end the real server too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_real_server_behind_a_launcher_dies_with_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let real = fixture.path().join("real-server.js");
+        std::fs::write(
+            &real,
+            r#"const http = require('node:http');
+const fs = require('node:fs');
+const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
+fs.writeFileSync(process.env.PID_FILE, String(process.pid));
+http.createServer((req, res) => {
+  res.setHeader('content-type', 'application/json');
+  if (req.url === '/api/info') { res.end(JSON.stringify({version: '2.0.20'})); return; }
+  res.statusCode = 404; res.end('{}');
+}).listen(port, '127.0.0.1');
+"#,
+        )
+        .unwrap();
+        let launcher = fixture.path().join("opencode");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/usr/bin/env node\nrequire('node:child_process').spawnSync(process.execPath, [{real:?}, ...process.argv.slice(2)], {{stdio: 'inherit'}});\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+        for explicit in [true, false] {
+            let pid_file = fixture.path().join(format!("pid-{explicit}"));
+            // SAFETY: test-local environment, read by the spawned child.
+            unsafe { std::env::set_var("PID_FILE", &pid_file) };
+            let mut server = Server::spawn(
+                &launcher,
+                fixture.path().to_str(),
+                Duration::from_secs(10),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+            assert!(alive(pid));
+            if explicit {
+                server.shutdown(Duration::from_millis(500)).await;
+            } else {
+                drop(server);
+            }
+            let mut gone = false;
+            for _ in 0..100 {
+                if !alive(pid) {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            if !gone {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+            assert!(gone, "the real server outlived its launcher (explicit: {explicit})");
         }
     }
 
