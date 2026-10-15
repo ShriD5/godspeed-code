@@ -38,8 +38,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable as _, ListAlignment, ListState,
-    SharedString, Subscription, Task, Window, div, font, list, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable as _, ListAlignment, ListOffset,
+    ListState, Pixels, SharedString, Subscription, Task, Window, div, font, list, prelude::*, px,
 };
 use unicode_width::UnicodeWidthChar as _;
 
@@ -1239,6 +1239,9 @@ impl FileHorizontalState {
 struct ParsedDiff {
     /// `checkout_id:checksum` — identity of the parsed content.
     key: String,
+    /// `checkout_id:scope`: what the reader is looking at, stable across
+    /// content updates. Keys [`Changes::views`].
+    view_key: String,
     truncated: bool,
     additions: u32,
     deletions: u32,
@@ -1561,6 +1564,64 @@ struct FileFold {
     toggled_at: Option<std::time::Instant>,
 }
 
+/// Where the reader was in one diff: the files they folded and the row at the
+/// top of the pane. A diff tab follows the selected chat, so switching chats
+/// re-parses it, and so does every agent edit (new checksum); both used to
+/// land at the top with every file expanded (T3 11571). Kept per
+/// `checkout_id:scope`, so each chat's diff comes back where it was left.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct DiffView {
+    collapsed: std::collections::HashSet<String>,
+    /// The top row as (file path, row index within that file's span, pixel
+    /// offset into the row): row indices shift whenever any earlier file
+    /// changes, a file-relative position mostly doesn't.
+    top: Option<(String, usize, Pixels)>,
+}
+
+/// Bound on remembered [`DiffView`]s per pane; past it the map starts over.
+const MAX_DIFF_VIEWS: usize = 64;
+
+/// The file-relative form of a list's top row.
+fn diff_view_top(
+    paths: &[&str],
+    ranges: &[std::ops::Range<usize>],
+    top: ListOffset,
+) -> Option<(String, usize, Pixels)> {
+    let file_ix = ranges
+        .iter()
+        .position(|range| range.contains(&top.item_ix))?;
+    Some((
+        paths.get(file_ix)?.to_string(),
+        top.item_ix - ranges[file_ix].start,
+        top.offset_in_item,
+    ))
+}
+
+/// Where a remembered top row lands in a fresh row model: the same row of the
+/// same file, clamped into the file's span (a folded file is its header). A
+/// file that left the diff restores nothing.
+fn resolve_diff_view_top(
+    paths: &[&str],
+    ranges: &[std::ops::Range<usize>],
+    (path, row, offset): &(String, usize, Pixels),
+) -> Option<ListOffset> {
+    let file_ix = paths.iter().position(|candidate| candidate == path)?;
+    let range = ranges.get(file_ix)?;
+    let last = range
+        .end
+        .checked_sub(1)
+        .filter(|last| *last >= range.start)?;
+    let item_ix = (range.start + row).min(last);
+    Some(ListOffset {
+        item_ix,
+        offset_in_item: if item_ix == range.start + row {
+            *offset
+        } else {
+            px(0.0)
+        },
+    })
+}
+
 /// Tween arming window after a fold toggle (COLLAPSE's 180ms plus margin).
 const FOLD_TWEEN_WINDOW: Duration = Duration::from_millis(400);
 
@@ -1649,6 +1710,8 @@ pub struct Changes {
     parsed: Option<ParsedDiff>,
     parse_task: Option<Task<()>>,
     folds: HashMap<String, FileFold>,
+    /// Reading position per diff identity (see [`DiffView`]).
+    views: HashMap<String, DiffView>,
     highlights: HashMap<String, HighlightSlot>,
     /// The flattened row model the list virtualizes over (line granularity;
     /// collapsed bodies excluded) + each file's row span within it.
@@ -1762,6 +1825,7 @@ impl Changes {
             parsed: None,
             parse_task: None,
             folds: HashMap::new(),
+            views: HashMap::new(),
             highlights: HashMap::new(),
             rows: Vec::new(),
             row_ranges: Vec::new(),
@@ -2349,6 +2413,7 @@ impl Changes {
         }
         self.ensure_scoped(cx);
         let Some(diff) = self.active_diff(cx) else {
+            self.remember_view();
             if self.parsed.take().is_some() {
                 self.rows.clear();
                 self.row_ranges.clear();
@@ -2364,6 +2429,7 @@ impl Changes {
             self.sync_comment_rows(cx);
             return;
         }
+        let view_key = format!("{}:{}", diff.checkout_id, self.scope_key());
         // Parse off the render path — patches run to megabytes.
         let patch = diff.patch.clone();
         let truncated = diff.truncated;
@@ -2387,7 +2453,23 @@ impl Changes {
                     files.len()
                 };
                 let horizontal = files.iter().map(FileHorizontalState::new).collect();
-                changes.folds.clear();
+                // Leave the outgoing diff's position behind, then pick up the
+                // incoming one's (the same key when only the content moved).
+                changes.remember_view();
+                let view = changes.views.get(&view_key).cloned().unwrap_or_default();
+                changes.folds = files
+                    .iter()
+                    .filter(|file| view.collapsed.contains(&file.path))
+                    .map(|file| {
+                        (
+                            file.path.clone(),
+                            FileFold {
+                                collapsed: true,
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect();
                 changes.highlights.clear();
                 let staged = changes.staged_comments(cx);
                 let draft = changes.draft_anchor();
@@ -2398,7 +2480,11 @@ impl Changes {
                         .as_ref()
                         .map(|(path, side, line)| (path.as_str(), *side, *line)),
                     changes.mode,
-                    |_| false,
+                    |ix| {
+                        files
+                            .get(ix)
+                            .is_some_and(|file| view.collapsed.contains(&file.path))
+                    },
                 );
                 changes.comment_key = comment_state_key(&staged, draft.as_ref());
                 // The uniform hint keeps offsets for never-rendered rows
@@ -2408,10 +2494,19 @@ impl Changes {
                 changes
                     .list
                     .reset_with_uniform_height(rows.len(), row_height);
+                let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+                if let Some(top) = view
+                    .top
+                    .as_ref()
+                    .and_then(|top| resolve_diff_view_top(&paths, &ranges, top))
+                {
+                    changes.list.scroll_to(top);
+                }
                 changes.rows = rows;
                 changes.row_ranges = ranges;
                 changes.parsed = Some(ParsedDiff {
                     key,
+                    view_key,
                     truncated,
                     additions,
                     deletions,
@@ -2423,6 +2518,28 @@ impl Changes {
             })
             .ok();
         }));
+    }
+
+    /// Record the parsed diff's folds and top row under its view key, before
+    /// a re-parse or a selection change replaces the rows.
+    fn remember_view(&mut self) {
+        let Some(parsed) = self.parsed.as_ref() else {
+            return;
+        };
+        let paths: Vec<&str> = parsed.files.iter().map(|file| file.path.as_str()).collect();
+        let view = DiffView {
+            collapsed: self
+                .folds
+                .iter()
+                .filter(|(_, fold)| fold.collapsed)
+                .map(|(path, _)| path.clone())
+                .collect(),
+            top: diff_view_top(&paths, &self.row_ranges, self.list.logical_scroll_top()),
+        };
+        if self.views.len() >= MAX_DIFF_VIEWS && !self.views.contains_key(&parsed.view_key) {
+            self.views.clear();
+        }
+        self.views.insert(parsed.view_key.clone(), view);
     }
 
     /// Swap one file's body rows (everything after its header) for
@@ -5272,6 +5389,37 @@ impl Render for Changes {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    /// T3 11571: a diff's top row survives a re-parse as a file-relative
+    /// position, even when an earlier file grows or folds.
+    #[test]
+    fn diff_view_top_rides_its_file_across_reparses() {
+        let paths = ["a.rs", "b.rs", "c.rs"];
+        let before = [0..10, 10..30, 30..35];
+        let top = diff_view_top(
+            &paths,
+            &before,
+            ListOffset {
+                item_ix: 14,
+                offset_in_item: px(6.0),
+            },
+        )
+        .unwrap();
+        assert_eq!(top, ("b.rs".to_string(), 4, px(6.0)));
+        let resolve = |paths: &[&str], ranges: &[std::ops::Range<usize>]| {
+            resolve_diff_view_top(paths, ranges, &top)
+                .map(|offset| (offset.item_ix, offset.offset_in_item))
+        };
+        // a.rs folded to its header: b.rs moved up, the reader didn't.
+        assert_eq!(resolve(&paths, &[0..1, 1..21, 21..26]), Some((5, px(6.0))));
+        // b.rs shrank (or folded): clamp to its last row, top of it.
+        assert_eq!(
+            resolve(&paths, &[0..10, 10..12, 12..20]),
+            Some((11, px(0.0)))
+        );
+        // b.rs left the diff.
+        assert_eq!(resolve(&["a.rs", "c.rs"], &[0..10, 10..15]), None);
+    }
 
     #[gpui::test]
     fn editing_staged_diff_comments_preserves_identity_and_cancellation(
