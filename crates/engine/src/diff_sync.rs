@@ -914,6 +914,7 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
         truncated: snapshot.truncated,
         checksum: snapshot.checksum.clone(),
         updated_at: chrono::Utc::now(),
+        branch: live_branch(&snapshot.branch),
     };
     {
         let entries = lock(&inner.entries);
@@ -1446,6 +1447,16 @@ pub async fn working_diff_base(root: &Path) -> Result<String, EngineError> {
     } else {
         head
     })
+}
+
+/// A snapshot's branch as published checkout state: `None` when detached.
+/// The branch is part of the snapshot checksum, and the git dir is watched,
+/// so a checkout switched anywhere (a terminal, another app) republishes
+/// within the watch debounce: the `.git/HEAD` watcher behind live branch
+/// labels.
+pub(crate) fn live_branch(branch: &str) -> Option<String> {
+    let branch = branch.trim();
+    (!branch.is_empty() && branch != "HEAD").then(|| branch.to_string())
 }
 
 /// One bounded atomic snapshot: tracked diff vs HEAD (or the empty tree) with

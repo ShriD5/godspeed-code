@@ -2905,6 +2905,7 @@ impl RpcService for EngineRpc {
                         additions: snapshot.additions,
                         deletions: snapshot.deletions,
                         truncated: snapshot.truncated,
+                        branch: crate::diff_sync::live_branch(&snapshot.branch),
                         checksum: snapshot.checksum,
                         updated_at: chrono::Utc::now(),
                     })

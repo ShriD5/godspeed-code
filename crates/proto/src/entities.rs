@@ -948,6 +948,12 @@ pub struct CheckoutDiff {
     pub truncated: bool,
     pub checksum: String,
     pub updated_at: DateTime<Utc>,
+    /// The branch checked out in this checkout right now (`None` when HEAD
+    /// is detached). Live: the git-dir watch republishes on every `HEAD`
+    /// move, so a branch label can follow a checkout switched outside
+    /// Godspeed without waiting for the next message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// Provider-neutral lifecycle state for a code change request.
