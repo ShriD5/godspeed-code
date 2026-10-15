@@ -1027,3 +1027,71 @@ async fn sources_are_never_modified() {
     }
     assert_eq!(fixture.source_hashes(), before);
 }
+
+/// A trial import of this machine's real history into a throwaway engine:
+/// `cargo test -p zeron-engine --test chat_import real_history_trial -- --ignored --nocapture`.
+/// Sources are only read (T3's database through a private copy); prints
+/// counts, never content.
+#[tokio::test]
+#[ignore = "reads the real ~/.t3, ~/.claude and ~/.codex"]
+async fn real_history_trial() {
+    let data = tempfile::tempdir().unwrap();
+    let core = EngineCore::assemble_with_profile(
+        EngineProfile::local(data.path()).unwrap(),
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::ClaudeCode,
+        None,
+    )
+    .unwrap();
+    for source in [
+        ChatImportSource::T3,
+        ChatImportSource::Claude,
+        ChatImportSource::Codex,
+    ] {
+        let preview = core.chat_import.preview(source);
+        let started = std::time::Instant::now();
+        let summary = core.chat_import.run(
+            &ChatImportRequest {
+                source,
+                projects: None,
+            },
+            |_| {},
+        );
+        println!(
+            "{}: found={} projects={} chats={} new={} elsewhere={} warnings={} | imported={} skipped={} spaces={} messages={} attachments={} errors={} ({:.1}s)",
+            source.slug(),
+            preview.found,
+            preview.projects.len(),
+            preview.chat_count(),
+            preview.count(ChatImportState::New),
+            preview.count(ChatImportState::Elsewhere),
+            preview.warnings.len(),
+            summary.imported,
+            summary.skipped,
+            summary.spaces_created,
+            summary.messages,
+            summary.attachments,
+            summary.errors.len(),
+            started.elapsed().as_secs_f32(),
+        );
+        let again = core.chat_import.run(
+            &ChatImportRequest {
+                source,
+                projects: None,
+            },
+            |_| {},
+        );
+        println!(
+            "{} re-run: imported={} updated={} skipped={}",
+            source.slug(),
+            again.imported,
+            again.updated,
+            again.skipped
+        );
+    }
+    println!(
+        "workspace: {} chats in {} spaces",
+        core.workspace.read_chats().unwrap().len(),
+        core.workspace.read_spaces().unwrap().len()
+    );
+}
