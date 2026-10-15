@@ -352,12 +352,12 @@ async fn repository_identity_spans_worktrees_and_clones() {
     .await;
     git(
         &shallow,
-        &["remote", "set-url", "origin", "https://GitHub.com/ZeronSH/Godspeed.git"],
+        &["remote", "set-url", "origin", "https://GitHub.com/ShriD5/Godspeed.git"],
     )
     .await;
     assert_eq!(
         repos.repository_identity(&shallow).await.unwrap(),
-        "github.com/ShriD5/godspeed"
+        "github.com/shrid5/godspeed"
     );
 
     // No commits yet: the remote (origin, else the first), then a
