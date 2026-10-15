@@ -54,11 +54,11 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
-    /// Import chats from T3 Code, Claude Code or Codex into the running
+    /// Import chats from T3 Code, Claude Code, Codex or Cursor into the running
     /// engine's workspace. `--dry-run` only reports what would be imported.
     Import {
         /// Where to import from.
-        #[arg(value_parser = ["t3", "claude", "codex"])]
+        #[arg(value_parser = ["t3", "claude", "codex", "cursor"])]
         source: String,
         /// Report counts without importing anything.
         #[arg(long)]

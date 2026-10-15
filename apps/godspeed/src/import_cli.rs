@@ -1,4 +1,4 @@
-//! `godspeed import <t3|claude|codex> [--dry-run] [--project <path>]`.
+//! `godspeed import <t3|claude|codex|cursor> [--dry-run] [--project <path>]`.
 //!
 //! Imports run inside the engine that owns the workspace (the app, or
 //! `godspeed headless`), reached over IPC. A dry run also works with no

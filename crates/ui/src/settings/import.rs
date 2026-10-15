@@ -1,4 +1,5 @@
-//! Settings → Import: bring chats over from T3 Code, Claude Code and Codex.
+//! Settings → Import: bring chats over from T3 Code, Claude Code, Codex and
+//! the Cursor Agent CLI.
 //!
 //! The engine scans every source on open (`ScanChatImportSources`); each
 //! source lists its projects with a switch (on by default when it holds
@@ -300,6 +301,16 @@ impl ImportPage {
             if here > 0 {
                 meta.push(SharedString::from(format!("{here} already here")).into_any_element());
             }
+            let history_only = project
+                .chats
+                .iter()
+                .filter(|c| !c.resumable && matches!(c.state, ChatImportState::New))
+                .count();
+            if history_only > 0 {
+                meta.push(
+                    SharedString::from(format!("{history_only} history only")).into_any_element(),
+                );
+            }
             if elsewhere > 0 {
                 meta.push(
                     SharedString::from(format!("{elsewhere} via another source"))
@@ -535,9 +546,10 @@ impl Render for ImportPage {
                                                 .child(widgets::page_header(&theme, "Import", None))
                                                 .child(widgets::page_subtitle(
                                                     &theme,
-                                                    "Bring chats over from T3 Code, Claude Code and Codex. \
-                                                     They keep their projects and history, and sending a \
-                                                     message picks up the original agent session.",
+                                                    "Bring chats over from T3 Code, Claude Code, Codex and \
+                                                     Cursor. They keep their projects and history; sending a \
+                                                     message in a Claude Code or Codex chat picks up the \
+                                                     original agent session.",
                                                 )),
                                         )
                                         .child(rescan),

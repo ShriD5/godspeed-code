@@ -568,7 +568,7 @@ pub enum SettingsSection {
     /// Always-on agents and their run inbox. (`Agents` above is the legacy
     /// Accounts alias, so this page needs its own name.)
     AlwaysOn,
-    /// Chats brought over from T3 Code, Claude Code and Codex.
+    /// Chats brought over from T3 Code, Claude Code, Codex and Cursor.
     Import,
 }
 
@@ -9343,7 +9343,7 @@ impl Shell {
                                 this.open_settings(SettingsSection::Import, cx);
                             }))
                             .child(SharedString::from(
-                                "Import chats from T3 Code, Claude Code or Codex",
+                                "Import chats from T3 Code, Claude Code, Codex or Cursor",
                             )),
                     )
                 })
