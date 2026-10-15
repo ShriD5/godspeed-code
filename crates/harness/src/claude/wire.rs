@@ -172,6 +172,24 @@ pub(crate) struct ContentBlock {
     pub tool_use_id: String,
     #[serde(default)]
     pub is_error: Option<bool>,
+    /// `tool_result` content: a string or text blocks.
+    #[serde(default)]
+    pub content: Value,
+}
+
+impl ContentBlock {
+    /// A `tool_result`'s text, whichever shape its content took.
+    pub fn result_text(&self) -> String {
+        match &self.content {
+            Value::String(text) => text.clone(),
+            Value::Array(blocks) => blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -759,11 +759,36 @@ impl Normalizer {
                 f.message
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_result")
-                    .map(|b| AgentEvent::ToolResult {
-                        id: b.tool_use_id.clone(),
-                        is_error: b.is_error.unwrap_or(false),
-                        output: None,
-                        diff: None,
+                    .flat_map(|b| {
+                        let is_error = b.is_error.unwrap_or(false);
+                        // A spawn that errored never ran, or stopped with its
+                        // call (a PreToolUse hook denying `Agent`, an invalid
+                        // subagent type): no `task_notification` follows, so
+                        // its error result is the subagent's end.
+                        let settled = (is_error && self.agent_spawn_tools.contains(&b.tool_use_id))
+                            .then(|| {
+                                let status = if b.result_text().contains("[Request interrupted") {
+                                    DoneStatus::Interrupted
+                                } else {
+                                    DoneStatus::Errored
+                                };
+                                tag(
+                                    &b.tool_use_id,
+                                    AgentEvent::Done {
+                                        status,
+                                        result: None,
+                                        error: None,
+                                        session_id: None,
+                                    },
+                                )
+                            });
+                        std::iter::once(AgentEvent::ToolResult {
+                            id: b.tool_use_id.clone(),
+                            is_error,
+                            output: None,
+                            diff: None,
+                        })
+                        .chain(settled)
                     })
                     .collect()
             }
@@ -1504,6 +1529,74 @@ mod tests {
                 .agent_tasks
                 .is_empty()
         );
+    }
+
+    /// A spawn a PreToolUse hook rejects never starts: the CLI answers its
+    /// call with an error result and sends no `task_notification`
+    /// (zeronsh/zeron#893). That result must settle the subagent, or it
+    /// counts as running until the session ends. Ordinary failed tools and
+    /// successful (async-launched) spawns settle nothing.
+    #[test]
+    fn an_errored_spawn_result_settles_the_subagent() {
+        let mut norm = Normalizer::new();
+        norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_spawn","name":"Agent","input":{"description":"scan","prompt":"p","run_in_background":true}},{"type":"tool_use","id":"toolu_ok","name":"Agent","input":{"description":"ok"}},{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"false"}}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_spawn","is_error":true,"content":"PreToolUse:Agent hook error: blocked"},{"type":"tool_result","tool_use_id":"toolu_ok","content":[{"type":"text","text":"Async agent launched"}]},{"type":"tool_result","tool_use_id":"toolu_bash","is_error":true,"content":"exit 1"}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let settled: Vec<&AgentEvent> = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Subagent { .. }))
+            .collect();
+        assert_eq!(
+            settled,
+            vec![&tag(
+                "toolu_spawn",
+                AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                }
+            )],
+            "{events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::ToolResult { .. }))
+                .count(),
+            3
+        );
+        // A spawn stopped with its turn ends interrupted, not failed.
+        let mut norm = Normalizer::new();
+        norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t","name":"Task","input":{"description":"d"}}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let events = norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","is_error":true,"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(events.iter().any(|e| matches!(e,
+            AgentEvent::Subagent { event, .. }
+                if matches!(event.as_ref(), AgentEvent::Done { status: DoneStatus::Interrupted, .. })
+        )), "{events:?}");
     }
 
     #[test]
