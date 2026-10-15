@@ -13005,6 +13005,7 @@ mod tests {
                 started_at: Some(updated),
                 updated_at: updated,
                 running_subagents: 0,
+                background_tasks: 0,
                 awaiting_approval: false,
             }];
             state.selected_chat = Some("c".into());

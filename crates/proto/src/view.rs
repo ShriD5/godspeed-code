@@ -72,6 +72,18 @@ pub fn running_subagents(session: Option<&Session>, now: DateTime<Utc>) -> u32 {
         .map_or(0, |s| s.running_subagents)
 }
 
+/// Background work a chat is still waiting on — "waiting on N tasks": its
+/// streaming subagents or the driver's own count of background tasks
+/// (shells, monitors, background agents), whichever is larger, since a
+/// driver may count its subagents among its tasks. Staleness-checked like
+/// [`running_subagents`]. While this is nonzero a settled turn is not done:
+/// completion sounds and banners wait for it to reach zero. Pure.
+pub fn background_work(session: Option<&Session>, now: DateTime<Utc>) -> u32 {
+    session
+        .filter(|s| now.signed_duration_since(s.updated_at).num_milliseconds() <= SESSION_STALE_MS)
+        .map_or(0, |s| s.running_subagents.max(s.background_tasks))
+}
+
 /// The full display status for a chat row / tab dot: live states win, then the
 /// synced seen marker decides completed-vs-idle. Staleness gating rides on
 /// [`effective_indicator`]; the derivation itself is [`crate::chat_indicator`].
@@ -265,8 +277,22 @@ mod gate_tests {
             started_at: None,
             updated_at,
             running_subagents: running,
+            background_tasks: 0,
             awaiting_approval: false,
         }
+    }
+
+    #[test]
+    fn background_work_counts_the_larger_report_while_fresh() {
+        let now = Utc::now();
+        let mut session = running_session(1, now);
+        session.background_tasks = 3;
+        assert_eq!(background_work(Some(&session), now), 3);
+        session.background_tasks = 0;
+        assert_eq!(background_work(Some(&session), now), 1);
+        session.updated_at = now - chrono::Duration::milliseconds(SESSION_STALE_MS + 1);
+        assert_eq!(background_work(Some(&session), now), 0);
+        assert_eq!(background_work(None, now), 0);
     }
 
     #[test]

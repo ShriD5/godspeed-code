@@ -778,6 +778,55 @@ async fn send_now_keeps_the_runtime_and_stop_tears_it_down() {
     rig.core.sessions.shutdown().await;
 }
 
+/// A turn that settles while background work is live is not done: the
+/// session row carries the driver's task count ("waiting on N tasks") so
+/// clients hold the completion chime, and when the work ends while parked
+/// the zero is held a moment (the agent usually wakes) before it shows.
+#[tokio::test]
+async fn the_session_row_reports_background_work_and_holds_its_end() {
+    let rig = rig();
+    let tasks = |core: &EngineCore| core.sessions.session_status(CHAT).map(|s| s.background_tasks);
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("hold: watch the build"), None)
+        .await
+        .unwrap();
+    wait_for(
+        || rig.ledger.turn.lock().unwrap().is_some(),
+        "the runtime to start",
+    )
+    .await;
+    let turn = rig.ledger.turn.lock().unwrap().clone().unwrap();
+    wait_for(
+        || status(&rig.core) == Some(SessionStatus::Working),
+        "the turn to run",
+    )
+    .await;
+    // The driver reports work without emitting anything: still published.
+    turn.set_background(2);
+    wait_for(|| tasks(&rig.core) == Some(2), "the task count").await;
+
+    // The turn settles with the work still running.
+    assert!(rig.core.sessions.stop_turn(CHAT).await.unwrap());
+    let row = rig.core.sessions.session_status(CHAT).unwrap();
+    assert_eq!(row.status, SessionStatus::Idle);
+    assert_eq!(
+        zeron_proto::view::background_work(Some(&row), chrono::Utc::now()),
+        2
+    );
+
+    // The work ends: held briefly, then cleared.
+    turn.set_background(0);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(tasks(&rig.core), Some(2), "the end is held");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tasks(&rig.core) != Some(0) {
+        assert!(tokio::time::Instant::now() < deadline, "the end shows");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    rig.core.sessions.shutdown().await;
+}
+
 /// Stop pressed right after Send: controls bypass the prompt drain, and the
 /// Stop used to run before the send had dispatched — it found no turn, did
 /// nothing, and the turn then ran in full.

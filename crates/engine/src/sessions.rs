@@ -1499,6 +1499,33 @@ impl Inner {
         }
     }
 
+    /// Publish how many background tasks `chat_id`'s runtime reports (see
+    /// [`BackgroundReport`]). Same discipline as
+    /// [`Self::set_running_subagents`]: a change is mirrored, an unchanged
+    /// count is a no-op.
+    fn set_background_tasks(&self, chat_id: &str, tasks: usize) {
+        let tasks = u32::try_from(tasks).unwrap_or(u32::MAX);
+        let session = {
+            let mut statuses = lock(&self.statuses);
+            let Some(entry) = statuses.get_mut(chat_id) else {
+                return;
+            };
+            if entry.background_tasks == tasks {
+                return;
+            }
+            entry.background_tasks = tasks;
+            entry.updated_at = Utc::now();
+            let session = entry.clone();
+            let mut list: Vec<Session> = statuses.values().cloned().collect();
+            list.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
+            self.sessions_tx.send_replace(list);
+            session
+        };
+        if let Some(ws) = self.workspace() {
+            ws.record_session(&session);
+        }
+    }
+
     fn has_pending_steers(&self, chat_id: &str, run_id: &str) -> bool {
         lock(&self.runs)
             .get(chat_id)
@@ -1545,6 +1572,7 @@ impl Inner {
                     started_at: None,
                     updated_at: now,
                     running_subagents: 0,
+                    background_tasks: 0,
                     awaiting_approval: false,
                 });
             // `started_at` is the elapsed-timer base and must only ever mean
@@ -1877,6 +1905,47 @@ fn is_active(session: &Session) -> bool {
         session.status,
         SessionStatus::Working | SessionStatus::AwaitingInput
     )
+}
+
+// ── background work ─────────────────────────────────────────────────────────
+
+/// How long a parked turn's "background work ended" is held back. The end
+/// of that work (a background shell exiting, a monitor firing, a subagent
+/// reporting) usually wakes the agent into a follow-up turn a moment later;
+/// publishing zero in that gap read as done, so clients chimed "finished"
+/// right before the agent got back to work (T3 13625/15099).
+const BACKGROUND_CLEAR_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The background-task count a session row carries: the driver's live
+/// count, except that a drop to zero while the turn is parked waits out
+/// [`BACKGROUND_CLEAR_GRACE`] (or the next turn starting) before it shows.
+#[derive(Debug, Default)]
+struct BackgroundReport {
+    published: usize,
+    /// When a held drop to zero publishes.
+    clear_at: Option<tokio::time::Instant>,
+}
+
+impl BackgroundReport {
+    /// The count to publish now. `parked`: no turn in flight.
+    fn next(&mut self, live: usize, parked: bool, now: tokio::time::Instant) -> usize {
+        if live > 0 || self.published == 0 || !parked {
+            // More work, nothing to clear, or a turn took over (its own end
+            // is the completion that counts).
+            self.clear_at = None;
+            self.published = live;
+            return live;
+        }
+        match self.clear_at {
+            Some(at) if now >= at => {
+                self.clear_at = None;
+                self.published = 0;
+            }
+            Some(_) => {}
+            None => self.clear_at = Some(now + BACKGROUND_CLEAR_GRACE),
+        }
+        self.published
+    }
 }
 
 // ── subagent docs ───────────────────────────────────────────────────────────
@@ -2536,9 +2605,20 @@ async fn drive_run(
     // spawned it, and its traffic never un-parks the chat, so the idle reaper
     // measures from here as well as from the park.
     let mut last_subagent_activity: Option<tokio::time::Instant> = None;
+    // The driver's background-task count, mirrored onto the session row so
+    // clients hold "done" while work is still live.
+    let mut background = BackgroundReport::default();
 
     let mut final_completed_turn = None;
     let final_status = loop {
+        inner.set_background_tasks(
+            &chat_id,
+            background.next(
+                turn.background_tasks(),
+                idle_since.is_some(),
+                tokio::time::Instant::now(),
+            ),
+        );
         let event: AgentEvent = if let Some(event) = prepared_events.pop_front() {
             event
         } else {
@@ -2564,6 +2644,13 @@ async fn drive_run(
                     inner.touch_session(&chat_id);
                     continue;
                 }
+                // The driver's background count moved (a driver may update
+                // it without emitting an event), or a held "background work
+                // ended" is due: the top of the loop publishes either.
+                _ = turn.background_changed() => continue,
+                _ = tokio::time::sleep_until(
+                    background.clear_at.unwrap_or_else(tokio::time::Instant::now)
+                ), if background.clear_at.is_some() => continue,
                 // A hang-up restarts the idle window, however long the call.
                 _ = resume_state.voice_active.ended.notified() => {
                     if idle_since.is_some() {
@@ -3407,6 +3494,7 @@ async fn drive_run(
         }
     }
     inner.set_running_subagents(&chat_id, 0);
+    inner.set_background_tasks(&chat_id, 0);
 
     // Claim any accepted-but-unconfirmed steers BEFORE the handle goes away:
     // a routed send that raced this exit either finds its entry gone (we own

@@ -319,6 +319,10 @@ pub enum SessionStatus {
     Errored,
 }
 
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 /// Live run status for a chat — drives the Working indicator and sidebar status dots.
 /// Staleness-checked client-side against `updated_at` so a crashed backend never shows
 /// an eternal "Working".
@@ -340,6 +344,13 @@ pub struct Session {
     /// has not opened; read it through `view::running_subagents`.
     #[serde(default)]
     pub running_subagents: u32,
+    /// Background tasks the agent's runtime reports still running —
+    /// background shells, monitors, background agents — as its driver counts
+    /// them. A settled turn with work still live is not done yet: the work
+    /// usually wakes the agent again. Read it through
+    /// `view::background_work`. Additive; older rows read 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub background_tasks: u32,
     /// With `AwaitingInput`: the pending request is a permission approval
     /// ("Needs approval" in the sidebar). Additive; older rows read false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
