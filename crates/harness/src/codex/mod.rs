@@ -823,6 +823,7 @@ impl CodexHarness {
             title_only,
             idle,
             executable: exe,
+            registration: crate::process::registry::register(child.id(), "codex"),
             child,
             client,
             incoming,
@@ -859,6 +860,8 @@ struct Session {
     kill_grace: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
     stderr_tail: crate::StderrTail,
+    /// The agent's crash record, held until the child is reaped.
+    registration: Option<crate::process::registry::Registration>,
 }
 
 /// Turn-routing state (port of codex.ts's activeTurnId/completedTurnIds): the
@@ -1057,6 +1060,7 @@ async fn run_session(session: Session) {
         interrupt_grace,
         kill_grace,
         stderr_tail,
+        registration: _registration,
     } = session;
     let RunControls {
         realtime,

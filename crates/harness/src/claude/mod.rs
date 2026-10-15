@@ -698,6 +698,7 @@ impl ClaudeHarness {
             }
         })?;
 
+        let child_pid = child.id();
         let stdin = child
             .stdin
             .take()
@@ -755,6 +756,7 @@ impl ClaudeHarness {
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
             stderr_tail,
+            registration: crate::process::registry::register(child_pid, "claude"),
         }));
 
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
@@ -885,6 +887,9 @@ struct Session {
     kill_grace: Duration,
     /// Rolling stderr tail for the crash message on an unexpected exit.
     stderr_tail: crate::StderrTail,
+    /// The agent's crash record ([`crate::process::registry`]), held until
+    /// the child is reaped.
+    registration: Option<crate::process::registry::Registration>,
 }
 
 /// The per-run event loop: one task multiplexing stdout frames, the steering
@@ -903,6 +908,7 @@ async fn run_session(session: Session) {
         interrupt_grace,
         kill_grace,
         stderr_tail,
+        registration: _registration,
     } = session;
     let RunControls {
         realtime: _,
