@@ -3006,7 +3006,14 @@ impl Shell {
             // Godspeed; the sidebar dot carries the rest.
             let app_focused = cx.active_window().is_some();
             for (chat_id, status, send_pending, title, notify) in sessions {
-                let prev = self.sound_prev.insert(chat_id.clone(), status.clone());
+                let prev = self.sound_prev.get(&chat_id).cloned();
+                // A completion while background work is live stays held in
+                // the baseline until that work ends.
+                let baseline = match &prev {
+                    Some(prev) => status.baseline_after(prev, send_pending),
+                    None => status.clone(),
+                };
+                self.sound_prev.insert(chat_id.clone(), baseline);
                 // Keep side-chat baselines current, but never emit their
                 // completion, input-request, or failure sounds/banners.
                 if notify
@@ -14652,6 +14659,7 @@ mod tests {
             started_at: Some(updated_at),
             updated_at,
             running_subagents: 0,
+            background_tasks: 0,
             awaiting_approval: false,
         }
     }

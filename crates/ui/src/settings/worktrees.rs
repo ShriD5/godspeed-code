@@ -249,6 +249,7 @@ impl WorktreeSettingsCard {
             WorktreeSettings {
                 use_custom_directory: true,
                 custom_directory: Some(path),
+                branch_prefix: self.saved().and_then(|s| s.branch_prefix.clone()),
             },
             cx,
         );

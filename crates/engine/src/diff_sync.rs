@@ -914,6 +914,7 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
         truncated: snapshot.truncated,
         checksum: snapshot.checksum.clone(),
         updated_at: chrono::Utc::now(),
+        branch: live_branch(&snapshot.branch),
     };
     {
         let entries = lock(&inner.entries);
@@ -1076,6 +1077,7 @@ async fn capture_git_in<S: AsRef<OsStr>>(
         cmd.as_std_mut().creation_flags(0x08000000);
     }
     cmd.arg("-C").arg(cwd).args(args);
+    crate::repos::noninteractive_git(&mut cmd);
     if let Some(snapshot) = snapshot {
         snapshot.apply_to(&mut cmd);
     }
@@ -1447,6 +1449,16 @@ pub async fn working_diff_base(root: &Path) -> Result<String, EngineError> {
     })
 }
 
+/// A snapshot's branch as published checkout state: `None` when detached.
+/// The branch is part of the snapshot checksum, and the git dir is watched,
+/// so a checkout switched anywhere (a terminal, another app) republishes
+/// within the watch debounce: the `.git/HEAD` watcher behind live branch
+/// labels.
+pub(crate) fn live_branch(branch: &str) -> Option<String> {
+    let branch = branch.trim();
+    (!branch.is_empty() && branch != "HEAD").then(|| branch.to_string())
+}
+
 /// One bounded atomic snapshot: tracked diff vs HEAD (or the empty tree) with
 /// renames, plus untracked files (via `git status --porcelain`, index untouched)
 /// as synthesized new-file hunks. 3MiB patch cap with a `truncated` flag; sha256
@@ -1757,6 +1769,7 @@ async fn run_git_for_path_batch(
         use std::os::windows::process::CommandExt;
         command.as_std_mut().creation_flags(0x08000000);
     }
+    crate::repos::noninteractive_git(&mut command);
     command
         .arg("-C")
         .arg(root)

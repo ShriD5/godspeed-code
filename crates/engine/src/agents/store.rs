@@ -157,7 +157,11 @@ impl AgentStore {
                  created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, created_at DESC);
-             CREATE INDEX IF NOT EXISTS runs_by_chat ON runs (chat_id);",
+             CREATE INDEX IF NOT EXISTS runs_by_chat ON runs (chat_id);
+             CREATE TABLE IF NOT EXISTS meta (
+                 key TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
+             );",
         )
         .map_err(store_err)?;
         Ok(Self {
@@ -264,6 +268,31 @@ impl AgentStore {
             .optional()
             .map_err(store_err)?;
         Ok(streak.unwrap_or(0).try_into().unwrap_or(0))
+    }
+
+    // ── install identity ──────────────────────────────────────────────────
+
+    /// The install that last owned this database (its device id), if stamped.
+    pub(crate) fn install_id(&self) -> Result<Option<String>, EngineError> {
+        self.conn()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'install_id'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_err)
+    }
+
+    pub(crate) fn set_install_id(&self, id: &str) -> Result<(), EngineError> {
+        self.conn()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('install_id', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![id],
+            )
+            .map_err(store_err)?;
+        Ok(())
     }
 
     pub(crate) fn set_paused(&self, id: &str, reason: Option<&str>) -> Result<(), EngineError> {

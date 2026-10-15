@@ -199,14 +199,14 @@ fn scan(roots: &ImportRoots, source: ChatImportSource) -> Result<Scan, EngineErr
             } else {
                 HashMap::new()
             };
+            let scan_one = move |path: &Path, archived: bool| match source {
+                ChatImportSource::Claude => claude::scan_file(path),
+                ChatImportSource::Cursor => cursor::scan_file(path),
+                _ => codex::scan_file(path, archived, &titles),
+            };
             let mut chats: Vec<SourceChat> = Vec::new();
             let mut paths = HashMap::new();
-            for (path, archived) in files {
-                let scanned = match source {
-                    ChatImportSource::Claude => claude::scan_file(&path),
-                    ChatImportSource::Cursor => cursor::scan_file(&path),
-                    _ => codex::scan_file(&path, archived, &titles),
-                };
+            for (path, scanned) in scan_bounded(files, SCAN_FILE_TIMEOUT, scan_one) {
                 match scanned {
                     // A thread resumed under several rollouts keeps its newest.
                     Ok(Some(chat)) => {
@@ -233,6 +233,100 @@ fn scan(roots: &ImportRoots, source: ChatImportSource) -> Result<Scan, EngineErr
             })
         }
     }
+}
+
+/// How long one source file may take to read before the scan skips it.
+const SCAN_FILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Scan `files` in order on a worker thread, giving each `timeout`. A read
+/// that never returns (a FIFO, a network mount, a privacy prompt nobody can
+/// answer) costs that one file: its thread is abandoned, a fresh worker takes
+/// the rest, and the file reports an error.
+fn scan_bounded<T, F>(
+    files: Vec<(PathBuf, bool)>,
+    timeout: std::time::Duration,
+    scan: F,
+) -> Vec<(PathBuf, Result<Option<T>, EngineError>)>
+where
+    T: Send + 'static,
+    F: Fn(&Path, bool) -> Result<Option<T>, EngineError> + Send + Sync + 'static,
+{
+    type Job = (PathBuf, bool);
+    type Done<T> = Result<Option<T>, EngineError>;
+    let scan = Arc::new(scan);
+    let spawn = || {
+        let (job_tx, job_rx) = std::sync::mpsc::channel::<Job>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<Done<T>>();
+        let scan = scan.clone();
+        let spawned = std::thread::Builder::new()
+            .name("chat-import-scan".into())
+            .spawn(move || {
+                for (path, archived) in job_rx {
+                    if done_tx.send(scan(&path, archived)).is_err() {
+                        return;
+                    }
+                }
+            });
+        spawned.ok().map(|_| (job_tx, done_rx))
+    };
+    let mut worker = None;
+    let mut out = Vec::with_capacity(files.len());
+    for (path, archived) in files {
+        if worker.is_none() {
+            worker = spawn();
+        }
+        let Some((jobs, done)) = &worker else {
+            out.push((path, Err(EngineError::Other("scan thread unavailable".into()))));
+            continue;
+        };
+        let result = match jobs.send((path.clone(), archived)) {
+            Ok(()) => done.recv_timeout(timeout),
+            Err(_) => Err(std::sync::mpsc::RecvTimeoutError::Disconnected),
+        };
+        match result {
+            Ok(scanned) => out.push((path, scanned)),
+            Err(err) => {
+                // Dropping the channels lets a stuck worker exit whenever its
+                // read finally returns.
+                worker = None;
+                let reason = match err {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => {
+                        format!("no answer after {}s; skipped", timeout.as_secs())
+                    }
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => "scan failed".into(),
+                };
+                out.push((path, Err(EngineError::Other(reason))));
+            }
+        }
+    }
+    out
+}
+
+/// macOS privacy-protected (TCC) locations. Touching them from a process
+/// without consent blocks on a prompt, so the import never probes inside
+/// them; the space's git stamp is filled in later by `SpacesSync`.
+fn privacy_protected(path: &Path) -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    if path.starts_with("/Volumes") {
+        return true;
+    }
+    let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+        return false;
+    };
+    let home = Path::new(&home);
+    [
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Movies",
+        "Music",
+        "Library/Mobile Documents",
+    ]
+    .iter()
+    .any(|dir| path.starts_with(home.join(dir)))
 }
 
 /// Native session ids T3 threads resume (empty when T3 Code isn't here).
@@ -590,7 +684,8 @@ impl ChatImporter {
         let id = uuid::Uuid::new_v4().to_string();
         let title = chat.project_title.clone();
         let name = title.filter(|t| t != &model::basename(&chat.project_path));
-        let git = Path::new(&chat.project_path).join(".git").exists();
+        let project = Path::new(&chat.project_path);
+        let git = !privacy_protected(project) && project.join(".git").exists();
         self.inner
             .workspace
             .create_space(&id, device_id, &chat.project_path, name.clone(), git)?;
@@ -826,12 +921,56 @@ impl ChatImporter {
 
 #[cfg(test)]
 mod tests {
-    use super::chat_id_for;
+    use super::*;
 
     #[test]
     fn chat_ids_are_stable_per_source_key() {
         assert_eq!(chat_id_for("t3:a"), chat_id_for("t3:a"));
         assert_ne!(chat_id_for("t3:a"), chat_id_for("claude:a"));
         assert_eq!(chat_id_for("t3:a").len(), 36);
+    }
+
+    #[test]
+    fn a_file_that_never_answers_costs_only_itself() {
+        let files: Vec<(PathBuf, bool)> = ["a", "hang", "b", "hang", "c"]
+            .iter()
+            .map(|name| (PathBuf::from(name), false))
+            .collect();
+        let started = std::time::Instant::now();
+        let scanned = scan_bounded(
+            files,
+            std::time::Duration::from_millis(100),
+            |path: &Path, _| {
+                if path == Path::new("hang") {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                }
+                Ok(Some(path.display().to_string()))
+            },
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let names: Vec<_> = scanned
+            .iter()
+            .map(|(path, result)| match result {
+                Ok(Some(name)) => name.clone(),
+                Ok(None) => format!("{}: none", path.display()),
+                Err(err) => format!("{}: {err}", path.display()),
+            })
+            .collect();
+        assert_eq!(names[0], "a");
+        assert!(names[1].starts_with("hang: ") && names[1].contains("skipped"));
+        assert_eq!(names[2], "b");
+        assert!(names[3].contains("skipped"));
+        assert_eq!(names[4], "c");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn privacy_protected_folders_are_never_probed() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert!(privacy_protected(&home.join("Documents/app")));
+        assert!(privacy_protected(&home.join("Desktop")));
+        assert!(privacy_protected(Path::new("/Volumes/USB/repo")));
+        assert!(!privacy_protected(&home.join("Developer/app")));
+        assert!(!privacy_protected(&home.join("Documentsx/app")));
     }
 }

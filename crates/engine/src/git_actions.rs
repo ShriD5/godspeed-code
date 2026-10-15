@@ -25,7 +25,7 @@ use zeron_proto::{
     PublishedRepository, RepositoryVisibility,
 };
 
-use crate::source_control::{GitHubCli, GitHubWriteError, PullRequestDraft, parse_git_remote};
+use crate::source_control::{GitHubCli, GitHubWriteError, PullRequestDraft};
 use crate::text_generation::{self, PullRequestPrompt, TextGenerator};
 
 /// Local operations (status, staging, commit hooks).
@@ -317,11 +317,13 @@ impl GitActions {
             _ => (0, 0),
         };
         let remote = self.push_remote(cwd, branch.as_deref()).await;
+        // Any remote name (not just `origin`), and an SSH host alias for
+        // GitHub (`git@github-work:…`) counts as GitHub.
         let github = match &remote {
-            Some(remote) => git_value(cwd, &["remote", "get-url", remote])
-                .await
-                .and_then(|url| parse_git_remote(&url))
-                .is_some_and(|remote| remote.host.contains("github")),
+            Some(remote) => match git_value(cwd, &["remote", "get-url", remote]).await {
+                Some(url) => crate::source_control::remote_is_github(&url).await,
+                None => false,
+            },
             None => false,
         };
         let porcelain = git_value(cwd, &["status", "--porcelain=v1"]).await.unwrap_or_default();

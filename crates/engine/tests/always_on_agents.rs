@@ -30,9 +30,9 @@ const SPACE: &str = "space-agents";
 type PromptLog = Arc<Mutex<Vec<String>>>;
 type RequestLog = Arc<Mutex<Vec<RunRequest>>>;
 
-/// Answers by keyword in the instructions: `FAIL` errors out, `ASK` waits
-/// on a question first, `APPROVE` on a permission approval, anything else
-/// replies with a report.
+/// Answers by keyword in the instructions: `FAIL` errors out, `PARTIAL`
+/// errors after some text, `ASK` waits on a question first, `APPROVE` on a
+/// permission approval, anything else replies with a report.
 struct ScriptedHarness {
     prompts: PromptLog,
     requests: RequestLog,
@@ -92,6 +92,21 @@ impl Harness for ScriptedHarness {
                     message: "boom: the build is broken".into(),
                 }),
                 Ok(done(DoneStatus::Errored, Some("boom: the build is broken"))),
+            ];
+            return Ok(futures::stream::iter(events).boxed());
+        }
+        if instructions.contains("PARTIAL") {
+            // Some text, then an error, on a turn the harness still closes
+            // as completed: the transcript is the only failure signal.
+            let events = vec![
+                Ok(started),
+                Ok(AgentEvent::TextDelta {
+                    text: "Checked half the suites.".into(),
+                }),
+                Ok(AgentEvent::Error {
+                    message: "stream cut: rate limited".into(),
+                }),
+                Ok(done(DoneStatus::Completed, None)),
             ];
             return Ok(futures::stream::iter(events).boxed());
         }
@@ -720,6 +735,80 @@ async fn three_failures_in_a_row_pause_the_agent() {
     assert!(resumed.paused_reason.is_none());
     assert_eq!(resumed.consecutive_failures, 0);
     assert!(resumed.next_fire_at.is_some());
+    w.core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_error_after_partial_text_fails_the_run() {
+    let w = world();
+    let agent = create(
+        &w.client,
+        draft("Half", "PARTIAL report.", json!([{ "kind": "webhook" }])),
+    )
+    .await;
+    let run = w.core.agents.run_now(&agent.id).await.unwrap();
+    let failed = wait_for_run(&w, &run.id, AgentRunStatus::Failed).await;
+    assert_eq!(failed.summary.as_deref(), Some("stream cut: rate limited"));
+    assert_eq!(w.core.agents.list().unwrap()[0].consecutive_failures, 1);
+    w.core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_database_copied_from_another_install_pauses_its_agents() {
+    let w = world();
+    let dir = w._tmp.path().join("copied");
+    let open = || {
+        Agents::open(
+            &dir,
+            w.core.workspace.clone(),
+            w.core.doc_host.clone(),
+            w.core.sessions.clone(),
+            w.core.registry.clone(),
+        )
+        .unwrap()
+    };
+    let agents = open();
+    let agent = agents
+        .create(
+            serde_json::from_value(draft(
+                "Hourly",
+                "Check the build.",
+                json!([{ "kind": "interval", "everySecs": 3600 }]),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    drop(agents);
+    // The same install reopening its own database changes nothing.
+    let agents = open();
+    assert!(agents.list().unwrap()[0].paused_reason.is_none());
+    drop(agents);
+
+    // Another install wrote this database: its agents must not fire here.
+    let conn = rusqlite::Connection::open(dir.join("agents.sqlite3")).unwrap();
+    conn.execute(
+        "UPDATE meta SET value = 'another-install' WHERE key = 'install_id'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let agents = open();
+    let paused = &agents.list().unwrap()[0];
+    assert_eq!(
+        paused.paused_reason.as_deref(),
+        Some(zeron_engine::agents::COPIED_INSTALL_REASON)
+    );
+    assert!(paused.next_fire_at.is_none());
+    agents
+        .tick_at(Utc::now() + chrono::TimeDelta::hours(3))
+        .await;
+    assert!(runs_of(&agents, &agent.id).is_empty());
+
+    // Resuming adopts the agent here, and it stays adopted across restarts.
+    let resumed = agents.set_enabled(&agent.id, true).unwrap();
+    assert!(resumed.paused_reason.is_none());
+    drop(agents);
+    assert!(open().list().unwrap()[0].paused_reason.is_none());
     w.core.shutdown().await;
 }
 

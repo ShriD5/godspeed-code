@@ -319,6 +319,10 @@ pub enum SessionStatus {
     Errored,
 }
 
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 /// Live run status for a chat — drives the Working indicator and sidebar status dots.
 /// Staleness-checked client-side against `updated_at` so a crashed backend never shows
 /// an eternal "Working".
@@ -340,6 +344,13 @@ pub struct Session {
     /// has not opened; read it through `view::running_subagents`.
     #[serde(default)]
     pub running_subagents: u32,
+    /// Background tasks the agent's runtime reports still running —
+    /// background shells, monitors, background agents — as its driver counts
+    /// them. A settled turn with work still live is not done yet: the work
+    /// usually wakes the agent again. Read it through
+    /// `view::background_work`. Additive; older rows read 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub background_tasks: u32,
     /// With `AwaitingInput`: the pending request is a permission approval
     /// ("Needs approval" in the sidebar). Additive; older rows read false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -449,6 +460,21 @@ pub struct Worktree {
     pub checkout_id: Option<String>,
 }
 
+/// One row of `ListOrphanWorktrees`: a Godspeed worktree no chat's cwd
+/// points into any more. Removing it goes through `DeleteWorktree`, with
+/// `force` only after the user confirmed losing `dirty` work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrphanWorktree {
+    pub repo_path: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Uncommitted or untracked changes (or a status git couldn't read).
+    #[serde(default)]
+    pub dirty: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderEntry {
@@ -474,6 +500,22 @@ pub struct WorktreeSettings {
     pub use_custom_directory: bool,
     /// Remembered even while the custom location is disabled.
     pub custom_directory: Option<String>,
+    /// Prefix for new worktree branches; `None` keeps
+    /// [`DEFAULT_WORKTREE_BRANCH_PREFIX`]. May be empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_prefix: Option<String>,
+}
+
+/// The prefix new worktree branches get unless the device chooses another.
+pub const DEFAULT_WORKTREE_BRANCH_PREFIX: &str = "godspeed/";
+
+impl WorktreeSettings {
+    /// The prefix new worktree branches get.
+    pub fn effective_branch_prefix(&self) -> &str {
+        self.branch_prefix
+            .as_deref()
+            .unwrap_or(DEFAULT_WORKTREE_BRANCH_PREFIX)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -948,6 +990,12 @@ pub struct CheckoutDiff {
     pub truncated: bool,
     pub checksum: String,
     pub updated_at: DateTime<Utc>,
+    /// The branch checked out in this checkout right now (`None` when HEAD
+    /// is detached). Live: the git-dir watch republishes on every `HEAD`
+    /// move, so a branch label can follow a checkout switched outside
+    /// Godspeed without waiting for the next message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// Provider-neutral lifecycle state for a code change request.

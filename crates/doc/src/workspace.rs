@@ -488,6 +488,11 @@ impl WorkspaceDoc {
         set_opt_ms(&row, "startedAt", session.started_at)?;
         row.insert("updatedAt", session.updated_at.timestamp_millis())?;
         row.insert("runningSubagents", i64::from(session.running_subagents))?;
+        if session.background_tasks > 0 {
+            row.insert("backgroundTasks", i64::from(session.background_tasks))?;
+        } else {
+            row.delete("backgroundTasks")?;
+        }
         if session.awaiting_approval {
             row.insert("awaitingApproval", true)?;
         } else {
@@ -788,6 +793,8 @@ pub(crate) struct RawSession {
     #[serde(default)]
     running_subagents: u32,
     #[serde(default)]
+    background_tasks: u32,
+    #[serde(default)]
     awaiting_approval: bool,
 }
 
@@ -801,6 +808,7 @@ impl From<RawSession> for Session {
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
             running_subagents: raw.running_subagents,
+            background_tasks: raw.background_tasks,
             awaiting_approval: raw.awaiting_approval,
         }
     }
@@ -911,6 +919,7 @@ mod tests {
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
             running_subagents: 0,
+            background_tasks: 0,
             awaiting_approval: false,
         }
     }
@@ -1010,6 +1019,7 @@ mod tests {
         // The running-subagent count rides the row and survives the round trip.
         let mut busy = session("chat-1", "dev-a", SessionStatus::Working);
         busy.running_subagents = 4;
+        busy.background_tasks = 2;
         ws.upsert_session(&busy).unwrap();
         assert_eq!(ws.read_sessions().unwrap(), vec![busy]);
         ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))

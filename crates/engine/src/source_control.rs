@@ -261,31 +261,9 @@ impl ChangeRequestResolver {
     async fn github_slug(&self, remote_url: &str) -> Option<String> {
         let remote = parse_git_remote(remote_url)?;
         let slug = format!("{}/{}", remote.owner, remote.repository);
-        if remote.host.eq_ignore_ascii_case("github.com") {
-            return Some(slug);
-        }
-        if !is_ssh_remote(remote_url) || !valid_ssh_alias(&remote.host) {
-            return None;
-        }
-        let output = self
-            .inspector
-            .runner
-            .run(ProcessRequest {
-                program: "ssh".into(),
-                args: vec!["-G".into(), remote.host.clone()],
-                stdin: None,
-                cwd: None,
-                env: Vec::new(),
-                timeout: SSH_CONFIG_TIMEOUT,
-                output_limit: GIT_OUTPUT_LIMIT,
-            })
+        resolved_remote_host(self.inspector.runner.as_ref(), remote_url, &remote.host)
             .await
-            .ok()?;
-        if !output.success || output.stdout_truncated {
-            return None;
-        }
-        ssh_config_hostname(&String::from_utf8_lossy(&output.stdout))
-            .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
+            .eq_ignore_ascii_case("github.com")
             .then_some(slug)
     }
 
@@ -1108,8 +1086,10 @@ pub enum GitHubWriteError {
         "GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run `gh auth login`."
     )]
     CliUnavailable,
-    #[error("GitHub CLI is not signed in. Run `gh auth login` in a terminal, then try again.")]
-    Authentication,
+    /// Carries gh's own words: "not signed in" has several causes (an
+    /// expired token, a missing scope, another host).
+    #[error("GitHub CLI is not signed in. Run `gh auth login` in a terminal, then try again.\ngh: {0}")]
+    Authentication(String),
     #[error("A pull request for this branch already exists: {0}")]
     PullRequestExists(String),
     #[error("GitHub did not answer in time. Check your connection and try again.")]
@@ -1257,7 +1237,9 @@ impl GitHubCli {
             return Err(GitHubWriteError::PullRequestExists(url));
         }
         Err(match classify_github_failure(&output.stderr) {
-            ChangeRequestError::Authentication => GitHubWriteError::Authentication,
+            ChangeRequestError::Authentication => {
+                GitHubWriteError::Authentication(gh_failure_detail(&stderr))
+            }
             _ => GitHubWriteError::Failed(gh_failure_detail(&stderr)),
         })
     }
@@ -1271,20 +1253,20 @@ fn first_url(bytes: &[u8]) -> Option<String> {
         .map(|url| url.trim_end_matches(['.', ',', ')']).to_string())
 }
 
-/// `gh`'s explanation: its non-empty lines, bounded for a dialog.
+/// `gh`'s explanation verbatim (line breaks kept, so a GraphQL error and the
+/// hint under it stay readable), only trimmed and bounded for a dialog.
 fn gh_failure_detail(stderr: &str) -> String {
-    let detail = stderr
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let detail: String = detail.chars().take(400).collect();
+    const MAX_CHARS: usize = 4000;
+    let detail = stderr.trim();
     if detail.is_empty() {
-        "the GitHub CLI failed without an explanation".into()
-    } else {
-        detail
+        return "the GitHub CLI failed without an explanation".into();
     }
+    if detail.chars().count() <= MAX_CHARS {
+        return detail.to_string();
+    }
+    let mut cut: String = detail.chars().take(MAX_CHARS).collect();
+    cut.push('…');
+    cut
 }
 
 /// Board requests run against GitHub.com without a checkout or interactive prompts.
@@ -1468,6 +1450,50 @@ fn valid_ssh_alias(host: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+/// The host a remote really reaches. An SSH remote may name a host alias
+/// from `~/.ssh/config` (`git@github-work:acme/app.git`, one key per GitHub
+/// account); `ssh -G` resolves it locally without connecting. Anything else,
+/// or an alias ssh can't resolve, is the host as written.
+async fn resolved_remote_host(runner: &dyn ProcessRunner, remote_url: &str, host: &str) -> String {
+    if host.eq_ignore_ascii_case("github.com")
+        || !is_ssh_remote(remote_url)
+        || !valid_ssh_alias(host)
+    {
+        return host.to_string();
+    }
+    let output = runner
+        .run(ProcessRequest {
+            program: "ssh".into(),
+            args: vec!["-G".into(), host.to_string()],
+            stdin: None,
+            cwd: None,
+            env: Vec::new(),
+            timeout: SSH_CONFIG_TIMEOUT,
+            output_limit: GIT_OUTPUT_LIMIT,
+        })
+        .await;
+    match output {
+        Ok(output) if output.success && !output.stdout_truncated => {
+            ssh_config_hostname(&String::from_utf8_lossy(&output.stdout))
+                .filter(|resolved| !resolved.is_empty())
+                .map_or_else(|| host.to_string(), |resolved| resolved.to_ascii_lowercase())
+        }
+        _ => host.to_string(),
+    }
+}
+
+/// Whether `remote_url` points at GitHub (github.com, a `github` host such
+/// as an Enterprise install, or an SSH alias for either).
+pub async fn remote_is_github(remote_url: &str) -> bool {
+    let Some(remote) = parse_git_remote(remote_url) else {
+        return false;
+    };
+    remote.host.contains("github")
+        || resolved_remote_host(&SystemProcessRunner, remote_url, &remote.host)
+            .await
+            .contains("github")
+}
+
 /// The `hostname` line of `ssh -G` output: the host an alias connects to.
 fn ssh_config_hostname(config: &str) -> Option<&str> {
     config.lines().find_map(|line| {
@@ -1605,12 +1631,17 @@ impl GitCheckoutInspector {
             remote_url
         };
 
-        let branch = BranchHeadContext::resolve(
+        let mut branch = BranchHeadContext::resolve(
             local_branch,
             upstream_ref.as_deref(),
             remote_name.as_deref(),
             remote_url.as_deref(),
         );
+        // A remote through an SSH host alias names the forge it reaches, so
+        // provider calls address github.com rather than the alias.
+        if let (Some(url), Some(host)) = (branch.remote_url.clone(), branch.host.clone()) {
+            branch.host = Some(resolved_remote_host(self.runner.as_ref(), &url, &host).await);
+        }
         // The default branch is read from local refs only. `refs/remotes/
         // <remote>/HEAD` is a fetch-time cache and may be absent; the provider
         // resolves the remote's default branch itself when needed. Never fall
@@ -2242,6 +2273,9 @@ impl ProcessRunner for SystemProcessRunner {
         if request.program == "gh" {
             zeron_harness::compose_login_shell_path(&mut command);
         }
+        if request.program == "git" {
+            crate::repos::noninteractive_git(&mut command);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -2855,6 +2889,59 @@ mod tests {
         let config = "user git\nhostname github.com\nport 22\n";
         assert_eq!(ssh_config_hostname(config), Some("github.com"));
         assert_eq!(ssh_config_hostname("user git\n"), None);
+    }
+
+    /// Real local git; `ssh -G` answers as if `~/.ssh/config` mapped the
+    /// alias to github.com.
+    struct SshAliasRunner;
+
+    #[async_trait]
+    impl ProcessRunner for SshAliasRunner {
+        async fn run(&self, request: ProcessRequest) -> Result<ProcessOutput, ProcessRunError> {
+            if request.program == "ssh" {
+                assert_eq!(request.args, ["-G", "github-work"]);
+                return command_success("user git\nhostname github.com\n");
+            }
+            SystemProcessRunner.run(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_checkout_behind_an_ssh_alias_on_a_non_origin_remote_is_github() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for args in [
+            &["init", "-q", "-b", "feature"][..],
+            &["remote", "add", "fork", "git@github-work:acme/app.git"],
+            &["config", "branch.feature.remote", "fork"],
+            &["config", "branch.feature.merge", "refs/heads/feature"],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        }
+        let source = GitCheckoutInspector::new(Arc::new(SshAliasRunner))
+            .inspect(repo)
+            .await
+            .unwrap();
+        assert_eq!(source.branch.remote_name.as_deref(), Some("fork"));
+        assert_eq!(source.branch.host.as_deref(), Some("github.com"));
+        assert_eq!(source.branch.owner.as_deref(), Some("acme"));
+        assert_eq!(source.branch.repository.as_deref(), Some("app"));
+        // Unresolvable or non-SSH hosts stay as written.
+        let failing = FakeProcessRunner::with_responses([Err(ProcessRunError::Timeout)]);
+        assert_eq!(
+            resolved_remote_host(failing.as_ref(), "git@work:acme/app.git", "work").await,
+            "work"
+        );
+        assert_eq!(
+            resolved_remote_host(failing.as_ref(), "https://ghe.corp/acme/app", "ghe.corp").await,
+            "ghe.corp"
+        );
+        assert_eq!(failing.requests().len(), 1);
     }
 
     #[tokio::test]
@@ -4047,6 +4134,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             .set_worktree_settings(zeron_proto::WorktreeSettings {
                 use_custom_directory: true,
                 custom_directory: Some(custom_root.to_string_lossy().into_owned()),
+                branch_prefix: None,
             })
             .await
             .unwrap();
@@ -4681,15 +4769,23 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
         let runner = FakeProcessRunner::with_responses([
             Err(ProcessRunError::Spawn(io::ErrorKind::NotFound)),
             command_failure("To get started with GitHub CLI, please run:  gh auth login"),
-            command_failure("pull request create failed: GraphQL: No commits between main and feature"),
+            command_failure(
+                "pull request create failed: GraphQL: No commits between main and feature\n\
+                 (createPullRequest)\n",
+            ),
             Err(ProcessRunError::Timeout),
         ]);
         let github = GitHubCli::with_runner(runner.clone());
         for expected in [
             GitHubWriteError::CliUnavailable,
-            GitHubWriteError::Authentication,
+            GitHubWriteError::Authentication(
+                "To get started with GitHub CLI, please run:  gh auth login".into(),
+            ),
+            // gh's own words, line breaks and all.
             GitHubWriteError::Failed(
-                "pull request create failed: GraphQL: No commits between main and feature".into(),
+                "pull request create failed: GraphQL: No commits between main and feature\n\
+                 (createPullRequest)"
+                    .into(),
             ),
             GitHubWriteError::Timeout,
         ] {
@@ -4698,11 +4794,8 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
                 Err(expected)
             );
         }
-        assert!(
-            GitHubWriteError::Authentication
-                .to_string()
-                .contains("gh auth login")
-        );
+        let auth = GitHubWriteError::Authentication("HTTP 401: Bad credentials".into()).to_string();
+        assert!(auth.contains("gh auth login") && auth.contains("HTTP 401: Bad credentials"));
         let request = &runner.requests()[0];
         assert_eq!(request.program, "gh");
         assert_eq!(request.stdin.as_deref(), Some(b"B".as_slice()));

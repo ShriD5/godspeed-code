@@ -195,6 +195,8 @@ pub mod methods {
     pub const WATCH_WORKSPACE_FILES: &str = "WatchWorkspaceFiles";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
+    /// `{repoPath?}` → `OrphanWorktree[]`: Godspeed worktrees no chat uses.
+    pub const LIST_ORPHAN_WORKTREES: &str = "ListOrphanWorktrees";
     // Project Actions are private state on the device that owns the project.
     pub const LIST_PROJECT_ACTIONS: &str = "ListProjectActions";
     pub const UPSERT_PROJECT_ACTION: &str = "UpsertProjectAction";

@@ -121,9 +121,10 @@ impl TitleGenerator {
         }
 
         // Rename the worktree branch when the chat still sits on its original
-        // godspeed/<name> branch (guards live inside rename_worktree_branch).
+        // <prefix><name> branch (guards live inside rename_worktree_branch).
         if let (Some(chat_cwd), Some(branch)) = (&latest.cwd, &latest.branch)
-            && branch.starts_with("godspeed/")
+            && (branch.starts_with(&self.inner.repos.worktree_branch_prefix())
+                || branch.starts_with(zeron_proto::DEFAULT_WORKTREE_BRANCH_PREFIX))
         {
             match self
                 .inner

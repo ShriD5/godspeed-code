@@ -615,3 +615,51 @@ async fn orphaned_entry_skips_captures_and_catches_up_on_return() {
     .await;
     core.shutdown().await;
 }
+
+/// The published checkout state names the checked-out branch, and a branch
+/// switched outside Godspeed (no file content changes) republishes on its
+/// own: the git-dir watch sees `HEAD` move.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_external_branch_switch_republishes_the_live_branch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = tmp.path().join("repo");
+    init_dirty_repo(&repo_dir).await;
+    let core = assemble(&tmp.path().join("data"));
+    core.workspace
+        .create_space(
+            "space-1",
+            &core.device_id,
+            &repo_dir.to_string_lossy(),
+            None,
+            true,
+        )
+        .expect("space row");
+    core.workspace
+        .create_chat("chat-1", Some("space-1"), None, None, None)
+        .expect("chat row");
+    wait_chat_state(&core, "chat-1", true).await;
+    core.diff_sync.reconcile_now().await;
+    let before = wait_for_diff(&core.diff_sync).await;
+    assert_eq!(before.branch.as_deref(), Some("main"));
+
+    // A terminal checkout: the dirty edit rides along, only HEAD moves.
+    git(&repo_dir, &["checkout", "-q", "-b", "feature/live"]).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let branch = current_diffs(&core.diff_sync)
+            .first()
+            .and_then(|d| d.branch.clone());
+        if branch.as_deref() == Some("feature/live") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "branch switch republished before timeout (last: {branch:?})"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    // The chat's own branch label is conversation identity and stays put.
+    let chat = core.workspace.chat("chat-1").unwrap().unwrap();
+    assert_ne!(chat.branch.as_deref(), Some("feature/live"));
+    core.shutdown().await;
+}

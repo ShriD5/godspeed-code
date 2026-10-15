@@ -629,6 +629,22 @@ impl UsageEntry {
     fn record(&mut self, result: Result<UsageSnapshot, ProbeError>, credentials: String, now: i64) {
         self.checked_at = now;
         match result {
+            // An answer that carries no windows (identity or plan only, a
+            // partial read) never blanks meters a full read produced: keep
+            // the last good windows, and their age, beside the new plan.
+            Ok(usage)
+                if usage.windows.is_empty()
+                    && self.usage.as_ref().is_some_and(|u| !u.windows.is_empty()) =>
+            {
+                if let Some(kept) = self.usage.as_mut()
+                    && usage.plan_label.is_some()
+                {
+                    kept.plan_label = usage.plan_label;
+                }
+                self.error = None;
+                self.retry_at = None;
+                self.credentials = None;
+            }
             Ok(usage) => {
                 self.usage = Some(usage);
                 self.fetched_at = Some(now);
@@ -4595,6 +4611,35 @@ mod probe_tests {
         assert!(!entry.probe_due("creds", inside));
         assert!(!entry.probe_due("new-creds", inside));
         assert!(entry.probe_due("creds", later + 121_000));
+    }
+
+    #[test]
+    fn an_answer_without_windows_never_blanks_the_last_good_ones() {
+        let mut entry = UsageEntry::default();
+        entry.record(Ok(snapshot()), "creds".into(), 1_000);
+        entry.record(
+            Err(ProbeError::Network { timeout: true }),
+            "creds".into(),
+            2_000,
+        );
+        // A plan-only read (the windows half failed) after the failure.
+        entry.record(
+            Ok(UsageSnapshot {
+                windows: Vec::new(),
+                plan_label: Some("Max".into()),
+            }),
+            "creds".into(),
+            3_000,
+        );
+        let usage = entry.usage.as_ref().unwrap();
+        assert_eq!(usage.windows, snapshot().windows);
+        assert_eq!(usage.plan_label.as_deref(), Some("Max"));
+        assert_eq!(entry.fetched_at, Some(1_000), "the windows' age is kept");
+        assert!(entry.error.is_none());
+        // With nothing good to keep, an empty answer is the truth.
+        let mut fresh = UsageEntry::default();
+        fresh.record(Ok(UsageSnapshot::default()), "creds".into(), 1_000);
+        assert_eq!(fresh.usage, Some(UsageSnapshot::default()));
     }
 
     #[test]

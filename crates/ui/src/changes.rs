@@ -6315,6 +6315,7 @@ rename to new_name.rs
             truncated: false,
             checksum: format!("sum-{}", patch.len()),
             updated_at: Utc::now(),
+            branch: None,
         }
     }
 
