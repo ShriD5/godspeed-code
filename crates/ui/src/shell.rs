@@ -1959,6 +1959,25 @@ enum PendingExit {
     InstallUpdate(PathBuf),
 }
 
+/// The live-run count an exit must confirm: only when it ends the process,
+/// the user hasn't already confirmed, and something would die. Pure.
+fn exit_confirmation(ends_process: bool, confirmed: bool, running: usize) -> Option<usize> {
+    (ends_process && !confirmed && running > 0).then_some(running)
+}
+
+/// Title and body of the quit confirmation for `running` live runs.
+fn exit_confirm_copy(running: usize) -> (String, &'static str) {
+    let title = if running == 1 {
+        "1 agent is running".to_owned()
+    } else {
+        format!("{running} agents are running")
+    };
+    (
+        title,
+        "The engine runs inside Godspeed, so quitting stops them mid-turn.",
+    )
+}
+
 pub struct Shell {
     state: Entity<AppState>,
     sidebar_pane: Entity<SidebarPane>,
@@ -2045,6 +2064,12 @@ pub struct Shell {
     file_surface_seq: u64,
     pending_file_closes: std::collections::HashSet<RightSurface>,
     pending_exit: Option<PendingExit>,
+    /// The "N agents running" quit confirmation on screen: the exit it
+    /// holds and the live-run count it was raised for.
+    exit_confirm: Option<(PendingExit, usize)>,
+    /// The user chose Quit in that confirmation; later passes through
+    /// `prepare_exit` (the unsaved-file flush re-runs it) don't ask again.
+    exit_confirmed: bool,
     /// Event hookups for [`Self::diffs`] (History rows opening commit tabs).
     diff_subs: std::collections::HashMap<u64, Subscription>,
     diff_seq: u64,
@@ -2580,6 +2605,8 @@ impl Shell {
             file_surface_seq: 0,
             pending_file_closes: std::collections::HashSet::new(),
             pending_exit: None,
+            exit_confirm: None,
+            exit_confirmed: false,
             diff_subs: std::collections::HashMap::new(),
             diff_seq: 0,
             subagent_tabs: std::collections::HashMap::new(),
@@ -4645,6 +4672,9 @@ impl Shell {
     fn cancel_file_close(&mut self, surface: RightSurface, cx: &mut Context<Self>) {
         self.pending_file_closes.remove(&surface);
         self.pending_exit = None;
+        // Backing out of the save prompt backs out of the whole exit; the
+        // next one asks about running agents again.
+        self.exit_confirmed = false;
         cx.notify();
     }
 
@@ -4691,6 +4721,16 @@ impl Shell {
     }
 
     fn prepare_exit(&mut self, action: PendingExit, cx: &mut Context<Self>) -> bool {
+        // With the engine embedded in this process, exiting kills every run
+        // mid-turn, with no word to the user (T3 10161). Ask first. Godspeed
+        // can't hand a live run to the daemon yet (switching runtimes needs
+        // a quit), so the choice is Quit or Cancel, not "keep running".
+        if let Some(running) = self.runs_lost_on(&action, cx) {
+            self.exit_confirm = Some((action, running));
+            cx.activate(true);
+            cx.notify();
+            return false;
+        }
         let surfaces = self.file_surfaces.values().cloned().collect::<Vec<_>>();
         if surfaces
             .iter()
@@ -4712,6 +4752,81 @@ impl Shell {
         }
         cx.notify();
         all_ready
+    }
+
+    /// How many live runs `action` would kill and must confirm, if any.
+    fn runs_lost_on(&self, action: &PendingExit, cx: &App) -> Option<usize> {
+        let ends_process = match action {
+            PendingExit::Quit => true,
+            // macOS keeps the app, and its embedded engine, alive with no
+            // window (the Dock reopens one); elsewhere gpui quits when the
+            // last window closes.
+            PendingExit::CloseWindow => !cfg!(target_os = "macos") && cx.windows().len() <= 1,
+            // Both are explicit choices made in their own flows.
+            PendingExit::RuntimeChange | PendingExit::InstallUpdate(_) => false,
+        };
+        let running = self.state.read(cx).runs_ended_by_exit(Utc::now());
+        exit_confirmation(ends_process, self.exit_confirmed, running)
+    }
+
+    /// The confirmation's Quit: carry out the held exit without asking again.
+    fn confirm_exit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((action, _)) = self.exit_confirm.take() else {
+            return;
+        };
+        self.exit_confirmed = true;
+        match action {
+            PendingExit::Quit => crate::app_menus::request_quit(cx),
+            PendingExit::CloseWindow => {
+                if self.prepare_window_close(cx) {
+                    window.remove_window();
+                }
+            }
+            PendingExit::RuntimeChange => self.quit_for_runtime_change(cx),
+            PendingExit::InstallUpdate(staged) => self.apply_staged_update(staged, cx),
+        }
+        cx.notify();
+    }
+
+    fn cancel_exit(&mut self, cx: &mut Context<Self>) {
+        self.exit_confirm = None;
+        self.exit_confirmed = false;
+        cx.notify();
+    }
+
+    fn render_exit_confirm(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let (_, running) = self.exit_confirm.as_ref()?;
+        let theme = Theme::of(cx).clone();
+        let (title, body) = exit_confirm_copy(*running);
+        let card = popover::dialog_card(&theme)
+            .child(popover::dialog_title(&theme, &title))
+            .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, body)))
+            .child(
+                div()
+                    .mt(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(&theme, "Cancel", "exit-confirm-cancel")
+                            .id("exit-confirm-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_exit(cx))),
+                    )
+                    .child(
+                        popover::btn_primary(&theme, "Quit")
+                            .id("exit-confirm-quit")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.confirm_exit(window, cx)),
+                            ),
+                    ),
+            )
+            .into_any_element();
+        Some(popover::modal("exit-confirm-dialog", viewport, card))
     }
 
     fn reveal_unsaved_file(&mut self, cx: &mut Context<Self>) {
@@ -7234,6 +7349,15 @@ impl Shell {
     ) -> gpui::Stateful<gpui::Div> {
         el.id(id)
             .window_control_area(WindowControlArea::Drag)
+            // The titlebar is glass over full-height content (the transcript
+            // list scrolls under it), and a plain hitbox doesn't stop the
+            // text below from counting as hovered: a press meant to drag the
+            // window also anchored a markdown selection there, and the
+            // window move then dragged that selection out, auto-scrolling
+            // the transcript (Zeron #431). Presses stop at the strip; the
+            // wheel still reaches the list beneath. The strip's own children
+            // (tabs, buttons) paint above it and stay clickable.
+            .block_mouse_except_scroll()
             .on_mouse_down_out(cx.listener(|this, _, _, _| this.titlebar_should_move = false))
             .on_mouse_up(
                 MouseButton::Left,
@@ -10976,6 +11100,9 @@ impl Shell {
         }
         if let Some(update) = self.render_update_prompt(viewport, cx) {
             overlays.push(update);
+        }
+        if let Some(confirm) = self.render_exit_confirm(viewport, cx) {
+            overlays.push(confirm);
         }
 
         overlays
@@ -14726,6 +14853,18 @@ mod tests {
         assert_eq!(PANE_RESIZE_HITBOX_TOP, Theme::TITLEBAR_HEIGHT);
         assert_eq!(PANE_RESIZE_HITBOX_HALF_WIDTH * 2.0, 20.0);
         assert_eq!(TERMINAL_RESIZE_HITBOX_HEIGHT, 10.0);
+    }
+
+    /// T3 10161: only an exit that ends the process with live runs asks, and
+    /// only once per exit.
+    #[test]
+    fn exit_confirmation_asks_only_when_runs_would_die() {
+        assert_eq!(exit_confirmation(true, false, 2), Some(2));
+        assert_eq!(exit_confirmation(true, false, 0), None);
+        assert_eq!(exit_confirmation(false, false, 3), None);
+        assert_eq!(exit_confirmation(true, true, 3), None);
+        assert_eq!(exit_confirm_copy(1).0, "1 agent is running");
+        assert_eq!(exit_confirm_copy(3).0, "3 agents are running");
     }
 
     #[test]

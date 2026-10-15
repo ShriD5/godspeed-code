@@ -404,6 +404,44 @@ fn stage_plain_file(path: &Path) -> Result<StagedAttachment, String> {
     Ok(StagedAttachment::from_file(&name, bytes))
 }
 
+/// Whether a dropped or pasted path can't be uploaded but an agent on this
+/// device can read it in place: a folder, or a file past
+/// [`MAX_ATTACHMENT_BYTES`]. The CLIs Godspeed drives accept both by path.
+pub fn read_by_path(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_dir() || (meta.is_file() && meta.len() > MAX_ATTACHMENT_BYTES))
+}
+
+/// The draft text that hands the agent `path` to read itself: the absolute
+/// path as inline code (a folder ends in `/`), or bare when a backtick in
+/// the path would break the span.
+pub fn path_reference(path: &Path) -> String {
+    let mut text = path.to_string_lossy().into_owned();
+    if path.is_dir() && !text.ends_with(std::path::MAIN_SEPARATOR) {
+        text.push(std::path::MAIN_SEPARATOR);
+    }
+    if text.contains('`') {
+        text
+    } else {
+        format!("`{text}`")
+    }
+}
+
+/// The file name a long paste is staged under.
+pub const PASTED_TEXT_NAME: &str = "pasted-text.txt";
+
+/// Stage a long clipboard paste as a text file. The composer turns pastes past
+/// its inline limit into an attachment chip instead of thousands of draft lines.
+pub fn stage_pasted_text(text: String) -> Result<StagedAttachment, String> {
+    if text.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err("The pasted text is too large (24 MB max).".into());
+    }
+    Ok(StagedAttachment::from_file(
+        PASTED_TEXT_NAME,
+        text.into_bytes(),
+    ))
+}
+
 /// Stage an image pasted from the clipboard. A BMP (what Windows puts there for
 /// a screenshot) is converted to PNG like [`stage_file`] does; one that won't
 /// decode stays as pasted.

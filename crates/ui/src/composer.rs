@@ -90,6 +90,18 @@ const NEW_THREAD_SELECTOR_ROW_HEIGHT: f32 = 20.0;
 // Accommodate the 24px usage indicator and PR badge without overflowing the
 // row's equal 8px top/bottom gutters.
 pub(crate) const SESSION_FOOTER_HEIGHT: f32 = 24.0;
+/// Pastes longer than this many characters become a text-file attachment.
+pub(crate) const LONG_PASTE_CHARS: usize = 20_000;
+
+/// Whether `text` is past [`LONG_PASTE_CHARS`]. The byte length bounds the
+/// char count from above, so short pastes skip the count.
+fn is_long_paste(text: &str) -> bool {
+    text.len() > LONG_PASTE_CHARS && text.chars().count() > LONG_PASTE_CHARS
+}
+
+/// The approval card's command box: about twelve 18px lines (padding
+/// included) before a long heredoc scrolls inside the box.
+const APPROVAL_COMMAND_MAX_HEIGHT: f32 = 12.0 * 18.0 + 16.0;
 
 /// Route chrome dissolves around the middle of the shared-element move. The
 /// two ramps never overlap, which avoids duplicate picker ids/popovers while
@@ -817,6 +829,29 @@ impl Wizard {
         }
     }
 
+    /// Free text the user typed that never went out: each page's answer (the
+    /// live editor text for the current page, which only syncs into `typed`
+    /// on Enter or paging), skipping blanks and untouched prefills.
+    pub fn unsent_typed(&self, current: &str) -> Vec<String> {
+        self.questions
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, q)| {
+                if q.is_approval() {
+                    return None;
+                }
+                let text = if ix == self.page {
+                    current
+                } else {
+                    self.typed.get(ix)?.as_str()
+                };
+                let text = text.trim();
+                let prefill = q.prefill.as_deref().map(str::trim);
+                (!text.is_empty() && Some(text) != prefill).then(|| text.to_owned())
+            })
+            .collect()
+    }
+
     /// Answers per question: free text overrides picked labels.
     pub fn answers(&self) -> Vec<UserInputAnswer> {
         self.questions
@@ -848,6 +883,19 @@ impl Wizard {
             })
             .collect()
     }
+}
+
+/// The chat draft saved when a question opened, with the answers typed into
+/// that question appended (blank-line separated) so a cancel loses nothing.
+fn draft_with_unsent_answers(saved: &str, unsent: Vec<String>) -> String {
+    if unsent.is_empty() {
+        return saved.to_owned();
+    }
+    std::iter::once(saved.trim_end().to_owned())
+        .chain(unsent)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -1822,6 +1870,9 @@ pub enum ComposerInputEvent {
         range: Range<usize>,
         revision: u64,
     },
+    /// A paste past [`LONG_PASTE_CHARS`] in the message composer: the wrapper
+    /// stages it as a text-file attachment instead of inserting it.
+    PastedLongText(String),
     /// An image chip was clicked: open its picture full size.
     OpenAttachment(u32),
 }
@@ -3531,6 +3582,10 @@ impl ComposerInput {
                     }
                 }
             }
+            if self.long_paste_becomes_file(&text) {
+                cx.emit(ComposerInputEvent::PastedLongText(text));
+                return;
+            }
             // Clipboard operations remain separate undo steps, even a one-character paste.
             self.last_edit = None;
             self.replace_text_in_range(None, &text, window, cx);
@@ -3543,6 +3598,19 @@ impl ComposerInput {
                 });
             }
         }
+    }
+
+    /// A paste this long goes in as a file chip, not draft text: tens of
+    /// thousands of characters (a log, a file dump) bury the prompt, make the
+    /// editor lay out every line on every keystroke, and read better to the
+    /// agent as a file (T3 C2). Only the message composer does this; a
+    /// question card borrowing the input, dialogs and search fields take the
+    /// text as pasted.
+    fn long_paste_becomes_file(&self, text: &str) -> bool {
+        self.mentions_enabled
+            && !self.single_line
+            && self.key_context == MESSAGE_COMPOSER_CONTEXT
+            && is_long_paste(text)
     }
 
     fn apply_pasted_references(
@@ -5620,6 +5688,12 @@ fn invocation_token(text: &str, cursor: usize, prefix: char) -> Option<MentionTo
 
 /// Pasted prose is eligible only at completion boundaries, never inside
 /// Markdown code/links. Catalog matching below decides whether it is a reference.
+///
+/// Only `$skill` and `/command` invocations qualify. Pasted `@` text is never
+/// turned into a file mention: in pasted code and logs `@` is a decorator,
+/// an annotation, a handle or an npm scope far more often than a reference,
+/// and a paste rewritten into a mention link isn't what the user copied
+/// (T3 8331). Typing `@` still opens the file picker.
 fn pasted_reference_tokens(text: &str, pasted: Range<usize>) -> Vec<(char, MentionToken)> {
     if text.len() > 256 * 1024 || text.get(pasted.clone()).is_none() {
         return Vec::new();
@@ -5627,16 +5701,13 @@ fn pasted_reference_tokens(text: &str, pasted: Range<usize>) -> Vec<(char, Menti
     let mut tokens = Vec::new();
     let mut attempts = 0;
     for (relative, prefix) in text[pasted.clone()].char_indices() {
-        if !matches!(prefix, '@' | '$' | '/') {
+        if !matches!(prefix, '$' | '/') {
             continue;
         }
         let start = pasted.start + relative;
         let mut end = start + 1;
         for ch in text[end..].chars() {
-            if !(ch.is_alphanumeric()
-                || matches!(ch, '_' | '-' | '.' | ':')
-                || (prefix == '@' && ch == '/'))
-            {
+            if !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':')) {
                 break;
             }
             end += ch.len_utf8();
@@ -5664,11 +5735,7 @@ fn pasted_reference_tokens(text: &str, pasted: Range<usize>) -> Vec<(char, Menti
             break;
         }
         attempts += 1;
-        let token = if prefix == '@' {
-            mention_token(text, end)
-        } else {
-            invocation_token(text, end, prefix)
-        };
+        let token = invocation_token(text, end, prefix);
         if let Some(mut token) = token.filter(|token| token.range.start == start) {
             token.range.end = end;
             token.query = text[start + 1..end].to_owned();
@@ -6308,6 +6375,10 @@ impl Composer {
                 );
             }
             ComposerInputEvent::PastedPaths(paths) => this.add_paths(paths.clone(), cx),
+            ComposerInputEvent::PastedLongText(text) => {
+                let text = text.clone();
+                this.stage_in_background(move || vec![attachments::stage_pasted_text(text)], cx);
+            }
             ComposerInputEvent::PastedText { range, revision } => {
                 this.resolve_pasted_references(range.clone(), *revision, cx);
             }
@@ -6690,9 +6761,39 @@ impl Composer {
     }
 
     /// Stage files (picker / drop / pasted paths): images with thumbnails, any
-    /// other file as opaque bytes. Folders, read failures and oversize files
-    /// surface in the failure notice.
+    /// other file as opaque bytes. Read failures surface in the failure
+    /// notice.
+    ///
+    /// Folders and files past the upload cap used to be refused too, though
+    /// the agent CLIs read both by path (T3 17471). When the chat runs on this
+    /// device they now go into the draft as their absolute paths for the
+    /// agent to open itself. A chat on another device can't see this disk, so
+    /// there they still fail as before.
     pub(crate) fn add_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let (references, paths): (Vec<_>, Vec<_>) = if self.targets_this_device(cx) {
+            paths
+                .into_iter()
+                .partition(|path| attachments::read_by_path(path))
+        } else {
+            (Vec::new(), paths)
+        };
+        if !references.is_empty() {
+            let text = references
+                .iter()
+                .map(|path| attachments::path_reference(path))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let inserted = self
+                .input
+                .update(cx, |input, cx| input.insert_reference(&text, cx));
+            if inserted {
+                self.focus_pending = true;
+            }
+            cx.notify();
+        }
+        if paths.is_empty() {
+            return;
+        }
         self.stage_in_background(
             move || {
                 paths
@@ -7451,6 +7552,19 @@ impl Composer {
         }
     }
 
+    /// Whether the selected chat (or the new chat's target) runs on this
+    /// device, so a local path in the prompt names a file its agent can read.
+    fn targets_this_device(&self, cx: &App) -> bool {
+        let target = self
+            .completion_workspace_params(cx)
+            .and_then(|params| params["targetDeviceId"].as_str().map(str::to_owned))
+            .or_else(|| self.state.read(cx).effective_device_id());
+        match (target, self.state.read(cx).local_device_id.as_deref()) {
+            (Some(target), Some(local)) => target == local,
+            _ => true,
+        }
+    }
+
     fn file_search_params(&self, query: &str, cx: &App) -> Option<serde_json::Value> {
         let mut params = self.completion_workspace_params(cx)?;
         params["query"] = query.into();
@@ -7506,7 +7620,6 @@ impl Composer {
             return;
         }
         let params = self.catalog_params(cx);
-        let file_params = self.file_search_params("", cx);
         if !params["targetDeviceId"].as_str().is_some_and(|target| {
             self.state
                 .read(cx)
@@ -7526,7 +7639,7 @@ impl Composer {
         );
         cx.spawn(async move |this, cx| {
             let mut candidates = Vec::new();
-            if tokens.iter().any(|(prefix, _)| *prefix != '@') && harness.is_some() {
+            if harness.is_some() {
                 let commands = async {
                     engine
                         .client()
@@ -7553,7 +7666,6 @@ impl Composer {
                 candidates = invocation_candidates(commands, skills);
             }
             let mut replacements = Vec::new();
-            let mut files = HashMap::new();
             for (prefix, token) in tokens {
                 if this
                     .update(cx, |this, cx| this.input.read(cx).edit_revision != revision)
@@ -7561,34 +7673,7 @@ impl Composer {
                 {
                     return;
                 }
-                let replacement = if prefix == '@' {
-                    if !files.contains_key(&token.query) {
-                        let Some(mut search) = file_params.clone() else {
-                            continue;
-                        };
-                        search["query"] = token.query.clone().into();
-                        let results = engine
-                            .client()
-                            .call(methods::SEARCH_FILES, search)
-                            .await
-                            .ok()
-                            .and_then(|v| serde_json::from_value::<Vec<FileSearchMatch>>(v).ok())
-                            .unwrap_or_default();
-                        let exact: Vec<_> = results
-                            .into_iter()
-                            .filter(|file| {
-                                file.path.trim_end_matches('/') == token.query.trim_end_matches('/')
-                                    && local_path_is_safe(&file.path)
-                            })
-                            .collect();
-                        files.insert(
-                            token.query.clone(),
-                            (exact.len() == 1)
-                                .then(|| local_file_link(&exact[0].path, exact[0].is_dir)),
-                        );
-                    }
-                    files.get(&token.query).cloned().flatten()
-                } else if prefix == '$' && !preferences.dollar {
+                let replacement = if prefix == '$' && !preferences.dollar {
                     None
                 } else {
                     let exact: Vec<_> = candidates
@@ -8631,13 +8716,24 @@ impl Composer {
                         || (!transcript.is_empty()
                             && !self.answered_requests.contains(&wizard.request_id));
                     if released {
+                        // Stop (or the agent moving on) cancels the question,
+                        // but what the user typed into it is theirs: it goes
+                        // back into the chat draft instead of vanishing with
+                        // the card (T3 8963). A submitted answer was sent.
+                        let unsent = if self.answered_requests.contains(&wizard.request_id) {
+                            Vec::new()
+                        } else {
+                            wizard.unsent_typed(self.input.read(cx).text())
+                        };
                         self.wizard = None;
                         self.advance_task = None;
-                        let draft = self
-                            .drafts
-                            .get(&self.current_key)
-                            .cloned()
-                            .unwrap_or_default();
+                        let draft = draft_with_unsent_answers(
+                            self.drafts
+                                .get(&self.current_key)
+                                .map(String::as_str)
+                                .unwrap_or_default(),
+                            unsent,
+                        );
                         self.input.update(cx, |input, cx| {
                             input.set_text(draft, cx);
                             input.set_placeholder("Do anything…", cx);
@@ -10132,8 +10228,19 @@ impl Composer {
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx).clone();
         let mono = theme.font_mono.clone();
+        // The command is what the user is approving, so all of it must be
+        // readable in place: `w_full` + `min_w_0` give the text a definite
+        // width to wrap against (gpui breaks mid-token when a pipeline or a
+        // path has no space to break at) instead of running off the card's
+        // edge, and a tall heredoc scrolls inside its own box rather than
+        // shoving the decision buttons out of the window (T3 16197).
         let code_block = |text: SharedString| {
             div()
+                .id("approval-command")
+                .w_full()
+                .min_w_0()
+                .max_h(px(APPROVAL_COMMAND_MAX_HEIGHT))
+                .overflow_y_scroll()
                 .mt(px(10.0))
                 .px(px(12.0))
                 .py(px(8.0))
@@ -10161,6 +10268,7 @@ impl Composer {
                 )
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
                         .font_family(mono.clone())
                         .text_color(theme.text_muted)
@@ -13366,8 +13474,21 @@ mod tests {
                 .iter()
                 .map(|(prefix, token)| (*prefix, token.query.as_str()))
                 .collect::<Vec<_>>(),
-            vec![('@', "README.md"), ('$', "framer"), ('/', "review")]
+            vec![('$', "framer"), ('/', "review")]
         );
+        // T3 8331: pasted `@` text (decorators, handles, file names) stays
+        // exactly what was copied; it never becomes a mention.
+        for text in [
+            "@README.md",
+            "@foo(bar)",
+            "@property\ndef x(self):",
+            "see @src/lib.rs",
+        ] {
+            assert!(
+                pasted_reference_tokens(text, 0..text.len()).is_empty(),
+                "{text}"
+            );
+        }
         for text in [
             "```\n@README.md\n```",
             "    @README.md",
@@ -13389,7 +13510,7 @@ mod tests {
         );
         // Invalid candidates consume the same work budget as accepted ones.
         // Do not repeatedly parse a large pasted block of literal examples.
-        let text = format!("```\n{}\n```\n$review", "@example ".repeat(4_000));
+        let text = format!("```\n{}\n```\n$review", "$example ".repeat(4_000));
         assert!(pasted_reference_tokens(&text, 0..text.len()).is_empty());
     }
 
@@ -16362,6 +16483,34 @@ mod tests {
             vec!["custom answer"],
             "typed overrides picked, trimmed"
         );
+    }
+
+    /// T3 8963: answers typed into a question that gets cancelled go back to
+    /// the chat draft; untouched prefills and blank pages don't.
+    #[test]
+    fn cancelled_question_answers_return_to_the_draft() {
+        let mut prefilled = question("q3", &[], false);
+        prefilled.prefill = Some("agent default".into());
+        let mut w = Wizard::new(
+            "req".into(),
+            vec![
+                question("q1", &["a"], false),
+                question("q2", &["x"], false),
+                prefilled,
+            ],
+        );
+        w.set_typed("first answer".into());
+        w.advance();
+        // Page 2's text lives only in the editor until Enter.
+        let unsent = w.unsent_typed("  second answer \n");
+        assert_eq!(unsent, ["first answer", "second answer"]);
+        assert_eq!(
+            draft_with_unsent_answers("my draft\n", unsent),
+            "my draft\n\nfirst answer\n\nsecond answer"
+        );
+        assert_eq!(draft_with_unsent_answers("", vec!["only".into()]), "only");
+        assert_eq!(draft_with_unsent_answers("keep  ", Vec::new()), "keep  ");
+        assert!(w.unsent_typed("").len() == 1, "blank current page");
     }
 
     #[gpui::test]

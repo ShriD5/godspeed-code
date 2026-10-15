@@ -291,6 +291,13 @@ pub(crate) fn activate_main_window(cx: &mut App) {
     }
 }
 
+/// Whether exiting now would kill live runs in the embedded engine, read
+/// without a window (macOS keeps the app alive after ⌘W closes the last one).
+pub(crate) fn exit_ends_live_runs(cx: &App) -> bool {
+    cx.try_global::<ReopenState>()
+        .is_some_and(|reopen| reopen.state.read(cx).runs_ended_by_exit(chrono::Utc::now()) > 0)
+}
+
 /// A clicked banner: bring Godspeed forward on its chat or settings destination,
 /// reopening the main window first if ⌘W closed it.
 fn open_notification_target(target: String, state: &gpui::Entity<state::AppState>, cx: &mut App) {

@@ -85,11 +85,27 @@ pub(crate) fn request_quit(cx: &mut App) {
 
 fn prepare_quit(cx: &mut App) {
     let mut ready = true;
+    let mut shells = 0;
     for window in cx.windows() {
         if let Some(window) = window.downcast::<shell::Shell>() {
+            shells += 1;
             ready &= window
                 .update(cx, |shell, _, cx| shell.prepare_quit(cx))
                 .unwrap_or(false);
+        }
+    }
+    // ⌘W left the app running with no window (macOS), so a Dock or menu
+    // Quit had nowhere to ask before killing the embedded engine's runs.
+    // Reopen the main window and ask there (its shell raises the prompt).
+    if shells == 0 && crate::exit_ends_live_runs(cx) {
+        crate::activate_main_window(cx);
+        if cx
+            .windows()
+            .iter()
+            .any(|window| window.downcast::<shell::Shell>().is_some())
+        {
+            cx.defer(prepare_quit);
+            return;
         }
     }
     if ready {
