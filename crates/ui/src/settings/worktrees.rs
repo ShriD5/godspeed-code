@@ -1,12 +1,16 @@
 //! Settings → General: device-addressed worktree destination settings.
 
-use gpui::{AnyElement, Context, Entity, Render, Task, Window, div, prelude::*, px};
-use zeron_proto::{FolderListing, WorktreeSettings, WorktreeSettingsStatus};
+use gpui::{AnyElement, Context, Entity, Render, Subscription, Task, Window, div, prelude::*, px};
+use zeron_proto::{
+    DEFAULT_WORKTREE_BRANCH_PREFIX, FolderListing, WorktreeSettings, WorktreeSettingsStatus,
+    valid_worktree_branch_prefix,
+};
 use zeron_rpc::methods;
 
 use super::widgets;
+use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::icons;
-use crate::popover::Loadable;
+use crate::popover::{self, Loadable};
 use crate::state::AppState;
 use crate::theme::Theme;
 use zeron_proto::device_paths::{child_folder as child_path, parent_folder as folder_parent};
@@ -25,10 +29,23 @@ pub(super) struct WorktreeSettingsCard {
     browsing: bool,
     folders: Loadable<FolderListing>,
     folder_task: Option<Task<()>>,
+    prefix_input: Entity<ComposerInput>,
+    _prefix_events: Subscription,
 }
 
 impl WorktreeSettingsCard {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let prefix_input = cx.new(|cx| {
+            ComposerInput::new("No prefix", cx)
+                .with_single_line()
+                .with_tab_stop()
+        });
+        let prefix_events =
+            cx.subscribe(&prefix_input, |card: &mut Self, _, event, cx| match event {
+                ComposerInputEvent::Submitted => card.save_prefix(cx),
+                ComposerInputEvent::Edited => cx.notify(),
+                _ => {}
+            });
         let mut card = Self {
             state,
             target: None,
@@ -41,6 +58,8 @@ impl WorktreeSettingsCard {
             browsing: false,
             folders: Loadable::Idle,
             folder_task: None,
+            prefix_input,
+            _prefix_events: prefix_events,
         };
         card.load(None, cx);
         card
@@ -177,6 +196,9 @@ impl WorktreeSettingsCard {
                 match result {
                     Ok(status) => {
                         card.enabled = status.settings.use_custom_directory;
+                        let prefix = status.settings.effective_branch_prefix().to_string();
+                        card.prefix_input
+                            .update(cx, |input, cx| input.set_text(prefix, cx));
                         card.settings = Loadable::Ready(status);
                         card.browsing = false;
                     }
@@ -253,6 +275,89 @@ impl WorktreeSettingsCard {
             },
             cx,
         );
+    }
+
+    fn prefix_draft(&self, cx: &Context<Self>) -> String {
+        self.prefix_input.read(cx).text().trim().to_string()
+    }
+
+    fn prefix_edited(&self, cx: &Context<Self>) -> bool {
+        self.saved()
+            .is_some_and(|saved| saved.effective_branch_prefix() != self.prefix_draft(cx))
+    }
+
+    fn save_prefix(&mut self, cx: &mut Context<Self>) {
+        let Some(saved) = self.saved().cloned() else {
+            return;
+        };
+        let prefix = self.prefix_draft(cx);
+        if prefix == saved.effective_branch_prefix() {
+            return;
+        }
+        if !valid_worktree_branch_prefix(&prefix) {
+            self.error = Some(format!(
+                "\"{prefix}\" can't start a Git branch name. Use letters, digits, '-', '_', '.' and '/'."
+            ));
+            cx.notify();
+            return;
+        }
+        self.save(
+            WorktreeSettings {
+                branch_prefix: (prefix != DEFAULT_WORKTREE_BRANCH_PREFIX).then_some(prefix),
+                ..saved
+            },
+            cx,
+        );
+    }
+
+    fn render_prefix_row(
+        &self,
+        theme: &Theme,
+        interactive: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let edited = interactive && self.prefix_edited(cx);
+        widgets::card_row(theme, false)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(160.0))
+                    .child(widgets::row_title(theme, "Branch prefix"))
+                    .child(widgets::meta_line(
+                        theme,
+                        vec![
+                            div()
+                                .child("New worktree branches start with this")
+                                .into_any_element(),
+                        ],
+                    )),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .when(edited, |row| {
+                        row.child(
+                            widgets::text_action(theme, widgets::ActionTone::Filled, "Save")
+                                .id("worktrees-prefix-save")
+                                .tab_index(0)
+                                .role(gpui::Role::Button)
+                                .focus_visible(|s| s.border_2().border_color(theme.accent))
+                                .on_click(cx.listener(|card, _, _, cx| card.save_prefix(cx))),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(180.0))
+                            .when(!interactive, |el| el.opacity(0.5))
+                            .child(popover::dialog_field(
+                                self.prefix_input.clone().into_any_element(),
+                            )),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn browse_folder(&mut self, cx: &mut Context<Self>) {
@@ -603,15 +708,11 @@ impl Render for WorktreeSettingsCard {
             _ => self.error.clone(),
         };
         // Match the text inset of the shared settings block rows.
-        let detail = div()
-            .px(px(16.0))
-            .pb(px(16.0))
-            .when(self.browsing, |el| {
-                el.child(self.render_browser(&theme, cx))
-            })
-            .when_some(error.clone(), |el, error| {
-                el.child(widgets::error_strip(&theme, error).mt(px(8.0)))
-            });
+        let inset = || div().px(px(16.0)).pb(px(16.0));
+        let browser = self
+            .browsing
+            .then(|| inset().child(self.render_browser(&theme, cx)));
+        let error = error.map(|error| inset().child(widgets::error_strip(&theme, error)));
         let card = widgets::section_card(&theme)
             .mt_0()
             .child(
@@ -625,7 +726,9 @@ impl Render for WorktreeSettingsCard {
                     )
                     .child(controls),
             )
-            .when(self.browsing || error.is_some(), |card| card.child(detail));
+            .children(browser)
+            .child(self.render_prefix_row(&theme, interactive, cx))
+            .children(error);
         widgets::section(&theme, "Worktrees", card).into_any_element()
     }
 }

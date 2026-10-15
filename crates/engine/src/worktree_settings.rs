@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use zeron_proto::{WorktreeSettings, WorktreeSettingsStatus};
+use zeron_proto::{WorktreeSettings, WorktreeSettingsStatus, valid_worktree_branch_prefix};
 
 use crate::EngineError;
 
@@ -38,7 +38,7 @@ impl WorktreePreferences {
                 if settings
                     .branch_prefix
                     .as_deref()
-                    .is_some_and(|prefix| !valid_branch_prefix(prefix))
+                    .is_some_and(|prefix| !valid_worktree_branch_prefix(prefix))
                 {
                     settings.branch_prefix = None;
                 }
@@ -108,7 +108,7 @@ impl WorktreePreferences {
         }
         if let Some(prefix) = next.branch_prefix.as_mut() {
             *prefix = prefix.trim().to_string();
-            if !valid_branch_prefix(prefix) {
+            if !valid_worktree_branch_prefix(prefix) {
                 return Err(EngineError::Other(format!(
                     "\"{prefix}\" can't start a Git branch name. Use letters, digits, '-', '_', '.' and '/'."
                 )));
@@ -154,21 +154,6 @@ impl WorktreePreferences {
         }
         Ok(self.status())
     }
-}
-
-/// A prefix that keeps `<prefix><generated-name>` a valid branch name
-/// (`git check-ref-format --branch`), checked without running git. Empty is
-/// allowed: plain generated names.
-pub(crate) fn valid_branch_prefix(prefix: &str) -> bool {
-    prefix.len() <= 64
-        && prefix
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/'))
-        && !prefix.starts_with(['-', '/', '.'])
-        && !prefix.contains("..")
-        && !prefix.contains("//")
-        && !prefix.contains("/.")
-        && !prefix.split('/').any(|part| part.ends_with(".lock"))
 }
 
 fn validate_directory(value: &str) -> Result<PathBuf, EngineError> {
