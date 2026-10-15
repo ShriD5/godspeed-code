@@ -19,7 +19,7 @@ fn request(cwd: &std::path::Path, prompt: &str) -> RunRequest {
         reasoning: None,
         model_options: Default::default(),
         cwd: cwd.display().to_string(),
-        sandbox: SandboxLevel::WorkspaceWrite,
+        sandbox: SandboxLevel::DangerFullAccess,
         auto_approve: true,
         resume: None,
         attachments: vec![],

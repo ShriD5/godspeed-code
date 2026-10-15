@@ -135,6 +135,36 @@ mod tests {
         assert!(diff.contains("-two\n+three"));
     }
 
+    #[test]
+    fn unsupported_modes_are_refused_with_the_supported_ones_named() {
+        use zeron_proto::{HarnessId, RunRequest, SandboxLevel};
+        let mut request = RunRequest {
+            prompt: String::new(),
+            harness: None,
+            model: None,
+            reasoning: None,
+            model_options: Default::default(),
+            cwd: String::new(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            resume: None,
+            attachments: Vec::new(),
+            worktree: None,
+            mcp: None,
+            access: None,
+        };
+        let err = crate::refuse_unsupported_access(HarnessId::Pi, "Pi", &request).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "harness protocol error: Pi can't ask before acting, so it can't run in \
+             Auto-accept edits. Switch the access mode to Full access."
+        );
+        request.set_access_mode(AccessMode::FullAccess);
+        assert!(crate::refuse_unsupported_access(HarnessId::Pi, "Pi", &request).is_ok());
+        request.set_access_mode(AccessMode::Supervised);
+        assert!(crate::refuse_unsupported_access(HarnessId::Codex, "Codex", &request).is_ok());
+    }
+
     #[tokio::test]
     async fn ask_declines_when_the_bridge_drops() {
         let bridge = |_: Vec<UserInputQuestion>| oneshot::channel().1;

@@ -317,13 +317,7 @@ impl Harness for CursorHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        let mode = request.access_mode();
-        if !zeron_proto::access_mode_supported(HarnessId::Cursor, mode) {
-            return Err(HarnessError::Protocol(format!(
-                "Cursor can't ask before acting, so it can't run in {}. Switch the access mode to Auto or Full access.",
-                mode.label()
-            )));
-        }
+        crate::refuse_unsupported_access(HarnessId::Cursor, "Cursor", &request)?;
         let lease = if self.executable.is_none() {
             Some(state::Lease::acquire(&state::state_root(), request.resume.as_deref()).await?)
         } else {

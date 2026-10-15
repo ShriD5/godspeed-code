@@ -1,4 +1,11 @@
 //! Native Pi JSONL RPC driver. See PROTOCOL.md for the legacy ACK barrier.
+//!
+//! Access modes: Pi has no permission system ("Pi does not include a
+//! built-in permission system", upstream README; nothing in its RPC
+//! protocol), so every tool runs and only full access is honest. A run in
+//! any other mode is refused. Extension prompts (`extension_ui_request`
+//! confirm/select, e.g. a permission-gate extension) still reach the user
+//! as questions.
 mod catalog;
 mod mcp;
 mod normalize;
@@ -342,6 +349,7 @@ impl Harness for PiHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        crate::refuse_unsupported_access(HarnessId::Pi, "Pi", &request)?;
         let mut request = request;
         let store = sessions::Store::new(self.session_store.clone(), self.agent_dir.clone());
         let mut lost_context = None;
