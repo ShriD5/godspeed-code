@@ -3840,6 +3840,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "zeron-engine",
  "zeron-mcp",
+ "zeron-proto",
  "zeron-rpc",
  "zeron-ui",
  "zeron-update",
