@@ -404,6 +404,21 @@ fn stage_plain_file(path: &Path) -> Result<StagedAttachment, String> {
     Ok(StagedAttachment::from_file(&name, bytes))
 }
 
+/// The file name a long paste is staged under.
+pub const PASTED_TEXT_NAME: &str = "pasted-text.txt";
+
+/// Stage a long clipboard paste as a text file. The composer turns pastes past
+/// its inline limit into an attachment chip instead of thousands of draft lines.
+pub fn stage_pasted_text(text: String) -> Result<StagedAttachment, String> {
+    if text.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err("The pasted text is too large (24 MB max).".into());
+    }
+    Ok(StagedAttachment::from_file(
+        PASTED_TEXT_NAME,
+        text.into_bytes(),
+    ))
+}
+
 /// Stage an image pasted from the clipboard. A BMP (what Windows puts there for
 /// a screenshot) is converted to PNG like [`stage_file`] does; one that won't
 /// decode stays as pasted.

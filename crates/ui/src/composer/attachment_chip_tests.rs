@@ -547,6 +547,51 @@ fn chips_copied_from_another_draft_paste_as_plain_labels(cx: &mut gpui::TestAppC
     assert_eq!(text(&handle, cx), attachment_mention_link(1, None));
 }
 
+/// T3 C2: a paste past the inline limit becomes a text-file chip with the
+/// exact pasted bytes; one at the limit still goes in as draft text.
+#[gpui::test]
+fn long_pastes_become_a_text_file_chip(cx: &mut gpui::TestAppContext) {
+    let (_dir, handle) = composer_focus_window(cx);
+    let long = "line of log output\n".repeat(LONG_PASTE_CHARS / 19 + 1);
+    assert!(long.chars().count() > LONG_PASTE_CHARS);
+    handle
+        .update(cx, |composer, window, cx| {
+            composer.input.update(cx, |input, cx| {
+                input.set_text("summarize ", cx);
+                cx.write_to_clipboard(ClipboardItem::new_string(long.clone()));
+                input.paste(&Paste, window, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(staged_names(&handle, cx), [attachments::PASTED_TEXT_NAME]);
+    assert_eq!(
+        text(&handle, cx),
+        format!(
+            "summarize {} ",
+            attachment_mention_link(1, Some(attachments::PASTED_TEXT_NAME))
+        )
+    );
+    handle
+        .read_with(cx, |composer, _| {
+            assert_eq!(composer.staged()[0].bytes(), long.as_bytes());
+        })
+        .unwrap();
+
+    let at_limit = "x".repeat(LONG_PASTE_CHARS);
+    handle
+        .update(cx, |composer, window, cx| {
+            composer.input.update(cx, |input, cx| {
+                input.set_text("", cx);
+                cx.write_to_clipboard(ClipboardItem::new_string(at_limit.clone()));
+                input.paste(&Paste, window, cx);
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(text(&handle, cx), at_limit);
+}
+
 #[test]
 fn sent_messages_project_image_chips_for_the_transcript() {
     let raw = format!("look at {} please", attachment_mention_link(2, None));

@@ -90,6 +90,15 @@ const NEW_THREAD_SELECTOR_ROW_HEIGHT: f32 = 20.0;
 // Accommodate the 24px usage indicator and PR badge without overflowing the
 // row's equal 8px top/bottom gutters.
 pub(crate) const SESSION_FOOTER_HEIGHT: f32 = 24.0;
+/// Pastes longer than this many characters become a text-file attachment.
+pub(crate) const LONG_PASTE_CHARS: usize = 20_000;
+
+/// Whether `text` is past [`LONG_PASTE_CHARS`]. The byte length bounds the
+/// char count from above, so short pastes skip the count.
+fn is_long_paste(text: &str) -> bool {
+    text.len() > LONG_PASTE_CHARS && text.chars().count() > LONG_PASTE_CHARS
+}
+
 /// The approval card's command box: about twelve 18px lines (padding
 /// included) before a long heredoc scrolls inside the box.
 const APPROVAL_COMMAND_MAX_HEIGHT: f32 = 12.0 * 18.0 + 16.0;
@@ -1825,6 +1834,9 @@ pub enum ComposerInputEvent {
         range: Range<usize>,
         revision: u64,
     },
+    /// A paste past [`LONG_PASTE_CHARS`] in the message composer: the wrapper
+    /// stages it as a text-file attachment instead of inserting it.
+    PastedLongText(String),
     /// An image chip was clicked: open its picture full size.
     OpenAttachment(u32),
 }
@@ -3534,6 +3546,10 @@ impl ComposerInput {
                     }
                 }
             }
+            if self.long_paste_becomes_file(&text) {
+                cx.emit(ComposerInputEvent::PastedLongText(text));
+                return;
+            }
             // Clipboard operations remain separate undo steps, even a one-character paste.
             self.last_edit = None;
             self.replace_text_in_range(None, &text, window, cx);
@@ -3546,6 +3562,19 @@ impl ComposerInput {
                 });
             }
         }
+    }
+
+    /// A paste this long goes in as a file chip, not draft text: tens of
+    /// thousands of characters (a log, a file dump) bury the prompt, make the
+    /// editor lay out every line on every keystroke, and read better to the
+    /// agent as a file (T3 C2). Only the message composer does this; a
+    /// question card borrowing the input, dialogs and search fields take the
+    /// text as pasted.
+    fn long_paste_becomes_file(&self, text: &str) -> bool {
+        self.mentions_enabled
+            && !self.single_line
+            && self.key_context == MESSAGE_COMPOSER_CONTEXT
+            && is_long_paste(text)
     }
 
     fn apply_pasted_references(
@@ -6310,6 +6339,10 @@ impl Composer {
                 );
             }
             ComposerInputEvent::PastedPaths(paths) => this.add_paths(paths.clone(), cx),
+            ComposerInputEvent::PastedLongText(text) => {
+                let text = text.clone();
+                this.stage_in_background(move || vec![attachments::stage_pasted_text(text)], cx);
+            }
             ComposerInputEvent::PastedText { range, revision } => {
                 this.resolve_pasted_references(range.clone(), *revision, cx);
             }
