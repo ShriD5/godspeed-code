@@ -31,6 +31,18 @@ use crate::workspace_search::{NameKinds, normalize_name_query};
 /// Existence probe timeout for user-chosen / remembered paths, which can point at
 /// dead network mounts where a bare `stat` hangs for minutes.
 const PATH_EXISTS_TIMEOUT: Duration = Duration::from_secs(2);
+/// Git the engine runs in the background has nobody to answer a prompt:
+/// a missing credential or an unknown host key must fail fast instead of
+/// waiting on a terminal (the engine's, when launched from one) or popping a
+/// credential-manager or askpass dialog nobody asked for. User-configured
+/// credential helpers still answer silently.
+pub(crate) fn noninteractive_git(cmd: &mut tokio::process::Command) {
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS_REQUIRE", "never");
+}
+
 /// Hard wall-clock ceiling for a folder listing (the walk runs in a disposable
 /// blocking task; on expiry the caller unblocks and the task is abandoned).
 const FOLDER_LIST_TIMEOUT: Duration = Duration::from_secs(6);
@@ -287,6 +299,7 @@ impl Repos {
         }
         cmd.args(args);
         cmd.stdin(std::process::Stdio::null());
+        noninteractive_git(&mut cmd);
         let output = cmd.output().await.map_err(|e| {
             EngineError::Other(format!("git {args:?} in {cwd:?} failed to start: {e}"))
         })?;
@@ -325,6 +338,7 @@ impl Repos {
             cmd.current_dir(cwd);
         }
         cmd.stdin(std::process::Stdio::null());
+        noninteractive_git(&mut cmd);
         let output = cmd
             .output()
             .await
@@ -2632,6 +2646,21 @@ mod tests {
             Repos::with_worktrees_root(&tmp.path().join("data2"), "test", code.join("wt"));
         let worktree = sibling.create_worktree(&repo, "main").await.unwrap();
         assert!(Path::new(&worktree.path).starts_with(code.join("wt").join("comet")));
+    }
+
+    #[test]
+    fn background_git_never_prompts() {
+        let mut cmd = tokio::process::Command::new("git");
+        noninteractive_git(&mut cmd);
+        let envs: HashMap<String, String> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .collect();
+        assert_eq!(envs.get("GIT_TERMINAL_PROMPT").map(String::as_str), Some("0"));
+        assert_eq!(envs.get("GCM_INTERACTIVE").map(String::as_str), Some("never"));
+        assert_eq!(envs.get("GIT_ASKPASS").map(String::as_str), Some(""));
+        assert_eq!(envs.get("SSH_ASKPASS_REQUIRE").map(String::as_str), Some("never"));
     }
 
     async fn two_step_fixture(hook_exit: u8) -> (tempfile::TempDir, Repos, PathBuf) {

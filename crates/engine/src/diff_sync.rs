@@ -1076,6 +1076,7 @@ async fn capture_git_in<S: AsRef<OsStr>>(
         cmd.as_std_mut().creation_flags(0x08000000);
     }
     cmd.arg("-C").arg(cwd).args(args);
+    crate::repos::noninteractive_git(&mut cmd);
     if let Some(snapshot) = snapshot {
         snapshot.apply_to(&mut cmd);
     }
@@ -1757,6 +1758,7 @@ async fn run_git_for_path_batch(
         use std::os::windows::process::CommandExt;
         command.as_std_mut().creation_flags(0x08000000);
     }
+    crate::repos::noninteractive_git(&mut command);
     command
         .arg("-C")
         .arg(root)

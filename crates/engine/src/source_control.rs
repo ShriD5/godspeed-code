@@ -2242,6 +2242,9 @@ impl ProcessRunner for SystemProcessRunner {
         if request.program == "gh" {
             zeron_harness::compose_login_shell_path(&mut command);
         }
+        if request.program == "git" {
+            crate::repos::noninteractive_git(&mut command);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

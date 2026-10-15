@@ -373,6 +373,7 @@ async fn snapshot_git(
         cmd.as_std_mut().creation_flags(0x08000000);
     }
     cmd.arg("-C").arg(root).args(args);
+    crate::repos::noninteractive_git(&mut cmd);
     cmd.env("GIT_INDEX_FILE", index);
     store.apply_to(&mut cmd);
     cmd.stdin(if stdin.is_some() {
