@@ -15,12 +15,18 @@
 //! - Notifications map to [`AgentEvent`]s: agentMessage/reasoning deltas (both
 //!   `delta`/`textDelta` spellings), item lifecycles → typed ToolCall/ToolResult,
 //!   `thread/tokenUsage/updated` → Usage, turn/completed|failed|aborted → Done.
-//! - Approvals + sandbox: yolo mode. The wire policy is always `"never"` and
-//!   the sandbox is forced to `danger-full-access` — parity with the Claude
-//!   adapter's auto-approve-everything (unattended runs). Stray
-//!   `item/commandExecution/requestApproval` +
-//!   `item/fileChange/requestApproval` still round-trip through
-//!   [`RunControls::request_input`] as a synthesized yes/no question.
+//! - Access modes map onto `approvalPolicy` + sandbox (validated against
+//!   `codex app-server generate-json-schema`, 0.155): supervised =
+//!   `untrusted` + read-only, auto-accept edits = `untrusted` +
+//!   workspace-write with in-workspace file changes accepted here (codex's
+//!   `untrusted` asks before every patch), auto = `on-request` +
+//!   workspace-write (codex's own "Auto" preset), full access = `never` +
+//!   danger-full-access. Both ride every `turn/start`, so a mode change
+//!   applies from the next turn in place; extra writable roots ride
+//!   `sandboxPolicy.writableRoots`. `item/commandExecution/requestApproval`,
+//!   `item/fileChange/requestApproval` (its diff taken from the fileChange
+//!   item) and `item/permissions/requestApproval` become approvals answered
+//!   accept / acceptForSession / decline / cancel.
 //! - Subagents are full child app-server threads. Parent spawn items establish
 //!   their stable ownership; content arriving before the spawn is buffered.
 //!   A registered child's notifications route through an EXPLICIT table
@@ -62,8 +68,9 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
-    RunRequest, SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
+    AccessMode, AgentEvent, ApprovalDecision, ApprovalKind, ApprovalRequest, DoneStatus,
+    HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel, RunRequest, SandboxLevel,
+    SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::jsonrpc::{Incoming, RpcClient};
@@ -629,14 +636,15 @@ impl Harness for CodexHarness {
     fn stops_turn_in_place(&self) -> bool {
         true
     }
-    /// What the app-server launch and its turns read: the sandbox is forced
-    /// to full access, and `serviceTier` is the only model option used.
+    /// What the app-server launch and its turns read: `serviceTier` is the
+    /// only model option used, and the access mode rides every turn.
     fn same_runtime(&self, live: &RunRequest, next: &RunRequest) -> bool {
         live.cwd == next.cwd
             && live.model == next.model
             && to_effort(live.reasoning) == to_effort(next.reasoning)
             && service_tier(live) == service_tier(next)
-            && live.auto_approve == next.auto_approve
+            && live.access_mode() == next.access_mode()
+            && live.writable_roots() == next.writable_roots()
     }
     /// `turn/start` carries model, effort and service tier, and each sticks
     /// for later turns — so a change applies from the next turn without a
@@ -644,7 +652,6 @@ impl Harness for CodexHarness {
     /// that way (an omitted parameter keeps the previous value).
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
         live.cwd == next.cwd
-            && live.auto_approve == next.auto_approve
             && (next.model.is_some() || live.model.is_none())
             && (to_effort(next.reasoning).is_some() || to_effort(live.reasoning).is_none())
             && (service_tier(next).is_some() || service_tier(live).is_none())
@@ -767,18 +774,13 @@ impl CodexHarness {
                 .canonicalize()
                 .map_err(HarnessError::Io)?,
         );
-        // Yolo mode: danger-full-access + approvalPolicy "never" (set below) —
-        // codex's --dangerously-bypass-approvals-and-sandbox equivalent.
-        // Parity with the Claude adapter, which auto-approves every
-        // can_use_tool and so effectively grants full access. This also
-        // sidesteps codex ≤0.144.x's workspace-write bug where a linked
-        // worktree on a slash-named branch derives a malformed mount that
-        // kills every command.
-        request.sandbox = if title_only {
-            zeron_proto::SandboxLevel::ReadOnly
-        } else {
-            zeron_proto::SandboxLevel::DangerFullAccess
-        };
+        // The sandbox follows the access mode (see `access_policy`); a title
+        // run is always read-only. Codex ≤0.144.x mis-mounted a linked
+        // worktree on a slash-named branch under workspace-write — fixed in
+        // the releases this driver is validated against.
+        if title_only {
+            request.sandbox = zeron_proto::SandboxLevel::ReadOnly;
+        }
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
@@ -1069,15 +1071,11 @@ async fn run_session(session: Session) {
     let request_input = Arc::new(request_input);
 
     // ---- wire params ------------------------------------------------------
-    // Parity with the Claude adapter, which auto-approves every `can_use_tool`
-    // regardless of `auto_approve` (godspeed sessions run unattended; combined
-    // with the danger-full-access override above this is codex's yolo mode):
-    // never surface wire approvals. "on-request" turned
-    // every command into a yes/no question (user report: "asking me for
-    // approval at every step"). The approval-as-input plumbing below stays for
-    // stray requests and a future explicit permission-mode setting.
-    let approval_policy = "never";
+    // The access mode picks the approval policy and sandbox; both ride the
+    // thread and every turn (`turn/start` applies them to "this turn and
+    // subsequent turns"), so a mode change lands on the next turn in place.
     let start_tier = service_tier(&request);
+    let (approval_policy, start_sandbox) = access_policy(&request, title_only);
 
     let start_params = {
         let mut p = serde_json::Map::new();
@@ -1120,7 +1118,7 @@ async fn run_session(session: Session) {
             overrides.extend(codex_mcp_overrides(mcp));
         }
         p.insert("approvalPolicy".into(), approval_policy.into());
-        p.insert("sandbox".into(), sandbox_mode(request.sandbox).into());
+        p.insert("sandbox".into(), sandbox_mode(start_sandbox).into());
         if let Some(model) = &request.model {
             p.insert("model".into(), Value::String(model.clone()));
         }
@@ -1245,8 +1243,12 @@ async fn run_session(session: Session) {
         let mut p = serde_json::Map::new();
         p.insert("threadId".into(), Value::String(thread_id.clone()));
         p.insert("input".into(), prompt_input(text));
+        let (approval_policy, sandbox) = access_policy(live, title_only);
         p.insert("approvalPolicy".into(), approval_policy.into());
-        p.insert("sandboxPolicy".into(), sandbox_policy_value(live.sandbox));
+        p.insert(
+            "sandboxPolicy".into(),
+            sandbox_policy_value(sandbox, live.writable_roots()),
+        );
         // Reasoning summaries stream (`item/reasoning/summaryTextDelta`) only
         // when asked for — without this codex "thinks" in silence for minutes:
         // nothing renders and the UI's 45s staleness gate flips Working off
@@ -1360,10 +1362,16 @@ async fn run_session(session: Session) {
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut torn_down: Vec<i32> = Vec::new();
 
+    // In-flight fileChange items by id: their `changes` (path + diff) are
+    // what a `item/fileChange/requestApproval` — which carries none — asks
+    // about.
+    let mut file_changes: HashMap<String, Value> = HashMap::new();
+
     'main: loop {
         tokio::select! {
             inc = incoming.recv() => match inc {
                 Some(Incoming::Notification { method, params }) => {
+                note_file_changes(&mut file_changes, &method, &params);
                 // Foreign-thread traffic FIRST: a child thread's turn/thread
                 // bookkeeping must never reach the parent turn router below
                 // (a child's turn/completed would settle the PARENT turn).
@@ -1755,7 +1763,8 @@ async fn run_session(session: Session) {
                         id,
                         &method,
                         &params,
-                        request.auto_approve,
+                        &live,
+                        &file_changes,
                         &request_input,
                     );
                 }
@@ -2047,17 +2056,60 @@ type RequestInputFn = Box<
         + Sync,
 >;
 
-/// Serve one server→client request. Approval requests round-trip through
-/// `request_input` as a synthesized yes/no question (in a subtask so the
-/// message loop keeps flowing); with `auto_approve` they're accepted outright
-/// (belt to the wire-level `approvalPolicy: "never"`). Anything else is
+/// The wire approval policy and sandbox for a run's access mode. Title runs
+/// stay read-only and never ask.
+fn access_policy(request: &RunRequest, title_only: bool) -> (&'static str, SandboxLevel) {
+    if title_only {
+        return ("never", SandboxLevel::ReadOnly);
+    }
+    match request.access_mode() {
+        AccessMode::Supervised => ("untrusted", SandboxLevel::ReadOnly),
+        AccessMode::AutoAcceptEdits => ("untrusted", SandboxLevel::WorkspaceWrite),
+        AccessMode::Auto => ("on-request", SandboxLevel::WorkspaceWrite),
+        AccessMode::FullAccess => ("never", SandboxLevel::DangerFullAccess),
+    }
+}
+
+/// Track fileChange items (from `item/started`, `item/fileChange/patchUpdated`
+/// and `item/completed`) so their approval can show what changes.
+fn note_file_changes(cache: &mut HashMap<String, Value>, method: &str, params: &Value) {
+    match method {
+        "item/started" | "item/completed" => {
+            let item = params.get("item").unwrap_or(&Value::Null);
+            if !matches!(item_type(item), "fileChange" | "file_change") {
+                return;
+            }
+            let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+            if method == "item/completed" {
+                cache.remove(id);
+            } else if let Some(changes) = item.get("changes") {
+                cache.insert(id.to_owned(), changes.clone());
+            }
+        }
+        "item/fileChange/patchUpdated" => {
+            if let (Some(id), Some(changes)) = (
+                params.get("itemId").and_then(Value::as_str),
+                params.get("changes"),
+            ) {
+                cache.insert(id.to_owned(), changes.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Serve one server→client request. Approvals the access mode lets through
+/// (full access; in-workspace file changes under auto-accept edits and
+/// auto) are accepted here; the rest wait on the user through the input
+/// bridge (in a subtask so the message loop keeps flowing). Anything else is
 /// rejected as unsupported so the server never wedges awaiting a reply.
 fn handle_server_request(
     client: &RpcClient,
     id: Value,
     method: &str,
     params: &Value,
-    auto_approve: bool,
+    live: &RunRequest,
+    file_changes: &HashMap<String, Value>,
     request_input: &Arc<RequestInputFn>,
 ) {
     // A tool's user-input request (EXPERIMENTAL, codex 0.146.x) is a CONTENT
@@ -2087,44 +2139,34 @@ fn handle_server_request(
         });
         return;
     }
-    let is_approval = matches!(
-        method,
-        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-    );
-    if !is_approval {
+    let Some(approval) = approval_request(method, params, file_changes, &live.cwd) else {
         tracing::debug!(
             target: "zeron_harness::codex",
             "unhandled server request: {method}"
         );
         client.respond_error(&id, -32601, &format!("unsupported method: {method}"));
         return;
-    }
-    if auto_approve {
-        client.respond(&id, json!({ "decision": "accept" }));
+    };
+    let in_workspace = crate::approval::paths_within(
+        approval.paths.iter().map(String::as_str),
+        &live.cwd,
+        live.writable_roots(),
+    );
+    if crate::approval::auto_decision(live.access_mode(), approval.kind, in_workspace) {
+        client.respond(&id, approval_response(method, params, ApprovalDecision::Approve));
         return;
     }
-
-    let question = approval_question(method, params);
     let client = client.clone();
     let request_input = Arc::clone(request_input);
+    let method = method.to_owned();
+    let params = params.clone();
     tokio::spawn(async move {
         // The engine's input bridge owns the `InputRequested`/`InputResolved`
         // lifecycle (it mints the request id the resolver is parked under);
         // emitting our own copy here doubled the doc's input part with an id
-        // `respond_input` could never match.
-        //
-        // A dropped sender (caller went away) degrades to a decline so the
-        // agent is unblocked — never silently allowed.
-        let answers = (request_input)(vec![question.clone()])
-            .await
-            .unwrap_or_default();
-        let accept = answers.iter().any(|a| {
-            a.question_id == question.id && a.labels.iter().any(|l| l.eq_ignore_ascii_case("yes"))
-        });
-        client.respond(
-            &id,
-            json!({ "decision": if accept { "accept" } else { "decline" } }),
-        );
+        // `respond_input` could never match. A dropped bridge declines.
+        let decision = crate::approval::ask(request_input.as_ref(), approval).await;
+        client.respond(&id, approval_response(&method, &params, decision));
     });
 }
 
@@ -2189,54 +2231,137 @@ fn user_input_questions(params: &Value) -> Vec<(String, UserInputQuestion)> {
         .collect()
 }
 
-/// Synthesize the yes/no question an approval request surfaces to the user.
-fn approval_question(method: &str, params: &Value) -> UserInputQuestion {
-    let (header, question) = if method.contains("commandExecution") {
-        let command = match params.get("command") {
-            Some(Value::String(s)) => s.clone(),
-            Some(Value::Array(parts)) => parts
+/// Describe a codex approval request, or `None` for a method that is not one.
+fn approval_request(
+    method: &str,
+    params: &Value,
+    file_changes: &HashMap<String, Value>,
+    cwd: &str,
+) -> Option<ApprovalRequest> {
+    let text = |key: &str| params.get(key).and_then(Value::as_str).map(str::to_owned);
+    let mut approval = match method {
+        "item/commandExecution/requestApproval" => {
+            let command = match params.get("command") {
+                Some(Value::String(s)) => Some(s.clone()),
+                Some(Value::Array(parts)) => Some(
+                    parts
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                _ => None,
+            };
+            let network = params
+                .get("networkApprovalContext")
+                .filter(|c| !c.is_null());
+            let mut approval = match network {
+                Some(context) => ApprovalRequest::new(
+                    ApprovalKind::Network,
+                    format!(
+                        "Allow network access to {}",
+                        context["host"].as_str().unwrap_or("a host")
+                    ),
+                ),
+                None => ApprovalRequest::new(ApprovalKind::Command, "Run a command"),
+            };
+            approval.command = command;
+            approval.cwd = text("cwd").or_else(|| (!cwd.is_empty()).then(|| cwd.to_owned()));
+            approval
+        }
+        "item/fileChange/requestApproval" => {
+            let changes = text("itemId")
+                .and_then(|item| file_changes.get(&item))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let paths: Vec<String> = changes
                 .iter()
-                .filter_map(Value::as_str)
+                .filter_map(|c| c.get("path").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect();
+            let title = match paths.as_slice() {
+                [] => "Edit files".to_owned(),
+                [one] => format!("Edit {one}"),
+                [first, rest @ ..] => format!("Edit {first} and {} more", rest.len()),
+            };
+            let mut approval = ApprovalRequest::new(ApprovalKind::FileChange, title);
+            let diff: String = changes
+                .iter()
+                .filter_map(|c| {
+                    let diff = c.get("diff").and_then(Value::as_str)?;
+                    let path = c.get("path").and_then(Value::as_str).unwrap_or_default();
+                    Some(if diff.starts_with("---") || diff.starts_with("diff ") {
+                        diff.to_owned()
+                    } else {
+                        format!("--- a/{path}\n+++ b/{path}\n{diff}")
+                    })
+                })
                 .collect::<Vec<_>>()
-                .join(" "),
-            _ => String::new(),
-        };
-        (
-            "Approve command".to_owned(),
-            if command.is_empty() {
-                "Codex wants to run a command. Allow it?".to_owned()
+                .join("\n");
+            approval.diff = (!diff.is_empty()).then_some(diff);
+            approval.paths = paths;
+            if let Some(root) = text("grantRoot") {
+                approval.paths.push(root);
+            }
+            approval.cwd = (!cwd.is_empty()).then(|| cwd.to_owned());
+            approval
+        }
+        "item/permissions/requestApproval" => {
+            let permissions = params.get("permissions").unwrap_or(&Value::Null);
+            let network = permissions
+                .get("network")
+                .is_some_and(|n| !n.is_null());
+            let file_system = permissions.get("fileSystem").filter(|f| !f.is_null());
+            let mut approval = if network && file_system.is_none() {
+                ApprovalRequest::new(ApprovalKind::Network, "Allow network access")
             } else {
-                format!("Codex wants to run `{command}`. Allow it?")
-            },
-        )
-    } else {
-        let paths: Vec<&str> = params
-            .get("changes")
-            .and_then(Value::as_array)
-            .map(|a| a.as_slice())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|c| c.get("path").and_then(Value::as_str))
-            .collect();
-        (
-            "Approve file change".to_owned(),
-            if paths.is_empty() {
-                "Codex wants to modify files. Allow it?".to_owned()
-            } else {
-                format!("Codex wants to modify {}. Allow it?", paths.join(", "))
-            },
-        )
+                ApprovalRequest::new(ApprovalKind::Other, "Grant extra permissions")
+            };
+            if let Some(fs) = file_system {
+                for key in ["write", "read"] {
+                    approval.paths.extend(
+                        fs.get(key)
+                            .and_then(Value::as_array)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default()
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned),
+                    );
+                }
+            }
+            approval.cwd = text("cwd");
+            approval
+        }
+        _ => return None,
     };
-    UserInputQuestion {
-        id: new_message_id(),
-        header,
-        question,
-        options: vec!["Yes".into(), "No".into()],
-        prefill: None,
-        multiline: false,
-        multi_select: false,
-        approval: None,
+    approval.reason = text("reason");
+    Some(approval)
+}
+
+/// The response body for a decision, per method.
+fn approval_response(method: &str, params: &Value, decision: ApprovalDecision) -> Value {
+    if method == "item/permissions/requestApproval" {
+        let scope = if decision == ApprovalDecision::ApproveForSession {
+            "session"
+        } else {
+            "turn"
+        };
+        let granted = if decision.approves() {
+            params.get("permissions").cloned().unwrap_or(json!({}))
+        } else {
+            json!({})
+        };
+        return json!({ "permissions": granted, "scope": scope });
     }
+    let decision = match decision {
+        ApprovalDecision::Approve | ApprovalDecision::ApproveAlways => "accept",
+        ApprovalDecision::ApproveForSession => "acceptForSession",
+        ApprovalDecision::Decline | ApprovalDecision::DeclineAlways => "decline",
+        ApprovalDecision::Cancel => "cancel",
+    };
+    json!({ "decision": decision })
 }
 
 use crate::{Signal, send_signal, shutdown_child};
@@ -2265,29 +2390,107 @@ mod tests {
     }
 
     #[test]
-    fn approval_questions_are_yes_no() {
-        let q = approval_question(
+    fn approvals_describe_commands_file_changes_and_permissions() {
+        let none = HashMap::new();
+        let command = approval_request(
             "item/commandExecution/requestApproval",
-            &json!({"itemId": "c1", "command": "rm -rf /tmp/x"}),
-        );
-        assert_eq!(q.header, "Approve command");
-        assert!(q.question.contains("rm -rf /tmp/x"));
-        assert_eq!(q.options, vec!["Yes".to_string(), "No".to_string()]);
-        assert!(!q.multi_select);
+            &json!({"itemId": "c1", "command": ["git", "push", "--force"], "cwd": "/w", "reason": "pushes"}),
+            &none,
+            "/repo",
+        )
+        .unwrap();
+        assert_eq!(command.kind, ApprovalKind::Command);
+        assert_eq!(command.command.as_deref(), Some("git push --force"));
+        assert_eq!(command.cwd.as_deref(), Some("/w"));
+        assert_eq!(command.reason.as_deref(), Some("pushes"));
 
-        let q = approval_question(
+        let network = approval_request(
+            "item/commandExecution/requestApproval",
+            &json!({"command": "curl x", "networkApprovalContext": {"host": "example.com", "protocol": "https"}}),
+            &none,
+            "/repo",
+        )
+        .unwrap();
+        assert_eq!(network.kind, ApprovalKind::Network);
+        assert!(network.title.contains("example.com"));
+
+        let mut changes = HashMap::new();
+        changes.insert(
+            "f1".to_owned(),
+            json!([{"path": "/repo/a.rs", "kind": {"type": "update"}, "diff": "@@ -1 +1 @@\n-a\n+b\n"}]),
+        );
+        let file = approval_request(
             "item/fileChange/requestApproval",
-            &json!({"changes": [{"path": "/a.rs"}, {"path": "/b.rs"}]}),
-        );
-        assert_eq!(q.header, "Approve file change");
-        assert!(q.question.contains("/a.rs, /b.rs"));
+            &json!({"itemId": "f1"}),
+            &changes,
+            "/repo",
+        )
+        .unwrap();
+        assert_eq!(file.kind, ApprovalKind::FileChange);
+        assert_eq!(file.paths, ["/repo/a.rs"]);
+        assert!(file.diff.unwrap().starts_with("--- a//repo/a.rs"));
 
-        // Command as argv array joins with spaces.
-        let q = approval_question(
-            "item/commandExecution/requestApproval",
-            &json!({"command": ["git", "push", "--force"]}),
+        assert!(approval_request("execCommandApproval", &json!({}), &none, "/").is_none());
+    }
+
+    #[test]
+    fn decisions_map_to_codex_responses() {
+        let method = "item/commandExecution/requestApproval";
+        let params = json!({});
+        for (decision, wire) in [
+            (ApprovalDecision::Approve, "accept"),
+            (ApprovalDecision::ApproveForSession, "acceptForSession"),
+            (ApprovalDecision::Decline, "decline"),
+            (ApprovalDecision::Cancel, "cancel"),
+        ] {
+            assert_eq!(
+                approval_response(method, &params, decision),
+                json!({ "decision": wire })
+            );
+        }
+        let asked = json!({"permissions": {"network": {"enabled": true}}});
+        let method = "item/permissions/requestApproval";
+        assert_eq!(
+            approval_response(method, &asked, ApprovalDecision::ApproveForSession),
+            json!({"permissions": {"network": {"enabled": true}}, "scope": "session"})
         );
-        assert!(q.question.contains("git push --force"));
+        assert_eq!(
+            approval_response(method, &asked, ApprovalDecision::Decline),
+            json!({"permissions": {}, "scope": "turn"})
+        );
+    }
+
+    #[test]
+    fn access_modes_pick_policy_and_sandbox() {
+        let mut request = RunRequest {
+            prompt: String::new(),
+            harness: None,
+            model: None,
+            reasoning: None,
+            model_options: Default::default(),
+            cwd: "/repo".into(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            resume: None,
+            attachments: Vec::new(),
+            worktree: None,
+            mcp: None,
+            access: None,
+        };
+        for (mode, policy, sandbox) in [
+            (AccessMode::Supervised, "untrusted", SandboxLevel::ReadOnly),
+            (AccessMode::AutoAcceptEdits, "untrusted", SandboxLevel::WorkspaceWrite),
+            (AccessMode::Auto, "on-request", SandboxLevel::WorkspaceWrite),
+            (AccessMode::FullAccess, "never", SandboxLevel::DangerFullAccess),
+        ] {
+            request.set_access_mode(mode);
+            assert_eq!(access_policy(&request, false), (policy, sandbox), "{mode:?}");
+        }
+        assert_eq!(access_policy(&request, true), ("never", SandboxLevel::ReadOnly));
+        assert_eq!(
+            sandbox_policy_value(SandboxLevel::WorkspaceWrite, &["/data/a1".to_owned()]),
+            json!({"type": "workspaceWrite", "networkAccess": true, "writableRoots": ["/data/a1"]})
+        );
     }
 
     #[test]

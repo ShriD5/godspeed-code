@@ -100,13 +100,51 @@ fn request(prompt: &str) -> RunRequest {
         reasoning: Some(ReasoningLevel::Ultra),
         model_options: serde_json::Map::new(),
         cwd: String::new(),
-        sandbox: SandboxLevel::WorkspaceWrite,
+        sandbox: SandboxLevel::DangerFullAccess,
         auto_approve: true,
         attachments: Vec::new(),
         worktree: None,
         resume: None,
         access: None,
     }
+}
+
+/// Controls answering each question with the next label from `labels`,
+/// recording every question asked.
+fn scripted_controls(
+    labels: Vec<&'static str>,
+) -> (
+    RunControls,
+    mpsc::Sender<SteerMessage>,
+    Arc<Mutex<Vec<UserInputQuestion>>>,
+) {
+    let asked: Arc<Mutex<Vec<UserInputQuestion>>> = Arc::default();
+    let seen = asked.clone();
+    let labels = Arc::new(Mutex::new(std::collections::VecDeque::from(labels)));
+    let (steer_tx, steer_rx) = mpsc::channel(8);
+    let controls = RunControls {
+        realtime: None,
+        execution_lease: None,
+        request_input: Box::new(move |questions| {
+            seen.lock().unwrap().extend(questions.iter().cloned());
+            let label = labels.lock().unwrap().pop_front().unwrap_or("Decline");
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(
+                questions
+                    .iter()
+                    .map(|q| UserInputAnswer {
+                        question_id: q.id.clone(),
+                        labels: vec![label.into()],
+                    })
+                    .collect(),
+            );
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        turn: Default::default(),
+    };
+    (controls, steer_tx, asked)
 }
 
 /// Controls whose `request_input` answers every question with `answer_label`.
@@ -598,47 +636,35 @@ async fn rejected_steer_falls_back_to_a_follow_up_turn() {
 
 #[tokio::test]
 async fn approvals_round_trip_as_input_requests() {
-    // Approvals must reach the ENGINE's input bridge (`request_input`) — and
-    // the harness must NOT emit its own `InputRequested`/`InputResolved`
+    // Approvals must reach the ENGINE's input bridge (`request_input`) —
+    // and the harness must NOT emit its own `InputRequested`/`InputResolved`
     // twins: the bridge owns that lifecycle (it mints the request id the
     // resolver is parked under; a harness-emitted copy folded an unanswerable
     // duplicate chip into the doc).
-    let asked: Arc<Mutex<Vec<UserInputQuestion>>> = Arc::new(Mutex::new(Vec::new()));
-    let (steer_tx, steer_rx) = mpsc::channel(8);
-    let _steer = steer_tx;
-    let token = CancellationToken::new();
-    let seen = asked.clone();
-    let controls = RunControls {
-        realtime: None,
-        execution_lease: None,
-        request_input: Box::new(move |questions| {
-            seen.lock().unwrap().extend(questions.iter().cloned());
-            let (tx, rx) = oneshot::channel();
-            let answers: Vec<UserInputAnswer> = questions
-                .iter()
-                .map(|q| UserInputAnswer {
-                    question_id: q.id.clone(),
-                    labels: vec!["Yes".into()],
-                })
-                .collect();
-            let _ = tx.send(answers);
-            rx
-        }),
-        steering: steer_rx,
-        interrupt: token.clone(),
-        turn: Default::default(),
-    };
+    use zeron_proto::{AccessMode, ApprovalKind};
+    let (controls, _steer, asked) =
+        scripted_controls(vec!["Approve for this session", "Decline"]);
     let mut req = request("scenario:approve");
-    req.auto_approve = false;
+    req.set_access_mode(AccessMode::Supervised);
+    req.cwd = "/tmp".into();
     let events = run_to_end(&harness(), req, controls).await;
 
     let asked = asked.lock().unwrap();
     assert_eq!(asked.len(), 2, "{events:?}");
-    assert_eq!(asked[0].header, "Approve command");
-    assert!(asked[0].question.contains("rm -rf /tmp/x"));
-    assert_eq!(asked[0].options, vec!["Yes".to_string(), "No".to_string()]);
-    assert_eq!(asked[1].header, "Approve file change");
-    assert!(asked[1].question.contains("/tmp/a.rs"));
+    let command = asked[0].approval.as_ref().expect("an approval");
+    assert_eq!(command.kind, ApprovalKind::Command);
+    assert_eq!(command.command.as_deref(), Some("rm -rf /tmp/x"));
+    assert_eq!(command.cwd.as_deref(), Some("/tmp"));
+    assert_eq!(command.reason.as_deref(), Some("cleans up"));
+    assert_eq!(
+        asked[0].options,
+        ["Approve", "Approve for this session", "Decline"]
+    );
+    // The diff comes from the fileChange item the request names.
+    let file = asked[1].approval.as_ref().expect("an approval");
+    assert_eq!(file.kind, ApprovalKind::FileChange);
+    assert_eq!(file.paths, ["/tmp/a.rs"]);
+    assert!(file.diff.as_deref().unwrap().contains("-old\n+new"));
     assert!(
         !events.iter().any(|e| matches!(
             e,
@@ -647,7 +673,7 @@ async fn approvals_round_trip_as_input_requests() {
         "harness must not emit input lifecycle events itself: {events:?}"
     );
 
-    // The fake only completes the turn after seeing BOTH accept decisions.
+    // The fake only completes the turn after seeing acceptForSession, then decline.
     assert_eq!(
         events.last(),
         Some(&AgentEvent::Done {
@@ -660,10 +686,85 @@ async fn approvals_round_trip_as_input_requests() {
 }
 
 #[tokio::test]
+async fn auto_accept_edits_accepts_workspace_edits_and_asks_for_the_rest() {
+    use zeron_proto::{AccessMode, ApprovalKind};
+    let (controls, _steer, asked) = scripted_controls(vec!["Approve", "Decline"]);
+    let mut req = request("scenario:edits-auto");
+    req.set_access_mode(AccessMode::AutoAcceptEdits);
+    req.access.as_mut().unwrap().writable_roots = vec!["/data/agents/a1".into()];
+    let dir = tempfile::tempdir().unwrap();
+    req.cwd = dir.path().display().to_string();
+    let events = run_to_end(&harness(), req, controls).await;
+    assert!(
+        matches!(
+            events.last(),
+            Some(AgentEvent::Done {
+                status: DoneStatus::Completed,
+                ..
+            })
+        ),
+        "{events:?}"
+    );
+    let asked = asked.lock().unwrap();
+    let kinds: Vec<_> = asked
+        .iter()
+        .map(|q| q.approval.as_ref().unwrap().kind)
+        .collect();
+    assert_eq!(kinds, [ApprovalKind::FileChange, ApprovalKind::Command]);
+    assert_eq!(asked[0].approval.as_ref().unwrap().paths, ["/etc/hosts"]);
+}
+
+#[tokio::test]
+async fn a_mode_change_rides_the_next_turn_in_place() {
+    use zeron_proto::AccessMode;
+    let h = harness();
+    let launch = request("scenario:mode-switch");
+    let mut next = launch.clone();
+    next.set_access_mode(AccessMode::Auto);
+    assert!(!h.same_runtime(&launch, &next));
+    assert!(h.reconfigures_in_place(&launch, &next));
+
+    let (controls, steer, _asked) = scripted_controls(vec![]);
+    let mut stream = h.run(launch, controls).await.expect("run starts");
+    let events = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut events = Vec::new();
+        let mut sent = false;
+        while let Some(event) = stream.next().await {
+            let event = event.expect("stream event");
+            let done = matches!(event, AgentEvent::Done { .. });
+            events.push(event);
+            if done && !sent {
+                sent = true;
+                steer
+                    .send(SteerMessage {
+                        prompt: "now in auto".into(),
+                        message_id: None,
+                        attachments: Vec::new(),
+                        config: Some(Box::new(next.clone())),
+                    })
+                    .await
+                    .unwrap();
+            } else if done {
+                break;
+            }
+        }
+        events
+    })
+    .await
+    .expect("run finished in time");
+    assert!(
+        events.contains(&AgentEvent::TextDelta {
+            text: "switched".into()
+        }),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
 async fn approval_no_answer_becomes_decline() {
     let (controls, _steer, _token) = controls("No");
     let mut req = request("scenario:decline");
-    req.auto_approve = false;
+    req.set_access_mode(zeron_proto::AccessMode::AutoAcceptEdits);
     let events = run_to_end(&harness(), req, controls).await;
 
     // The fake only completes the turn after seeing the decline decision.
