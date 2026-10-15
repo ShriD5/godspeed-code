@@ -11,7 +11,7 @@
 //!   live against 2.1.228: `can_use_tool` control requests arrive and
 //!   allow/deny responses are honored). The alternative channel — an MCP
 //!   permission tool — needs a server process and was rejected. Tool calls
-//!   auto-allow (zeron sessions run unattended, parity with the ACP
+//!   auto-allow (godspeed sessions run unattended, parity with the ACP
 //!   harness's preferred-allow behavior); `AskUserQuestion` round-trips
 //!   through [`RunControls::request_input`].
 //! - DONE is the CLI's own `result` frame, eagerly: background work (a
@@ -339,7 +339,7 @@ impl ClaudeHarness {
             shutdown_child(&mut child, self.kill_grace).await;
             return Err(HarnessError::Protocol("claude child has no stdio".into()));
         };
-        const PROBE_ID: &str = "zeron-command-probe";
+        const PROBE_ID: &str = "godspeed-command-probe";
         let discovery = async {
             let request = serde_json::json!({
                 "type": "control_request",
@@ -598,7 +598,7 @@ impl ClaudeHarness {
                 "",
             ]);
         } else if let Some(mcp) = &request.mcp {
-            // Zeron's own server rides beside the user's configured servers
+            // Godspeed's own server rides beside the user's configured servers
             // (no `--strict-mcp-config`): the CLI merges an inline JSON
             // config with settings-sourced ones.
             cmd.args(["--mcp-config", &mcp_config_arg(mcp)]);
@@ -1491,21 +1491,21 @@ mod mcp_injection_tests {
     #[test]
     fn mcp_config_arg_spells_the_server_the_way_the_cli_reads_it() {
         let mcp = zeron_proto::McpServer {
-            name: "zeron".into(),
-            command: "/opt/zeron/zeron".into(),
+            name: "godspeed".into(),
+            command: "/opt/godspeed/godspeed".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_CHAT_ID".to_owned(), "chat-1".to_owned())]
+            env: [("GODSPEED_CHAT_ID".to_owned(), "chat-1".to_owned())]
                 .into_iter()
                 .collect(),
         };
         let parsed: Value = serde_json::from_str(&mcp_config_arg(&mcp)).unwrap();
-        assert_eq!(parsed["mcpServers"]["zeron"]["command"], "/opt/zeron/zeron");
+        assert_eq!(parsed["mcpServers"]["godspeed"]["command"], "/opt/godspeed/godspeed");
         assert_eq!(
-            parsed["mcpServers"]["zeron"]["args"],
+            parsed["mcpServers"]["godspeed"]["args"],
             serde_json::json!(["mcp"])
         );
         assert_eq!(
-            parsed["mcpServers"]["zeron"]["env"]["ZERON_CHAT_ID"],
+            parsed["mcpServers"]["godspeed"]["env"]["GODSPEED_CHAT_ID"],
             "chat-1"
         );
     }

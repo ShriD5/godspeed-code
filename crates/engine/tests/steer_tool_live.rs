@@ -3,7 +3,7 @@
 //! tool must still finish and its real result must reach the agent — then
 //! the steer is answered.
 //!
-//! ZERON_TEST_HARNESS=claude cargo test -p zeron-engine --test steer_tool_live -- --ignored --nocapture
+//! GODSPEED_TEST_HARNESS=claude cargo test -p zeron-engine --test steer_tool_live -- --ignored --nocapture
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -88,8 +88,8 @@ fn dump(entries: &[SessionMessageEntry]) -> String {
 #[tokio::test]
 #[ignore = "uses real model quota; select the harness explicitly"]
 async fn steering_never_aborts_a_running_tool() {
-    let name = std::env::var("ZERON_TEST_HARNESS").expect("select harness");
-    let model = std::env::var("ZERON_TEST_MODEL").ok();
+    let name = std::env::var("GODSPEED_TEST_HARNESS").expect("select harness");
+    let model = std::env::var("GODSPEED_TEST_MODEL").ok();
     let harness = harness(&name);
     let id = harness.id();
     let dir = tempfile::tempdir().unwrap();

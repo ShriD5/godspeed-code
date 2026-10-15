@@ -1,13 +1,13 @@
 //! `ui.shader`: a fragment shader the desktop runs on the GPU, in the
 //! convention agents already know from Shadertoy. The script supplies
-//! `void mainImage(out vec4 fragColor, in vec2 fragCoord)`; Zeron wraps it in
+//! `void mainImage(out vec4 fragColor, in vec2 fragCoord)`; Godspeed wraps it in
 //! a complete GLSL program with the usual inputs and validates it here, so a
 //! compile error reaches the agent (with its line) before the reader sees it.
 //!
 //! Inputs, as in Shadertoy: `iResolution` (vec3, pixels), `iTime` and
 //! `iTimeDelta` (seconds), `iFrame` (int), `iMouse` (vec4: xy while the
 //! button is down, zw where it went down, negative z/w once released;
-//! origin bottom-left). Zeron adds `iCamera` (vec4: yaw, pitch, zoom, 0),
+//! origin bottom-left). Godspeed adds `iCamera` (vec4: yaw, pitch, zoom, 0),
 //! which the reader orbits by dragging when `orbit = true`, and named number
 //! inputs the script binds to its state (`inputs = { speed = s.speed }`
 //! makes `speed` a float in the shader).

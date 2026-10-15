@@ -102,10 +102,10 @@ async fn native_launch_matches_tokio_argv_environment_cwd_and_path() {
             .current_dir(dir.path())
             .env("PATH", dir.path())
             .env("zeron_launch_marker", "old")
-            .env("ZERON_LAUNCH_MARKER", "new 日本語")
-            .env("ZERON_LAUNCH_REMOVED", "old")
+            .env("GODSPEED_LAUNCH_MARKER", "new 日本語")
+            .env("GODSPEED_LAUNCH_REMOVED", "old")
             .env_remove("zeron_launch_removed")
-            .env("ZERON_ä_KEY", "unicode value")
+            .env("GODSPEED_ä_KEY", "unicode value")
             .stdin(Stdio::null());
         baseline
             .arg("--launch-report")
@@ -113,10 +113,10 @@ async fn native_launch_matches_tokio_argv_environment_cwd_and_path() {
             .current_dir(dir.path())
             .env("PATH", dir.path())
             .env("zeron_launch_marker", "old")
-            .env("ZERON_LAUNCH_MARKER", "new 日本語")
-            .env("ZERON_LAUNCH_REMOVED", "old")
+            .env("GODSPEED_LAUNCH_MARKER", "new 日本語")
+            .env("GODSPEED_LAUNCH_REMOVED", "old")
             .env_remove("zeron_launch_removed")
-            .env("ZERON_ä_KEY", "unicode value")
+            .env("GODSPEED_ä_KEY", "unicode value")
             .stdin(std::process::Stdio::null())
             .creation_flags(0x08000000)
             .kill_on_drop(true);
@@ -434,7 +434,7 @@ async fn process_exit_drains_buffered_output_despite_inherited_descendant_pipes(
 /// the `--` separator, so agent-shaped flags stay literal filters).
 #[test]
 fn batch_override_helper() {
-    let Some(file) = std::env::var_os("ZERON_TEST_BATCH_ARGS_FILE") else {
+    let Some(file) = std::env::var_os("GODSPEED_TEST_BATCH_ARGS_FILE") else {
         return;
     };
     let argv: Vec<String> = std::env::args().collect();
@@ -480,7 +480,7 @@ async fn batch_overrides_launch_through_cmd() {
         // The harness owns its child's environment; reach the helper through
         // the inherited process env. No other test in this binary reads it.
         // SAFETY: written before any child exists in this iteration.
-        unsafe { std::env::set_var("ZERON_TEST_BATCH_ARGS_FILE", &received) };
+        unsafe { std::env::set_var("GODSPEED_TEST_BATCH_ARGS_FILE", &received) };
         let (_steer, steering) = mpsc::channel(1);
         let controls = RunControls {
             realtime: None,
@@ -545,7 +545,7 @@ async fn batch_overrides_launch_through_cmd() {
             harness.display_name()
         );
         // SAFETY: no other test in this binary reads this variable.
-        unsafe { std::env::remove_var("ZERON_TEST_BATCH_ARGS_FILE") };
+        unsafe { std::env::remove_var("GODSPEED_TEST_BATCH_ARGS_FILE") };
     }
 }
 
@@ -612,8 +612,8 @@ async fn batch_arguments_resist_shell_interpretation() {
         "quote\"here",
         "trailing \\",
         "slashes\\\\\"quote",
-        "%ZERON_BATCH_ATTACK%",
-        "!ZERON_BATCH_ATTACK!",
+        "%GODSPEED_BATCH_ATTACK%",
+        "!GODSPEED_BATCH_ATTACK!",
         "a\"&echo injected>injected.txt&rem \"b",
         "& | < > ^ ( )",
         "{\"model\":\"a&b\"}",
@@ -624,7 +624,7 @@ async fn batch_arguments_resist_shell_interpretation() {
             Command::new(&script)
                 .arg(arg)
                 .current_dir(dir.path())
-                .env("ZERON_BATCH_ATTACK", "EXPANDED&echo injected>injected.txt")
+                .env("GODSPEED_BATCH_ATTACK", "EXPANDED&echo injected>injected.txt")
                 .output(),
         )
         .await
@@ -662,7 +662,7 @@ async fn batch_arguments_resist_shell_interpretation() {
 #[tokio::test]
 async fn batch_executable_path_rejects_percent_expansion() {
     let dir = tempfile::tempdir().unwrap();
-    let script = dir.path().join("shim%ZERON_BATCH_NAME%.cmd");
+    let script = dir.path().join("shim%GODSPEED_BATCH_NAME%.cmd");
     std::fs::write(&script, "@exit /b 0\r\n").unwrap();
     assert_eq!(
         zeron_harness::process::Command::new(&script)

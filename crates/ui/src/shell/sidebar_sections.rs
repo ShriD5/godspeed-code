@@ -797,7 +797,7 @@ mod tests {
         // The item sits in the submenu, outside the menu card: pressing it
         // must copy rather than dismiss the menu first.
         let item = cx
-            .debug_bounds("chat-copy-zeron")
+            .debug_bounds("chat-copy-godspeed")
             .expect("the Copy submenu is open");
         cx.simulate_click(item.center(), gpui::Modifiers::none());
         cx.run_until_parked();

@@ -540,7 +540,7 @@ struct HostService {
     spaces: Mutex<Vec<String>>,
 }
 
-const HOST_IMAGE: &str = "/Users/dev/.zeron/uploads/host.png";
+const HOST_IMAGE: &str = "/Users/dev/.godspeed/uploads/host.png";
 
 fn host_image() -> Vec<u8> {
     (0..100_000u32).map(|i| (i * 7 % 251) as u8).collect()
@@ -595,7 +595,7 @@ impl zeron_rpc::RpcService for HostService {
                     .lock()
                     .unwrap()
                     .push((id.clone(), name.clone(), unb64(&data)));
-                json!({ "path": format!("/Users/dev/.zeron/uploads/{}-{name}", &id[..8]) })
+                json!({ "path": format!("/Users/dev/.godspeed/uploads/{}-{name}", &id[..8]) })
             }
             m::READ_ATTACHMENT_CHUNK => {
                 let offset = params["offset"].as_u64().unwrap_or(0) as usize;

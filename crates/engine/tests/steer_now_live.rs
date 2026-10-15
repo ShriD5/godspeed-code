@@ -5,7 +5,7 @@
 //! The current answer must stop early and the steer must be answered within
 //! the same live runtime — not after the long answer finishes.
 //!
-//! ZERON_TEST_HARNESS=codex cargo test -p zeron-engine --test steer_now_live -- --ignored --nocapture
+//! GODSPEED_TEST_HARNESS=codex cargo test -p zeron-engine --test steer_now_live -- --ignored --nocapture
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -78,9 +78,9 @@ fn dump(entries: &[SessionMessageEntry]) -> String {
 #[tokio::test]
 #[ignore = "uses real model quota; select the harness explicitly"]
 async fn steer_now_interrupts_a_streaming_answer() {
-    let name = std::env::var("ZERON_TEST_HARNESS").expect("select harness");
-    let model = std::env::var("ZERON_TEST_MODEL").ok();
-    let bursts: usize = std::env::var("ZERON_TEST_BURST")
+    let name = std::env::var("GODSPEED_TEST_HARNESS").expect("select harness");
+    let model = std::env::var("GODSPEED_TEST_MODEL").ok();
+    let bursts: usize = std::env::var("GODSPEED_TEST_BURST")
         .ok()
         .map(|b| b.parse().unwrap())
         .unwrap_or(1);
@@ -168,9 +168,9 @@ async fn steer_now_interrupts_a_streaming_answer() {
     }
     let words_at_steer = assistant_text(&entries()).split_whitespace().count();
     let steer_at = Instant::now();
-    // ZERON_TEST_CLICK_GAP_MS: the UI flow of queueing every message first
+    // GODSPEED_TEST_CLICK_GAP_MS: the UI flow of queueing every message first
     // (Enter while busy) and then pressing Steer on each row in turn.
-    if let Some(gap) = std::env::var("ZERON_TEST_CLICK_GAP_MS")
+    if let Some(gap) = std::env::var("GODSPEED_TEST_CLICK_GAP_MS")
         .ok()
         .map(|g| Duration::from_millis(g.parse().unwrap()))
     {
@@ -194,7 +194,7 @@ async fn steer_now_interrupts_a_streaming_answer() {
             assert!(core.doc_host.steer_queued_now(CHAT, &row).await.unwrap());
         }
     }
-    for i in (0..bursts).filter(|_| std::env::var("ZERON_TEST_CLICK_GAP_MS").is_err()) {
+    for i in (0..bursts).filter(|_| std::env::var("GODSPEED_TEST_CLICK_GAP_MS").is_err()) {
         let word = format!("PINEAPPLE{i}");
         let row = core
             .doc_host

@@ -1,5 +1,5 @@
 //! Agent visuals: Luau scripts an agent shows inline in its reply through
-//! Zeron's `show_visual` MCP tool (charts, tables, dashboards, simulations,
+//! Godspeed's `show_visual` MCP tool (charts, tables, dashboards, simulations,
 //! 3D views).
 //!
 //! A script returns a tree of `ui.*` nodes ([`zeron_visual`]), and this module

@@ -37,7 +37,7 @@ impl BrowserProfile {
 
     fn new(data_dir: &Path, identity: &[&str]) -> Self {
         let mut hash = Sha256::new();
-        hash.update(b"zeron-browser-profile-v1");
+        hash.update(b"godspeed-browser-profile-v1");
         for part in identity {
             hash.update((part.len() as u64).to_le_bytes());
             hash.update(part.as_bytes());
@@ -58,7 +58,7 @@ impl BrowserProfile {
         // Include the installation directory: fixtures and alternative data roots
         // must never open a real user's WKWebsiteDataStore.
         let mut hash = Sha256::new();
-        hash.update(b"zeron-wkwebsite-data-store-v1");
+        hash.update(b"godspeed-wkwebsite-data-store-v1");
         hash.update(self.root.as_os_str().as_encoded_bytes());
         let mut id: [u8; 16] = hash.finalize()[..16].try_into().unwrap();
         id[6] = (id[6] & 0x0f) | 0x80; // UUID v8, application-defined hash.

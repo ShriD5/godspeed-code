@@ -4,7 +4,7 @@
 fn sync_keeps_git_available_with_256_file_descriptors() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "resource_limit_child", "--nocapture"])
-        .env("ZERON_RESOURCE_TEST_CHILD", "1")
+        .env("GODSPEED_RESOURCE_TEST_CHILD", "1")
         .output()
         .unwrap();
     eprintln!("{}", String::from_utf8_lossy(&output.stderr));
@@ -19,7 +19,7 @@ fn sync_keeps_git_available_with_256_file_descriptors() {
 #[cfg(unix)]
 #[test]
 fn resource_limit_child() {
-    if std::env::var_os("ZERON_RESOURCE_TEST_CHILD").is_none() {
+    if std::env::var_os("GODSPEED_RESOURCE_TEST_CHILD").is_none() {
         return;
     }
     unsafe {

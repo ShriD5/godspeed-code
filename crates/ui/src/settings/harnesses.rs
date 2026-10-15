@@ -135,7 +135,7 @@ fn harness_update_label(status: &HarnessUpdateStatus, theme: &Theme) -> (SharedS
         HarnessUpdatePhase::Dormant
         | HarnessUpdatePhase::Checking
         | HarnessUpdatePhase::Current => version_only(),
-        // The row's Update button already says it; one Zeron can only
+        // The row's Update button already says it; one Godspeed can only
         // describe (a command to run yourself) is just the version too.
         HarnessUpdatePhase::Available | HarnessUpdatePhase::ManualActionRequired
             if status.can_apply =>

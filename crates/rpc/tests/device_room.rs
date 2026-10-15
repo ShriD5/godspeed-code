@@ -755,15 +755,15 @@ async fn nudges_reach_the_host_callback() {
 }
 
 /// Live-edge variant: run the same host+client path through a real DeviceRoom DO.
-/// `ZERON_EDGE_WS=http://127.0.0.1:26640 cargo test -p zeron-rpc -- --ignored live_edge`
-/// (dev-mode edge; ZERON_EDGE_TOKEN defaults to a fixed dev user id).
+/// `GODSPEED_EDGE_WS=http://127.0.0.1:26640 cargo test -p zeron-rpc -- --ignored live_edge`
+/// (dev-mode edge; GODSPEED_EDGE_TOKEN defaults to a fixed dev user id).
 #[tokio::test]
-#[ignore = "needs a running edge (set ZERON_EDGE_WS)"]
+#[ignore = "needs a running edge (set GODSPEED_EDGE_WS)"]
 async fn live_edge_relay_round_trip() {
-    let Ok(edge_url) = std::env::var("ZERON_EDGE_WS") else {
-        panic!("set ZERON_EDGE_WS to the edge base URL (e.g. http://127.0.0.1:26640)");
+    let Ok(edge_url) = std::env::var("GODSPEED_EDGE_WS") else {
+        panic!("set GODSPEED_EDGE_WS to the edge base URL (e.g. http://127.0.0.1:26640)");
     };
-    let token = std::env::var("ZERON_EDGE_TOKEN").unwrap_or_else(|_| "relay-live-test".into());
+    let token = std::env::var("GODSPEED_EDGE_TOKEN").unwrap_or_else(|_| "relay-live-test".into());
     let device_id = format!("relay-live-{}", uuid::Uuid::new_v4());
 
     let service = TestService::new("live-host");

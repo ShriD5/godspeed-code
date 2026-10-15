@@ -2273,7 +2273,7 @@ mod tests {
     }
 
     /// Rows label references the way the transcript does, never as raw
-    /// `zeron-invoke:`/`zeron-file:` links, and still hide attachment trailers.
+    /// `godspeed-invoke:`/`godspeed-file:` links, and still hide attachment trailers.
     #[test]
     fn queue_rows_label_commands_skills_and_files() {
         use crate::composer::ChipKind;

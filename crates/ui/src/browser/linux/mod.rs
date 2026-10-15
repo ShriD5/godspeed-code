@@ -76,13 +76,13 @@ fn helper_path() -> Result<std::path::PathBuf, String> {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| std::path::PathBuf::from(p).join(".cache")))
         .ok_or("Could not locate the browser cache directory")?
-        .join("zeron/browser");
+        .join("godspeed/browser");
     extract_helper(&root)
 }
 
 fn extract_helper(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
     use sha2::{Digest, Sha256};
-    const HELPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/zeron-webkit"));
+    const HELPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/godspeed-webkit"));
     let hash = format!("{:x}", Sha256::digest(HELPER));
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let path = root.join(format!("webkit-{hash}"));

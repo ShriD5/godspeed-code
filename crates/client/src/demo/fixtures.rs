@@ -71,7 +71,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             created_ago_ms: HOUR,
             ..chat(
                 "chat-veil",
-                Some("space-zeron"),
+                Some("space-godspeed"),
                 MAC,
                 "Streaming veil on transcript rows",
                 "Opening the PR now. Running the checks first:",
@@ -87,7 +87,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             model: "claude-opus-5",
             ..chat(
                 "chat-picker",
-                Some("space-zeron"),
+                Some("space-godspeed"),
                 MAC,
                 "Model picker catalog sync",
                 "Before I wire the RPC, two decisions:",
@@ -103,7 +103,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             seen: false,
             ..chat(
                 "chat-tabs",
-                Some("space-zeron"),
+                Some("space-godspeed"),
                 MAC,
                 "Tool group header colors",
                 "Done — failed children stay quiet.",
@@ -188,7 +188,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             last_ago_ms: 10 * MIN,
             ..chat(
                 "chat-cjk",
-                Some("space-zeron-vps"),
+                Some("space-godspeed-vps"),
                 VPS,
                 "多言語テキストのレイアウト 🌏",
                 "日本語の長い段落です。",
@@ -210,7 +210,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             last_ago_ms: 30 * MIN,
             ..chat(
                 "chat-side",
-                Some("space-zeron"),
+                Some("space-godspeed"),
                 MAC,
                 "Side chat: veil timing",
                 "α = 0.2 over inter-append gaps",
@@ -222,7 +222,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
             created_ago_ms: 4 * DAY,
             ..chat(
                 "chat-oklch",
-                Some("space-zeron"),
+                Some("space-godspeed"),
                 MAC,
                 "OKLCH conversion drift",
                 "Gamma encode matches now.",
@@ -259,8 +259,8 @@ pub(crate) fn spaces(now: i64) -> Vec<Space> {
             repository_id: None,
             created_at: ms(now - ago),
         };
-    let zeron = |mut space: Space| {
-        space.repository_id = Some("github.com/zeronsh/zeron".into());
+    let godspeed = |mut space: Space| {
+        space.repository_id = Some("github.com/ShriD5/godspeed".into());
         space
     };
     vec![
@@ -272,19 +272,19 @@ pub(crate) fn spaces(now: i64) -> Vec<Space> {
             false,
             20 * DAY,
         ),
-        zeron(space(
-            "space-zeron",
+        godspeed(space(
+            "space-godspeed",
             MAC,
-            "/Users/dev/zeron",
+            "/Users/dev/godspeed",
             None,
             true,
             9 * DAY,
         )),
         // A second clone of the same repository on the VPS.
-        zeron(space(
-            "space-zeron-vps",
+        godspeed(space(
+            "space-godspeed-vps",
             VPS,
-            "/srv/src/zeron",
+            "/srv/src/godspeed",
             None,
             true,
             6 * DAY,
@@ -293,8 +293,8 @@ pub(crate) fn spaces(now: i64) -> Vec<Space> {
         space(
             "space-mobile",
             MAC,
-            "/Users/dev/zeron-ios",
-            Some("Zeron iOS"),
+            "/Users/dev/godspeed-ios",
+            Some("Godspeed iOS"),
             true,
             2 * DAY,
         ),
@@ -463,7 +463,7 @@ pub(crate) fn seed(
                     provider: "github".into(),
                     number,
                     title: title.into(),
-                    url: format!("https://github.com/zeron-sh/zeron/pull/{number}"),
+                    url: format!("https://github.com/godspeed-sh/godspeed/pull/{number}"),
                     state,
                     base_ref: "main".into(),
                     head_ref: source.branch.clone(),

@@ -58,7 +58,7 @@ pub async fn exercise(
     })?;
     let loaded_result = loaded(&browser, cx).await;
     #[cfg(target_os = "macos")]
-    if std::env::var_os("ZERON_BROWSER_STORAGE_DIAGNOSTICS").is_some() {
+    if std::env::var_os("GODSPEED_BROWSER_STORAGE_DIAGNOSTICS").is_some() {
         let (tx, rx) = tokio::sync::oneshot::channel();
         browser.read_with(cx, |browser, _| browser.fixture_cookies(move |cookies| {
             let _ = tx.send(cookies);
@@ -71,7 +71,7 @@ pub async fn exercise(
     })?;
     drop(browser);
     eprintln!("Storage lifecycle: closed page and dropped browser ({url})");
-    if url.ends_with("/delete") && std::env::var_os("ZERON_BROWSER_STORAGE_REOPEN").is_some() {
+    if url.ends_with("/delete") && std::env::var_os("GODSPEED_BROWSER_STORAGE_REOPEN").is_some() {
         let empty = format!("{}/empty", url.strip_suffix("/delete").unwrap());
         let (id, reopened) = window.update(cx, |shell, window, cx| {
             shell.fixture_open_browser(Some(empty), window, cx)

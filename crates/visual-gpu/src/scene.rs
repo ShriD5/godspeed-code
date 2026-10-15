@@ -1743,7 +1743,7 @@ mod tests {
             zoom: 1.0,
         };
         let frame = render_scene(&scene, camera, 720.0, 360.0, 2.0, &palette, &mut state).unwrap();
-        if let Ok(path) = std::env::var("ZERON_VISUAL_DUMP_ASSETS") {
+        if let Ok(path) = std::env::var("GODSPEED_VISUAL_DUMP_ASSETS") {
             crate::dump_ppm(&frame, &path);
         }
         // The environment stands behind everything: no clear pixels inside
@@ -1789,7 +1789,7 @@ mod tests {
             frame.height,
             start.elapsed()
         );
-        if let Ok(path) = std::env::var("ZERON_VISUAL_DUMP") {
+        if let Ok(path) = std::env::var("GODSPEED_VISUAL_DUMP") {
             crate::dump_ppm(&frame, &path);
         }
         assert_eq!((frame.width, frame.height), (1440, 720));

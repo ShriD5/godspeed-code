@@ -6,18 +6,18 @@ if (process.argv[2] === 'server') {
     const msg = JSON.parse(line);
     let result;
     if (msg.method === 'initialize') result = {protocolVersion: '2024-11-05', capabilities: {tools:{}}, serverInfo: {name:'test',version:'1'}};
-    else if (msg.method === 'tools/list') result = {tools:['whoami','create_chat','create_chats','read_chat','send_message','wait_for_turn'].map(name => ({name,description:'Zeron delegation',inputSchema:{type:'object',properties:{mode:{type:'string'}}}}))};
+    else if (msg.method === 'tools/list') result = {tools:['whoami','create_chat','create_chats','read_chat','send_message','wait_for_turn'].map(name => ({name,description:'Godspeed delegation',inputSchema:{type:'object',properties:{mode:{type:'string'}}}}))};
     else if (msg.method === 'tools/call') {
       if (msg.params.arguments.mode === 'hang') return;
       if (msg.params.arguments.mode === 'crash') process.exit(1);
-      result = {content:[{type:'text',text:process.env.ZERON_CHAT_ID}], isError:msg.params.arguments.mode === 'error'};
+      result = {content:[{type:'text',text:process.env.GODSPEED_CHAT_ID}], isError:msg.params.arguments.mode === 'error'};
     } else return;
     process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:msg.id, result})+'\n');
   });
 } else {
   const {default: extension} = await import(process.argv[2]);
   for (const chat of ['first', 'second']) {
-    process.env.ZERON_PI_MCP = JSON.stringify({name:'zeron',command:process.execPath,args:[process.argv[1],'server'],env:{ZERON_CHAT_ID:chat}});
+    process.env.GODSPEED_PI_MCP = JSON.stringify({name:'godspeed',command:process.execPath,args:[process.argv[1],'server'],env:{GODSPEED_CHAT_ID:chat}});
     const handlers = {}, tools = {};
     extension({on:(event,fn)=>handlers[event]=fn,registerTool:tool=>tools[tool.name]=tool});
     try {

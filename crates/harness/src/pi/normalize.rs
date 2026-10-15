@@ -203,7 +203,7 @@ fn tool(name: &str, args: &Value) -> ToolCall {
             pattern: string(args, "pattern").into(),
         },
         name if name.starts_with("zeron_") => ToolCall::Mcp {
-            server: "zeron".into(),
+            server: "godspeed".into(),
             tool: name[6..].into(),
             input: Some(args.clone()),
         },

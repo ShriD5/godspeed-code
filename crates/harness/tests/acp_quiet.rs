@@ -22,7 +22,7 @@ fn init_env() {
     ONCE.call_once(|| {
         // SAFETY: set before any harness runs in this test process; all
         // tests in this binary share the one value.
-        unsafe { std::env::set_var("ZERON_ACP_QUIET_SETTLE_MS", QUIET_MS.to_string()) };
+        unsafe { std::env::set_var("GODSPEED_ACP_QUIET_SETTLE_MS", QUIET_MS.to_string()) };
     });
 }
 

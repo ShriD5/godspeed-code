@@ -27,7 +27,7 @@ pub struct OutgoingAttachment {
 pub struct WorktreeSpec {
     /// The repo to branch (the project's folder on the host).
     pub repo_path: String,
-    /// Base ref for the fresh `zeron/<name>` branch.
+    /// Base ref for the fresh `godspeed/<name>` branch.
     pub base: String,
     pub space_id: Option<String>,
 }

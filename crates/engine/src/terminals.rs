@@ -1,5 +1,5 @@
 //! Terminals — PTY sessions owned by this device (feature-inventory §3.4; port of
-//! zeron's `terminals.ts` over `portable-pty`).
+//! godspeed's `terminals.ts` over `portable-pty`).
 //!
 //! - `open` spawns the user's login shell in the chat's cwd; `subscribe` replays a
 //!   bounded 1MB window (resumable via `afterSeq`) then tails live output, batched
@@ -9,7 +9,7 @@
 //!   Only EXITED sessions expire (30min TTL on their inert replay buffers), and
 //!   [`MAX_TERMINALS`] bounds leakage from renderers that lost their tab state.
 //! - Ownership: M5 is single-user local — every IPC/relay caller is the device
-//!   owner, so the per-user owner re-checks from zeron's Router land with real
+//!   owner, so the per-user owner re-checks from godspeed's Router land with real
 //!   multi-account auth in M6.
 
 use std::collections::{HashMap, VecDeque};
@@ -248,11 +248,11 @@ impl Terminals {
         #[cfg(not(windows))]
         let (initial_script, bootstrap) = if let Some(command) = command {
             let (suffix, source) = match shell_name.as_str() {
-                "fish" => (".fish", "source \"$ZERON_ACTION_SCRIPT\"\r"),
-                _ => (".sh", ". \"$ZERON_ACTION_SCRIPT\"\r"),
+                "fish" => (".fish", "source \"$GODSPEED_ACTION_SCRIPT\"\r"),
+                _ => (".sh", ". \"$GODSPEED_ACTION_SCRIPT\"\r"),
             };
             let mut script = tempfile::Builder::new()
-                .prefix("zeron-action-")
+                .prefix("godspeed-action-")
                 .suffix(suffix)
                 .tempfile()?;
             script.write_all(command.as_bytes())?;
@@ -279,12 +279,12 @@ impl Terminals {
             cmd.cwd(cwd);
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
-            cmd.env("TERM_PROGRAM", "Zeron");
+            cmd.env("TERM_PROGRAM", "Godspeed");
             for (name, value) in environment {
                 cmd.env(name, value);
             }
             if let Some(script) = initial_script.as_ref() {
-                cmd.env("ZERON_ACTION_SCRIPT", script.path());
+                cmd.env("GODSPEED_ACTION_SCRIPT", script.path());
             }
             let child = pair
                 .slave
@@ -1185,7 +1185,7 @@ mod initial_command_tests {
                     root.path().to_str().unwrap(),
                     80,
                     24,
-                    Some("/nonexistent/zeron-test-shell"),
+                    Some("/nonexistent/godspeed-test-shell"),
                     &HashMap::new(),
                     Some("echo test"),
                 )

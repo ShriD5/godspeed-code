@@ -3,7 +3,7 @@
 //! transport that rides the prompt, the transcript read-back cache, and the
 //! full-size preview lightbox.
 //!
-//! Ports of zeron's `composer/use-attachments.ts` (staging/upload),
+//! Ports of godspeed's `composer/use-attachments.ts` (staging/upload),
 //! `control/message-attachments.ts` (the `withAttachments` /
 //! `parseUserMessageImages` text transport — attachment refs are embedded in
 //! the user message's plain text, which is exactly what persists in the doc),
@@ -156,7 +156,7 @@ fn name_from_path(path: &str) -> String {
 
 /// Find the refs trailer: a blank line, then a line starting (case-insensitive)
 /// with `Attached images (local files` and ending `):`. Returns
-/// `(body_end, refs_start)` byte offsets — the tolerant equivalent of zeron's
+/// `(body_end, refs_start)` byte offsets — the tolerant equivalent of godspeed's
 /// `ATTACHED_IMAGES_RE`.
 fn find_refs_marker(content: &str) -> Option<(usize, usize)> {
     let lower = content.to_ascii_lowercase();
@@ -629,7 +629,7 @@ pub struct LoadedAttachmentImage {
 }
 
 /// `ReadAttachmentChunk` loop: 45KB base64 chunks until `done` (bounded, with
-/// the same stuck-offset guard as zeron's `readAttachmentImage`). Returns the
+/// the same stuck-offset guard as godspeed's `readAttachmentImage`). Returns the
 /// file's name, MIME type and bytes.
 pub(crate) async fn read_attachment_bytes(
     engine: &EngineHandle,

@@ -1,6 +1,6 @@
 //! Durable command ledger — port of `packages/session-doc/src/commands.ts`.
 //!
-//! Rules (verbatim from zeron's design):
+//! Rules (verbatim from godspeed's design):
 //! 1. Each device inserts only its own entries; entries are append-only and immutable.
 //! 2. The chat's HOST is the sole writer of command outcomes; a composer may only set
 //!    `cancelled` on its own still-pending entries.

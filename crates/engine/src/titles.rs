@@ -19,7 +19,7 @@ use crate::repos::Repos;
 use crate::workspace_host::WorkspaceHost;
 
 /// Throwaway title runs are cheap but still cross a process boundary — retry a
-/// couple of times with a short backoff before falling back (zeron's ladder).
+/// couple of times with a short backoff before falling back (godspeed's ladder).
 const RETRY_DELAYS_MS: &[u64] = &[250, 1_000];
 
 struct Inner {
@@ -117,9 +117,9 @@ impl TitleGenerator {
         }
 
         // Rename the worktree branch when the chat still sits on its original
-        // zeron/<name> branch (guards live inside rename_worktree_branch).
+        // godspeed/<name> branch (guards live inside rename_worktree_branch).
         if let (Some(chat_cwd), Some(branch)) = (&latest.cwd, &latest.branch)
-            && branch.starts_with("zeron/")
+            && branch.starts_with("godspeed/")
         {
             match self
                 .inner
@@ -239,7 +239,7 @@ impl TitleGenerator {
     }
 }
 
-/// The cheapest model a harness offers (zeron's `cheapestModel` heuristic):
+/// The cheapest model a harness offers (godspeed's `cheapestModel` heuristic):
 /// prefer a small-tier name (haiku/mini/nano/flash/small/lite), else the last
 /// listed model; `None` when the catalog is empty (harness picks its default).
 fn cheapest_model(models: &[Model]) -> Option<String> {

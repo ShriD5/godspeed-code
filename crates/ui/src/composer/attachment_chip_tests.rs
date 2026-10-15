@@ -194,7 +194,7 @@ fn removing_a_thumbnail_removes_every_chip_for_it(cx: &mut gpui::TestAppContext)
         .unwrap();
     cx.run_until_parked();
     assert!(attachment_mention_indices(&text(&handle, cx)).is_empty());
-    assert!(!text(&handle, cx).contains("zeron-image"));
+    assert!(!text(&handle, cx).contains("godspeed-image"));
     assert!(staged_names(&handle, cx).is_empty());
 }
 
@@ -558,7 +558,7 @@ fn sent_messages_project_image_chips_for_the_transcript() {
         format!("{MENTION_SIDE_PAD}{CHIP_ICON_SLOT}Image\u{a0}2{CHIP_TRAILING_PAD}")
     );
     assert!(sent_mention_display("Image 2 without a link").is_none());
-    assert!(sent_mention_display("[Image 2](zeron-image:9)").is_none());
+    assert!(sent_mention_display("[Image 2](godspeed-image:9)").is_none());
 }
 
 #[test]

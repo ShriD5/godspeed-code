@@ -3510,7 +3510,7 @@ fn error_copy(error: &PullRequestsPageError) -> (String, String) {
             "Reconnect the device and try again.".into(),
         ),
         PullRequestsPageError::UpdateRequired(name) => (
-            format!("Update Zeron on {name}"),
+            format!("Update Godspeed on {name}"),
             "This device doesn’t support pull requests yet.".into(),
         ),
     }
@@ -4013,8 +4013,8 @@ mod tests {
         page.update(cx, |page, _| {
             // A cached board, so opening it needs no engine.
             page.snapshots.push((
-                (None, "acme/zeron".into(), ChangeRequestFilter::Authored),
-                vec![pull_request("acme/zeron", 10, 1, 1, 1)],
+                (None, "acme/godspeed".into(), ChangeRequestFilter::Authored),
+                vec![pull_request("acme/godspeed", 10, 1, 1, 1)],
                 Instant::now(),
                 Paging::default(),
             ));
@@ -4027,12 +4027,12 @@ mod tests {
         page.update(cx, |page, cx| {
             assert!(page.repository_menu.is_open());
             page.repository_input
-                .update(cx, |input, cx| input.set_text("acme/zeron", cx));
+                .update(cx, |input, cx| input.set_text("acme/godspeed", cx));
         });
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         page.read_with(cx, |page, _| {
-            assert_eq!(page.repository.as_deref(), Some("acme/zeron"));
+            assert_eq!(page.repository.as_deref(), Some("acme/godspeed"));
             assert!(!page.repository_menu.is_open());
             assert_eq!(page.items[0].number, 10);
         });
@@ -4054,13 +4054,13 @@ mod tests {
             assert_eq!(page.load_state, PullRequestsLoadState::Idle);
             // No engine exists. Any accidental request would produce Network.
             page.snapshots.push((
-                (None, "acme/zeron".into(), ChangeRequestFilter::Authored),
-                vec![pull_request("acme/zeron", 10, 1, 1, 1)],
+                (None, "acme/godspeed".into(), ChangeRequestFilter::Authored),
+                vec![pull_request("acme/godspeed", 10, 1, 1, 1)],
                 Instant::now(),
                 Paging::default(),
             ));
             page.repository_input
-                .update(cx, |input, cx| input.set_text("ACME/ZERON", cx));
+                .update(cx, |input, cx| input.set_text("ACME/GODSPEED", cx));
             page.select_repository(cx);
             assert_eq!(page.items[0].number, 10);
             assert_eq!(page.load_state, PullRequestsLoadState::Ready);
@@ -4072,7 +4072,7 @@ mod tests {
             page.reset_for_target(None, cx);
             assert_eq!(page.items[0].number, 10);
             page.repository_input.update(cx, |input, cx| {
-                input.set_text("acme/zeron repo:other/repo", cx)
+                input.set_text("acme/godspeed repo:other/repo", cx)
             });
             page.select_repository(cx);
             assert!(
@@ -4080,7 +4080,7 @@ mod tests {
                     .iter()
                     .any(|message| message.contains("owner/name"))
             );
-            assert_eq!(page.repository.as_deref(), Some("acme/zeron"));
+            assert_eq!(page.repository.as_deref(), Some("acme/godspeed"));
         });
     }
 
@@ -4937,10 +4937,10 @@ mod tests {
 
     #[test]
     fn search_matches_all_words_across_title_repo_number_and_status() {
-        let mut item = pull_request("ZeronSH/Zeron", 181, 1, 1, 1);
+        let mut item = pull_request("ZeronSH/Godspeed", 181, 1, 1, 1);
         item.title = "Add a pull request dashboard".into();
         item.is_draft = true;
-        assert!(matches_query(&item, "ZERON dashboard #181 draft"));
+        assert!(matches_query(&item, "GODSPEED dashboard #181 draft"));
         assert!(matches_query(&item, "  "));
         assert!(!matches_query(&item, "dashboard approved"));
     }

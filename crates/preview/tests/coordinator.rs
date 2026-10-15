@@ -1,6 +1,6 @@
 //! Full authenticated Worker → catalog → SDP/ICE → P2P → HTTP integration.
 //! Run against `wrangler dev --local --var AUTH_MODE:dev --port 27641`:
-//! ZERON_PREVIEW_TEST_EDGE=http://127.0.0.1:27641 cargo test -p zeron-preview --test coordinator -- --ignored
+//! GODSPEED_PREVIEW_TEST_EDGE=http://127.0.0.1:27641 cargo test -p zeron-preview --test coordinator -- --ignored
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -36,8 +36,8 @@ impl Connector for Backend {
 #[tokio::test]
 #[ignore = "requires a local Worker in AUTH_MODE=dev"]
 async fn authenticated_coordinator_pairs_devices_for_large_http_preview() {
-    let edge = std::env::var("ZERON_PREVIEW_TEST_EDGE")
-        .expect("set ZERON_PREVIEW_TEST_EDGE to the local dev Worker");
+    let edge = std::env::var("GODSPEED_PREVIEW_TEST_EDGE")
+        .expect("set GODSPEED_PREVIEW_TEST_EDGE to the local dev Worker");
     tokio::time::timeout(Duration::from_secs(60), async {
         let temp = tempfile::tempdir().unwrap(); let stop = CancellationToken::new();
         let host = Catalog::open(temp.path().join("host.json"),"host".into(),"MacBook".into()).unwrap();

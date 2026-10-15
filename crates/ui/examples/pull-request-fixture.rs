@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("warn").init();
     let mut args = std::env::args().skip(1);
     let output = PathBuf::from(args.next().expect("output directory"));
-    let repository = args.next().unwrap_or_else(|| "zeronsh/zeron".into());
+    let repository = args.next().unwrap_or_else(|| "ShriD5/godspeed".into());
     let number = args.next().unwrap_or_else(|| "591".into());
     std::fs::create_dir_all(&output)?;
     let temp = tempfile::tempdir()?;
@@ -108,7 +108,7 @@ fn main() -> anyhow::Result<()> {
     // SAFETY: set before any other thread starts.
     unsafe {
         std::env::set_var("PATH", path);
-        std::env::set_var("ZERON_OPEN_ROUTE", "pull-requests");
+        std::env::set_var("GODSPEED_OPEN_ROUTE", "pull-requests");
     }
     let set_delay = move |seconds: u64| std::fs::write(&delay, seconds.to_string());
 

@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn svg_text_survives_an_unavailable_font() {
-        assert_svg_text_is_visible("Zeron Missing SVG Test Font");
+        assert_svg_text_is_visible("Godspeed Missing SVG Test Font");
         assert_svg_text_is_visible(".SystemUIFont");
     }
 

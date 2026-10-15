@@ -1,5 +1,5 @@
 //! Exercise the explorer and editors against an isolated real workspace/RPC.
-//! Set ZERON_FILES_CAPTURES to a directory to run on X11 and capture the fixture.
+//! Set GODSPEED_FILES_CAPTURES to a directory to run on X11 and capture the fixture.
 use super::*;
 use crate::settings::{FILES_PANEL_DEFAULT, RIGHT_PANE_DEFAULT};
 use gpui::{AppContext, AsyncApp, WindowHandle};
@@ -147,7 +147,7 @@ fn files_panel_workspace_navigation_and_external_updates() {
     let _ipc = runtime
         .block_on(zeron_engine::serve_ipc(port, core.rpc_service()))
         .unwrap();
-    let output = std::env::var_os("ZERON_FILES_CAPTURES").map(PathBuf::from);
+    let output = std::env::var_os("GODSPEED_FILES_CAPTURES").map(PathBuf::from);
     let application = if output.is_some() {
         gpui_platform::application()
     } else {

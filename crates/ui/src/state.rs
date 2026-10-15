@@ -4,7 +4,7 @@
 //! ## EngineHandle
 //! The UI talks the same typed RPC whether the engine is in-process or a separate
 //! daemon (ARCHITECTURE §1). [`EngineHandle::bootstrap`] probes the localhost IPC
-//! port, mirroring zeron: if an engine is listening it connects over WebSocket
+//! port, mirroring godspeed: if an engine is listening it connects over WebSocket
 //! ([`RemoteEngine`]); otherwise it embeds one via [`EngineCore::assemble`] and an
 //! in-memory RPC transport ([`InProcessEngine`]) — same envelopes, same dispatch.
 //!
@@ -91,7 +91,7 @@ impl Drop for WatchPreparation {
 /// Everything needed to reach (or start) an engine.
 #[derive(Debug, Clone)]
 pub struct EngineBootConfig {
-    /// Data directory for the embedded engine (`~/.zeron`).
+    /// Data directory for the embedded engine (`~/.godspeed`).
     pub data_dir: PathBuf,
     /// Localhost IPC port to probe / serve.
     pub ipc_port: u16,
@@ -1907,7 +1907,7 @@ impl AppState {
     // ---- queries ----
 
     /// Non-archived, top-level chats in sidebar order. Chats spawned by
-    /// another chat (`parent_chat_id`, the Zeron MCP's orchestration link)
+    /// another chat (`parent_chat_id`, the Godspeed MCP's orchestration link)
     /// are the parent's workers, not sessions the user started: they stay
     /// reachable by id/deep link but never take a sidebar row or jump slot.
     /// Voice orchestrator chats are hidden the same way.
@@ -3985,7 +3985,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_connects_when_daemon_is_listening() {
-        // Stand in for `zeron headless`: an engine served over the WS IPC port.
+        // Stand in for `godspeed headless`: an engine served over the WS IPC port.
         let daemon_dir = tempfile::tempdir().unwrap();
         let core = EngineCore::assemble(
             daemon_dir.path(),
@@ -4735,7 +4735,7 @@ mod tests {
         remote.parent_chat_id = Some("fork".into());
         state.apply_chats(vec![parent, fork, remote]);
         state.apply_spaces(vec![
-            space("local", "dev", "/projects/zeron", 0),
+            space("local", "dev", "/projects/godspeed", 0),
             space("remote", "other", "/remote/only", 1),
         ]);
         let root = |chat: Option<&str>, root: &str, local: bool| FileLinkRoot {
@@ -4750,7 +4750,7 @@ mod tests {
             vec![
                 root(Some("fork"), "/fork/fork", true),
                 root(Some("parent"), "/repo", true),
-                root(None, "/projects/zeron", true),
+                root(None, "/projects/godspeed", true),
             ],
             "own checkout, parent, then this device's projects"
         );
@@ -5730,13 +5730,13 @@ mod tests {
 
     #[test]
     fn project_labels_from_cwd() {
-        assert_eq!(project_label(Some("/home/w/dev/zeron")), "zeron");
-        assert_eq!(project_label(Some("/home/w/dev/zeron/")), "zeron");
+        assert_eq!(project_label(Some("/home/w/dev/godspeed")), "godspeed");
+        assert_eq!(project_label(Some("/home/w/dev/godspeed/")), "godspeed");
         assert_eq!(project_label(None), "No project");
         assert_eq!(project_label(Some("~")), "No project");
         assert_eq!(project_label(Some("~/")), "No project");
         assert_eq!(
-            project_label(Some("~/.zeron/scratch/2026-10-11-3e4f5a6b")),
+            project_label(Some("~/.godspeed/scratch/2026-10-11-3e4f5a6b")),
             "No project"
         );
         assert_eq!(project_label(Some("   ")), "No project");
@@ -5747,15 +5747,15 @@ mod tests {
     fn grouped_sidebar_preserves_recency_order() {
         // Input is sidebar-sorted (most recent first).
         let chats = [
-            chat_with_cwd("a", 9, Some("/dev/zeron")),
+            chat_with_cwd("a", 9, Some("/dev/godspeed")),
             chat_with_cwd("b", 8, Some("/dev/zed")),
-            chat_with_cwd("c", 7, Some("/dev/zeron")),
+            chat_with_cwd("c", 7, Some("/dev/godspeed")),
             chat_with_cwd("d", 6, None),
         ];
         let groups = group_chats(chats.iter());
         let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
         // Groups ordered by their most recent chat; rows keep order.
-        assert_eq!(labels, ["zeron", "zed", "No project"]);
+        assert_eq!(labels, ["godspeed", "zed", "No project"]);
         let zeron_ids: Vec<&str> = groups[0].chats.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(zeron_ids, ["a", "c"]);
         assert!(group_chats(std::iter::empty()).is_empty());
@@ -5787,10 +5787,10 @@ mod tests {
     #[test]
     fn chat_location_joins_project_and_branch() {
         let mut c = chat_with_cwd("x", 1, Some("/home/w/dev/soccertcg"));
-        c.branch = Some("zeron/rebalance".into());
+        c.branch = Some("godspeed/rebalance".into());
         assert_eq!(
             chat_location(&c).as_deref(),
-            Some("soccertcg · zeron/rebalance")
+            Some("soccertcg · godspeed/rebalance")
         );
         c.branch = None;
         assert_eq!(chat_location(&c).as_deref(), Some("soccertcg"));
@@ -5802,7 +5802,7 @@ mod tests {
         c.branch = None;
         assert_eq!(chat_location(&c), None);
         // Projectless: no project name, no folder.
-        for cwd in ["~", "~/.zeron/scratch/2026-10-11-3e4f5a6b"] {
+        for cwd in ["~", "~/.godspeed/scratch/2026-10-11-3e4f5a6b"] {
             c.cwd = Some(cwd.into());
             assert_eq!(chat_location(&c), None);
         }

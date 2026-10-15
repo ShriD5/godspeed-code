@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Godspeed
+GenericName=Coding Agent Controller
+Comment=Multi-device controller for coding agents
+Exec=godspeed %u
+TryExec=godspeed
+Icon=godspeed
+Terminal=false
+StartupNotify=true
+Categories=Development;Utility;
+Keywords=agent;claude;codex;ai;coding;
+StartupWMClass=godspeed
+MimeType=x-scheme-handler/godspeed;

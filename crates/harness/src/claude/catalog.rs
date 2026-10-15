@@ -1,4 +1,4 @@
-//! Model catalog + effort mapping for Claude Code, ported from zeron's
+//! Model catalog + effort mapping for Claude Code, ported from godspeed's
 //! `packages/harness/src/claude.ts` (which itself mirrors Claude Code's own
 //! picker via t3code's catalog).
 //!

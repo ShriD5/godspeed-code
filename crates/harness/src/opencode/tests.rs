@@ -800,7 +800,7 @@ async fn read_http_request_headers(socket: &mut tokio::net::TcpStream) {
 #[test]
 fn http_client_never_proxies_the_loopback_server() {
     const NAME: &str = "opencode::tests::http_client_never_proxies_the_loopback_server";
-    const CHILD: &str = "ZERON_OPENCODE_PROXY_PROBE";
+    const CHILD: &str = "GODSPEED_OPENCODE_PROXY_PROBE";
     if std::env::var_os(CHILD).is_none() {
         // reqwest reads the proxy from the environment, and mutating it here
         // would race sibling tests, so run the body in a child process.

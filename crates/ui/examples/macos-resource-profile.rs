@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
                     "archived":false, "createdAt":"2026-09-05T00:00:00Z",
                     "config":{"harness":"claude-code", "model":"claude-haiku-4-5", "reasoning":null, "sandbox":"workspace-write"}
                 })).unwrap()];
-                let background_chats = std::env::var("ZERON_PROFILE_BACKGROUND_CHATS")
+                let background_chats = std::env::var("GODSPEED_PROFILE_BACKGROUND_CHATS")
                     .ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
                 for index in 0..background_chats {
                     let mut chat = state.chats[0].clone();
@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
                     chat.title = Some(format!("Background conversation {}", index + 1));
                     state.chats.push(chat);
                 }
-                if std::env::var_os("ZERON_VERIFY_SIDEBAR_ROWS").is_some() {
+                if std::env::var_os("GODSPEED_VERIFY_SIDEBAR_ROWS").is_some() {
                     state.chats[0].title = Some("Short".into());
                     state.chats[0].branch = Some("main".into());
                     for (index, chat) in state.chats.iter_mut().skip(1).enumerate() {
@@ -203,14 +203,14 @@ fn main() -> anyhow::Result<()> {
     // Opt-in correctness check: a reused transcript scene must match a fresh
     // layout after idle, panel transitions and scrolling. Keep this outside
     // measured phases; screenshot readback and forced refreshes add work.
-    if std::env::var_os("ZERON_VERIFY_CACHE").is_some() {
+    if std::env::var_os("GODSPEED_VERIFY_CACHE").is_some() {
         let mut scenarios = vec!["settled", "sidebar-hidden", "sidebar-restored", "scrolled"];
-        if std::env::var_os("ZERON_VERIFY_SIDEBAR_ROWS").is_some() {
+        if std::env::var_os("GODSPEED_VERIFY_SIDEBAR_ROWS").is_some() {
             scenarios.extend(["sidebar-hover-short", "sidebar-hover-long"]);
         }
         // These hit coordinates target the bundled 80-section fixture. General
         // frame replays can still use the cache checks above on their own.
-        if std::env::var_os("ZERON_VERIFY_INTERACTIONS").is_some() {
+        if std::env::var_os("GODSPEED_VERIFY_INTERACTIONS").is_some() {
             scenarios.extend(["selected", "typed", "model-menu", "menu-dismissed"]);
         }
         for scenario in scenarios {
@@ -293,7 +293,7 @@ fn main() -> anyhow::Result<()> {
             });
             cached.save(output.join(format!("{scenario}-cached.png")))?;
             fresh.save(output.join(format!("{scenario}-fresh.png")))?;
-            if std::env::var_os("ZERON_VERIFY_SIDEBAR_ROWS").is_some()
+            if std::env::var_os("GODSPEED_VERIFY_SIDEBAR_ROWS").is_some()
                 && scenario != "sidebar-hidden"
             {
                 // This fixture uses a 256-point sidebar at 2x scale. Check

@@ -390,7 +390,7 @@ impl TranscriptView {
         let worker_shared = shared.clone();
         let worker_visuals = visuals.clone();
         thread::Builder::new()
-            .name("zeron-layout".into())
+            .name("godspeed-layout".into())
             .spawn(move || Worker::new(&text, worker_shared, listener, Some(worker_visuals)).run(rx))
             .expect("spawn layout thread");
         Arc::new(Self {

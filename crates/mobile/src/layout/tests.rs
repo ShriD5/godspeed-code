@@ -470,14 +470,14 @@ fn user_mentions_render_as_chips() {
     let mut w = worker(390.0);
     let skill = zeron_proto::invocation::Invocation::Skill { name: "review".into(), path: "/repo/SKILL.md".into(), command: None };
     let text = format!(
-        "Look at [mod.rs](zeron-file:crates/mobile/src/layout/mod.rs) in [layout](zeron-file:crates/mobile/src/layout/) with {}",
+        "Look at [mod.rs](godspeed-file:crates/mobile/src/layout/mod.rs) in [layout](godspeed-file:crates/mobile/src/layout/) with {}",
         skill.link()
     );
     w.input = debug_input(vec![DebugEntry { id: "u".into(), user: true, text, streaming: false }], false);
     let frame = w.pass();
     let d = frame.display(0).unwrap();
     assert!(d.text.contains("mod.rs") && !d.text.contains("@mod.rs"), "{}", d.text);
-    assert!(!d.text.contains("zeron-"), "{}", d.text);
+    assert!(!d.text.contains("godspeed-"), "{}", d.text);
     assert!(d.runs.iter().all(|r| r.color != display::ColorRole::Link));
     let icons: Vec<&str> = d
         .widgets
@@ -510,7 +510,7 @@ fn synced_file_attachments_render_as_chips_and_name_pills() {
     // chip only; the image chip opens its upload; the unchipped ZIP keeps a
     // name pill and never reaches image loading.
     let mut w = worker(390.0);
-    let text = "Compare [Image 1](zeron-image:1) with [notes.zip](zeron-attachment:2)\n\nAttached images (local files — open them to view):\n- /tmp/uploads/ab12cd34-Image_1.png\n- /tmp/uploads/ab12cd34-notes.zip\n- pending://up-3/logs.zip".to_owned();
+    let text = "Compare [Image 1](godspeed-image:1) with [notes.zip](godspeed-attachment:2)\n\nAttached images (local files — open them to view):\n- /tmp/uploads/ab12cd34-Image_1.png\n- /tmp/uploads/ab12cd34-notes.zip\n- pending://up-3/logs.zip".to_owned();
     w.input = debug_input(vec![DebugEntry { id: "u".into(), user: true, text, streaming: false }], false);
     let frame = w.pass();
     let d = frame.display(0).unwrap();
@@ -527,7 +527,7 @@ fn synced_file_attachments_render_as_chips_and_name_pills() {
     assert_eq!(icons, ["fileicon-files-compressed", "photo", "fileicon-files-compressed"]);
     assert!(d.text.contains("Compare Image 1 with notes.zip"), "{}", d.text);
     assert!(d.text.contains("logs.zip") && !d.text.contains("ab12cd34-"), "{}", d.text);
-    assert!(!d.text.contains("zeron-image") && !d.text.contains("zeron-attachment"), "{}", d.text);
+    assert!(!d.text.contains("godspeed-image") && !d.text.contains("godspeed-attachment"), "{}", d.text);
     let links: Vec<&str> = d.links.iter().map(|l| l.url.as_str()).collect();
     assert_eq!(links, ["zeron-preview://image?ref=%2Ftmp%2Fuploads%2Fab12cd34-Image_1.png"]);
 }

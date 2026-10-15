@@ -1219,7 +1219,7 @@ mod corner_render_tests {
             cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
                 .unwrap();
             let image = cx.capture_screenshot(window.into()).unwrap();
-            if let Ok(directory) = std::env::var("ZERON_PR_CORNER_CAPTURE_DIR") {
+            if let Ok(directory) = std::env::var("GODSPEED_PR_CORNER_CAPTURE_DIR") {
                 image
                     .save(std::path::Path::new(&directory).join(format!("{name}.png")))
                     .unwrap();

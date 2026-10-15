@@ -3803,6 +3803,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "godspeed"
+version = "0.2.113"
+dependencies = [
+ "anyhow",
+ "clap",
+ "embed-resource",
+ "libc",
+ "mimalloc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.61.2",
+ "zeron-engine",
+ "zeron-mcp",
+ "zeron-rpc",
+ "zeron-ui",
+ "zeron-update",
+]
+
+[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13547,28 +13569,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "zeron"
-version = "0.2.113"
-dependencies = [
- "anyhow",
- "clap",
- "embed-resource",
- "libc",
- "mimalloc",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.61.2",
- "zeron-engine",
- "zeron-mcp",
- "zeron-rpc",
- "zeron-ui",
- "zeron-update",
 ]
 
 [[package]]

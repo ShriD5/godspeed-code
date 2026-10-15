@@ -660,7 +660,7 @@ pub(super) fn foreground_after_capture() {
         let _: () = msg_send![configuration, setCreatesNewApplicationInstance: 0i8];
         let completion = ConcreteBlock::new(|_app: *mut Object, error: *mut Object| {
             if !error.is_null() {
-                tracing::warn!("Could not bring Zeron forward after Appshot capture");
+                tracing::warn!("Could not bring Godspeed forward after Appshot capture");
             }
         })
         .copy();
@@ -811,7 +811,7 @@ fn capture_with_screen_capture_kit(
 fn load_screen_capture_kit() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| unsafe {
-        // Load dynamically so Zeron's macOS 12.0 minimum remains valid. The
+        // Load dynamically so Godspeed's macOS 12.0 minimum remains valid. The
         // screenshot manager arrived in macOS 14; older systems use fallback.
         let path = b"/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit\0";
         !dlopen(path.as_ptr().cast(), 1).is_null() // RTLD_LAZY
@@ -962,7 +962,7 @@ fn encode_png(image: *mut c_void) -> Result<Vec<u8>, String> {
         }
         let len: usize = msg_send![data, length];
         if len as u64 > crate::attachments::MAX_ATTACHMENT_BYTES {
-            return Err("The captured window is larger than Zeron's 24 MB image limit.".into());
+            return Err("The captured window is larger than Godspeed's 24 MB image limit.".into());
         }
         let bytes: *const u8 = msg_send![data, bytes];
         if bytes.is_null() || len == 0 {

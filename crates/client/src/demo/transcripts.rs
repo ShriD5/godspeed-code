@@ -102,13 +102,13 @@ fn assistant(id: &str, host: &str, at: i64, parts: Vec<MessagePart>) -> SessionM
 /// Paths the demo serves generated images for.
 pub(crate) const DEMO_IMAGES: &[(&str, u32, u32, u32)] = &[
     (
-        "/Users/dev/.zeron/uploads/4f1c9a2e-Image_1.png",
+        "/Users/dev/.godspeed/uploads/4f1c9a2e-Image_1.png",
         960,
         540,
         1,
     ),
-    ("/Users/dev/.zeron/uploads/scroll-tall.png", 400, 800, 2),
-    ("/Users/dev/.zeron/uploads/square.png", 600, 600, 3),
+    ("/Users/dev/.godspeed/uploads/scroll-tall.png", 400, 800, 2),
+    ("/Users/dev/.godspeed/uploads/square.png", 600, 600, 3),
 ];
 
 const VEIL_PLAN: &str = r#"## Veil port plan
@@ -150,7 +150,7 @@ pub fn veil_alpha(elapsed_ms: f32, duration_ms: f32) -> f32 {
 }
 ```
 
-The row keeps one `RowVeil` while streaming and drops it on the live→complete flip, exactly like the desktop lifecycle. Details in [the veil design note](https://github.com/zeron-sh/zeron/blob/main/docs/design/transcript-veil.md#lifecycle)."#;
+The row keeps one `RowVeil` while streaming and drops it on the live→complete flip, exactly like the desktop lifecycle. Details in [the veil design note](https://github.com/godspeed-sh/godspeed/blob/main/docs/design/transcript-veil.md#lifecycle)."#;
 
 const CJK_REPLY: &str = r#"### Grapheme-safe fading
 
@@ -168,7 +168,7 @@ Chunk boundaries now snap to **extended grapheme clusters**, so these all fade a
 | Emoji ZWJ | 👨‍👩‍👧‍👦 | 1 |
 | Flags | 🇨🇦🇯🇵 | 2 |
 
-The splitter lives in `/Users/dev/zeron/crates/ui/src/markdown/veil/grapheme_boundaries_for_streamed_chunks.rs` and is covered by a table test:
+The splitter lives in `/Users/dev/godspeed/crates/ui/src/markdown/veil/grapheme_boundaries_for_streamed_chunks.rs` and is covered by a table test:
 
 ```python
 CASES = [
@@ -195,7 +195,7 @@ const VEIL_LIVE_PREFIX: &str = "All 14 veil tests pass. Pushing `veil-fade` and"
 pub(crate) const VEIL_LIVE_REST: &str = r#" opening the pull request against `main`:
 
 - [x] `cargo test -p zeron-ui veil` — 14 passed
-- [x] `xcodebuild -scheme Zeron build`
+- [x] `xcodebuild -scheme Godspeed build`
 - [ ] Screenshots for the PR description
 
 ```bash
@@ -203,7 +203,7 @@ git push -u origin veil-fade
 gh pr create --base main --title "Stream pull request status on every client"
 ```
 
-PR **#90** is open: https://github.com/zeron-sh/zeron/pull/90"#;
+PR **#90** is open: https://github.com/godspeed-sh/godspeed/pull/90"#;
 
 fn veil(host: &str, now: i64) -> Vec<SessionMessageEntry> {
     // Sent from the desktop composer: file, folder and skill chips, plus the
@@ -215,12 +215,12 @@ fn veil(host: &str, now: i64) -> Vec<SessionMessageEntry> {
     };
     let attach = crate::attachments::with_attachments(
         &format!(
-            "Port the streaming fade-in veil from [transcript.rs](zeron-file:crates/ui/src/transcript.rs) into [Transcript](zeron-file:apps/ios/Zeron/Transcript/). It must never affect layout — opacity only, split at chunk boundaries. Here's how it looks today: [Image 1](zeron-image:1), and the fade is in [veil-recording.zip](zeron-attachment:2). Run {} when done.",
+            "Port the streaming fade-in veil from [transcript.rs](godspeed-file:crates/ui/src/transcript.rs) into [Transcript](godspeed-file:apps/ios/Godspeed/Transcript/). It must never affect layout — opacity only, split at chunk boundaries. Here's how it looks today: [Image 1](godspeed-image:1), and the fade is in [veil-recording.zip](godspeed-attachment:2). Run {} when done.",
             review.link()
         ),
         &[
             DEMO_IMAGES[0].0.to_owned(),
-            "/Users/dev/.zeron/uploads/7d03b6e1-veil-recording.zip".to_owned(),
+            "/Users/dev/.godspeed/uploads/7d03b6e1-veil-recording.zip".to_owned(),
         ],
     );
     let mut live = assistant(
@@ -262,11 +262,11 @@ fn veil(host: &str, now: i64) -> Vec<SessionMessageEntry> {
                     false,
                     Some("crates/ui/src/markdown/veil.rs:12: pub const VEIL_MIN_FADE_MS"),
                 ),
-                edit("k3", "apps/ios/Zeron/Transcript/Veil.swift", 84, 12),
+                edit("k3", "apps/ios/Godspeed/Transcript/Veil.swift", 84, 12),
                 tool(
                     "k4",
                     exec(
-                        "xcodebuild -scheme Zeron -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build",
+                        "xcodebuild -scheme Godspeed -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build",
                     ),
                     false,
                     Some("** BUILD SUCCEEDED **"),

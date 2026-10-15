@@ -1,6 +1,6 @@
 //! Native project selector review fixture, with isolated synthetic data.
 //! Run under a desktop/Xvfb, then click the sidebar's "All projects" selector.
-//! ZERON_FIXTURE_PROJECT=<space id> starts the new-session canvas on that project.
+//! GODSPEED_FIXTURE_PROJECT=<space id> starts the new-session canvas on that project.
 use gpui::{AppContext, Bounds, WindowBounds, WindowOptions, point, px, size};
 use zeron_ui::*;
 
@@ -44,7 +44,7 @@ fn main() {
                 {"id":"c","deviceId":"long","path":"/projects/design-system-with-a-long-project-name","createdAt":"2026-09-15T00:00:00Z"},
                 {"id":"d","deviceId":"unknown","path":"/projects/fieldnotes","createdAt":"2026-09-15T00:00:00Z"}
             ])).unwrap();
-            if let Ok(space) = std::env::var("ZERON_FIXTURE_PROJECT") {
+            if let Ok(space) = std::env::var("GODSPEED_FIXTURE_PROJECT") {
                 s.selected_space = Some(space);
             }
             s

@@ -340,7 +340,7 @@ fn move_entry_no_replace(root: &Path, source: &Path, destination: &Path) -> Muta
                 let temporary = source
                     .parent()
                     .unwrap_or(Path::new(""))
-                    .join(format!(".zeron-save-{}.tmp", uuid::Uuid::new_v4()));
+                    .join(format!(".godspeed-save-{}.tmp", uuid::Uuid::new_v4()));
                 move_no_replace(root, source, &temporary).map_err(io_error)?;
                 if let Err(error) = move_no_replace(root, &temporary, destination) {
                     if let Err(rollback) = move_no_replace(root, &temporary, source) {

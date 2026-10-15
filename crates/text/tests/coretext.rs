@@ -244,8 +244,8 @@ fn broad_corpus() -> Vec<String> {
         "Run `npm install --save-dev @types/node@^20.11.0 typescript@~5.4.2` then `npx tsc --noEmit --strict` and fix errors.",
         "camelCaseIdentifier snake_case_identifier SCREAMING_CASE_CONSTANT kebab-case-identifier PascalCaseTypeName __dunder__ methods",
         // paths / urls
-        "Edit /Users/wing/Documents/GitHub/comet-native/crates/text/src/layout.rs and ~/Library/Application Support/Zeron/config.toml today.",
-        "C:\\Program Files\\Zeron\\bin\\zeron.exe --config C:\\Users\\wing\\AppData\\Roaming\\Zeron\\settings.json --verbose",
+        "Edit /Users/wing/Documents/GitHub/comet-native/crates/text/src/layout.rs and ~/Library/Application Support/Godspeed/config.toml today.",
+        "C:\\Program Files\\Godspeed\\bin\\godspeed.exe --config C:\\Users\\wing\\AppData\\Roaming\\Godspeed\\settings.json --verbose",
         "Docs at https://developer.apple.com/documentation/coretext/1509588-ctframesettercreateframe?language=objc#discussion and more.",
         "Mail wing@anara.com or visit http://www.example.org:8080/path/to/resource.html?a=1&b=two#section-3 for further info.",
         "git@github.com:chenglou/pretext.git, ssh://git@host.example.com:2222/repo.git, and file:///tmp/some%20file.txt are URLs.",

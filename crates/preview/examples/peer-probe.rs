@@ -1,5 +1,5 @@
 //! Two-device preview diagnostic. Exchange `SIGNAL` lines over an authenticated
-//! channel (for example Zeron terminal RPC); never publish SDP in release logs.
+//! channel (for example Godspeed terminal RPC); never publish SDP in release logs.
 //! `peer-probe host <localhost-port>` serves that explicit backend; `peer-probe
 //! client` requests it. Each process reads the other process's signals on stdin.
 use std::{sync::Arc, time::Duration};

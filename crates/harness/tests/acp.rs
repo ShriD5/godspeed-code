@@ -853,7 +853,7 @@ fn devin_auth_fixture() -> PathBuf {
     path
 }
 
-/// Zeron's "Add account" for Devin: an explicit method (Devin has no
+/// Godspeed's "Add account" for Devin: an explicit method (Devin has no
 /// default), a throwaway data home the new login lands in, and a url filter
 /// that skips the handshake's unrelated link for the real sign-in page.
 #[tokio::test]
@@ -1604,7 +1604,7 @@ fn antigravity_sign_in_preserves_relative_home_auth_in_a_separate_process() {
         .current_dir(parent_cwd.path())
         .env("HOME", child_home.path())
         .env("GEMINI_HOME", "relative-gemini-home")
-        .env("ZERON_TEST_EXPECTED_GEMINI_HOME", &gemini_home)
+        .env("GODSPEED_TEST_EXPECTED_GEMINI_HOME", &gemini_home)
         .output()
         .unwrap();
     assert!(
@@ -1617,7 +1617,7 @@ fn antigravity_sign_in_preserves_relative_home_auth_in_a_separate_process() {
 
 #[tokio::test]
 async fn antigravity_auth_path_subprocess() {
-    if std::env::var_os("ZERON_TEST_EXPECTED_GEMINI_HOME").is_none() {
+    if std::env::var_os("GODSPEED_TEST_EXPECTED_GEMINI_HOME").is_none() {
         return;
     }
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2262,8 +2262,8 @@ fn antigravity_detection_and_missing_server_never_install() {
             .env("HOME", dir.path())
             .env("PATH", &bin)
             .env("SHELL", "/nonexistent-shell")
-            .env("ZERON_ADAPTERS_DIR", &adapters)
-            .env("ZERON_TEST_DETECTION", scenario)
+            .env("GODSPEED_ADAPTERS_DIR", &adapters)
+            .env("GODSPEED_TEST_DETECTION", scenario)
             .env_remove("ANTIGRAVITY_ACP_EXECUTABLE");
         if scenario == "override" {
             child.env("ANTIGRAVITY_ACP_EXECUTABLE", &exe);
@@ -2284,7 +2284,7 @@ fn antigravity_detection_and_missing_server_never_install() {
 
 #[tokio::test]
 async fn antigravity_detection_subprocess() {
-    let Ok(scenario) = std::env::var("ZERON_TEST_DETECTION") else {
+    let Ok(scenario) = std::env::var("GODSPEED_TEST_DETECTION") else {
         return;
     };
     let harness = AcpHarness::antigravity();
@@ -2319,7 +2319,7 @@ async fn antigravity_detection_subprocess() {
         harness.run(request("hello"), ctl).await,
         Err(HarnessError::NotInstalled(_))
     ));
-    let adapters = PathBuf::from(std::env::var_os("ZERON_ADAPTERS_DIR").unwrap());
+    let adapters = PathBuf::from(std::env::var_os("GODSPEED_ADAPTERS_DIR").unwrap());
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         std::fs::read_dir(adapters)
@@ -2344,12 +2344,12 @@ async fn mcp_injection_all_acp_harnesses_new_resume_and_fallback() {
             req.model = None;
             req.resume = resume.map(str::to_owned);
             req.mcp = Some(zeron_proto::McpServer {
-                name: "zeron".into(),
-                command: "/path with spaces/zeron".into(),
+                name: "godspeed".into(),
+                command: "/path with spaces/godspeed".into(),
                 args: vec!["mcp".into()],
                 env: [
-                    ("ZERON_CHAT_ID".into(), "origin-chat".into()),
-                    ("ZERON_IPC_PORT".into(), "27699".into()),
+                    ("GODSPEED_CHAT_ID".into(), "origin-chat".into()),
+                    ("GODSPEED_IPC_PORT".into(), "27699".into()),
                 ]
                 .into(),
             });
@@ -2414,10 +2414,10 @@ async fn shared_acp_skills_require_explicit_native_command_classification() {
     ] {
         let h = h.with_executable(fixture_path());
         let cwd = tempfile::tempdir().unwrap();
-        let skill_dir = cwd.path().join(".agents/skills/zeron-fixture-review");
+        let skill_dir = cwd.path().join(".agents/skills/godspeed-fixture-review");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: zeron-fixture-review\ndescription: Review changes\n---\nReview the changes.").unwrap();
-        let command_name = "zeron-fixture-review";
+        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: godspeed-fixture-review\ndescription: Review changes\n---\nReview the changes.").unwrap();
+        let command_name = "godspeed-fixture-review";
         std::fs::write(cwd.path().join(".command-fixture"), command_name).unwrap();
         let skills = h
             .skills(&cwd.path().canonicalize().unwrap())
@@ -2426,7 +2426,7 @@ async fn shared_acp_skills_require_explicit_native_command_classification() {
             .unwrap();
         let skill = skills
             .into_iter()
-            .find(|s| s.name == "zeron-fixture-review")
+            .find(|s| s.name == "godspeed-fixture-review")
             .unwrap();
         assert!(skill.command.is_none());
         let invocation = Invocation::Skill {

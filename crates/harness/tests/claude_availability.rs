@@ -36,7 +36,7 @@ fn probe(path: &std::path::Path, override_path: Option<&std::path::Path>, expect
         command.env_remove(key);
     }
     // The login-shell PATH snapshot would otherwise carry this machine's shell.
-    command.env("ZERON_NO_LOGIN_SHELL", "1");
+    command.env("GODSPEED_NO_LOGIN_SHELL", "1");
     command
         .env("PATH", path)
         .env("CLAUDE_AVAILABILITY_EXPECTED", expected.to_string());

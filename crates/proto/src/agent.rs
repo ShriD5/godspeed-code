@@ -232,7 +232,7 @@ pub struct RunRequest {
     /// Absolute paths of image attachments already staged on the run device
     /// (composer uploads: UploadChunk/UploadCommit → durable path). The same
     /// paths also ride the prompt text as `Attached images (local files …)`
-    /// refs (zeron's `withAttachments` transport — that's what persists in the
+    /// refs (godspeed's `withAttachments` transport — that's what persists in the
     /// doc); this field additionally lets a harness inline the bytes as image
     /// content blocks. Additive + serde-defaulted for wire compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -243,12 +243,12 @@ pub struct RunRequest {
     /// host ignores it and runs in `cwd` (the repo's main checkout).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeSpec>,
-    /// Zeron's own MCP server, injected by the HOST engine as it starts the
-    /// run: the `zeron mcp` subcommand of this same binary, pointed at the
+    /// Godspeed's own MCP server, injected by the HOST engine as it starts the
+    /// run: the `godspeed mcp` subcommand of this same binary, pointed at the
     /// engine's loopback IPC and stamped with the originating chat so the
     /// agent can spawn, read, and message side chats. Additive +
     /// serde-defaulted — an old host leaves it unset and the agent simply has
-    /// no Zeron tools; title runs never carry it.
+    /// no Godspeed tools; title runs never carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpServer>,
 }
@@ -278,7 +278,7 @@ pub struct McpServer {
 pub struct WorktreeSpec {
     /// The repo whose worktree to create (the space's folder on the host).
     pub repo_path: String,
-    /// Base ref the fresh `zeron/<name>` branch is created off.
+    /// Base ref the fresh `godspeed/<name>` branch is created off.
     pub base: String,
     /// Owning project used to resolve host-local setup Actions. Optional for
     /// wire compatibility with clients that only request worktree creation.
@@ -416,7 +416,7 @@ pub const SUBAGENT_INPUT_KEEP: [&str; 5] = [
 ];
 
 /// Bounds on an agent's inline visual ([`AgentEvent::Visual`]): a Luau
-/// script Zeron runs in a sandbox and renders natively.
+/// script Godspeed runs in a sandbox and renders natively.
 pub const VISUAL_MAX_BYTES: usize = 256 * 1024;
 pub const VISUAL_MAX_TITLE_CHARS: usize = 200;
 /// Files a visual may ship with (models, textures, environment maps).
@@ -571,7 +571,7 @@ pub enum DoneStatus {
 
 /// The normalized streaming event every harness emits.
 ///
-/// Mirrors zeron's `AgentEvent` tagged enum.
+/// Mirrors godspeed's `AgentEvent` tagged enum.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
@@ -599,7 +599,7 @@ pub enum AgentEvent {
     },
     /// An agent-authored visual shown inline in the reply: a Luau script
     /// that builds native UI (`zeron-visual`). The engine emits it when the
-    /// agent calls Zeron's `show_visual` MCP tool; `path` is the stored
+    /// agent calls Godspeed's `show_visual` MCP tool; `path` is the stored
     /// script on the host device.
     Visual {
         id: String,

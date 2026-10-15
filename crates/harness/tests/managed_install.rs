@@ -1,13 +1,13 @@
 //! Real-world E2E for the managed adapter install: with no `grok`
 //! binary anywhere, `run()` must npm-install the pinned adapter into
-//! `$ZERON_ADAPTERS_DIR`, spawn it via node, and reach SessionStarted (the
+//! `$GODSPEED_ADAPTERS_DIR`, spawn it via node, and reach SessionStarted (the
 //! full initialize → session/new handshake) — the exact path that used to be
 //! `npx -y` at chat time (zeronsh/comet#95).
 //!
 //! Ignored: needs network and npm. Run with
 //! `cargo test -p zeron-harness --test managed_install -- --ignored`.
 //!
-//! Single-test binary: it mutates ZERON_ADAPTERS_DIR process-wide.
+//! Single-test binary: it mutates GODSPEED_ADAPTERS_DIR process-wide.
 
 use futures::StreamExt;
 use tokio::sync::mpsc;
@@ -21,7 +21,7 @@ async fn managed_install_reaches_session_started() {
     let adapters = tempfile::tempdir().unwrap();
     // SAFETY: single-test binary — nothing else reads env concurrently.
     unsafe {
-        std::env::set_var("ZERON_ADAPTERS_DIR", adapters.path());
+        std::env::set_var("GODSPEED_ADAPTERS_DIR", adapters.path());
         std::env::remove_var("GROK_EXECUTABLE");
     }
 
@@ -94,5 +94,5 @@ async fn managed_install_reaches_session_started() {
         .next()
         .expect("a pinned version dir")
         .path();
-    assert!(version_dir.join(".zeron-install-ok").exists());
+    assert!(version_dir.join(".godspeed-install-ok").exists());
 }

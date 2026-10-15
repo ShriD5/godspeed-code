@@ -590,8 +590,8 @@ fn image_preview_link(reference: &str) -> String {
 }
 
 /// The chips a sent prompt's canonical links read as, like the desktop's:
-/// files and folders (`zeron-file:`), skills and commands (`zeron-invoke:`),
-/// and attachments (`zeron-image:` / `zeron-attachment:`), in text order.
+/// files and folders (`godspeed-file:`), skills and commands (`godspeed-invoke:`),
+/// and attachments (`godspeed-image:` / `godspeed-attachment:`), in text order.
 /// `previews` pairs image chip numbers with the uploads they open.
 fn user_chips(body: &str, previews: &[(u32, String)]) -> Vec<UserChip> {
     let mut chips: Vec<UserChip> = zeron_proto::file_mentions::file_mention_links(body)

@@ -1005,7 +1005,7 @@ impl SessionHandle {
             && !client.is_demo()
         {
             return Err(ClientError::Unsupported(
-                "the host is too old for image attachments — update Zeron on it".into(),
+                "the host is too old for image attachments — update Godspeed on it".into(),
             ));
         }
         let refs =

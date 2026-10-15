@@ -8,7 +8,7 @@ pub const MAX_SOURCE_BYTES: usize = 16 * 1024;
 // CPU work across previews; UI owners discard results from superseded revisions.
 static RENDER_LOCK: Mutex<()> = Mutex::new(());
 
-/// Zeron's diagram style. The canvas is left transparent so the diagram sits
+/// Godspeed's diagram style. The canvas is left transparent so the diagram sits
 /// on its fence body; `canvas` is that body's opaque approximation, used where
 /// the engine needs a solid mask (edge label pills, hollow markers).
 #[derive(Clone)]
@@ -323,7 +323,7 @@ mod tests {
                 let ratio = size.width.0 as f32 / size.height.0 as f32;
                 assert!((ratio / (prepared.width / prepared.height) - 1.0).abs() < 0.02);
                 assert_eq!(svg, render(source, &palette).unwrap());
-                if let Ok(dir) = std::env::var("ZERON_MERMAID_ARTIFACTS") {
+                if let Ok(dir) = std::env::var("GODSPEED_MERMAID_ARTIFACTS") {
                     std::fs::create_dir_all(&dir).unwrap();
                     std::fs::write(format!("{dir}/{name}-{mode}.svg"), svg).unwrap();
                     let size = prepared_raster.size(0);

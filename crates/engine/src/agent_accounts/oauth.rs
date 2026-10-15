@@ -134,14 +134,14 @@ impl AgentAccounts {
             Ok(()) => (
                 "200 OK",
                 "<!doctype html><title>Signed in</title><p>Signed in to ChatGPT.</p>\
-                 <p>You can close this tab and return to Zeron.</p>"
+                 <p>You can close this tab and return to Godspeed.</p>"
                     .to_string(),
             ),
             Err(error) => (
                 "400 Bad Request",
                 format!(
                     "<!doctype html><title>Sign-in failed</title><p>{}</p>\
-                     <p>Return to Zeron to try again.</p>",
+                     <p>Return to Godspeed to try again.</p>",
                     html_escape(&error.to_string())
                 ),
             ),
@@ -251,7 +251,7 @@ impl AgentAccounts {
             .http
             .post(format!("{login}/login/device/code"))
             .header("Accept", "application/json")
-            .header("User-Agent", "zeron")
+            .header("User-Agent", "godspeed")
             .form(&[
                 ("client_id", OPENCODE_COPILOT_CLIENT_ID),
                 ("scope", "read:user"),
@@ -325,7 +325,7 @@ impl AgentAccounts {
                 .http
                 .post(format!("{login}/login/oauth/access_token"))
                 .header("Accept", "application/json")
-                .header("User-Agent", "zeron")
+                .header("User-Agent", "godspeed")
                 .form(&[
                     ("client_id", OPENCODE_COPILOT_CLIENT_ID),
                     ("device_code", device_code),

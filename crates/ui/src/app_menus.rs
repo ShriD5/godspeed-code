@@ -1,6 +1,6 @@
 //! Native menu bar + app-level window actions (macOS-first).
 //!
-//! zeron never called `cx.set_menus`, so on macOS `NSApp.mainMenu` stayed nil:
+//! godspeed never called `cx.set_menus`, so on macOS `NSApp.mainMenu` stayed nil:
 //! no app menu, no ⌘Q quit, and nothing for the auto-hidden system menu bar to
 //! reveal on hover (gpui only calls `setMainMenu_` from `set_menus` —
 //! gpui_macos/src/platform.rs `fn set_menus`). Structure ported from zed's
@@ -19,7 +19,7 @@ use crate::composer;
 use crate::shell;
 
 actions!(
-    zeron,
+    godspeed,
     [
         About,
         CheckForUpdates,
@@ -53,7 +53,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    // Window verbs route to the active window. zeron is single-window, so a
+    // Window verbs route to the active window. godspeed is single-window, so a
     // global handler suffices where zed registers these per-workspace
     // (crates/zed/src/zed.rs `register_action(Minimize/Zoom)`).
     cx.on_action(|_: &Minimize, cx| with_active_window(cx, |window| window.minimize_window()));
@@ -160,7 +160,7 @@ fn app_key_bindings(macos: bool) -> Vec<KeyBinding> {
     bindings
 }
 
-/// The zeron menu bar. macOS renders this natively; mac-only entries are gated
+/// The godspeed menu bar. macOS renders this natively; mac-only entries are gated
 /// at runtime (`cfg!`) so the whole module compiles and tests on Linux.
 pub fn app_menus() -> Vec<Menu> {
     let macos = cfg!(target_os = "macos");
@@ -169,7 +169,7 @@ pub fn app_menus() -> Vec<Menu> {
     // what we pass, but gpui still wants a name.
     let mut app_items = vec![
         // The native AppKit about panel; no equivalent elsewhere yet.
-        MenuItem::action("About Zeron", About).disabled(!macos),
+        MenuItem::action("About Godspeed", About).disabled(!macos),
         // Sparkle's placement: directly under About. Other platforms reach
         // the same check from the account menu.
         MenuItem::action("Check for Updates…", CheckForUpdates),
@@ -181,16 +181,16 @@ pub fn app_menus() -> Vec<Menu> {
         app_items.extend([
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide Zeron", Hide),
+            MenuItem::action("Hide Godspeed", Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
         ]);
     }
-    app_items.push(MenuItem::action("Quit Zeron", Quit));
+    app_items.push(MenuItem::action("Quit Godspeed", Quit));
 
     let mut menus = vec![
-        Menu::new("Zeron").items(app_items),
+        Menu::new("Godspeed").items(app_items),
         // Standard clipboard verbs tied to the composer's existing actions via
         // their native selectors (`OsAction` → cut:/copy:/paste:/selectAll:),
         // so the OS Edit menu routes through the responder chain to the focused
@@ -246,11 +246,11 @@ mod tests {
     #[test]
     fn app_menu_ends_with_quit() {
         let menus = app_menus();
-        assert_eq!(menus[0].name.as_ref(), "Zeron");
+        assert_eq!(menus[0].name.as_ref(), "Godspeed");
         let Some(MenuItem::Action { name, action, .. }) = menus[0].items.last() else {
             panic!("last app-menu item must be an action");
         };
-        assert_eq!(name.as_ref(), "Quit Zeron");
+        assert_eq!(name.as_ref(), "Quit Godspeed");
         assert_eq!(action.name(), Quit.name());
     }
 
@@ -382,7 +382,7 @@ mod tests {
 
 // Standard AppKit about panel. Icon and copyright still come from the bundle's
 // Info.plist; name and version are passed explicitly so unbundled dev builds
-// (`cargo run`) show "Zeron" and the crate version instead of the process name.
+// (`cargo run`) show "Godspeed" and the crate version instead of the process name.
 #[cfg(target_os = "macos")]
 mod about_panel {
     use objc2::MainThreadMarker;
@@ -397,7 +397,7 @@ mod about_panel {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        let name = NSString::from_str("Zeron");
+        let name = NSString::from_str("Godspeed");
         let version = NSString::from_str(env!("CARGO_PKG_VERSION"));
         // Empty build version: CFBundleVersion equals the marketing version, and
         // AppKit would otherwise render "Version 0.2.61 (0.2.61)".

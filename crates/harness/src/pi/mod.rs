@@ -60,7 +60,7 @@ impl PiHarness {
         self
     }
     /// Pi's settings/credentials directory (`PI_CODING_AGENT_DIR`) for the
-    /// child and for Zeron's own reads of it; defaults to the inherited one.
+    /// child and for Godspeed's own reads of it; defaults to the inherited one.
     pub fn with_agent_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.agent_dir = Some(path.into());
         self
@@ -525,7 +525,7 @@ impl Runner {
         self.submit(text, images, false)
     }
     async fn bootstrap(&mut self, backlog: &mut Vec<Value>) -> Result<Value, HarnessError> {
-        // Pi defaults to one-at-a-time. Zeron's pending steers belong together
+        // Pi defaults to one-at-a-time. Godspeed's pending steers belong together
         // at the next model step. Pi persists this in its global settings, so
         // select it only while no mode is configured: an explicit choice (the
         // user's, or `/steering` in a chat) is never overwritten.

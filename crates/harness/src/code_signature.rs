@@ -1,4 +1,4 @@
-//! vendor code-signature checks for archives that zeron installs without a
+//! vendor code-signature checks for archives that godspeed installs without a
 //! digest pinned in its own source (a registry release newer than the pin).
 //!
 //! every extracted file must carry a valid signature chaining to the vendor's
@@ -338,11 +338,11 @@ mod tests {
         verify_google_signed(dir.path()).await.unwrap();
     }
 
-    /// set `ZERON_TEST_GOOGLE_SIGNED_DIR` to an extracted antigravity archive.
+    /// set `GODSPEED_TEST_GOOGLE_SIGNED_DIR` to an extracted antigravity archive.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn google_signed_archive_is_accepted() {
-        let Some(dir) = std::env::var_os("ZERON_TEST_GOOGLE_SIGNED_DIR") else {
+        let Some(dir) = std::env::var_os("GODSPEED_TEST_GOOGLE_SIGNED_DIR") else {
             return;
         };
         verify_google_signed(Path::new(&dir)).await.unwrap();

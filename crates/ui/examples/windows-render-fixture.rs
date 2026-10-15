@@ -159,7 +159,7 @@ fn main() -> anyhow::Result<()> {
                     size(px(680.), px(640.)),
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Zeron Windows rendering fixture".into()),
+                    title: Some("Godspeed Windows rendering fixture".into()),
                     ..Default::default()
                 }),
                 ..Default::default()

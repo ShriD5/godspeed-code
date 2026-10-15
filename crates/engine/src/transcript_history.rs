@@ -7,7 +7,7 @@ use std::sync::Arc;
 use loro::{Container, ContainerID, EventTriggerKind, Index, LoroDoc, LoroValue, ValueOrContainer};
 use zeron_doc::{SessionMessageEntry, TranscriptBaseline};
 
-pub(crate) const REPLAY_ORIGIN: &str = "zeron:transcript-replay";
+pub(crate) const REPLAY_ORIGIN: &str = "godspeed:transcript-replay";
 
 #[derive(Default)]
 struct Part {

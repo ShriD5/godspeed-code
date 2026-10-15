@@ -18,7 +18,7 @@
 //!   turn (`cancelled` → Interrupted, `refusal` → Errored, else Completed).
 //! - `session/update` notifications normalize per [`normalize::map_update`].
 //! - Permission requests auto-accept with the agent's preferred allow option
-//!   (zeron sessions run unattended); question-shaped requests block on the
+//!   (godspeed sessions run unattended); question-shaped requests block on the
 //!   engine's input bridge.
 //! - Steering: agents advertising `_session/steering` get mid-turn injection;
 //!   others queue steers and deliver them as the next `session/prompt` at the
@@ -181,7 +181,7 @@ fn default_effort_values(
 }
 
 /// Devin's `thought_level` also offers `none` ("No Thinking"), which the
-/// catalog maps to Zeron's lowest level.
+/// catalog maps to Godspeed's lowest level.
 fn devin_effort_values(
     reasoning: Option<ReasoningLevel>,
     model: Option<&str>,
@@ -216,7 +216,7 @@ fn grok_spec() -> AcpAgentSpec {
         // the `agent` subcommand and starts a fresh agent even when
         // `[cli] use_leader` is set — leader mode ATTACHES `agent stdio` to a
         // shared process via ~/.grok/leader.sock, so a wedged/stale leader
-        // (the user's TUI) reads as total silent non-response in zeron.
+        // (the user's TUI) reads as total silent non-response in godspeed.
         args: &["--no-auto-update", "agent", "--no-leader", "stdio"],
         npm_package: Some("@xai-official/grok@1.0.4"),
         archive: None,
@@ -259,7 +259,7 @@ fn grok_spec() -> AcpAgentSpec {
         prompt_complete_extension: true,
         prompt_stall: Some(Duration::from_secs(30)),
         stall_hint: "The agent process is likely wedged — a stale shared leader \
-             process or a hung startup check; zeron launches it with --no-leader \
+             process or a hung startup check; godspeed launches it with --no-leader \
              and --no-auto-update to avoid both.",
         effort_in_model_id: false,
         auth_method: None,
@@ -518,7 +518,7 @@ const ANTIGRAVITY_ARCHIVE_NAME: &str = "antigravity-acp";
 pub const ANTIGRAVITY_REGISTRY_URL: &str = "https://raw.githubusercontent.com/agentclientprotocol/registry/main/antigravity-acp/agent.json";
 
 /// install marker for a release proven by google's code signature, which has
-/// no digest in zeron's source to record instead.
+/// no digest in godspeed's source to record instead.
 const ANTIGRAVITY_SIGNED_MARKER: &str = "google-code-signature";
 
 fn antigravity_entry() -> &'static str {
@@ -582,7 +582,7 @@ fn newest_antigravity_install() -> Option<(semver::Version, PathBuf)> {
         .max_by(|(left, _), (right, _)| left.cmp(right))
 }
 
-/// whether `executable` is the server zeron installed and may replace.
+/// whether `executable` is the server godspeed installed and may replace.
 pub fn is_managed_antigravity_server(executable: &Path) -> bool {
     newest_antigravity_install().is_some_and(|(_, entry)| entry == executable)
 }
@@ -596,7 +596,7 @@ pub struct AntigravityRelease {
 }
 
 impl AntigravityRelease {
-    /// whether zeron can prove this release's origin before installing it.
+    /// whether godspeed can prove this release's origin before installing it.
     pub fn installable(&self) -> bool {
         antigravity_archive().is_some_and(|pin| pin.version == self.version)
             || (crate::code_signature::SUPPORTED && self.archive_url.is_some())
@@ -646,7 +646,7 @@ pub async fn install_antigravity_release(
     }
     if !crate::code_signature::SUPPORTED {
         return Err(HarnessError::Install(format!(
-            "Antigravity {} is not pinned by this build of Zeron; update Zeron to install it",
+            "Antigravity {} is not pinned by this build of Godspeed; update Godspeed to install it",
             release.version
         )));
     }
@@ -721,7 +721,7 @@ pub fn antigravity_build_version(output: &str) -> Option<String> {
 }
 
 /// remove trusted installs older than the one launches resolve to. a version
-/// still running (in any process, including another zeron) is kept, and on
+/// still running (in any process, including another godspeed) is kept, and on
 /// failure to inspect processes nothing is removed.
 pub fn prune_superseded_antigravity_installs() {
     let Some((newest, _)) = newest_antigravity_install() else {
@@ -828,7 +828,7 @@ fn running_command_lines() -> Option<Vec<String>> {
     None
 }
 
-/// how a process may name files under `dir`: as zeron spawned it, and in its
+/// how a process may name files under `dir`: as godspeed spawned it, and in its
 /// canonical form, which windows reports for images even when the adapters
 /// directory was reached through an 8.3 short name such as `RUNNER~1`.
 fn install_path_prefixes(dir: &Path) -> Vec<String> {
@@ -1889,7 +1889,7 @@ impl AcpHarness {
     }
 }
 
-/// Map an advertised `thought_level` value id onto zeron's ladder.
+/// Map an advertised `thought_level` value id onto godspeed's ladder.
 fn reasoning_from_value(value: &str) -> Option<ReasoningLevel> {
     match norm_id(value).as_str() {
         "minimal" => Some(ReasoningLevel::Minimal),
@@ -2064,12 +2064,12 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
 }
 
 /// A session config option surfaced as a Traits-dropdown section. Mode is
-/// zeron's own (forced to the no-prompts choice), model rides the model rows,
+/// godspeed's own (forced to the no-prompts choice), model rides the model rows,
 /// and thought_level is the Reasoning ladder — everything else the agent
 /// advertises (fast mode, collaboration mode, agent persona, …) passes
 /// through. `currentValue` doubles as the default: it is the state the
 /// session opens in. Booleans render as an off/on select, mirroring the
-/// catalogs (zeron never declares the boolean config capability, so adapters
+/// catalogs (godspeed never declares the boolean config capability, so adapters
 /// send selects, but handle the shape defensively).
 fn trait_from_config_option(option: &Value) -> Option<ModelOption> {
     if matches!(
@@ -2507,18 +2507,18 @@ fn initialize_params(harness: HarnessId) -> Value {
         // Devin otherwise exposes only the parent's run_subagent call. This
         // unlocks lifecycle tags plus every nested message, thought, and tool
         // update, all of which DevinTracker can route. Do not advertise the
-        // separate subagentControl extension: Zeron has no matching UI yet.
+        // separate subagentControl extension: Godspeed has no matching UI yet.
         capabilities["_meta"] = json!({ "cognition.ai/subagentSupport": true });
     }
     json!({
         "protocolVersion": 1,
         "clientInfo": {
-            "name": "zeron",
-            "title": "Zeron",
+            "name": "godspeed",
+            "title": "Godspeed",
             "version": env!("CARGO_PKG_VERSION"),
         },
         // Declined: agents fall back to their own fs/terminal access, which
-        // is what zeron wants — the working tree is the source of truth for
+        // is what godspeed wants — the working tree is the source of truth for
         // the diff pane, and commands belong to the agent's own sandbox.
         "clientCapabilities": capabilities,
     })
@@ -2999,7 +2999,7 @@ fn prompt_turn(
 
 /// Answer a server→client request. Permission requests are auto-accepted with
 /// the agent's preferred allow option — parity with the claude harness's
-/// bypassPermissions and the codex harness's approvalPolicy "never" (zeron
+/// bypassPermissions and the codex harness's approvalPolicy "never" (godspeed
 /// sessions run unattended). Everything else (fs, terminal, elicitation) was
 /// declined at initialize, so a stray request gets method-not-found rather
 /// than wedging the agent.
@@ -3184,7 +3184,7 @@ fn noop_browser() -> Result<String, HarnessError> {
 
 /// python's `webbrowser` splits `BROWSER` on `:` and then shell-splits each
 /// entry. hosts without `true` (nixos, minimal containers) fall back to
-/// zeron's own `--noop-browser` mode.
+/// godspeed's own `--noop-browser` mode.
 #[cfg(any(not(windows), test))]
 fn unix_noop_browser(
     candidates: &[&Path],
@@ -3944,10 +3944,10 @@ async fn run_session(session: Session) {
     // settled ids are remembered so a STALE `prompt_complete` (a late replay
     // of an already-settled prompt) can never settle a newer turn.
     let mut prompt_seq: u64 = 1;
-    let mut current_prompt_id = prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
+    let mut current_prompt_id = prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
     let mut completed_prompts: VecDeque<String> = VecDeque::new();
-    // `ZERON_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
-    let prompt_stall: Option<Duration> = match std::env::var("ZERON_ACP_PROMPT_STALL_MS")
+    // `GODSPEED_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
+    let prompt_stall: Option<Duration> = match std::env::var("GODSPEED_ACP_PROMPT_STALL_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
     {
@@ -4017,7 +4017,7 @@ async fn run_session(session: Session) {
     // Silence is not a turn boundary: completed tools, text, and usage may
     // all precede a slow model request. Keep the prompt future alive until
     // its response (or an authoritative completion extension) arrives.
-    // ZERON_ACP_QUIET_SETTLE_MS is intentionally no longer honored (#296).
+    // GODSPEED_ACP_QUIET_SETTLE_MS is intentionally no longer honored (#296).
     let mut last_update_at = tokio::time::Instant::now();
     let mut open_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     // PREVENTION, ahead of all the recovery above: never send a
@@ -4276,7 +4276,7 @@ async fn run_session(session: Session) {
                     last_update_at = tokio::time::Instant::now();
                     prompt_seq += 1;
                     current_prompt_id =
-                        prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
+                        prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = texts.join("\n\n");
@@ -4587,7 +4587,7 @@ async fn run_session(session: Session) {
                     last_update_at = tokio::time::Instant::now();
                     prompt_seq += 1;
                     current_prompt_id =
-                        prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
+                        prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
@@ -4637,7 +4637,7 @@ async fn run_session(session: Session) {
                     last_update_at = tokio::time::Instant::now();
                     prompt_seq += 1;
                     current_prompt_id =
-                        prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
+                        prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
@@ -4714,7 +4714,7 @@ async fn run_session(session: Session) {
                     last_update_at = tokio::time::Instant::now();
                     prompt_seq += 1;
                     current_prompt_id =
-                        prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
+                        prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
@@ -4842,7 +4842,7 @@ async fn run_session(session: Session) {
                         last_update_at = tokio::time::Instant::now();
                         prompt_seq += 1;
                     current_prompt_id =
-                        prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
+                        prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
                     current_prompt_text = text.clone();
@@ -5066,10 +5066,10 @@ mod tests {
             Path::new("/missing/bin/true"),
         ];
         assert_eq!(
-            unix_noop_browser(&missing, Some(Path::new("/opt/My Apps/zeron"))).unwrap(),
-            "'/opt/My Apps/zeron' --noop-browser %s"
+            unix_noop_browser(&missing, Some(Path::new("/opt/My Apps/godspeed"))).unwrap(),
+            "'/opt/My Apps/godspeed' --noop-browser %s"
         );
-        for path in ["/opt/a:b/zeron", "/opt/it's/zeron", "/opt/100%s/zeron"] {
+        for path in ["/opt/a:b/godspeed", "/opt/it's/godspeed", "/opt/100%s/godspeed"] {
             assert!(
                 unix_noop_browser(&missing, Some(Path::new(path))).is_err(),
                 "{path}"
@@ -5119,13 +5119,13 @@ mod tests {
 
     #[test]
     fn windows_browser_suppression_quotes_the_executable_path() {
-        let command = windows_noop_browser(Path::new(r"C:\Program Files\Zeron\zeron.exe"))
+        let command = windows_noop_browser(Path::new(r"C:\Program Files\Godspeed\godspeed.exe"))
             .expect("browser command");
         assert_eq!(
             command,
-            r#""C:\\Program Files\\Zeron\\zeron.exe" --noop-browser %s"#
+            r#""C:\\Program Files\\Godspeed\\godspeed.exe" --noop-browser %s"#
         );
-        for path in [r"C:\semi;colon\zeron.exe", r"C:\percent%s\zeron.exe"] {
+        for path in [r"C:\semi;colon\godspeed.exe", r"C:\percent%s\godspeed.exe"] {
             assert!(windows_noop_browser(Path::new(path)).is_err());
         }
     }
@@ -5383,7 +5383,7 @@ mod tests {
     #[test]
     fn antigravity_unknown_named_home_fails_before_auth_selection() {
         let cwd = tempfile::tempdir().unwrap();
-        let path = PathBuf::from(format!("~zeron-missing-{}", uuid::Uuid::new_v4()));
+        let path = PathBuf::from(format!("~godspeed-missing-{}", uuid::Uuid::new_v4()));
         assert!(
             antigravity_paths::resolve_home(Some(&path), Some(cwd.path()), cwd.path()).is_err()
         );
@@ -5402,11 +5402,11 @@ mod tests {
     }
 
     /// runs in a child process, since installs resolve through the
-    /// process-wide `ZERON_ADAPTERS_DIR`.
+    /// process-wide `GODSPEED_ADAPTERS_DIR`.
     #[cfg(any(unix, windows))]
     #[test]
     fn antigravity_launches_the_newest_trusted_install_and_prunes_the_rest() {
-        let Ok(adapters) = std::env::var("ZERON_TEST_AGY_ADAPTERS") else {
+        let Ok(adapters) = std::env::var("GODSPEED_TEST_AGY_ADAPTERS") else {
             let root = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -5414,10 +5414,10 @@ mod tests {
                     "acp::tests::antigravity_launches_the_newest_trusted_install_and_prunes_the_rest",
                     "--nocapture",
                 ])
-                .env("ZERON_ADAPTERS_DIR", root.path())
-                .env("ZERON_TEST_AGY_ADAPTERS", root.path())
+                .env("GODSPEED_ADAPTERS_DIR", root.path())
+                .env("GODSPEED_TEST_AGY_ADAPTERS", root.path())
                 .env("PATH", root.path().join("bin"))
-                .env("ZERON_NO_LOGIN_SHELL", "1")
+                .env("GODSPEED_NO_LOGIN_SHELL", "1")
                 .env_remove("ANTIGRAVITY_ACP_EXECUTABLE")
                 .output()
                 .unwrap();
@@ -5521,10 +5521,10 @@ mod tests {
     }
 
     /// downloads google's real archive (~110 MB). run with
-    /// `ZERON_TEST_AGY_LIVE_SIGNED=1 ZERON_ADAPTERS_DIR=<empty dir>`.
+    /// `GODSPEED_TEST_AGY_LIVE_SIGNED=1 GODSPEED_ADAPTERS_DIR=<empty dir>`.
     #[tokio::test]
     async fn antigravity_live_release_is_refused_when_it_misreports_its_version() {
-        if std::env::var_os("ZERON_TEST_AGY_LIVE_SIGNED").is_none() {
+        if std::env::var_os("GODSPEED_TEST_AGY_LIVE_SIGNED").is_none() {
             return;
         }
         let pin = antigravity_archive().unwrap();
@@ -6314,10 +6314,10 @@ mod mcp_injection_tests {
     fn acp_mcp_servers_spell_env_as_name_value_pairs_and_default_empty() {
         assert!(acp_mcp_servers(None).is_empty());
         let mcp = zeron_proto::McpServer {
-            name: "zeron".into(),
-            command: "/opt/zeron/zeron".into(),
+            name: "godspeed".into(),
+            command: "/opt/godspeed/godspeed".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_IPC_PORT".to_owned(), "27654".to_owned())]
+            env: [("GODSPEED_IPC_PORT".to_owned(), "27654".to_owned())]
                 .into_iter()
                 .collect(),
         };
@@ -6325,10 +6325,10 @@ mod mcp_injection_tests {
         assert_eq!(
             servers,
             vec![json!({
-                "name": "zeron",
-                "command": "/opt/zeron/zeron",
+                "name": "godspeed",
+                "command": "/opt/godspeed/godspeed",
                 "args": ["mcp"],
-                "env": [{ "name": "ZERON_IPC_PORT", "value": "27654" }],
+                "env": [{ "name": "GODSPEED_IPC_PORT", "value": "27654" }],
             })]
         );
     }

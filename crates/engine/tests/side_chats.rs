@@ -184,17 +184,17 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
     .unwrap();
     let request = requests.lock().unwrap()[0].clone();
     assert_eq!(request.resume, None);
-    // The host stamps its MCP server onto the run: this binary's `zeron
+    // The host stamps its MCP server onto the run: this binary's `godspeed
     // mcp`, dialing the served port, identified as the side chat.
     let mcp = request
         .mcp
         .clone()
-        .expect("run carries the zeron MCP server");
-    assert_eq!(mcp.name, "zeron");
+        .expect("run carries the godspeed MCP server");
+    assert_eq!(mcp.name, "godspeed");
     assert_eq!(mcp.args, ["mcp"]);
-    assert_eq!(mcp.env["ZERON_IPC_PORT"], "27699");
-    assert_eq!(mcp.env["ZERON_CHAT_ID"], "side");
-    assert_eq!(mcp.env["ZERON_DEVICE_ID"], core.device_id);
+    assert_eq!(mcp.env["GODSPEED_IPC_PORT"], "27699");
+    assert_eq!(mcp.env["GODSPEED_CHAT_ID"], "side");
+    assert_eq!(mcp.env["GODSPEED_DEVICE_ID"], core.device_id);
     assert!(request.prompt.contains("PINEAPPLE"));
     assert!(!request.prompt.contains("unfinished turn"));
     assert_eq!(source.doc().read_entries().unwrap().len(), 4);

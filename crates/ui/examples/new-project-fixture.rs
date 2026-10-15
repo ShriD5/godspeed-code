@@ -12,18 +12,18 @@ fn main() -> anyhow::Result<()> {
         gpui_tokio::init(cx); gpui_base::init(cx);
         let mut settings = settings::UiSettings::default();
         settings.sidebar_show_branch = true;
-        if let Ok(path) = std::env::var("ZERON_FIXTURE_BACKGROUND") {
+        if let Ok(path) = std::env::var("GODSPEED_FIXTURE_BACKGROUND") {
             settings.new_thread_composer_background = Some(settings::NewThreadComposerBackground {
                 path,
                 name: "Uploaded background".into(),
                 adjustment: settings::NewThreadBackgroundAdjustment::default(),
             });
         }
-        if let Some(folder) = std::env::var_os("ZERON_FIXTURE_WALLPAPER_FOLDER") {
+        if let Some(folder) = std::env::var_os("GODSPEED_FIXTURE_WALLPAPER_FOLDER") {
             settings.wallpaper_folder = Some(folder.into());
         }
-        settings.wallpaper_theme_colors = std::env::var_os("ZERON_FIXTURE_WALLPAPER_COLORS").is_some();
-        settings.surface = if std::env::var_os("ZERON_FIXTURE_OPAQUE").is_some() {
+        settings.wallpaper_theme_colors = std::env::var_os("GODSPEED_FIXTURE_WALLPAPER_COLORS").is_some();
+        settings.surface = if std::env::var_os("GODSPEED_FIXTURE_OPAQUE").is_some() {
             zeron_theme::SurfacePreference::Opaque
         } else {
             zeron_theme::SurfacePreference::Frosted
@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
         let fonts = typography::register_fonts(cx);
         typography::init(settings.ui_font_family.clone(), settings.ui_font_size, settings.terminal_font_family.clone(), settings.terminal_font_size, settings.code_font_family.clone(), settings.code_font_size, fonts, cx);
         theme_library::init(data.clone(), cx);
-        appearance::init(if std::env::var_os("ZERON_PALETTE_LIGHT").is_some() { appearance::AppearanceMode::Light } else { appearance::AppearanceMode::Dark }, settings.theme_selection, settings.accent, settings.surface, cx);
+        appearance::init(if std::env::var_os("GODSPEED_PALETTE_LIGHT").is_some() { appearance::AppearanceMode::Light } else { appearance::AppearanceMode::Dark }, settings.theme_selection, settings.accent, settings.surface, cx);
         history::init(settings.git_history_columns, settings.git_history_column_widths,
             settings.git_history_column_order, settings.git_history_author_display, cx);
         composer::init(cx, settings.composer_send_behavior); terminal::panel::init(cx); app_menus::init(cx);
@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
                 {"id":"remote","name":"Build server","platform":"linux","lastSeenAt":null},
                 {"id":"laptop","name":"Travel laptop","platform":"macos","lastSeenAt":null}
             ])).unwrap();
-            s.selected_chat = if std::env::var_os("ZERON_FIXTURE_BACKGROUND").is_some() { None } else { Some("browser-fixture".into()) }; s.selected_space = Some("project".into());
+            s.selected_chat = if std::env::var_os("GODSPEED_FIXTURE_BACKGROUND").is_some() { None } else { Some("browser-fixture".into()) }; s.selected_space = Some("project".into());
             s.auto_selected = true; s.chats_synced = true; s.spaces_synced = true;
             s.spaces = vec![serde_json::from_value(serde_json::json!({"id":"project","deviceId":"local","path":"/tmp/fieldnotes","createdAt":"2026-09-08T00:00:00Z"})).unwrap()];
             s.chats = vec![serde_json::from_value(serde_json::json!({"id":"browser-fixture","deviceId":"local","spaceId":"project","title":"Build the Fieldnotes workspace","archived":false,"createdAt":"2026-09-08T00:00:00Z","config":{"harness":"claude-code","model":"claude-sonnet-4-6","reasoning":null,"sandbox":"workspace-write"}})).unwrap()];

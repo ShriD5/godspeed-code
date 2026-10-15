@@ -256,7 +256,7 @@ impl ChangeRequestResolver {
     }
 
     /// `owner/name` for a remote on github.com. An SSH remote may name a
-    /// host alias from `~/.ssh/config` (`git@github-work:acme/zeron.git`);
+    /// host alias from `~/.ssh/config` (`git@github-work:acme/godspeed.git`);
     /// `ssh -G` resolves it locally without connecting.
     async fn github_slug(&self, remote_url: &str) -> Option<String> {
         let remote = parse_git_remote(remote_url)?;
@@ -2241,7 +2241,7 @@ mod tests {
         run_git(&checkout, &["init", "--quiet"]);
         run_git(
             &checkout,
-            &["remote", "add", "origin", "git@github.com:acme/zeron.git"],
+            &["remote", "add", "origin", "git@github.com:acme/godspeed.git"],
         );
         let core = crate::EngineCore::assemble(
             &dir.path().join("engine"),
@@ -2259,15 +2259,15 @@ mod tests {
                 true,
             )
             .unwrap();
-        let url = "https://github.com/acme/zeron/pull/123";
+        let url = "https://github.com/acme/godspeed/pull/123";
         let patch = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n";
         let body = "Literal `$(touch /tmp/never)`; --flag\n\"quoted\" @octocat";
         let page = |number, cursor: Option<&str>| {
             json!({
                 "data": {
-                    "repository": {"nameWithOwner": "acme/zeron"},
+                    "repository": {"nameWithOwner": "acme/godspeed"},
                     "search": {
-                        "nodes": [search_pull_request("acme/zeron", number, "Add dashboard", "OPEN", "MERGEABLE",
+                        "nodes": [search_pull_request("acme/godspeed", number, "Add dashboard", "OPEN", "MERGEABLE",
                             "2026-08-10T09:30:00Z", "2026-08-19T12:00:00Z", false, Some("CHANGES_REQUESTED"))],
                         "issueCount": 2,
                         "pageInfo": {"hasNextPage": cursor.is_some(), "endCursor": cursor}
@@ -2280,12 +2280,12 @@ mod tests {
             "viewerLatestReviewRequest": null,
             "reviewRequests": {"nodes": [], "pageInfo": {"hasNextPage": false}},
             "statusCheckRollup": {"commit": {"oid": head}, "state": "FAILURE", "contexts": {"totalCount": 1,
-                "nodes": [{"name": "linux", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://github.com/acme/zeron/actions/runs/1"}]}}
+                "nodes": [{"name": "linux", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://github.com/acme/godspeed/actions/runs/1"}]}}
         });
         let metadata_response = json!({"data": {"repository": {"pullRequest": metadata}}});
         let detail = json!({"url": url, "number": 123, "title": "Add dashboard", "author": null,
             "headRefOid": head, "comments": [], "reviewDecision": null,
-            "statusCheckRollup": [{"name": "linux", "conclusion": "SUCCESS", "detailsUrl": "https://github.com/acme/zeron/actions/runs/1"}]});
+            "statusCheckRollup": [{"name": "linux", "conclusion": "SUCCESS", "detailsUrl": "https://github.com/acme/godspeed/actions/runs/1"}]});
         let mut moved_head = metadata_response.clone();
         moved_head["data"]["repository"]["pullRequest"]["headRefOid"] = "b".repeat(40).into();
         moved_head["data"]["repository"]["pullRequest"]["statusCheckRollup"]["commit"]["oid"] =
@@ -2299,7 +2299,7 @@ mod tests {
             })
         };
         let inline = json!({"id":"thread-1","isResolved":false,"isOutdated":false,"path":"a.rs","line":12,
-            "comments":connection(json!([{"id":"comment-1","body":"Inline-only change request","author":{"login":"reviewer"},"url":"https://github.com/acme/zeron/pull/123#discussion_r1"}]),Some("comments-next"))});
+            "comments":connection(json!([{"id":"comment-1","body":"Inline-only change request","author":{"login":"reviewer"},"url":"https://github.com/acme/godspeed/pull/123#discussion_r1"}]),Some("comments-next"))});
         let threads_first = json!({"data":{"repository":{"pullRequest":{"reviewThreads":connection(json!([inline]),Some("threads-next"))}}}});
         let replies = json!({"data":{"node":{"comments":connection(json!([{"id":"comment-2","body":"A reply","author":null,"replyTo":{"id":"comment-1"}}]),None)}}});
         let threads_last = json!({"data":{"repository":{"pullRequest":{"reviewThreads":connection(json!([{
@@ -2346,7 +2346,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(repository.as_deref(), Some("acme/zeron"));
+        assert_eq!(repository.as_deref(), Some("acme/godspeed"));
         // A directory that is no chat or project checkout is refused.
         let outside = dir.path().join("elsewhere");
         std::fs::create_dir(&outside).unwrap();
@@ -2378,7 +2378,7 @@ mod tests {
         // only resolves the remotes it hasn't seen.
         for (wanted, expected) in [
             ("ACME/UPSTREAM", Some("acme/upstream")),
-            ("acme/zeron", Some("acme/zeron")),
+            ("acme/godspeed", Some("acme/godspeed")),
             ("acme/renamed", Some("acme/renamed")),
             ("missing/repository", None),
             ("../invalid", None),
@@ -2421,11 +2421,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(detached.as_deref(), Some("acme/zeron"));
+        assert_eq!(detached.as_deref(), Some("acme/godspeed"));
         let first: ChangeRequestPage = client.call_as(methods::LIST_CHANGE_REQUEST_PAGE,
             json!({"repository": repository, "filter": "reviewing", "targetDeviceId": core.device_id})).await.unwrap();
         assert_eq!(first.items[0].number, 123);
-        assert_eq!(first.items[0].repository, "acme/zeron");
+        assert_eq!(first.items[0].repository, "acme/godspeed");
         assert_eq!(first.total_count, Some(2));
         let second: ChangeRequestPage = client.call_as(methods::LIST_CHANGE_REQUEST_PAGE,
             json!({"repository": repository, "filter": "reviewing", "after": first.next_cursor})).await.unwrap();
@@ -2512,15 +2512,15 @@ mod tests {
             (methods::LIST_CHANGE_REQUEST_PAGE, json!({})),
             (
                 methods::LIST_CHANGE_REQUEST_PAGE,
-                json!({"repository": "acme/zeron", "filter": "unknown"}),
+                json!({"repository": "acme/godspeed", "filter": "unknown"}),
             ),
             (
                 methods::LIST_CHANGE_REQUEST_PAGE,
-                json!({"repository": "acme/zeron repo:other/repo"}),
+                json!({"repository": "acme/godspeed repo:other/repo"}),
             ),
             (
                 methods::LIST_CHANGE_REQUEST_PAGE,
-                json!({"repository": "acme/zeron", "after": "a b"}),
+                json!({"repository": "acme/godspeed", "after": "a b"}),
             ),
             (
                 methods::POST_CHANGE_REQUEST_COMMENT,
@@ -2541,7 +2541,7 @@ mod tests {
             "invalid input never reaches gh and writes are not retried"
         );
         // The first two resolve the checkout's remotes to canonical names.
-        for (request, name) in requests[..2].iter().zip(["name=zeron", "name=upstream"]) {
+        for (request, name) in requests[..2].iter().zip(["name=godspeed", "name=upstream"]) {
             assert!(request.args.contains(&"owner=acme".into()));
             assert!(request.args.contains(&name.into()), "{:?}", request.args);
         }
@@ -2560,7 +2560,7 @@ mod tests {
             assert_eq!(request.output_limit, GITHUB_OUTPUT_LIMIT);
         }
         assert!(requests[0].args.contains(
-            &"search=is:pr is:open review-requested:@me repo:acme/zeron sort:updated-desc".into()
+            &"search=is:pr is:open review-requested:@me repo:acme/godspeed sort:updated-desc".into()
         ));
         assert!(requests[1].args.contains(&"after=Y3Vyc29yOjE=".into()));
         assert_eq!(&requests[2].args[..3], ["pr", "view", url]);
@@ -2579,7 +2579,7 @@ mod tests {
                 "api",
                 "--method",
                 "POST",
-                "repos/acme/zeron/issues/123/comments",
+                "repos/acme/godspeed/issues/123/comments",
                 "--input",
                 "-"
             ]
@@ -2649,9 +2649,9 @@ mod tests {
 
     #[test]
     fn ssh_host_aliases_resolve_only_from_safe_ssh_remotes() {
-        assert!(is_ssh_remote("git@github-work:acme/zeron.git"));
-        assert!(is_ssh_remote("ssh://git@github-work/acme/zeron.git"));
-        assert!(!is_ssh_remote("https://github-work/acme/zeron.git"));
+        assert!(is_ssh_remote("git@github-work:acme/godspeed.git"));
+        assert!(is_ssh_remote("ssh://git@github-work/acme/godspeed.git"));
+        assert!(!is_ssh_remote("https://github-work/acme/godspeed.git"));
         assert!(valid_ssh_alias("github-work"));
         assert!(valid_ssh_alias("gh.work_2"));
         for alias in ["", "-oProxyCommand=x", "a b", "user@host", "host:22", "a;b"] {
@@ -2673,10 +2673,10 @@ mod tests {
         };
         assert_eq!(
             resolver
-                .github_slug("git@github-work:acme/zeron.git")
+                .github_slug("git@github-work:acme/godspeed.git")
                 .await
                 .as_deref(),
-            Some("acme/zeron")
+            Some("acme/godspeed")
         );
         let request = &runner.requests()[0];
         assert_eq!(request.program, "ssh");
@@ -2684,12 +2684,12 @@ mod tests {
         // Literal github.com and HTTPS hosts never consult ssh.
         assert_eq!(
             resolver
-                .github_slug("https://github.com/acme/zeron")
+                .github_slug("https://github.com/acme/godspeed")
                 .await
                 .as_deref(),
-            Some("acme/zeron")
+            Some("acme/godspeed")
         );
-        assert_eq!(resolver.github_slug("https://gitlab.com/acme/zeron").await, None);
+        assert_eq!(resolver.github_slug("https://gitlab.com/acme/godspeed").await, None);
         assert_eq!(runner.requests().len(), 1);
     }
 
@@ -2868,7 +2868,7 @@ mod tests {
                 branch,
                 Some(&format!("origin/{branch}")),
                 Some("origin"),
-                Some(&format!("https://github.com/{owner}/zeron.git")),
+                Some(&format!("https://github.com/{owner}/godspeed.git")),
             ),
             default_branch: default_branch.map(str::to_owned),
         }
@@ -2884,7 +2884,7 @@ mod tests {
         serde_json::json!({
             "number": number,
             "title": format!("Pull request {number}"),
-            "url": format!("https://github.com/acme/zeron/pull/{number}"),
+            "url": format!("https://github.com/acme/godspeed/pull/{number}"),
             "state": state,
             "baseRefName": "main",
             "headRefName": branch,
@@ -2936,7 +2936,7 @@ mod tests {
         use zeron_proto::change_request_assessment::{CiState, Facts, MissingInformation};
         let head = "a".repeat(40);
         let nodes = (1..=50).map(|number| {
-            let mut node = search_pull_request("acme/zeron", number, "A PR", "OPEN", "MERGEABLE",
+            let mut node = search_pull_request("acme/godspeed", number, "A PR", "OPEN", "MERGEABLE",
                 "2026-08-10T09:30:00Z", "2026-08-19T12:00:00Z", false, Some("REVIEW_REQUIRED"));
             node["headRefOid"] = head.clone().into();
             node["viewerDidAuthor"] = false.into();
@@ -2963,7 +2963,7 @@ mod tests {
         let github = GitHubCli::with_runner(runner.clone());
         let page = github
             .list_page(
-                "acme/zeron",
+                "acme/godspeed",
                 zeron_proto::ChangeRequestFilter::All,
                 None,
                 false,
@@ -3038,7 +3038,7 @@ mod tests {
     ) {
         let runner = FakeProcessRunner::with_responses([response]);
         let github = GitHubCli::with_runner(runner.clone());
-        let result = authored(&github, "acme/zeron", false).await;
+        let result = authored(&github, "acme/godspeed", false).await;
         (result, runner)
     }
 
@@ -3117,7 +3117,7 @@ mod tests {
             runner.requests()[0]
                 .args
                 .iter()
-                .any(|arg| arg.contains("repo:acme/zeron"))
+                .any(|arg| arg.contains("repo:acme/godspeed"))
         );
     }
 
@@ -3125,7 +3125,7 @@ mod tests {
     async fn pr_pages_pass_the_cursor_and_report_the_next_one_and_total() {
         let item = |number| {
             search_pull_request(
-                "acme/zeron",
+                "acme/godspeed",
                 number,
                 "PR",
                 "OPEN",
@@ -3151,13 +3151,13 @@ mod tests {
         let github = GitHubCli::with_runner(runner.clone());
         let filter = zeron_proto::ChangeRequestFilter::All;
         let first = github
-            .list_page("acme/zeron", filter, None, false, false)
+            .list_page("acme/godspeed", filter, None, false, false)
             .await
             .unwrap();
         assert_eq!(first.next_cursor.as_deref(), Some("Y3Vyc29yOjUw"));
         assert_eq!(first.total_count, Some(120));
         let second = github
-            .list_page("acme/zeron", filter, first.next_cursor.as_deref(), false, false)
+            .list_page("acme/godspeed", filter, first.next_cursor.as_deref(), false, false)
             .await
             .unwrap();
         assert_eq!(second.items[0].number, 2);
@@ -3172,7 +3172,7 @@ mod tests {
         );
         assert_eq!(
             github
-                .list_page("acme/zeron", filter, Some("x repo:other/x"), false, false)
+                .list_page("acme/godspeed", filter, Some("x repo:other/x"), false, false)
                 .await,
             Err(ChangeRequestError::Decode),
             "cursors cannot smuggle search qualifiers"
@@ -3184,7 +3184,7 @@ mod tests {
     async fn pr_first_page_is_stored_on_disk_and_served_when_cached() {
         let page = |title: &str| {
             command_success(search_response(vec![search_pull_request(
-                "acme/zeron",
+                "acme/godspeed",
                 1,
                 title,
                 "OPEN",
@@ -3205,7 +3205,7 @@ mod tests {
         let filter = zeron_proto::ChangeRequestFilter::All;
         // Nothing stored yet: a cached read goes to GitHub and stores it.
         let first = github
-            .list_page("acme/zeron", filter, None, false, true)
+            .list_page("acme/godspeed", filter, None, false, true)
             .await
             .unwrap();
         assert_eq!(first.items[0].title, "first");
@@ -3214,7 +3214,7 @@ mod tests {
         let relaunched = GitHubCli::with_runner(runner.clone()).with_store(dir.path());
         *relaunched.account.lock().await = Some((Instant::now(), Some("me".into())));
         let stored = relaunched
-            .list_page("acme/zeron", filter, None, false, true)
+            .list_page("acme/godspeed", filter, None, false, true)
             .await
             .unwrap();
         assert_eq!(stored.items[0].title, "first");
@@ -3225,12 +3225,12 @@ mod tests {
         );
         // Refresh always reaches GitHub and replaces the stored page.
         let refreshed = relaunched
-            .list_page("acme/zeron", filter, None, true, false)
+            .list_page("acme/godspeed", filter, None, true, false)
             .await
             .unwrap();
         assert_eq!(refreshed.items[0].title, "refreshed");
         let stored = relaunched
-            .list_page("acme/zeron", filter, None, false, true)
+            .list_page("acme/godspeed", filter, None, false, true)
             .await
             .unwrap();
         assert_eq!(stored.items[0].title, "refreshed");
@@ -3246,7 +3246,7 @@ mod tests {
                 .store
                 .as_ref()
                 .unwrap()
-                .load("other", "acme/zeron", filter)
+                .load("other", "acme/godspeed", filter)
                 .await
                 .is_none()
         );
@@ -3290,7 +3290,7 @@ mod tests {
     #[tokio::test]
     async fn pr_empty_canonical_search_does_not_retry() {
         let response = serde_json::json!({"data": {
-            "repository": {"nameWithOwner": "acme/zeron"},
+            "repository": {"nameWithOwner": "acme/godspeed"},
             "search": {"nodes": []}
         }});
         let (items, runner) =
@@ -3308,12 +3308,12 @@ mod tests {
         let github = GitHubCli::with_runner(runner.clone());
         for (index, filter) in [All, Authored, Reviewing].into_iter().enumerate() {
             github
-                .list_page("acme/zeron", filter, None, false, false)
+                .list_page("acme/godspeed", filter, None, false, false)
                 .await
                 .unwrap();
             assert_eq!(runner.requests().len(), index + 1);
             github
-                .list_page("ACME/ZERON", filter, None, false, false)
+                .list_page("ACME/GODSPEED", filter, None, false, false)
                 .await
                 .unwrap();
             assert_eq!(runner.requests().len(), index + 1);
@@ -3326,11 +3326,11 @@ mod tests {
         {
             assert_eq!(
                 request.args.last().unwrap(),
-                &format!("search=is:pr is:open {qualifier}repo:acme/zeron sort:updated-desc")
+                &format!("search=is:pr is:open {qualifier}repo:acme/godspeed sort:updated-desc")
             );
         }
         github
-            .list_page("acme/zeron", All, None, false, false)
+            .list_page("acme/godspeed", All, None, false, false)
             .await
             .unwrap();
         assert_eq!(runner.requests().len(), 3);
@@ -3345,21 +3345,21 @@ mod tests {
         ]);
         let github = GitHubCli::with_runner(runner.clone());
         let (a, b) = tokio::join!(
-            authored(&github, "acme/zeron", false),
-            authored(&github, "ACME/ZERON", false)
+            authored(&github, "acme/godspeed", false),
+            authored(&github, "ACME/GODSPEED", false)
         );
         assert!(a.unwrap().is_empty() && b.unwrap().is_empty());
-        authored(&github, "acme/zeron", true).await.unwrap();
+        authored(&github, "acme/godspeed", true).await.unwrap();
         assert_eq!(
             runner.requests().len(),
             1,
             "concurrent and immediate refresh calls reuse one response"
         );
         github.pr_cache.lock().await.entries[0].1 = Instant::now() - Duration::from_secs(16);
-        authored(&github, "acme/zeron", true).await.unwrap();
+        authored(&github, "acme/godspeed", true).await.unwrap();
         assert_eq!(runner.requests().len(), 2);
         github.pr_cache.lock().await.entries[0].1 = Instant::now() - Duration::from_secs(301);
-        authored(&github, "acme/zeron", false).await.unwrap();
+        authored(&github, "acme/godspeed", false).await.unwrap();
         assert_eq!(runner.requests().len(), 3);
     }
 
@@ -3515,7 +3515,7 @@ mod tests {
     #[tokio::test]
     async fn github_search_uses_exact_repository_arguments_and_environment() {
         let json = search_response(vec![search_pull_request(
-            "acme/zeron",
+            "acme/godspeed",
             123,
             "Dashboard",
             "OPEN",
@@ -3528,7 +3528,7 @@ mod tests {
         let (result, runner) = list_with(command_success(json)).await;
 
         let item = &result.unwrap()[0];
-        assert_eq!(item.repository, "acme/zeron");
+        assert_eq!(item.repository, "acme/godspeed");
         assert!(item.is_draft);
         assert_eq!(
             item.review_decision,
@@ -3557,9 +3557,9 @@ mod tests {
                 "-f",
                 "owner=acme",
                 "-f",
-                "name=zeron",
+                "name=godspeed",
                 "-f",
-                "search=is:pr is:open author:@me repo:acme/zeron sort:updated-desc"
+                "search=is:pr is:open author:@me repo:acme/godspeed sort:updated-desc"
             ]
         );
         assert_eq!(
@@ -3577,7 +3577,7 @@ mod tests {
     async fn github_search_normalizes_titles_and_sorts_results_stably() {
         let json = search_response(vec![
             search_pull_request(
-                "acme/zeron",
+                "acme/godspeed",
                 8,
                 "  A title\nwith\tspacing  ",
                 "OPEN",
@@ -3588,7 +3588,7 @@ mod tests {
                 Some("APPROVED"),
             ),
             search_pull_request(
-                "acme/zeron",
+                "acme/godspeed",
                 4,
                 "Alpha",
                 "OPEN",
@@ -3599,7 +3599,7 @@ mod tests {
                 Some("REVIEW_REQUIRED"),
             ),
             search_pull_request(
-                "acme/zeron",
+                "acme/godspeed",
                 2,
                 "Earlier number",
                 "OPEN",
@@ -3618,7 +3618,7 @@ mod tests {
                 .iter()
                 .map(|item| (item.repository.as_str(), item.number))
                 .collect::<Vec<_>>(),
-            [("acme/zeron", 2), ("acme/zeron", 4), ("acme/zeron", 8)]
+            [("acme/godspeed", 2), ("acme/godspeed", 4), ("acme/godspeed", 8)]
         );
         assert_eq!(items[2].title, "A title with spacing");
         assert_eq!(items[0].state, ChangeRequestState::Open);
@@ -3627,7 +3627,7 @@ mod tests {
     #[tokio::test]
     async fn github_search_rejects_invalid_structural_fields() {
         let base = search_pull_request(
-            "acme/zeron",
+            "acme/godspeed",
             1,
             "Valid",
             "OPEN",
@@ -3641,7 +3641,7 @@ mod tests {
         for (pointer, value) in [
             ("/number", serde_json::json!(0)),
             ("/title", serde_json::json!(" \n\t ")),
-            ("/repository/nameWithOwner", serde_json::json!("zeron")),
+            ("/repository/nameWithOwner", serde_json::json!("godspeed")),
             ("/repository/nameWithOwner", serde_json::json!("a/b/c")),
             ("/url", serde_json::json!("file:///tmp/pr")),
             ("/state", serde_json::json!("CLOSED")),
@@ -3664,7 +3664,7 @@ mod tests {
         let json = serde_json::to_vec(&serde_json::json!({"data": {"search": {"nodes": [
             null,
             search_pull_request(
-                "acme/zeron",
+                "acme/godspeed",
                 3,
                 "Readable",
                 "OPEN",
@@ -3685,7 +3685,7 @@ mod tests {
     #[tokio::test]
     async fn github_search_keeps_readable_results_when_gh_reports_partial_errors() {
         let readable = search_pull_request(
-            "acme/zeron",
+            "acme/godspeed",
             3,
             "Readable",
             "OPEN",
@@ -3708,7 +3708,7 @@ mod tests {
             })
         };
         let (result, _) = list_with(partial(serde_json::json!({
-            "nameWithOwner": "acme/zeron"
+            "nameWithOwner": "acme/godspeed"
         })))
         .await;
         assert_eq!(result.unwrap()[0].number, 3);
@@ -3770,7 +3770,7 @@ mod tests {
                 "remote",
                 "add",
                 "origin",
-                "https://github.com/acme/zeron.git",
+                "https://github.com/acme/godspeed.git",
             ],
         );
 
@@ -3784,14 +3784,14 @@ if [ "$GH_PROMPT_DISABLED" != "1" ]; then
   echo "interactive auth was not disabled" >&2
   exit 2
 fi
-printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https://github.com/acme/zeron/pull/90","state":"OPEN","baseRefName":"main","headRefName":"feature/status","updatedAt":"2026-08-15T12:00:00Z","isCrossRepository":false,"headRepositoryOwner":{"login":"acme"}}]'
+printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https://github.com/acme/godspeed/pull/90","state":"OPEN","baseRefName":"main","headRefName":"feature/status","updatedAt":"2026-08-15T12:00:00Z","isCrossRepository":false,"headRepositoryOwner":{"login":"acme"}}]'
 "##;
         #[cfg(windows)]
         let fake_gh_contents = r##"if ($env:GH_PROMPT_DISABLED -ne '1') {
   [Console]::Error.WriteLine('interactive auth was not disabled')
   exit 2
 }
-[Console]::Out.WriteLine('[{"number":90,"title":"Host-resolved pull request","url":"https://github.com/acme/zeron/pull/90","state":"OPEN","baseRefName":"main","headRefName":"feature/status","updatedAt":"2026-08-15T12:00:00Z","isCrossRepository":false,"headRepositoryOwner":{"login":"acme"}}]')
+[Console]::Out.WriteLine('[{"number":90,"title":"Host-resolved pull request","url":"https://github.com/acme/godspeed/pull/90","state":"OPEN","baseRefName":"main","headRefName":"feature/status","updatedAt":"2026-08-15T12:00:00Z","isCrossRepository":false,"headRepositoryOwner":{"login":"acme"}}]')
 "##;
         std::fs::write(&fake_gh, fake_gh_contents).expect("write fake gh");
         #[cfg(unix)]
@@ -3922,7 +3922,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
                 "remote",
                 "add",
                 "origin",
-                "git@github.com:contributor/zeron.git",
+                "git@github.com:contributor/godspeed.git",
             ],
         );
         run_git(
@@ -3931,7 +3931,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
                 "remote",
                 "add",
                 "upstream",
-                "https://github.com/acme/zeron.git",
+                "https://github.com/acme/godspeed.git",
             ],
         );
 
@@ -3944,7 +3944,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
         assert_eq!(source.branch.remote_name.as_deref(), Some("origin"));
         assert_eq!(
             source.branch.remote_url.as_deref(),
-            Some("git@github.com:contributor/zeron.git")
+            Some("git@github.com:contributor/godspeed.git")
         );
         assert_eq!(source.branch.owner.as_deref(), Some("contributor"));
         assert_eq!(
@@ -3963,7 +3963,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
         run_git(&checkout, &["init", "-q", "-b", "main"]);
         run_git(
             &checkout,
-            &["remote", "add", "upstream", "git@github.com:acme/zeron.git"],
+            &["remote", "add", "upstream", "git@github.com:acme/godspeed.git"],
         );
         run_git(
             &checkout,
@@ -3987,11 +3987,11 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
         assert_eq!(source.branch.remote_name.as_deref(), Some("upstream"));
         assert_eq!(
             source.branch.remote_url.as_deref(),
-            Some("git@github.com:acme/zeron.git")
+            Some("git@github.com:acme/godspeed.git")
         );
         assert_eq!(
             resolver.repository_for_checkout(&checkout).await.as_deref(),
-            Some("acme/zeron")
+            Some("acme/godspeed")
         );
     }
 
@@ -4016,7 +4016,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
         );
         run_git(
             &checkout,
-            &["remote", "add", "origin", "git@github.com:acme/zeron.git"],
+            &["remote", "add", "origin", "git@github.com:acme/godspeed.git"],
         );
         // A repository-controlled transport command: any Git subcommand that
         // touches the remote (such as the former `ls-remote` default-branch
@@ -4295,7 +4295,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             [
                 "repo",
                 "view",
-                "github.com/acme/zeron",
+                "github.com/acme/godspeed",
                 "--json",
                 "defaultBranchRef"
             ]
@@ -4350,7 +4350,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             command_success("feature/status\n"),
             command_success("fork/published-status\n"),
             command_success("fork\n"),
-            command_success("git@github.com:contributor/zeron.git\n"),
+            command_success("git@github.com:contributor/godspeed.git\n"),
             command_success("fork/main\n"),
         ]);
         let inspector = GitCheckoutInspector::new(runner.clone());
@@ -4428,12 +4428,12 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             "local-name",
             Some("fork/published-name"),
             Some("fork"),
-            Some("git@github.com:contributor/zeron.git"),
+            Some("git@github.com:contributor/godspeed.git"),
         );
 
         assert_eq!(context.host.as_deref(), Some("github.com"));
         assert_eq!(context.owner.as_deref(), Some("contributor"));
-        assert_eq!(context.repository.as_deref(), Some("zeron"));
+        assert_eq!(context.repository.as_deref(), Some("godspeed"));
         assert_eq!(context.head_branch, "published-name");
         assert_eq!(
             context.head_selectors,
@@ -4447,7 +4447,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             "feature/local",
             None,
             Some("origin"),
-            Some("https://github.com/acme/zeron.git"),
+            Some("https://github.com/acme/godspeed.git"),
         );
 
         assert_eq!(context.head_branch, "feature/local");
@@ -4463,7 +4463,7 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
             "feature/shared",
             Some("refs/remotes/origin/feature/shared"),
             Some("origin"),
-            Some("https://github.com/acme/zeron"),
+            Some("https://github.com/acme/godspeed"),
         );
 
         assert_eq!(context.remote_name.as_deref(), Some("origin"));

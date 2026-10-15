@@ -76,7 +76,7 @@ fn front_page_mirrors_the_desktop_sidebar() {
     assert_eq!(veil.indicator, ChatIndicator::Working);
     assert!(veil.working_since_ms.is_some());
     assert!(veil.pinned);
-    assert_eq!(veil.project.as_ref().unwrap().name, "zeron");
+    assert_eq!(veil.project.as_ref().unwrap().name, "godspeed");
     assert_eq!(veil.device_name.as_deref(), Some("MacBook Pro"));
     assert!(veil.device_online);
     assert_eq!(veil.model_label.as_deref(), Some("Fable 5"));
@@ -100,17 +100,17 @@ fn front_page_mirrors_the_desktop_sidebar() {
     assert_eq!(ids(&prs.merged), ["chat-picker"]);
     assert_eq!(ids(&prs.closed), ["chat-tabs"]);
 
-    let zeron = ws.project("space-zeron").unwrap();
-    assert_eq!(zeron.indicator, ChatIndicator::AwaitingInput);
-    assert!(zeron.unseen_count >= 2);
+    let godspeed = ws.project("space-godspeed").unwrap();
+    assert_eq!(godspeed.indicator, ChatIndicator::AwaitingInput);
+    assert!(godspeed.unseen_count >= 2);
     // Clones of one repository are one project, with one name and color.
-    let clone = ws.project("space-zeron-vps").unwrap();
-    assert_eq!(clone.group_key, zeron.group_key);
-    assert_eq!(clone.group_name, "zeron");
-    assert_eq!(clone.color_index, zeron.color_index);
+    let clone = ws.project("space-godspeed-vps").unwrap();
+    assert_eq!(clone.group_key, godspeed.group_key);
+    assert_eq!(clone.group_name, "godspeed");
+    assert_eq!(clone.color_index, godspeed.color_index);
     let cjk = ws.session("chat-cjk").unwrap();
-    assert_eq!(cjk.project.as_ref().unwrap().color_index, zeron.color_index);
-    assert_ne!(ws.project("space-edge").unwrap().group_key, zeron.group_key);
+    assert_eq!(cjk.project.as_ref().unwrap().color_index, godspeed.color_index);
+    assert_ne!(ws.project("space-edge").unwrap().group_key, godspeed.group_key);
     assert_eq!(ids(&ws.projectless), ["chat-visuals", "chat-home"]);
     assert!(ws.devices.iter().any(|d| d.is_self && d.id == "ios-test"));
     assert!(!ws.device("dev-studio").unwrap().online);

@@ -188,7 +188,7 @@ impl TextConnector for WsTextConnector {
     }
 }
 
-// ── stats (RoomStatsSnapshot-compatible so SyncStatus/`zeron sync` render it) ─
+// ── stats (RoomStatsSnapshot-compatible so SyncStatus/`godspeed sync` render it) ─
 
 #[derive(Default)]
 struct Stats {

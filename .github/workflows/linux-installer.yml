@@ -7,8 +7,8 @@ on:
       - 'scripts/package-linux.sh'
       - 'scripts/test-linux-desktop-entry.sh'
       - 'scripts/ci/apt-install.sh'
-      - 'dist/zeron.desktop'
-      - 'dist/zeron.png'
+      - 'dist/godspeed.desktop'
+      - 'dist/godspeed.png'
       - '.github/workflows/linux-installer.yml'
   push:
     branches: [main]
@@ -17,8 +17,8 @@ on:
       - 'scripts/package-linux.sh'
       - 'scripts/test-linux-desktop-entry.sh'
       - 'scripts/ci/apt-install.sh'
-      - 'dist/zeron.desktop'
-      - 'dist/zeron.png'
+      - 'dist/godspeed.desktop'
+      - 'dist/godspeed.png'
       - '.github/workflows/linux-installer.yml'
   workflow_dispatch:
 

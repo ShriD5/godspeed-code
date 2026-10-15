@@ -127,7 +127,7 @@ pub(super) async fn exercise(
             == Some(&format!("{origin}/"))),
         "wrong browser destination"
     );
-    let missing_runtime = std::env::var_os("ZERON_LINK_FIXTURE_MISSING_RUNTIME").is_some();
+    let missing_runtime = std::env::var_os("GODSPEED_LINK_FIXTURE_MISSING_RUNTIME").is_some();
     let deadline = std::time::Instant::now() + Duration::from_secs(25);
     loop {
         let state = page.read_with(cx, |p, _| p.page.clone());

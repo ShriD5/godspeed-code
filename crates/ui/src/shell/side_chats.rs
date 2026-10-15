@@ -97,7 +97,7 @@ impl Shell {
     /// A fresh, empty side chat under `parent_id` (the active chat when
     /// None), opened in the right pane ready for its first message. Nothing
     /// is written until that message: the first send mints it with the same
-    /// shape the Zeron MCP server's `create_chat` does, so agent-spawned and
+    /// shape the Godspeed MCP server's `create_chat` does, so agent-spawned and
     /// hand-started side chats list together, and an abandoned one leaves
     /// no row behind.
     pub(super) fn create_child_chat(&mut self, parent_id: Option<String>, cx: &mut Context<Self>) {

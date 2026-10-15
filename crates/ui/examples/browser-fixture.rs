@@ -39,7 +39,7 @@ fn capture(directory: &std::path::Path, name: &str) -> anyhow::Result<()> {
     };
     #[cfg(not(target_os = "macos"))]
     let status = {
-        let capture_window = std::env::var("ZERON_BROWSER_CAPTURE_WINDOW").ok();
+        let capture_window = std::env::var("GODSPEED_BROWSER_CAPTURE_WINDOW").ok();
         let windows = std::process::Command::new("xdotool")
             .args([
                 "search",
@@ -153,15 +153,15 @@ fn main() -> anyhow::Result<()> {
     let output = PathBuf::from(
         std::env::args()
             .nth(1)
-            .unwrap_or_else(|| "/tmp/zeron-browser-captures".into()),
+            .unwrap_or_else(|| "/tmp/godspeed-browser-captures".into()),
     );
     std::fs::create_dir_all(&output)?;
     let temp = tempfile::tempdir()?;
-    let data = std::env::var_os("ZERON_BROWSER_STORAGE_ROOT")
+    let data = std::env::var_os("GODSPEED_BROWSER_STORAGE_ROOT")
         .map(PathBuf::from).unwrap_or_else(|| temp.path().to_path_buf());
     let storage_root = data.clone();
-    let storage_profile = std::env::var("ZERON_BROWSER_STORAGE_PROFILE").unwrap_or_else(|_| "local".into());
-    let storage_url = std::env::var("ZERON_BROWSER_STORAGE_URL").ok();
+    let storage_profile = std::env::var("GODSPEED_BROWSER_STORAGE_PROFILE").unwrap_or_else(|_| "local".into());
+    let storage_url = std::env::var("GODSPEED_BROWSER_STORAGE_URL").ok();
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let _origin = format!("http://{}", listener.local_addr()?);
     std::thread::spawn(move || {
@@ -236,7 +236,7 @@ fn main() -> anyhow::Result<()> {
                     }))?)?;
                     return Ok(());
                 }
-                if std::env::var_os("ZERON_TRANSCRIPT_LINK_FIXTURE_ONLY").is_some() {
+                if std::env::var_os("GODSPEED_TRANSCRIPT_LINK_FIXTURE_ONLY").is_some() {
                     return transcript_links::exercise(window, state.clone(), &_origin, &output, cx).await;
                 }
                 state.update(cx, |s, cx| {

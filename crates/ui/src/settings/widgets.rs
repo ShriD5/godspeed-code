@@ -1035,7 +1035,7 @@ pub fn tab_selection_t(
 }
 
 /// One treatment for settings section tabs: the selected wash and text ease
-/// over Zeron's tab timing, while hover keeps the normal sidebar color fade.
+/// over Godspeed's tab timing, while hover keeps the normal sidebar color fade.
 pub fn section_tab(
     theme: &Theme,
     selected: bool,

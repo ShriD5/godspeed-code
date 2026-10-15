@@ -14,10 +14,10 @@ pub(super) struct Lease {
 }
 
 pub(super) fn state_root() -> PathBuf {
-    let root = std::env::var_os("ZERON_CURSOR_STATE_DIR")
+    let root = std::env::var_os("GODSPEED_CURSOR_STATE_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".zeron/cursor-state"));
+        .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".godspeed/cursor-state"));
     if root.is_absolute() {
         root
     } else {
@@ -56,7 +56,7 @@ impl Lease {
             std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700))?;
         }
         let name = if store_dir.is_some() {
-            ".zeron-owner.lock".into()
+            ".godspeed-owner.lock".into()
         } else {
             format!(
                 "{:x}.lock",

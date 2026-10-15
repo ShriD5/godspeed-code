@@ -157,7 +157,7 @@ fn search_error_message(error: &FilesClientError, what: &str) -> SharedString {
             } else {
                 "files"
             };
-            format!("The session's device runs an older zeron — update it to search its {subject}")
+            format!("The session's device runs an older godspeed — update it to search its {subject}")
                 .into()
         }
         FilesClientError::Transport(_) => "The session's device is unreachable".into(),
@@ -2802,9 +2802,9 @@ mod tests {
     fn search_matches_words_across_chat_metadata() {
         assert!(matches_query(
             "mac auth",
-            "Fix authentication Zeron @ MacBook main"
+            "Fix authentication Godspeed @ MacBook main"
         ));
         assert!(matches_query("  ", "Any chat"));
-        assert!(!matches_query("mac windows", "Zeron @ MacBook"));
+        assert!(!matches_query("mac windows", "Godspeed @ MacBook"));
     }
 }

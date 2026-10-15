@@ -3,8 +3,8 @@
 //! its busy state lands, or any remote client), the composer queue, and
 //! explicit steering (queue-row Steer / Send next, MCP `send_message` steer).
 //!
-//! ZERON_TEST_HARNESS=pi cargo test -p zeron-engine --test queue_order_live -- --ignored --nocapture
-//! ZERON_TEST_MODEL optionally pins the model; ZERON_TEST_SCENARIO runs one of
+//! GODSPEED_TEST_HARNESS=pi cargo test -p zeron-engine --test queue_order_live -- --ignored --nocapture
+//! GODSPEED_TEST_MODEL optionally pins the model; GODSPEED_TEST_SCENARIO runs one of
 //! `sends`, `queue`, `steer`.
 use std::{sync::Arc, time::Duration};
 use zeron_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
@@ -87,7 +87,7 @@ impl Rig {
         registry.register(harness);
         let core =
             EngineCore::assemble(&dir.path().join("engine"), Arc::new(registry), id, None).unwrap();
-        let model = std::env::var("ZERON_TEST_MODEL").ok();
+        let model = std::env::var("GODSPEED_TEST_MODEL").ok();
         let cwd = dir.path().to_str().unwrap().to_owned();
         core.workspace
             .create_space(CHAT, &core.device_id, &cwd, None, false)
@@ -340,8 +340,8 @@ async fn scenario(name: &str, which: &str) {
 #[tokio::test]
 #[ignore = "uses real model quota; select the harness explicitly"]
 async fn messages_sent_during_a_turn_keep_transcript_order() {
-    let name = std::env::var("ZERON_TEST_HARNESS").expect("select harness");
-    let only = std::env::var("ZERON_TEST_SCENARIO").ok();
+    let name = std::env::var("GODSPEED_TEST_HARNESS").expect("select harness");
+    let only = std::env::var("GODSPEED_TEST_SCENARIO").ok();
     for which in ["sends", "queue", "steer"] {
         if only.as_deref().is_none_or(|o| o == which) {
             scenario(&name, which).await;

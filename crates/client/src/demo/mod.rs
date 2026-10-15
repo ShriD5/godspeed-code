@@ -392,7 +392,7 @@ impl DemoHost {
             let Some((upload_id, name)) = crate::attachments::parse_pending_ref(reference) else {
                 continue;
             };
-            let path = format!("/Users/dev/.zeron/uploads/{upload_id}-{name}");
+            let path = format!("/Users/dev/.godspeed/uploads/{upload_id}-{name}");
             if let Some(bytes) = client.attachment_cache.get(host, reference) {
                 lock(&self.uploads).insert(path.clone(), bytes.clone());
                 client.attachment_cache.put(host, &path, bytes);
@@ -931,13 +931,13 @@ impl DemoHost {
             current,
             worktree_path: worktree.map(str::to_owned),
         };
-        if path.contains("zeron") {
+        if path.contains("godspeed") {
             vec![
                 r("main", true, None),
                 r(
                     "veil-fade",
                     false,
-                    Some("/Users/dev/.zeron/worktrees/zeron-veil-fade"),
+                    Some("/Users/dev/.godspeed/worktrees/zeron-veil-fade"),
                 ),
                 r("feature/diff-pane", false, None),
                 r("fix/tool-colors", false, None),
@@ -974,7 +974,7 @@ impl DemoHost {
         tokio::time::sleep(Duration::from_millis(250)).await;
         let folder = path.rsplit('/').next().unwrap_or("repo");
         let worktree = format!(
-            "/Users/dev/.zeron/worktrees/{folder}-{}",
+            "/Users/dev/.godspeed/worktrees/{folder}-{}",
             base.replace('/', "-")
         );
         let mut refs = lock(&self.refs);
@@ -1008,20 +1008,20 @@ impl DemoHost {
                 "Downloads",
                 "Projects",
                 "scratch",
-                "zeron",
-                "zeron-ios",
+                "godspeed",
+                "godspeed-ios",
             ],
             "/Users/dev/Documents" => &["notes", "specs"],
-            "/Users/dev/Projects" => &["blog", "dotfiles", "playground", "zeron"],
-            "/Users/dev/Projects/zeron" => &["apps", "crates", "docs", "edge"],
+            "/Users/dev/Projects" => &["blog", "dotfiles", "playground", "godspeed"],
+            "/Users/dev/Projects/godspeed" => &["apps", "crates", "docs", "edge"],
             "/Users/dev/Projects/blog" => &["content", "public"],
             "/srv" => &["backups", "deploys"],
             "/srv/deploys" => &["edge", "landing"],
             _ => &[],
         };
         const REPOS: &[&str] = &[
-            "zeron",
-            "zeron-ios",
+            "godspeed",
+            "godspeed-ios",
             "dotfiles",
             "blog",
             "playground",
@@ -1056,7 +1056,7 @@ impl DemoHost {
                 progress(step as f64 / 4.0);
             }
         }
-        let path = format!("/Users/dev/.zeron/uploads/{}-{name}", &crate::new_id()[..8]);
+        let path = format!("/Users/dev/.godspeed/uploads/{}-{name}", &crate::new_id()[..8]);
         let bytes = Arc::new(data);
         lock(&self.uploads).insert(path.clone(), bytes.clone());
         client.attachment_cache.put(device_id, &path, bytes);

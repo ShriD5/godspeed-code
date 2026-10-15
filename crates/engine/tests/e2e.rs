@@ -892,7 +892,7 @@ async fn steer_with_no_live_run_falls_back_to_new_turn() {
     .await;
 
     // No live run anymore (mock finishes instantly): a steer command must fall back to
-    // dispatch-as-next-turn, per zeron's executor.
+    // dispatch-as-next-turn, per godspeed's executor.
     queue_as_viewer(
         handle.doc(),
         "cmd-steer-1",
@@ -2306,7 +2306,7 @@ async fn attachment_upload_then_run_threads_refs_and_paths() {
         "committed file holds the exact reassembled bytes"
     );
 
-    // Run with the zeron `withAttachments` transport: refs embedded in the
+    // Run with the godspeed `withAttachments` transport: refs embedded in the
     // prompt text (this is what persists), paths on the additive field.
     let prompt = format!(
         "what color is this?\n\nAttached images (local files — open them to view):\n- {path}"

@@ -83,7 +83,7 @@ impl WorktreePreferences {
     ) -> Result<WorktreeSettingsStatus, EngineError> {
         if self.environment_override.is_some() {
             return Err(EngineError::Other(
-                "Worktree location is controlled by ZERON_WORKTREES_DIR on this device".into(),
+                "Worktree location is controlled by GODSPEED_WORKTREES_DIR on this device".into(),
             ));
         }
         if next.use_custom_directory {
@@ -165,7 +165,7 @@ fn validate_directory(value: &str) -> Result<PathBuf, EngineError> {
     }
     // Test actual write access instead of relying on permission bits/ACLs.
     let _probe = tempfile::Builder::new()
-        .prefix(".zeron-write-check-")
+        .prefix(".godspeed-write-check-")
         .tempfile_in(&path)?;
     Ok(path)
 }

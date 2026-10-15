@@ -706,7 +706,7 @@ async fn grok_devin_opencode_and_pi_logins_swap_round_trip() {
 }
 
 /// Hermes keeps every account in its own pool: listed as-is, the active
-/// provider's first entry in use, never switched or forgotten from zeron.
+/// provider's first entry in use, never switched or forgotten from godspeed.
 #[tokio::test]
 async fn hermes_credential_pool_is_listed_read_only() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -894,7 +894,7 @@ async fn uploads_chunk_commit_readback_and_jail() {
         .read_chunk(&text.to_string_lossy(), 0, &[])
         .expect("an uploaded file reads back");
     assert_eq!(chunk.mime_type, "application/octet-stream");
-    // …but a non-image in a workspace root is still refused (zeron parity).
+    // …but a non-image in a workspace root is still refused (godspeed parity).
     let in_root = tmp.path().join("notes.txt");
     std::fs::write(&in_root, b"text").expect("txt");
     assert!(
@@ -996,7 +996,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
     .await;
     assert_eq!(chat.title.as_deref(), Some("Fix Login Flow"));
     // Branch renamed from the title, chat row updated to match.
-    assert_eq!(chat.branch.as_deref(), Some("zeron/fix-login-flow"));
+    assert_eq!(chat.branch.as_deref(), Some("godspeed/fix-login-flow"));
     let head = tokio::process::Command::new("git")
         .args(["branch", "--show-current"])
         .current_dir(&worktree.path)
@@ -1005,7 +1005,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         .expect("git");
     assert_eq!(
         String::from_utf8_lossy(&head.stdout).trim(),
-        "zeron/fix-login-flow"
+        "godspeed/fix-login-flow"
     );
 
     // A titled chat is never re-titled: rename, run again, title sticks.
@@ -1054,7 +1054,7 @@ async fn rename_worktree_branch_guards_and_collisions() {
 
     // Guard: expected branch mismatch → no-op, returns the actual branch.
     let unchanged = repos
-        .rename_worktree_branch(wt_path, "zeron/not-this-one", "Some Title")
+        .rename_worktree_branch(wt_path, "godspeed/not-this-one", "Some Title")
         .await
         .expect("guarded");
     assert_eq!(unchanged, wt.branch);
@@ -1064,15 +1064,15 @@ async fn rename_worktree_branch_guards_and_collisions() {
         .rename_worktree_branch(wt_path, &wt.branch, "Add Dark Mode!")
         .await
         .expect("renamed");
-    assert_eq!(renamed, "zeron/add-dark-mode");
+    assert_eq!(renamed, "godspeed/add-dark-mode");
 
-    // Already renamed → the guard (branch no longer zeron/<folder>) makes any
+    // Already renamed → the guard (branch no longer godspeed/<folder>) makes any
     // further title rename a no-op.
     let again = repos
-        .rename_worktree_branch(wt_path, "zeron/add-dark-mode", "Different Title")
+        .rename_worktree_branch(wt_path, "godspeed/add-dark-mode", "Different Title")
         .await
         .expect("second rename");
-    assert_eq!(again, "zeron/add-dark-mode");
+    assert_eq!(again, "godspeed/add-dark-mode");
 
     // Collision: a second worktree whose title slug already exists gets the
     // stable hash suffix.
@@ -1085,20 +1085,20 @@ async fn rename_worktree_branch_guards_and_collisions() {
         .await
         .expect("suffixed rename");
     assert!(
-        renamed2.starts_with("zeron/add-dark-mode-")
-            && renamed2.len() == "zeron/add-dark-mode-".len() + 6,
+        renamed2.starts_with("godspeed/add-dark-mode-")
+            && renamed2.len() == "godspeed/add-dark-mode-".len() + 6,
         "suffixed: {renamed2}"
     );
 
     // Slug edge cases.
     assert_eq!(
         worktree_branch_from_title("  Fix `Login` Flow!  "),
-        "zeron/fix-login-flow"
+        "godspeed/fix-login-flow"
     );
-    assert_eq!(worktree_branch_from_title("***"), "zeron/update");
+    assert_eq!(worktree_branch_from_title("***"), "godspeed/update");
     assert_eq!(
         worktree_branch_from_title("Cafe's Dark Mode"),
-        "zeron/cafes-dark-mode"
+        "godspeed/cafes-dark-mode"
     );
 }
 

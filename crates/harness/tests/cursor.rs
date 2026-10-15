@@ -503,10 +503,10 @@ async fn mcp_injection_reaches_shim_on_new_and_resumed_runs() {
         let mut req = request("scenario:mcp");
         req.resume = resume.map(str::to_owned);
         req.mcp = Some(zeron_proto::McpServer {
-            name: "zeron".into(),
-            command: "/path with spaces/zeron".into(),
+            name: "godspeed".into(),
+            command: "/path with spaces/godspeed".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_CHAT_ID".into(), "origin-chat".into())].into(),
+            env: [("GODSPEED_CHAT_ID".into(), "origin-chat".into())].into(),
         });
         let (controls, _steer, _token) = controls();
         let events = run_to_first_done(&harness(), req, controls).await;

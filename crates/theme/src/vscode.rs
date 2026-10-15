@@ -48,7 +48,7 @@ pub struct ImportReport {
     pub fallbacks: Vec<String>,
     pub dropped: Vec<String>,
     pub warnings: Vec<String>,
-    /// Deterministic repairs made after mapping so the compiled Zeron roles
+    /// Deterministic repairs made after mapping so the compiled Godspeed roles
     /// remain usable without erasing the source theme's syntax identity.
     #[serde(default)]
     pub adjustments: Vec<ImportAdjustment>,
@@ -619,13 +619,13 @@ fn parse_semantic_style(value: &Value) -> SemanticStyle {
 fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResult> {
     let registry = ThemeRegistry::builtin();
     let base_id = if options.appearance.is_dark() {
-        "zeron-dark"
+        "godspeed-dark"
     } else {
-        "zeron-light"
+        "godspeed-light"
     };
     let mut output = registry
         .variant(base_id)
-        .expect("Zeron base theme exists")
+        .expect("Godspeed base theme exists")
         .clone();
     let fallback_background = output.colors.background;
     output.id = options.id.clone();
@@ -645,7 +645,7 @@ fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResul
         ..ImportReport::default()
     };
     report.fallbacks.push(
-        "surface treatment inferred as opaque because VS Code palettes target solid workbench backgrounds; the user's Zeron surface preference can override it"
+        "surface treatment inferred as opaque because VS Code palettes target solid workbench backgrounds; the user's Godspeed surface preference can override it"
             .into(),
     );
     macro_rules! apply {
@@ -659,7 +659,7 @@ fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResul
                 });
             } else {
                 report.fallbacks.push(format!(
-                    "{} retained the Zeron {} fallback",
+                    "{} retained the Godspeed {} fallback",
                     $role,
                     if options.appearance.is_dark() {
                         "dark"
@@ -838,7 +838,7 @@ fn convert(theme: NormalizedTheme, options: ImportOptions) -> Result<ImportResul
     } else {
         report
             .fallbacks
-            .push("accent.* retained the Zeron fallback; curate a native accent".into());
+            .push("accent.* retained the Godspeed fallback; curate a native accent".into());
     }
 
     apply!(

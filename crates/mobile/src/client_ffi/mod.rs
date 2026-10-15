@@ -511,7 +511,7 @@ pub fn auth_production_edge_url() -> String {
     zc::auth::PRODUCTION_EDGE_URL.to_owned()
 }
 
-/// OAuth callback scheme (`zeron`).
+/// OAuth callback scheme (`godspeed`).
 #[uniffi::export]
 pub fn auth_callback_scheme() -> String {
     zc::auth::CALLBACK_SCHEME.to_owned()
@@ -523,7 +523,7 @@ pub fn workos_authorize_url(state: String) -> String {
     zc::auth::workos_authorize_url(&state)
 }
 
-/// `code`/`state` (or the provider error) of a `zeron://callback?…` URL.
+/// `code`/`state` (or the provider error) of a `godspeed://callback?…` URL.
 #[uniffi::export]
 pub fn parse_auth_callback(url: String) -> Option<AuthCallback> {
     zc::auth::parse_auth_callback(&url).map(Into::into)

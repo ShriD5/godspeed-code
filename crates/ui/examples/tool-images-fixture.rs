@@ -74,7 +74,7 @@ fn seed_workspace(root: &Path) -> anyhow::Result<()> {
     }
     std::fs::write(
         root.join("assets/logo.svg"),
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="420" height="160"><rect width="420" height="160" rx="24" fill="#1d1f27"/><circle cx="80" cy="80" r="48" fill="#7aa2ff"/><text x="150" y="98" font-size="44" fill="#e6e6e6" font-family="Geist">zeron</text></svg>"##,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="420" height="160"><rect width="420" height="160" rx="24" fill="#1d1f27"/><circle cx="80" cy="80" r="48" fill="#7aa2ff"/><text x="150" y="98" font-size="44" fill="#e6e6e6" font-family="Geist">godspeed</text></svg>"##,
     )?;
     std::fs::write(root.join("assets/notes.txt"), "not an image")?;
     // Decode-bound check: 15 MP source, previewed as a ≤1280×640 thumbnail.

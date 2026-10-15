@@ -289,7 +289,7 @@ const HELPER: &str = if cfg!(windows) {
 };
 
 /// The helper shipped inside the device's standalone Codex installation (layout
-/// 1, version 0.159 or later), resolved from its `codex` executable. Zeron never
+/// 1, version 0.159 or later), resolved from its `codex` executable. Godspeed never
 /// redistributes this runtime; npm installations do not contain it. The helper
 /// only initializes from a `codex-resources/voice` directory.
 pub fn installed_helper(codex_executable: &Path) -> Result<PathBuf, VoiceRejection> {
@@ -319,10 +319,10 @@ pub fn installed_helper(codex_executable: &Path) -> Result<PathBuf, VoiceRejecti
 }
 
 /// Client media for a remote call: an explicit development runtime
-/// (`ZERON_VOICE_MEDIA_DIR`, see `scripts/package-voice-runtime.py`), otherwise
+/// (`GODSPEED_VOICE_MEDIA_DIR`, see `scripts/package-voice-runtime.py`), otherwise
 /// this device's standalone Codex installation. Never reads Codex credentials.
 pub fn media_helper(codex_executable: Option<&Path>) -> Result<PathBuf, VoiceRejection> {
-    if let Some(path) = std::env::var_os("ZERON_VOICE_MEDIA_DIR") {
+    if let Some(path) = std::env::var_os("GODSPEED_VOICE_MEDIA_DIR") {
         return verify_runtime(Path::new(&path));
     }
     installed_helper(codex_executable.ok_or(VoiceRejection::NativeRuntimeUnavailable)?)
@@ -340,7 +340,7 @@ pub fn verify_runtime(root: &Path) -> Result<std::path::PathBuf, VoiceRejection>
         return Err(reject());
     }
     let manifest: Value = serde_json::from_slice(
-        &std::fs::read(root.join("zeron-runtime.json")).map_err(|_| reject())?,
+        &std::fs::read(root.join("godspeed-runtime.json")).map_err(|_| reject())?,
     )
     .map_err(|_| reject())?;
     if manifest["buildCommit"] != BUILD_COMMIT
@@ -428,7 +428,7 @@ mod tests {
 
     /// An opt-in runtime check: no provider connection or audio devices.
     #[tokio::test]
-    #[ignore = "requires a projected runtime in ZERON_VOICE_MEDIA_DIR"]
+    #[ignore = "requires a projected runtime in GODSPEED_VOICE_MEDIA_DIR"]
     async fn packaged_native_runtime_initializes_without_audio_devices() {
         let path = media_helper(None).unwrap();
         let host = NativeHost::open(&path, Default::default()).await.unwrap();
@@ -454,7 +454,7 @@ mod tests {
         let mut manifest = json!({"protocol":1,"buildCommit":BUILD_COMMIT,"target":runtime_target().unwrap(),"sha256":hashes});
         let save = |m: &Value| {
             std::fs::write(
-                dir.join("zeron-runtime.json"),
+                dir.join("godspeed-runtime.json"),
                 serde_json::to_vec(m).unwrap(),
             )
             .unwrap()

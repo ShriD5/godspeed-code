@@ -1,6 +1,6 @@
 #!/bin/sh
 
-[ "$GEMINI_HOME" = "$ZERON_TEST_EXPECTED_GEMINI_HOME" ] || exit 1
+[ "$GEMINI_HOME" = "$GODSPEED_TEST_EXPECTED_GEMINI_HOME" ] || exit 1
 [ -f "$GEMINI_HOME/antigravity-acp/settings.json" ] || exit 1
 
 while read -r line; do

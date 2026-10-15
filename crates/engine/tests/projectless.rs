@@ -1,6 +1,6 @@
 //! "Don't work in a project" against a real engine: a chat minted through the
 //! UI's exact wire shape (`Mutate createChat` with a `deviceId` and no
-//! `spaceId`) gets its own scratch folder (`~/.zeron/scratch/<date>-<id>`),
+//! `spaceId`) gets its own scratch folder (`~/.godspeed/scratch/<date>-<id>`),
 //! spawns its run there, and never mints a space row — the two failure modes
 //! of pre-#40 engines (a phantom project at root, and the run dying on the
 //! literal `~`). Chats from before scratch folders keep `~` and the host's

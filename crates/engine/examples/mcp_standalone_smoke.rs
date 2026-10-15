@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::{Harness, HarnessError, RunControls, mock::MockHarness};
-use zeron_mcp::{Origin, Tools, Zeron};
+use zeron_mcp::{Origin, Tools, Godspeed};
 use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
 };
@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     core.workspace
         .create_chat("smoke-origin", Some("smoke-project"), None, None, None)?;
     core.workspace.rename_chat("smoke-origin", "Coordinator")?;
-    let tools = Tools::new(Arc::new(Zeron::with_client(
+    let tools = Tools::new(Arc::new(Godspeed::with_client(
         zeron_rpc::memory_client(core.rpc_service()),
         Origin {
             chat_id: Some("smoke-origin".into()),

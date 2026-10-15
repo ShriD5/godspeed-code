@@ -199,9 +199,9 @@ mod tests {
     /// Runs only on an explicitly supplied local snapshot; never writes back
     /// to it or connects to an edge/production room.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "requires ZERON_WHALE_SNAPSHOT; reads privately supplied snapshot into a temporary store"]
+    #[ignore = "requires GODSPEED_WHALE_SNAPSHOT; reads privately supplied snapshot into a temporary store"]
     async fn real_whale_replay_keeps_146_heartbeats_running_on_two_workers() {
-        let bytes = std::fs::read(std::env::var("ZERON_WHALE_SNAPSHOT").unwrap()).unwrap();
+        let bytes = std::fs::read(std::env::var("GODSPEED_WHALE_SNAPSHOT").unwrap()).unwrap();
         let raw = loro::LoroDoc::new();
         raw.import(&bytes).unwrap();
         let doc = Arc::new(SessionDoc::from_doc(raw));

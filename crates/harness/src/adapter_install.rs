@@ -6,7 +6,7 @@
 //! before the adapter ever ran — silently, with an errno-encoded exit code
 //! (254 = ENOENT, the zeronsh/comet#95 crash) that surfaced as an opaque
 //! "harness protocol error". Instead, pinned adapter packages are installed
-//! ONCE into a zeron-owned prefix (`~/.zeron/adapters/<pkg>/<version>` on
+//! ONCE into a godspeed-owned prefix (`~/.godspeed/adapters/<pkg>/<version>` on
 //! Unix, the local app-data directory on Windows), with its own npm cache
 //! beside it, so a root-owned or read-only user cache cannot break us. Every
 //! subsequent launch spawns `node <entry>` directly — no npm anywhere near a
@@ -59,13 +59,13 @@ impl NpmPin {
     }
 }
 
-pub(crate) const OK_MARKER: &str = ".zeron-install-ok";
+pub(crate) const OK_MARKER: &str = ".godspeed-install-ok";
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Managed adapter storage. `$ZERON_ADAPTERS_DIR` wins, followed by
-/// `$ZERON_DATA_DIR/adapters`. Windows defaults to
-/// `%LOCALAPPDATA%/Zeron/adapters` (or `%USERPROFILE%/AppData/Local/...`);
-/// Unix keeps `~/.zeron/adapters`.
+/// Managed adapter storage. `$GODSPEED_ADAPTERS_DIR` wins, followed by
+/// `$GODSPEED_DATA_DIR/adapters`. Windows defaults to
+/// `%LOCALAPPDATA%/Godspeed/adapters` (or `%USERPROFILE%/AppData/Local/...`);
+/// Unix keeps `~/.godspeed/adapters`.
 pub(crate) fn adapters_root() -> Option<PathBuf> {
     adapters_root_with(
         &|key| std::env::var_os(key),
@@ -82,25 +82,25 @@ fn adapters_root_with(
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     };
-    if let Some(dir) = value("ZERON_ADAPTERS_DIR") {
+    if let Some(dir) = value("GODSPEED_ADAPTERS_DIR") {
         return Some(dir);
     }
-    if let Some(dir) = value("ZERON_DATA_DIR") {
+    if let Some(dir) = value("GODSPEED_DATA_DIR") {
         return Some(dir.join("adapters"));
     }
     if platform == crate::executable::Platform::Windows {
         value("LOCALAPPDATA")
-            .map(|dir| dir.join("Zeron").join("adapters"))
+            .map(|dir| dir.join("Godspeed").join("adapters"))
             .or_else(|| {
                 value("USERPROFILE").map(|home| {
                     home.join("AppData")
                         .join("Local")
-                        .join("Zeron")
+                        .join("Godspeed")
                         .join("adapters")
                 })
             })
     } else {
-        value("HOME").map(|home| home.join(".zeron").join("adapters"))
+        value("HOME").map(|home| home.join(".godspeed").join("adapters"))
     }
 }
 
@@ -372,7 +372,7 @@ pub(crate) async fn ensure_installed(
     })
 }
 
-/// A zeron-owned shim script materialized INSIDE a managed install dir, for
+/// A godspeed-owned shim script materialized INSIDE a managed install dir, for
 /// SDK packages with no bin entry (`@cursor/sdk`): the shim resolves the SDK
 /// from the sibling `node_modules`. Returns the shim path when the install is
 /// complete. Each build's shim source has its own immutable filename.
@@ -384,7 +384,7 @@ pub(crate) fn installed_shim(pin: &NpmPin, shim_name: &str, contents: &str) -> O
     materialize_shim(&dir, shim_name, contents).ok()
 }
 
-/// Different running Zeron builds must never replace each other's shim.
+/// Different running Godspeed builds must never replace each other's shim.
 /// Publish complete, content-addressed files; a reader never sees a partial write.
 fn materialize_shim(dir: &Path, name: &str, contents: &str) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};
@@ -410,7 +410,7 @@ fn materialize_shim(dir: &Path, name: &str, contents: &str) -> std::io::Result<P
 }
 
 /// Like [`ensure_installed`], for a package consumed as a LIBRARY by a
-/// zeron-owned shim rather than through a bin entry. Installs the pin once,
+/// godspeed-owned shim rather than through a bin entry. Installs the pin once,
 /// writes `contents` to a content-addressed sibling of `shim_name`, and returns the shim
 /// path (spawn it via [`launch_for_entry`]).
 pub(crate) async fn ensure_installed_shim(
@@ -693,15 +693,15 @@ mod tests {
 
     #[test]
     fn adapters_root_has_injected_windows_precedence_and_fallbacks() {
-        let explicit = PathBuf::from(r"D:\Zeron adapters");
-        let data = PathBuf::from(r"E:\Zeron data");
+        let explicit = PathBuf::from(r"D:\Godspeed adapters");
+        let data = PathBuf::from(r"E:\Godspeed data");
         let local = PathBuf::from(r"C:\Users\Ada\AppData\Local");
         let profile = PathBuf::from(r"C:\Users\Ada");
         assert_eq!(
             adapters_root_with(
                 &env(&[
-                    ("ZERON_ADAPTERS_DIR", explicit.clone().into_os_string()),
-                    ("ZERON_DATA_DIR", data.clone().into_os_string()),
+                    ("GODSPEED_ADAPTERS_DIR", explicit.clone().into_os_string()),
+                    ("GODSPEED_DATA_DIR", data.clone().into_os_string()),
                     ("LOCALAPPDATA", local.clone().into_os_string()),
                 ]),
                 crate::executable::Platform::Windows,
@@ -710,7 +710,7 @@ mod tests {
         );
         assert_eq!(
             adapters_root_with(
-                &env(&[("ZERON_DATA_DIR", data.clone().into_os_string())]),
+                &env(&[("GODSPEED_DATA_DIR", data.clone().into_os_string())]),
                 crate::executable::Platform::Windows,
             ),
             Some(data.join("adapters"))
@@ -720,7 +720,7 @@ mod tests {
                 &env(&[("LOCALAPPDATA", local.clone().into_os_string())]),
                 crate::executable::Platform::Windows,
             ),
-            Some(local.join("Zeron").join("adapters"))
+            Some(local.join("Godspeed").join("adapters"))
         );
         assert_eq!(
             adapters_root_with(
@@ -731,7 +731,7 @@ mod tests {
                 profile
                     .join("AppData")
                     .join("Local")
-                    .join("Zeron")
+                    .join("Godspeed")
                     .join("adapters")
             )
         );

@@ -21,7 +21,7 @@ impl From<AppearanceArg> for Appearance {
     }
 }
 
-/// Convert a VS Code JSON/JSONC color theme into a complete Zeron theme draft.
+/// Convert a VS Code JSON/JSONC color theme into a complete Godspeed theme draft.
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long)]

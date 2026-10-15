@@ -475,7 +475,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn discovery_skips_special_files_without_blocking() {
-        const CHILD: &str = "ZERON_SKILL_SPECIAL_FILE_TEST";
+        const CHILD: &str = "GODSPEED_SKILL_SPECIAL_FILE_TEST";
         if std::env::var_os(CHILD).is_none() {
             // Isolate the probe so a regression cannot strand the test runner.
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())

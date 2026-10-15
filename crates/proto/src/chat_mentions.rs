@@ -1,12 +1,12 @@
-//! Chat chips: a reference to another Zeron chat, dropped into a composer
+//! Chat chips: a reference to another Godspeed chat, dropped into a composer
 //! from the sidebar. The draft and the transcript keep the private link; the
-//! agent receives a plain description it can act on with Zeron's `read_chat`
+//! agent receives a plain description it can act on with Godspeed's `read_chat`
 //! tool, which accepts the chat's id.
 use std::ops::Range;
 
 use crate::file_mentions::escape_mention_label;
 
-pub const CHAT_MENTION_SCHEME: &str = "zeron-chat:";
+pub const CHAT_MENTION_SCHEME: &str = "godspeed-chat:";
 
 pub struct ChatMentionLink {
     pub range: Range<usize>,
@@ -33,7 +33,7 @@ fn clean_title(title: &str) -> String {
     }
 }
 
-/// `[title](zeron-chat:<id>)`, or `None` for an id that isn't a plain chat id.
+/// `[title](godspeed-chat:<id>)`, or `None` for an id that isn't a plain chat id.
 pub fn chat_mention_link(chat_id: &str, title: &str) -> Option<String> {
     valid_chat_id(chat_id).then(|| {
         format!(
@@ -100,7 +100,7 @@ pub fn chat_mention_prompt(text: &str) -> String {
     for link in chat_mention_links(text) {
         out.push_str(&text[at..link.range.start]);
         out.push_str(&format!(
-            "the Zeron chat \"{}\" (chat id {}; read it with the Zeron read_chat tool)",
+            "the Godspeed chat \"{}\" (chat id {}; read it with the Godspeed read_chat tool)",
             link.title, link.chat_id
         ));
         at = link.range.end;
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn chips_round_trip_and_reach_the_agent_as_a_readable_reference() {
         let link = chat_mention_link("0fd51606-ab", "Brief  Hello\nInteraction").unwrap();
-        assert_eq!(link, "[Brief Hello Interaction](zeron-chat:0fd51606-ab)");
+        assert_eq!(link, "[Brief Hello Interaction](godspeed-chat:0fd51606-ab)");
         let text = format!("Compare {link} with this one");
         let links = chat_mention_links(&text);
         assert_eq!(links.len(), 1);
@@ -125,8 +125,8 @@ mod tests {
         assert_eq!(&text[links[0].range.clone()], link);
         assert_eq!(
             chat_mention_prompt(&text),
-            "Compare the Zeron chat \"Brief Hello Interaction\" (chat id 0fd51606-ab; \
-             read it with the Zeron read_chat tool) with this one"
+            "Compare the Godspeed chat \"Brief Hello Interaction\" (chat id 0fd51606-ab; \
+             read it with the Godspeed read_chat tool) with this one"
         );
         // Markup in a title stays text.
         let marked = chat_mention_link("a1", "[x](y) `z`").unwrap();
@@ -142,12 +142,12 @@ mod tests {
             format!("`{link}`"),
             format!("```\n{link}\n```"),
             format!("\\{link}"),
-            "[x](zeron-chat:a b)".to_owned(),
-            "[x](zeron-chat:a/b)".to_owned(),
+            "[x](godspeed-chat:a b)".to_owned(),
+            "[x](godspeed-chat:a/b)".to_owned(),
         ] {
             assert!(chat_mention_links(&literal).is_empty(), "{literal}");
             assert_eq!(chat_mention_prompt(&literal), literal);
         }
-        assert_eq!(chat_mention_links("[](zeron-chat:a1)").len(), 0);
+        assert_eq!(chat_mention_links("[](godspeed-chat:a1)").len(), 0);
     }
 }

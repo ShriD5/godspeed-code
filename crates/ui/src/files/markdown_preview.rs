@@ -111,7 +111,7 @@ fn preview_link_outcome(activation: &render::LinkActivation) -> render::LinkOutc
 
 /// URL path resolution is independent of the UI host's filesystem.
 pub(super) fn relative_target(document: &str, target: &str) -> Option<(String, Option<String>)> {
-    if let Some(target) = target.strip_prefix("zeron-file:") {
+    if let Some(target) = target.strip_prefix("godspeed-file:") {
         return relative_target("", target);
     }
     if target.starts_with('/') || target.contains(':') || target.contains('\\') {

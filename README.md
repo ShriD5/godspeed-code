@@ -1,56 +1,47 @@
-# Zeron
+# Godspeed
 
-Control your coding agents (Claude Code, Codex, Cursor, Devin, Grok, Hermes, Pi, Antigravity) locally by default, with optional multi-device sync.
+One native app for every AI coding agent. Claude Code, Codex, Muse Code, Cursor, Grok Build,
+OpenCode, Pi, Antigravity and Devin, in a Rust + GPU-rendered UI that opens instantly and stays
+smooth on thousand-turn threads. Always-on agents keep working on a schedule or trigger and leave
+the results in your inbox.
 
-*English | [简体中文](README.zh-CN.md) | [한국어](README.ko.md) | [日本語](README.ja.md) | [Español](README.es.md)*
+> Early. Expect rough edges. See [docs/godspeed/ROADMAP.md](docs/godspeed/ROADMAP.md) for what is
+> done and what is next.
 
-![Zeron desktop app](docs/media/readme/app-screenshot.jpg)
+## Built on Zeron
 
-## Desktop app
+Godspeed is a fork of [Zeron](https://github.com/zeronsh/zeron) by Wing, used under the MIT
+license. Zeron did the hard part: the native GPUI shell, the headless engine, and the agent
+drivers. Go star it.
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/zeronsh/zeron/releases/latest):
+What Godspeed adds on top (in progress, tracked in the roadmap):
 
-- **macOS** — `zeron-<version>-macos-arm64.dmg`
-- **Windows** — `zeron-<version>-windows-x86_64-setup.exe`
-- **Linux** — `zeron-<version>-linux-<arch>.tar.gz`, then run its `install.sh`
+- **Muse Code** support (native MSP driver).
+- **T3 Code-level depth**: plan mode, rewind to any checkpoint, fork and merge back, generated
+  titles, commit messages and PR descriptions, a full command palette.
+- **Account fallback**: when one account hits its limit, the thread continues on the next account
+  or provider instead of stalling.
+- **Always-on agents**: agents with memory, triggered by cron, webhooks, file changes or GitHub
+  events, with an inbox and Telegram approvals.
 
-No account or network connection is needed; sessions stay on your device. The app updates itself.
+## Build
 
-## Headless (CLI)
-
-For servers and other machines without a display, such as a VPS that keeps agents running after you close your laptop. Linux only:
-
-```bash
-curl -fsSL https://zeron.sh/install.sh | sh
-zeron status
-```
-
-The installer starts the engine as a background service that survives reboots.
-
-```bash
-zeron status      # local/synced mode and engine status
-zeron update      # update to the latest release
-zeron daemon start|stop|restart|status
-```
-
-## Multi-device sync (optional)
-
-Sign in to start an agent on one device and follow or drive it from another:
+Requires stable Rust (see `rust-toolchain.toml`) and, on macOS, Xcode.
 
 ```bash
-zeron daemon stop
-zeron login        # or: zeron logout to return to local-only
-zeron daemon start
+cargo build -p godspeed
+cargo run -p godspeed              # desktop app
+cargo run -p godspeed -- headless  # engine only, for a server that keeps agents running
 ```
 
-Devices signed in to the same account can read and write each other's workspace files, so only sign in devices you trust. Existing local sessions are never uploaded.
+Install the agents you want to use (`claude`, `codex`, `muse`, `cursor-agent`, `grok`, `opencode`)
+and sign in with each CLI. Godspeed drives the CLIs you already have; it never resells model access.
 
-## Sponsors
+## Sync
 
-Thank you to [The Context Company](https://www.thecontextcompany.com/) for sponsoring Zeron. You can help fund Zeron's development too by [becoming a sponsor on GitHub](https://github.com/sponsors/zeronsh).
+Local-only by default. Multi-device sync needs your own deployment of `edge/` (Cloudflare Worker +
+Durable Objects): set `GODSPEED_EDGE_URL` and `GODSPEED_WORKOS_CLIENT_ID`.
 
----
+## License
 
-Developing or curious how it works? [Ask DeepWiki](https://deepwiki.com/zeronsh/zeron) or check out [ARCHITECTURE.md](ARCHITECTURE.md).
-
-Licensed under the [MIT License](LICENSE).
+MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

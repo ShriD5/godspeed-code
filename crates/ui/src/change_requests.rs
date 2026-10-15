@@ -478,7 +478,7 @@ mod tests {
                 provider: "github".into(),
                 number: 90,
                 title: "Add pull request badges".into(),
-                url: "https://github.com/acme/zeron/pull/90".into(),
+                url: "https://github.com/acme/godspeed/pull/90".into(),
                 state: ChangeRequestState::Open,
                 base_ref: "main".into(),
                 head_ref: "feature/pr".into(),

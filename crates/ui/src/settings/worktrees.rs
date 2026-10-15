@@ -163,7 +163,7 @@ impl WorktreeSettingsCard {
                 .await
                 .map_err(|error| match error {
                     zeron_rpc::RpcError::UnknownMethod(_) => {
-                        "Update Zeron on the selected device to configure worktree locations."
+                        "Update Godspeed on the selected device to configure worktree locations."
                             .to_string()
                     }
                     _ => error.to_string(),
@@ -507,7 +507,7 @@ impl Render for WorktreeSettingsCard {
             None => "Loading…".into(),
         }];
         if overridden {
-            meta.push("Set by ZERON_WORKTREES_DIR".into());
+            meta.push("Set by GODSPEED_WORKTREES_DIR".into());
         }
         let meta = meta
             .into_iter()

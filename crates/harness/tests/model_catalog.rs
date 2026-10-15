@@ -146,7 +146,7 @@ async fn codex_empty_catalogs_retire_children_and_next_request_spawns_fresh() {
 
 #[test]
 fn auth_context_child() {
-    let Some(root) = std::env::var_os("ZERON_MODEL_CONTEXT_TEST_ROOT") else {
+    let Some(root) = std::env::var_os("GODSPEED_MODEL_CONTEXT_TEST_ROOT") else {
         return;
     };
     let root = std::path::PathBuf::from(root);
@@ -198,7 +198,7 @@ fn each_spec_hashes_its_auth_file_contents() {
         .args(["--exact", "auth_context_child", "--nocapture"])
         .current_dir(dir.path())
         .env("HOME", dir.path())
-        .env("ZERON_MODEL_CONTEXT_TEST_ROOT", dir.path());
+        .env("GODSPEED_MODEL_CONTEXT_TEST_ROOT", dir.path());
     for key in [
         "CLAUDE_CONFIG_DIR",
         "XDG_CONFIG_HOME",

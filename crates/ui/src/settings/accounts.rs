@@ -3,7 +3,7 @@
 //! badge, Active, usage meters (indigo → amber ≥80% → red ≥95%, reset time),
 //! Switch / Forget — plus the one sign-in dialog every provider shares (the
 //! browser finishes the login on a loopback callback; Claude's paste-code
-//! step is its fallback) and account-shaped loading skeletons. Zeron
+//! step is its fallback) and account-shaped loading skeletons. Godspeed
 //! retargets devices from the settings sidebar (`targetDeviceId` passthrough;
 //! a remote device's callback is forwarded to this one engine-side).
 //!
@@ -142,7 +142,7 @@ fn open_login_url(url: &str, cx: &mut gpui::App) {
     }
 }
 
-/// Compact absolute reset moment (zeron settings.agents.tsx `formatReset`):
+/// Compact absolute reset moment (godspeed settings.agents.tsx `formatReset`):
 /// a local clock time ("3:45 PM") when it lands within ~22h, a short weekday
 /// ("Mon") within a week, else month + day ("Sep 14") — a weekday is noise
 /// when the window is a Codex free-tier MONTHLY reset weeks out. The caller
@@ -175,8 +175,8 @@ pub(crate) fn usage_resets(
         .join(" · ")
 }
 
-/// The providers zeron can sign into, in display order: (harness, name, CLI
-/// command — named in the empty-state copy, zeron settings.agents.tsx
+/// The providers godspeed can sign into, in display order: (harness, name, CLI
+/// command — named in the empty-state copy, godspeed settings.agents.tsx
 /// `PROVIDERS`). Every agent with a login of its own is here; what each one
 /// supports is documented engine-side (`agent_accounts` module docs).
 pub const PROVIDERS: [(HarnessId, &str, &str); 9] = [
@@ -217,14 +217,14 @@ pub fn keeps_one_login(harness: HarnessId) -> bool {
     harness == HarnessId::Antigravity
 }
 
-/// Whether zeron switches this agent's logins. Hermes rotates through its
+/// Whether godspeed switches this agent's logins. Hermes rotates through its
 /// own credential pool (listed, never reordered); Antigravity keeps one.
 pub fn switches_accounts(harness: HarnessId) -> bool {
     !matches!(harness, HarnessId::Hermes | HarnessId::Antigravity)
 }
 
 /// A standing note under a provider's Accounts label, for an agent whose
-/// accounts work differently. Hermes owns its credential pool: zeron lists
+/// accounts work differently. Hermes owns its credential pool: godspeed lists
 /// it and adds to it through Hermes' own CLI, but never switches or removes
 /// its entries. Pure.
 pub fn provider_note(harness: HarnessId) -> Option<&'static str> {
@@ -247,7 +247,7 @@ pub struct LoginOption {
     pub label: &'static str,
 }
 
-/// The sign-ins zeron offers for `harness`, in button order. Pure.
+/// The sign-ins godspeed offers for `harness`, in button order. Pure.
 pub fn login_options(harness: HarnessId) -> Vec<LoginOption> {
     let option = |provider, label| LoginOption {
         provider: Some(provider),
@@ -302,7 +302,7 @@ fn login_copy(harness: HarnessId, provider: Option<&str>) -> &'static str {
              your current one — nothing changes until you switch."
         }
         (HarnessId::Cursor, _) => {
-            "Finish signing in to Cursor in your browser. This mints a zeron-named API key \
+            "Finish signing in to Cursor in your browser. This mints a godspeed-named API key \
              you can revoke any time from Cursor's dashboard."
         }
         (HarnessId::Antigravity, _) => {
@@ -399,7 +399,7 @@ pub(crate) fn render_usage_meter(
                         div()
                             .h_full()
                             // A 1.5% floor keeps tiny non-zero usage
-                            // visible (zeron `max(used, 1.5)%`).
+                            // visible (godspeed `max(used, 1.5)%`).
                             .w(gpui::relative(fraction.max(0.015)))
                             .rounded_full()
                             .bg(fill),
@@ -500,7 +500,7 @@ pub struct AccountsPage {
     embedded_harness: Option<HarnessId>,
     scroll: widgets::PageScroll,
     /// Which device's logins are shown; `None` = this device (no passthrough).
-    /// Retargeted by the page-header device switcher (zeron parity: the
+    /// Retargeted by the page-header device switcher (godspeed parity: the
     /// accounts RPCs are relay-forwardable, CLI logins are per-device).
     target_device: Option<String>,
     device_select: widgets::SelectState,
@@ -626,7 +626,7 @@ impl AccountsPage {
         }
     }
 
-    /// The page-header device switcher (zeron device-switcher.tsx): a quiet
+    /// The page-header device switcher (godspeed device-switcher.tsx): a quiet
     /// trigger — platform glyph · name · presence dot · sort glyph — opening a
     /// dropdown of every registered device. Selecting one retargets the page.
     fn render_device_switcher(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -635,7 +635,7 @@ impl AccountsPage {
             let s = self.state.read(cx);
             (s.devices.clone(), s.local_device_id.clone())
         };
-        // Stable row order (registration time, then id) — zeron's switcher
+        // Stable row order (registration time, then id) — godspeed's switcher
         // sorts the same way so rows never reshuffle on heartbeats.
         devices.sort_by(|a, b| {
             a.created_at
@@ -1408,7 +1408,7 @@ impl AccountsPage {
     /// same geometry, so loaded rows land without a layout jump.
     fn render_embedded_skeleton(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use crate::motion;
-        let delta = motion::pulse_delta(&motion::ZERON_PULSE, cx.entity_id(), cx);
+        let delta = motion::pulse_delta(&motion::GODSPEED_PULSE, cx.entity_id(), cx);
         let ghost = |w: f32, h: f32| {
             div()
                 .flex_none()
@@ -1500,7 +1500,7 @@ impl AccountsPage {
             }
             _ => login_copy(login.harness, login.provider),
         };
-        // "Reopen the sign-in page" (zeron: `text-[12px]
+        // "Reopen the sign-in page" (godspeed: `text-[12px]
         // text-muted-foreground/60 hover:underline`), once there is a page.
         let reopen = login.url.clone().filter(|_| !failed).map(|url| {
             div()
@@ -1622,7 +1622,7 @@ impl AccountsPage {
         Some(popover::modal("add-account-dialog", viewport, card))
     }
 
-    /// A ghost account row (zeron settings.agents.tsx `SkeletonRow`): avatar,
+    /// A ghost account row (godspeed settings.agents.tsx `SkeletonRow`): avatar,
     /// email line, two usage-meter ghosts, a badge — same geometry as the real
     /// row so loaded data lands without a layout jump. `dim` fades row two.
     fn render_skeleton_row(
@@ -1634,7 +1634,7 @@ impl AccountsPage {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         use crate::motion;
-        let delta = motion::pulse_delta(&motion::ZERON_PULSE, cx.entity_id(), cx);
+        let delta = motion::pulse_delta(&motion::GODSPEED_PULSE, cx.entity_id(), cx);
         let ghost = |w: gpui::Length, h: f32, round_full: bool| {
             div()
                 .w(w)
@@ -1900,7 +1900,7 @@ impl Render for AccountsPage {
                 Some(crate::icons::claude_brand()),
             ),
         };
-        // Brand mark inside a 24px centered box (zeron: `grid size-6
+        // Brand mark inside a 24px centered box (godspeed: `grid size-6
         // place-items-center [&_svg]:size-4`).
         let provider_mark = |harness: HarnessId, theme: &Theme| {
             let (mark, tint) = provider_icon(harness);
@@ -1917,7 +1917,7 @@ impl Render for AccountsPage {
                 )
         };
 
-        // One section per provider (zeron settings.agents.tsx `ProviderSection`):
+        // One section per provider (godspeed settings.agents.tsx `ProviderSection`):
         // brand header + Add account, then the account rows card.
         let sections: Vec<AnyElement> = match &self.snapshot {
             Loadable::Idle | Loadable::Loading => PROVIDERS
@@ -2005,7 +2005,7 @@ impl Render for AccountsPage {
                     .into_iter()
                     .map(|(harness, name, cli)| {
                         let accounts = provider_accounts(&snapshot, harness);
-                        // EVERY warning renders its own strip (zeron maps them).
+                        // EVERY warning renders its own strip (godspeed maps them).
                         let warnings: Vec<String> = snapshot
                             .warnings
                             .iter()
@@ -2154,7 +2154,7 @@ impl Render for AccountsPage {
                                     .child(div().flex_1())
                                     .child(
                                         // `text-[12.5px]` + leading 16px Refresh icon,
-                                        // dimmed while a refresh is in flight (zeron
+                                        // dimmed while a refresh is in flight (godspeed
                                         // `disabled:opacity-50`).
                                         widgets::ghost_action(&theme)
                                             .id("accounts-refresh")
@@ -2180,7 +2180,7 @@ impl Render for AccountsPage {
                                     .child(self.render_device_switcher(&theme, cx)),
                             )
                             .children(sections)
-                            // Footer note (zeron: `mt-6 text-[12px] leading-relaxed
+                            // Footer note (godspeed: `mt-6 text-[12px] leading-relaxed
                             // text-muted-foreground/60`).
                             .child(
                                 div()
@@ -2349,7 +2349,7 @@ mod tests {
         // Antigravity has no quota to show and keeps a single login.
         assert!(!reports_usage(HarnessId::Antigravity) && reports_usage(HarnessId::Codex));
         assert!(keeps_one_login(HarnessId::Antigravity) && !keeps_one_login(HarnessId::Cursor));
-        // Hermes rotates its own pool; zeron never switches it, and says so.
+        // Hermes rotates its own pool; godspeed never switches it, and says so.
         assert!(!switches_accounts(HarnessId::Hermes) && switches_accounts(HarnessId::Grok));
         assert!(provider_note(HarnessId::Hermes).is_some_and(|n| n.contains("hermes auth add")));
         assert!(provider_note(HarnessId::Grok).is_none());

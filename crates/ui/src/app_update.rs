@@ -11,7 +11,7 @@
 //! release downloads in the background and is verified, the strip offers
 //! "restart to apply", and a staged update the user never restarts for is
 //! installed when the app quits — so nobody stays on a stale version just
-//! because they never clicked. `ZERON_AUTO_UPDATE=0` keeps it report-only.
+//! because they never clicked. `GODSPEED_AUTO_UPDATE=0` keeps it report-only.
 
 use std::path::{Path, PathBuf};
 
@@ -66,7 +66,7 @@ pub enum StripAction {
 pub struct AppUpdate {
     install: InstallKind,
     blocker: Option<UpdateBlocker>,
-    /// Background download + install on quit (`ZERON_AUTO_UPDATE` unset or on).
+    /// Background download + install on quit (`GODSPEED_AUTO_UPDATE` unset or on).
     automatic: bool,
     edge_url: String,
     data_dir: PathBuf,
@@ -377,7 +377,7 @@ impl AppUpdate {
 
 /// Label + click action of the strip. Self-updating installs drive their flow
 /// from it; blocked installs explain themselves; managed installs without a
-/// desktop path get the `zeron update` hint; unmanaged installs (source builds,
+/// desktop path get the `godspeed update` hint; unmanaged installs (source builds,
 /// hand-copied binaries) are pointed at the GitHub releases page.
 pub fn strip_for(
     install: &InstallKind,
@@ -413,7 +413,7 @@ pub fn strip_for(
     }
     if matches!(install, InstallKind::Managed { .. }) {
         (
-            format!("Update available — v{latest} · run `zeron update`").into(),
+            format!("Update available — v{latest} · run `godspeed update`").into(),
             StripAction::Advise {
                 open_releases: false,
             },
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn strip_follows_the_flow_on_self_updating_installs() {
         let mac_app = InstallKind::MacApp {
-            bundle: PathBuf::from("/Applications/Zeron.app"),
+            bundle: PathBuf::from("/Applications/Godspeed.app"),
         };
         assert_eq!(
             strip_for(&mac_app, false, &Flow::Idle, "0.2.86"),
@@ -471,7 +471,7 @@ mod tests {
         );
         let ready = Flow::Ready {
             version: "0.2.86".into(),
-            staged: PathBuf::from("/tmp/Zeron.app"),
+            staged: PathBuf::from("/tmp/Godspeed.app"),
         };
         assert_eq!(
             strip_for(&mac_app, false, &ready, "0.2.86").1,
@@ -508,7 +508,7 @@ mod tests {
             )
         );
         let managed = InstallKind::Managed {
-            app_root: PathBuf::from("/home/u/.zeron/app"),
+            app_root: PathBuf::from("/home/u/.godspeed/app"),
         };
         let strip = strip_for(&managed, false, &Flow::Idle, "0.2.86");
         if cfg!(target_os = "linux") {
@@ -518,7 +518,7 @@ mod tests {
         } else {
             assert_eq!(
                 strip.0,
-                SharedString::from("Update available — v0.2.86 · run `zeron update`")
+                SharedString::from("Update available — v0.2.86 · run `godspeed update`")
             );
         }
     }
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn windows_installs_drive_the_desktop_flow() {
         let installed = InstallKind::WindowsPortable {
-            directory: PathBuf::from(r"C:\Users\u\AppData\Local\Programs\Zeron"),
+            directory: PathBuf::from(r"C:\Users\u\AppData\Local\Programs\Godspeed"),
         };
         assert_eq!(
             strip_for(&installed, false, &Flow::Idle, "0.2.86"),

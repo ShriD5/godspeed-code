@@ -265,7 +265,7 @@ fn parse_variant(family: &str, label: &str) -> (String, Option<ReasoningLevel>, 
 
 fn effort_word(word: &str, next: Option<&&str>) -> Option<(ReasoningLevel, bool)> {
     Some(match word {
-        // "No Thinking" is Devin's `none`; Zeron's lowest level stands in.
+        // "No Thinking" is Devin's `none`; Godspeed's lowest level stands in.
         "No" if next == Some(&"Thinking") => (ReasoningLevel::Minimal, true),
         "None" | "Minimal" => (ReasoningLevel::Minimal, false),
         "Low" => (ReasoningLevel::Low, false),

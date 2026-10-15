@@ -9,7 +9,7 @@ use zeron_ui::browser::BrowserSurface;
 /// blocking this thread would prevent the frame we're waiting for.
 pub(super) async fn wait_for_visible_window(cx: &mut AsyncApp) -> anyhow::Result<()> {
     // Wayland captures the already-mapped nested compositor's X11 window.
-    if std::env::var("ZERON_BROWSER_CAPTURE_WINDOW").is_ok_and(|id| !id.is_empty()) {
+    if std::env::var("GODSPEED_BROWSER_CAPTURE_WINDOW").is_ok_and(|id| !id.is_empty()) {
         return Ok(());
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -56,7 +56,7 @@ pub(super) fn dispatch(
     event: PlatformInput,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<()> {
-    if std::env::var_os("ZERON_BROWSER_NATIVE_POINTER").is_some() {
+    if std::env::var_os("GODSPEED_BROWSER_NATIVE_POINTER").is_some() {
         let pointer = match &event {
             PlatformInput::MouseDown(e) => Some((e.position, Some(("mousedown", e.button)))),
             PlatformInput::MouseUp(e) => Some((e.position, Some(("mouseup", e.button)))),
@@ -64,7 +64,7 @@ pub(super) fn dispatch(
             _ => None,
         };
         if let Some((position, action)) = pointer {
-            let id = if let Ok(id) = std::env::var("ZERON_BROWSER_CAPTURE_WINDOW") {
+            let id = if let Ok(id) = std::env::var("GODSPEED_BROWSER_CAPTURE_WINDOW") {
                 id
             } else {
                 let ids = std::process::Command::new("xdotool")
@@ -185,7 +185,7 @@ pub async fn exercise(
         eval(&page, "document.getElementById('browser-input').value", cx).await? == "hello linux",
         "GPUI keyboard input did not reach WebKit"
     );
-    if let Ok(id) = std::env::var("ZERON_BROWSER_CAPTURE_WINDOW") {
+    if let Ok(id) = std::env::var("GODSPEED_BROWSER_CAPTURE_WINDOW") {
         let scale = AnyWindowHandle::from(window).update(cx, |_, w, _| w.scale_factor())?;
         let x = ((f32::from(bounds.origin.x) + input[0].as_f64().unwrap() as f32) * scale) as i32;
         let y = ((f32::from(bounds.origin.y) + input[1].as_f64().unwrap() as f32) * scale) as i32;

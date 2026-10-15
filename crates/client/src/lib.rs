@@ -1,6 +1,6 @@
 //! zeron-client — the engine-free thin client ("viewer device").
 //!
-//! A phone (or any frontend without an engine) is a *peer* on the zeron mesh:
+//! A phone (or any frontend without an engine) is a *peer* on the godspeed mesh:
 //! it mirrors the workspace registry, joins per-chat chat2 rooms, renders the
 //! session docs, and drives remote engines through the durable command ledger
 //! (`zeron_doc::SessionDoc::queue_command`) plus host RPCs over the device

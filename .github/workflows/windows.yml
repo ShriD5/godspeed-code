@@ -6,7 +6,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'apps/zeron/**'
+      - 'apps/godspeed/**'
       - 'dist/windows/**'
       - 'crates/**'
       - 'scripts/test-windows-*.ps1'
@@ -18,7 +18,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'apps/zeron/**'
+      - 'apps/godspeed/**'
       - 'dist/windows/**'
       - 'crates/**'
       - 'scripts/test-windows-*.ps1'
@@ -76,7 +76,7 @@ jobs:
       - name: Shader layout tests
         run: cargo test --release --locked -p gpui_windows --lib layout
       - name: Application and updater tests
-        run: cargo test --release --locked -p zeron -p zeron-update
+        run: cargo test --release --locked -p godspeed -p zeron-update
 
   engine-tests:
     runs-on: windows-2022
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/windows-ci-setup
       - name: Build application
-        run: cargo build --release --locked -p zeron
+        run: cargo build --release --locked -p godspeed
       - name: Verify portable and installer packaging
         run: ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
       - name: Installer install/uninstall
@@ -115,13 +115,13 @@ jobs:
           # Exercise real path resolution without touching the runner's account.
           # Port zero cannot connect to another running engine.
           $env:HOME = $null
-          $env:ZERON_DATA_DIR = $null
-          $env:ZERON_EDGE_TOKEN = $null
-          $env:ZERON_IPC_PORT = '0'
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "zeron smoke O'Brien 日本語"
-          $expected = Join-Path $env:LOCALAPPDATA 'Zeron'
+          $env:GODSPEED_DATA_DIR = $null
+          $env:GODSPEED_EDGE_TOKEN = $null
+          $env:GODSPEED_IPC_PORT = '0'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "godspeed smoke O'Brien 日本語"
+          $expected = Join-Path $env:LOCALAPPDATA 'Godspeed'
           $probe = [Diagnostics.ProcessStartInfo]::new()
-          $probe.FileName = (Resolve-Path -LiteralPath './target/release/zeron.exe').Path
+          $probe.FileName = (Resolve-Path -LiteralPath './target/release/godspeed.exe').Path
           $probe.Arguments = 'status'
           $probe.UseShellExecute = $false
           $probe.CreateNoWindow = $true
@@ -140,7 +140,7 @@ jobs:
           } finally { $process.Dispose() }
           $output
           if (-not ($output -contains "Data dir: $expected")) {
-            throw 'Windows startup did not select LOCALAPPDATA/Zeron'
+            throw 'Windows startup did not select LOCALAPPDATA/Godspeed'
           }
           if (-not ($output -match '^Mode:\s+local only$')) {
             throw 'An isolated Windows startup must select local-only mode'
@@ -154,7 +154,7 @@ jobs:
         with:
           name: windows-gui-binaries
           path: |
-            target/release/zeron.exe
+            target/release/godspeed.exe
             target/release/examples/windows-render-fixture.exe
           if-no-files-found: error
           retention-days: 1

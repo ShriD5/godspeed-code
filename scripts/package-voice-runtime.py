@@ -112,7 +112,7 @@ def install(package, destination, target=None):
                     subprocess.run(['codesign', '--verify', '--strict', str(path)], check=True)
         hashes = {p.relative_to(stage).as_posix(): checksum(p)
                   for p in sorted(stage.rglob('*')) if p.is_file()}
-        (stage / 'zeron-runtime.json').write_text(json.dumps({
+        (stage / 'godspeed-runtime.json').write_text(json.dumps({
             'protocol': 1, 'buildCommit': BUILD, 'sourceVersion': VERSION,
             'target': target, 'sha256': hashes}, indent=2) + '\n')
         if destination.exists():

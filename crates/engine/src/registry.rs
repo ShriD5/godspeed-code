@@ -1086,7 +1086,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn antigravity_detection_subprocess() {
-        let Ok(expected) = std::env::var("ZERON_TEST_AGY_INSTALLED") else {
+        let Ok(expected) = std::env::var("GODSPEED_TEST_AGY_INSTALLED") else {
             return;
         };
         let registry = HarnessRegistry::new();
@@ -1127,8 +1127,8 @@ mod tests {
                 .env("HOME", home.path())
                 .env("PATH", &bin)
                 .env_remove("ANTIGRAVITY_ACP_EXECUTABLE")
-                .env("ZERON_NO_LOGIN_SHELL", "1")
-                .env("ZERON_TEST_AGY_INSTALLED", installed.to_string())
+                .env("GODSPEED_NO_LOGIN_SHELL", "1")
+                .env("GODSPEED_TEST_AGY_INSTALLED", installed.to_string())
                 .output()
                 .unwrap();
             assert!(

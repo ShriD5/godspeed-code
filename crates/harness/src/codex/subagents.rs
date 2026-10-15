@@ -42,7 +42,7 @@ impl Subagents {
     }
 
     /// thread/resume returns the stored parent items. Rebuild ownership without
-    /// replaying chips or content that already lives in Zeron's documents.
+    /// replaying chips or content that already lives in Godspeed's documents.
     pub(super) fn restore(&mut self, thread: &Value) {
         for item in thread
             .get("turns")

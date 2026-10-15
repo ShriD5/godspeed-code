@@ -1,7 +1,7 @@
 //! The explorer's footer: two collapsible sections docked under the file
 //! tree — **Subagents** (the spawn chips of the active chat's transcript,
 //! with their live status) and **Chats** (the side chats hanging off the
-//! active chat: forks, and chats an agent spawned through the Zeron MCP
+//! active chat: forks, and chats an agent spawned through the Godspeed MCP
 //! server). Rows borrow the left sidebar's compact session row — 29px, status
 //! glyph, title, time — minus the harness, project and device icons, which
 //! say nothing here (every row shares the parent's context). Clicking a row

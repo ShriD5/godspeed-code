@@ -223,7 +223,7 @@ async fn write_loop(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<Strin
     }
 }
 
-/// The id of a response, tolerantly. zeron always sends numeric ids, but
+/// The id of a response, tolerantly. godspeed always sends numeric ids, but
 /// JSON-RPC lets a server echo them re-encoded — a string `"5"` or float
 /// `5.0` still names request 5. Dropping such a response would strand its
 /// caller forever (the session would spin Working with no per-turn timeout).

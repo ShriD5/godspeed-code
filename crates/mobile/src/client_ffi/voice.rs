@@ -92,7 +92,7 @@ pub enum VoiceEndReason {
     /// The host already has a voice call.
     Busy,
     HostUnavailable,
-    /// The host's Zeron is too old or has remote voice disabled.
+    /// The host's Godspeed is too old or has remote voice disabled.
     HostIncompatible,
     ConnectionLost,
 }

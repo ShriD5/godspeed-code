@@ -4,7 +4,7 @@
 //! The in-memory bridge below stands in for the edge room: it cross-imports Loro
 //! updates (`export(updates)`) between the two engines' workspace docs on a timer,
 //! which is exactly what `RoomClient` + the SessionRoom DO do over the wire. A live
-//! variant against a real edge runs behind `#[ignore]` (ZERON_EDGE_WS, like
+//! variant against a real edge runs behind `#[ignore]` (GODSPEED_EDGE_WS, like
 //! zeron-sync's edge_convergence test).
 
 use std::sync::Arc;
@@ -595,15 +595,15 @@ async fn chat_config_selects_the_run_harness() {
 /// the TS edge (`wrangler dev` in `edge/` with AUTH_MODE=dev):
 ///
 /// ```sh
-/// ZERON_EDGE_WS=ws://127.0.0.1:8787 cargo test -p zeron-engine -- --ignored
+/// GODSPEED_EDGE_WS=ws://127.0.0.1:8787 cargo test -p zeron-engine -- --ignored
 /// ```
 #[tokio::test]
-#[ignore = "requires a live edge: set ZERON_EDGE_WS (e.g. ws://127.0.0.1:8787)"]
+#[ignore = "requires a live edge: set GODSPEED_EDGE_WS (e.g. ws://127.0.0.1:8787)"]
 async fn two_engines_converge_through_a_real_workspace_room() {
     use zeron_engine::doc_host::EdgeConfig;
 
-    let base = std::env::var("ZERON_EDGE_WS")
-        .expect("set ZERON_EDGE_WS to the edge origin, e.g. ws://127.0.0.1:8787");
+    let base = std::env::var("GODSPEED_EDGE_WS")
+        .expect("set GODSPEED_EDGE_WS to the edge origin, e.g. ws://127.0.0.1:8787");
     let org = format!("org-{}", uuid::Uuid::new_v4().simple());
 
     let assemble_live = |dir: &std::path::Path, device_id: &str, user: &str| {

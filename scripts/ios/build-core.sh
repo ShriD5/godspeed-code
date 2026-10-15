@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the Rust mobile core (crates/mobile) for the active Xcode platform and
-# generate its Swift bindings. Run by the Zeron target's "Rust core" build
+# generate its Swift bindings. Run by the Godspeed target's "Rust core" build
 # phase; also runnable by hand (defaults to the simulator, dev profile).
 #
 #   scripts/ios/build-core.sh [iphonesimulator|iphoneos]
@@ -8,7 +8,7 @@
 # Outputs (target/ios-core/<platform>/):
 #   libzeron_mobile.a            linked via LIBRARY_SEARCH_PATHS
 #   include/module.modulemap     `import zeron_coreFFI` (SWIFT_INCLUDE_PATHS)
-# and refreshes apps/ios/Zeron/Core/Generated/zeron_core.swift — committed so
+# and refreshes apps/ios/Godspeed/Core/Generated/zeron_core.swift — committed so
 # Xcode's synchronized folder always sees it; CI fails if it drifts.
 set -euo pipefail
 
@@ -26,8 +26,8 @@ OUT="$ROOT/target/ios-core/$PLATFORM"
 mkdir -p "$OUT/include"
 
 # Iterating on Swift while the core is mid-edit: reuse the last good build.
-if [[ "${ZERON_SKIP_CORE:-}" == "1" && -f "$OUT/libzeron_mobile.a" ]]; then
-  echo "note: ZERON_SKIP_CORE=1 — reusing $OUT/libzeron_mobile.a"
+if [[ "${GODSPEED_SKIP_CORE:-}" == "1" && -f "$OUT/libzeron_mobile.a" ]]; then
+  echo "note: GODSPEED_SKIP_CORE=1 — reusing $OUT/libzeron_mobile.a"
   exit 0
 fi
 
@@ -53,6 +53,6 @@ GEN="$OUT/gen"
 cp "$GEN/zeron_coreFFI.h" "$OUT/include/zeron_coreFFI.h"
 cp "$GEN/zeron_coreFFI.modulemap" "$OUT/include/module.modulemap"
 # Only touch the Swift file when it changed so Xcode doesn't recompile it.
-SWIFT_OUT="$ROOT/apps/ios/Zeron/Core/Generated/zeron_core.swift"
+SWIFT_OUT="$ROOT/apps/ios/Godspeed/Core/Generated/zeron_core.swift"
 mkdir -p "$(dirname "$SWIFT_OUT")"
 cmp -s "$GEN/zeron_core.swift" "$SWIFT_OUT" || cp "$GEN/zeron_core.swift" "$SWIFT_OUT"

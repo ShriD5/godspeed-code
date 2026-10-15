@@ -1,5 +1,5 @@
 //! The colors visuals paint with: the app palette for one appearance
-//! (`apps/ios/Zeron/Design/Palette.swift`, the desktop's Zeron theme), and
+//! (`apps/ios/Godspeed/Design/Palette.swift`, the desktop's Godspeed theme), and
 //! the categorical chart series derived from its accent as the desktop does
 //! (`crates/ui/src/visuals.rs`, `chart_series`).
 //!

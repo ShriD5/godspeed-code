@@ -7719,7 +7719,7 @@ mod tests {
 #[cfg(feature = "project-palette-fixture")]
 impl Shell {
     pub fn fixture_project_responses(&mut self, cx: &mut Context<Self>) {
-        if std::env::var_os("ZERON_FIXTURE_BACKGROUND").is_some() {
+        if std::env::var_os("GODSPEED_FIXTURE_BACKGROUND").is_some() {
             self.composer
                 .read(cx)
                 .pickers()

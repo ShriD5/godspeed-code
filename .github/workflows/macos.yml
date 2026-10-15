@@ -115,7 +115,7 @@ jobs:
         env:
           # Match the old `cargo check --release`: no debug assertions.
           CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: false
-        run: cargo check --locked -p zeron
+        run: cargo check --locked -p godspeed
       - name: Updater, preview, CoreText and native UI regressions
         run: |
           # zeron-text's coretext tests are macOS-only (#![cfg(target_os = "macos")]); its other
@@ -151,7 +151,7 @@ jobs:
       - name: Project discovery, stable URLs and HMR in native WebKit
         timeout-minutes: 5
         env:
-          ZERON_PREVIEW_AUTO_OPEN: 1
+          GODSPEED_PREVIEW_AUTO_OPEN: 1
         run: |
           VITE_BINARY="$GITHUB_WORKSPACE/edge/node_modules/vite/bin/vite.js" scripts/ci/run-macos-fixture.sh target/debug/examples/preview-fixture "$RUNNER_TEMP/preview-captures"
           test -f "$RUNNER_TEMP/preview-captures/result.txt"
@@ -214,7 +214,7 @@ jobs:
           cargo build --locked -p zeron-mobile --bin uniffi-bindgen --features bindgen
           target/debug/uniffi-bindgen generate --library target/debug/libzeron_mobile.so \
             --language swift --out-dir "$RUNNER_TEMP/gen" >/dev/null
-          diff -u apps/ios/Zeron/Core/Generated/zeron_core.swift "$RUNNER_TEMP/gen/zeron_core.swift"
+          diff -u apps/ios/Godspeed/Core/Generated/zeron_core.swift "$RUNNER_TEMP/gen/zeron_core.swift"
           # The simulator job links these headers instead of regenerating them.
           mkdir -p "$RUNNER_TEMP/ios-include"
           cp "$RUNNER_TEMP/gen/zeron_coreFFI.h" "$RUNNER_TEMP/ios-include/zeron_coreFFI.h"
@@ -276,9 +276,9 @@ jobs:
         working-directory: apps/ios
         env:
           # Reuse the core built above instead of rebuilding it in the Xcode build phase.
-          ZERON_SKIP_CORE: 1
+          GODSPEED_SKIP_CORE: 1
         run: |
-          xcodebuild -project Zeron.xcodeproj -scheme Zeron \
+          xcodebuild -project Godspeed.xcodeproj -scheme Godspeed \
             -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
             -resultBundlePath "$RUNNER_TEMP/ios-tests.xcresult" \
             -only-testing:ZeronTests CODE_SIGNING_ALLOWED=NO test

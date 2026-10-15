@@ -13,7 +13,7 @@
 //!
 //! The RPC path multiplexes NOTHING new: each distinct client `connId` becomes a virtual
 //! string-frame connection feeding the existing [`serve_connection`] seam, so every RPC
-//! handler works through the relay untouched (the port of zeron's `device-room-host.ts`).
+//! handler works through the relay untouched (the port of godspeed's `device-room-host.ts`).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -308,7 +308,7 @@ impl HostRelayConfig {
 /// `service` to every client conn through virtual string-frame connections. Immortal
 /// supervisor: quiet while signed out, reconnects with backoff when the socket drops
 /// (including the 4409 "superseded by new host connection" close — the newest host wins,
-/// so the superseded process backs off and retries, mirroring zeron's DeviceRoomHost).
+/// so the superseded process backs off and retries, mirroring godspeed's DeviceRoomHost).
 pub struct HostRelay {
     task: tokio::task::JoinHandle<()>,
 }
@@ -769,7 +769,7 @@ pub struct LinkCacheConfig {
     pub edge_url: String,
     pub token: Arc<dyn TokenSource>,
     /// Exponential dial cooldown after failures (base, cap) — a dead peer must not be
-    /// redialed at full cadence; callers fail fast in between (zeron peers.ts behavior).
+    /// redialed at full cadence; callers fail fast in between (godspeed peers.ts behavior).
     pub cooldown_base: Duration,
     pub cooldown_max: Duration,
     /// Readiness probe budget: the relay accepts client joins even when the host is
@@ -786,7 +786,7 @@ pub struct LinkCacheConfig {
 impl LinkCacheConfig {
     pub fn new(edge_url: impl Into<String>, token: Arc<dyn TokenSource>) -> Self {
         // Interactive remote control (remote folders, terminals, accounts) rides
-        // this cache: one blip must cost seconds, not minutes. The old zeron
+        // this cache: one blip must cost seconds, not minutes. The old godspeed
         // 15s→5min curve punished a single failed dial with a 5-minute refusal;
         // here the first failure backs off 5s and even a dead peer is re-probed
         // within a minute. A generous probe budget keeps a slow-waking laptop
@@ -813,7 +813,7 @@ struct DialState {
     cooldown_until: Option<Instant>,
 }
 
-/// Lazily-dialed, cached peer links keyed by device id — the Rust twin of zeron's
+/// Lazily-dialed, cached peer links keyed by device id — the Rust twin of godspeed's
 /// `Peers`. Cache hits never wait behind an in-flight dial; dials to the same device are
 /// serialized per device (a global lock would head-of-line-block healthy peers); links
 /// self-evict when the transport drops; a failed RPC should call [`LinkCache::invalidate`]

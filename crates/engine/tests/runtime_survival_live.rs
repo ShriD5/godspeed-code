@@ -5,10 +5,10 @@
 //! (`stop_tears_down_all_agent_work`), and a resumed process never reads
 //! as done before its reply.
 //!
-//! ZERON_TEST_HARNESS=claude ZERON_TEST_MODEL=claude-haiku-4-5 \
+//! GODSPEED_TEST_HARNESS=claude GODSPEED_TEST_MODEL=claude-haiku-4-5 \
 //!   cargo test -p zeron-engine --test runtime_survival_live -- --ignored --nocapture
 //!
-//! `ZERON_TEST_HARNESS`: claude | codex | cursor | opencode | devin | hermes |
+//! `GODSPEED_TEST_HARNESS`: claude | codex | cursor | opencode | devin | hermes |
 //! pi | antigravity | grok. Harnesses whose agents can hold background work
 //! across turns (claude, codex) must also finish that work after the cancel.
 use std::{sync::Arc, time::Duration};
@@ -117,8 +117,8 @@ fn run(
 #[tokio::test]
 #[ignore = "uses real model quota; select harness and inexpensive model explicitly"]
 async fn agent_process_survives_sends_and_cancel() {
-    let name = std::env::var("ZERON_TEST_HARNESS").expect("select harness");
-    let model = std::env::var("ZERON_TEST_MODEL").ok();
+    let name = std::env::var("GODSPEED_TEST_HARNESS").expect("select harness");
+    let model = std::env::var("GODSPEED_TEST_MODEL").ok();
     let harness: Arc<dyn Harness> = match name.as_str() {
         "claude" => Arc::new(ClaudeHarness::new()),
         "codex" => Arc::new(CodexHarness::new()),
@@ -348,7 +348,7 @@ async fn agent_process_survives_sends_and_cancel() {
     println!("{name}: steer into a long command stayed Working until its real end");
 
     // 2c. Switch models on a follow-up: the live process adopts it.
-    if let Ok(other) = std::env::var("ZERON_TEST_OTHER_MODEL") {
+    if let Ok(other) = std::env::var("GODSPEED_TEST_OTHER_MODEL") {
         let before = completed_turns(&core);
         core.doc_host
             .queue_command(
@@ -402,13 +402,13 @@ async fn agent_process_survives_sends_and_cancel() {
 /// may complete the message — no Idle, no completion ping — before its
 /// reply.
 ///
-/// ZERON_TEST_HARNESS=claude ZERON_TEST_MODEL=claude-sonnet-5-5 \
+/// GODSPEED_TEST_HARNESS=claude GODSPEED_TEST_MODEL=claude-sonnet-5-5 \
 ///   cargo test -p zeron-engine --test runtime_survival_live resume_after -- --ignored --nocapture
 #[tokio::test]
 #[ignore = "uses real model quota; select harness and inexpensive model explicitly"]
 async fn resume_after_killed_background_work_is_not_done_early() {
-    let name = std::env::var("ZERON_TEST_HARNESS").unwrap_or_else(|_| "claude".into());
-    let model = std::env::var("ZERON_TEST_MODEL").ok();
+    let name = std::env::var("GODSPEED_TEST_HARNESS").unwrap_or_else(|_| "claude".into());
+    let model = std::env::var("GODSPEED_TEST_MODEL").ok();
     let id = match name.as_str() {
         "claude" => zeron_proto::HarnessId::ClaudeCode,
         "codex" => zeron_proto::HarnessId::Codex,
@@ -563,13 +563,13 @@ async fn resume_after_killed_background_work_is_not_done_early() {
 /// `agent_process_survives_sends_and_cancel`). The next message resumes the
 /// conversation in a fresh process without reading as done early.
 ///
-/// ZERON_TEST_HARNESS=claude ZERON_TEST_MODEL=claude-sonnet-5-5 \
+/// GODSPEED_TEST_HARNESS=claude GODSPEED_TEST_MODEL=claude-sonnet-5-5 \
 ///   cargo test -p zeron-engine --test runtime_survival_live stop_ -- --ignored --nocapture
 #[tokio::test]
 #[ignore = "uses real model quota; select harness and inexpensive model explicitly"]
 async fn stop_tears_down_all_agent_work() {
-    let name = std::env::var("ZERON_TEST_HARNESS").unwrap_or_else(|_| "claude".into());
-    let model = std::env::var("ZERON_TEST_MODEL").ok();
+    let name = std::env::var("GODSPEED_TEST_HARNESS").unwrap_or_else(|_| "claude".into());
+    let model = std::env::var("GODSPEED_TEST_MODEL").ok();
     let (id, harness): (zeron_proto::HarnessId, Arc<dyn Harness>) = match name.as_str() {
         "claude" => (
             zeron_proto::HarnessId::ClaudeCode,
@@ -716,7 +716,7 @@ async fn stop_tears_down_all_agent_work() {
 /// agent. With a short idle window, the shell outlives the window, finishes
 /// in the same process, and its completion wakes the agent.
 ///
-/// ZERON_TEST_MODEL=claude-haiku-5-5 \
+/// GODSPEED_TEST_MODEL=claude-haiku-5-5 \
 ///   cargo test -p zeron-engine --test runtime_survival_live idle_reaper_ -- --ignored --nocapture
 #[tokio::test]
 #[ignore = "uses real model quota; select an inexpensive model explicitly"]
@@ -724,9 +724,9 @@ async fn idle_reaper_spares_a_background_shell_until_it_wakes_the_agent() {
     // SAFETY: set before the engine starts; this test binary runs it alone
     // under the documented filter.
     unsafe {
-        std::env::set_var("ZERON_SESSION_IDLE_MS", "15000");
+        std::env::set_var("GODSPEED_SESSION_IDLE_MS", "15000");
     }
-    let model = std::env::var("ZERON_TEST_MODEL").ok();
+    let model = std::env::var("GODSPEED_TEST_MODEL").ok();
     let id = zeron_proto::HarnessId::ClaudeCode;
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_str().unwrap().to_owned();

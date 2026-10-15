@@ -196,8 +196,8 @@ fn full_shell_file_tab_drops_reach_side_chat_body(cx: &mut TestAppContext) {
             shell.read_with(cx, |shell, cx| {
                 let after = text(&shell.side_chats[&2].composer, cx);
                 assert_eq!(
-                    after.matches("zeron-file:src/tab.rs").count(),
-                    before.matches("zeron-file:src/tab.rs").count() + 1,
+                    after.matches("godspeed-file:src/tab.rs").count(),
+                    before.matches("godspeed-file:src/tab.rs").count() + 1,
                     "drop failed: expanded={expanded}, over_input={over_input}"
                 );
                 assert!(text(&shell.composer, cx).is_empty());
@@ -303,7 +303,7 @@ fn file_tab_drops_attach_to_side_chat_transcript_and_main_without_reordering(
     });
     drag(cx, "right-surface-tab-0", to);
     shell.read_with(cx, |shell, cx| {
-        assert!(text(&shell.side_chats[&2].composer, cx).contains("zeron-file:src/tab.rs"));
+        assert!(text(&shell.side_chats[&2].composer, cx).contains("godspeed-file:src/tab.rs"));
         assert!(text(&shell.side_chats[&1].composer, cx).is_empty());
         assert!(text(&shell.composer, cx).is_empty());
         assert_eq!(shell.resolved_right_active(cx), RightSurface::SideChat(2));
@@ -311,7 +311,7 @@ fn file_tab_drops_attach_to_side_chat_transcript_and_main_without_reordering(
     });
     drag(cx, "right-surface-tab-0", gpui::point(px(200.), px(150.)));
     shell.read_with(cx, |shell, cx| {
-        assert!(text(&shell.composer, cx).contains("zeron-file:src/tab.rs"));
+        assert!(text(&shell.composer, cx).contains("godspeed-file:src/tab.rs"));
         assert_eq!(shell.right_tabs[&shell.panel_key(cx)], original_tabs);
     });
     // Chat tabs have no workspace path and must not insert a mention.

@@ -1043,7 +1043,7 @@ fn normalize_watch_path_including_temp(root: &Path, path: &Path) -> Option<Strin
 fn is_internal_temp_wire_path(path: &str) -> bool {
     path.rsplit('/')
         .next()
-        .is_some_and(|name| name.starts_with(".zeron-save-") && name.ends_with(".tmp"))
+        .is_some_and(|name| name.starts_with(".godspeed-save-") && name.ends_with(".tmp"))
 }
 
 fn exceeds_watch_budget(root: &Path) -> bool {
@@ -2043,7 +2043,7 @@ fn write_file_blocking(
     let parent = target
         .parent()
         .ok_or_else(|| WorkspaceFilesError::Io("file has no parent directory".into()))?;
-    let temp_path = parent.join(format!(".zeron-save-{}.tmp", uuid::Uuid::new_v4()));
+    let temp_path = parent.join(format!(".godspeed-save-{}.tmp", uuid::Uuid::new_v4()));
     let mut temp = TempFileGuard::new(temp_path.clone());
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -3244,7 +3244,7 @@ mod tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".zeron-save-")
+                .starts_with(".godspeed-save-")
         }));
     }
 
@@ -3331,7 +3331,7 @@ mod tests {
             ),
             Ok(
                 notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
-                    .add_path(root.join(".zeron-save-dead.tmp"))
+                    .add_path(root.join(".godspeed-save-dead.tmp"))
                     .add_path(root.join("saved.rs")),
             ),
         ];

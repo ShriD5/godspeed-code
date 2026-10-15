@@ -1,4 +1,4 @@
-//! Zeron mobile core — the UniFFI surface shared by the iOS and Android apps.
+//! Godspeed mobile core — the UniFFI surface shared by the iOS and Android apps.
 //!
 //! - [`client_ffi`]: account, workspace and session state (wraps `zeron-client`).
 //! - [`layout`]: analytic transcript layout — markdown → measured display lists

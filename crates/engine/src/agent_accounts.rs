@@ -1,5 +1,5 @@
 //! AgentAccounts — the logins of every agent CLI on this device that has one
-//! (feature-inventory §3.7 "Agent accounts"; port of zeron's
+//! (feature-inventory §3.7 "Agent accounts"; port of godspeed's
 //! `agent-accounts.ts`).
 //!
 //! Grok, Devin, OpenCode, Pi and Hermes live in [`stores`] (credential
@@ -16,7 +16,7 @@
 //! | Hermes   | yes    | no¹    | `hermes auth add` (device code) | yes  |
 //!
 //! ¹ Hermes keeps every account in its own credential pool and rotates
-//! through it itself; zeron lists the pool and adds to it through Hermes'
+//! through it itself; godspeed lists the pool and adds to it through Hermes'
 //! own CLI, but never rewrites it.
 //!
 //! The original four providers each store exactly one live login:
@@ -30,7 +30,7 @@
 //! - **Cursor** — `~/.cursor/sdk/auth.json`: the Cursor SDK's credential store
 //!   (`StoredSdkCredentials`) holding the named, expiring user API key its
 //!   browser login mints. Deliberately SEPARATE from `cursor-agent login`'s
-//!   whole-account session tokens, which zeron never reads.
+//!   whole-account session tokens, which godspeed never reads.
 //! - **Antigravity** — its ACP server keeps one Google login per
 //!   `GEMINI_HOME`: a token blob in the macOS Keychain (service `gemini`) or
 //!   `antigravity-acp/acp_token.json`, plus the method in `settings.json`.
@@ -330,7 +330,7 @@ struct SlotProfile {
     auth_kind: AgentAuthKind,
 }
 
-/// One saved login (`{slotId}.json`), same field surface as zeron's slot files.
+/// One saved login (`{slotId}.json`), same field surface as godspeed's slot files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Slot {
@@ -522,7 +522,7 @@ enum NoCredentials {
     Missing,
     /// Cursor's minted key is past its expiry.
     KeyExpired,
-    /// The provider behind this login has no usage view zeron can read
+    /// The provider behind this login has no usage view godspeed can read
     /// (a Hermes API key for some other vendor, Pi's Copilot session).
     Unsupported,
 }
@@ -1051,7 +1051,7 @@ impl AgentAccounts {
                 });
             }
         }
-        // Antigravity keeps exactly one login whose token zeron never reads:
+        // Antigravity keeps exactly one login whose token godspeed never reads:
         // one active, unswitchable row, and no usage (it has no quota view).
         if let Some(login) = antigravity {
             accounts.push(login.account());
@@ -1067,7 +1067,7 @@ impl AgentAccounts {
     ///
     /// Refused for Hermes (and by [`Self::forget`]): Hermes owns its
     /// credential pool and rotates through it itself — a running Hermes
-    /// would write its own order back over any change — so zeron keeps it
+    /// would write its own order back over any change — so godspeed keeps it
     /// read-only (see [`stores`]).
     pub async fn activate(
         &self,
@@ -1076,7 +1076,7 @@ impl AgentAccounts {
     ) -> Result<AgentAccountsSnapshot, EngineError> {
         if harness == HarnessId::Hermes {
             return Err(EngineError::Other(
-                "Hermes picks from its own credential pool — zeron doesn't reorder it. Use \
+                "Hermes picks from its own credential pool — godspeed doesn't reorder it. Use \
                  `hermes auth` to manage it."
                     .into(),
             ));
@@ -1210,7 +1210,7 @@ impl AgentAccounts {
     }
 
     /// Whether a per-provider agent has a live entry under `store_key` at
-    /// all, identified or not — a live login zeron can't identify is still
+    /// all, identified or not — a live login godspeed can't identify is still
     /// never replaced unasked.
     fn has_live_entry(&self, harness: HarnessId, store_key: Option<&str>) -> bool {
         match harness {
@@ -1344,7 +1344,7 @@ impl AgentAccounts {
             return Err(EngineError::Other("Unknown account.".into()));
         }
         if harness == HarnessId::Hermes {
-            // Hermes' rows are its own pool, not zeron slots.
+            // Hermes' rows are its own pool, not godspeed slots.
             return Err(EngineError::Other(
                 "Hermes keeps this login in its own credential pool — remove it with \
                  `hermes auth remove`."
@@ -1573,7 +1573,7 @@ impl AgentAccounts {
                 &[("Content-Type", "text/html; charset=utf-8")],
                 &format!(
                     "<!doctype html><title>Sign-in failed</title><p>{}</p>\
-                     <p>Return to Zeron to try again.</p>",
+                     <p>Return to Godspeed to try again.</p>",
                     html_escape(&zeron_harness::redact::redact_output(&error.to_string()))
                 ),
             ),
@@ -1835,7 +1835,7 @@ impl AgentAccounts {
         }
     }
 
-    /// Cursor: the SDK's own PKCE browser flow, driven through the zeron shim
+    /// Cursor: the SDK's own PKCE browser flow, driven through the godspeed shim
     /// in login mode. The minted key lands in a throwaway store file (never
     /// the live `~/.cursor/sdk/auth.json`), then snapshots into a slot on
     /// poll — mirroring codex's throwaway `CODEX_HOME`.
@@ -2270,7 +2270,7 @@ impl AgentAccounts {
         }
     }
 
-    /// Lazy TTL sweep (zeron uses a background fiber; native reaps on the next
+    /// Lazy TTL sweep (godspeed uses a background fiber; native reaps on the next
     /// accounts call — same bound, no standing task).
     fn sweep_flows(&self) {
         let stale: Vec<String> = lock(&self.inner.flows)
@@ -2997,7 +2997,7 @@ mod keychain {
 
 // ── Antigravity ─────────────────────────────────────────────────────────────
 
-/// Antigravity's live login, as far as zeron can see it without its secret.
+/// Antigravity's live login, as far as godspeed can see it without its secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AntigravityLogin {
     /// The canonical auth method (`oauth-personal`, `oauth-business`, …).
@@ -3549,7 +3549,7 @@ fn usage_error_message(
         ProbeError::Http { status, .. } => format!("Usage check failed ({status})"),
         ProbeError::Network { timeout: true } => format!("{provider} didn't respond{retry}"),
         ProbeError::Network { .. } => format!("Couldn't reach {provider}{retry}"),
-        ProbeError::Schema => "Usage format changed — update zeron".to_string(),
+        ProbeError::Schema => "Usage format changed — update godspeed".to_string(),
         ProbeError::NoCredentials {
             why: NoCredentials::ApiKey,
         } => "API keys have no plan usage".to_string(),
@@ -3563,7 +3563,7 @@ fn usage_error_message(
             why: NoCredentials::Unsupported,
         } => "No usage view for this login".to_string(),
         ProbeError::UntrustedEndpoint => {
-            "Usage skipped — this login names a server zeron doesn't recognize".to_string()
+            "Usage skipped — this login names a server godspeed doesn't recognize".to_string()
         }
     })
 }
@@ -3787,15 +3787,15 @@ fn ensure_noop_browser(root: &Path) -> Option<PathBuf> {
 }
 
 /// A "browser" that records the url it was asked to open into
-/// `$ZERON_LOGIN_URL_FILE` instead of opening it — so the app opens the
+/// `$GODSPEED_LOGIN_URL_FILE` instead of opening it — so the app opens the
 /// one tab (on the requesting device, for a remote login) even when the CLI
 /// never prints its sign-in url. Unix only, like [`ensure_noop_browser`].
 #[cfg(unix)]
 fn ensure_recording_browser(root: &Path) -> Option<PathBuf> {
     // `umask 077`: should the file not exist yet, it's still owner-only
     // (the sign-in pre-creates it 0600).
-    const SCRIPT: &str = "#!/bin/sh\numask 077\n[ -n \"$ZERON_LOGIN_URL_FILE\" ] && \
-                          printf '%s\\n' \"$1\" >> \"$ZERON_LOGIN_URL_FILE\"\nexit 0\n";
+    const SCRIPT: &str = "#!/bin/sh\numask 077\n[ -n \"$GODSPEED_LOGIN_URL_FILE\" ] && \
+                          printf '%s\\n' \"$1\" >> \"$GODSPEED_LOGIN_URL_FILE\"\nexit 0\n";
     let path = root.join(".record-browser");
     if std::fs::read_to_string(&path).ok().as_deref() != Some(SCRIPT) {
         std::fs::write(&path, SCRIPT).ok()?;

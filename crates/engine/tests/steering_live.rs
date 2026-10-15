@@ -1,5 +1,5 @@
 //! Opt-in real-model checks through the production queue and command executor.
-//! ZERON_TEST_HARNESS=claude ZERON_TEST_MODEL=claude-haiku-4-5 cargo test -p zeron-engine --test steering_live -- --ignored --nocapture
+//! GODSPEED_TEST_HARNESS=claude GODSPEED_TEST_MODEL=claude-haiku-4-5 cargo test -p zeron-engine --test steering_live -- --ignored --nocapture
 use std::{sync::Arc, time::Duration};
 use zeron_doc::{MessageRole, SessionCommandPayload};
 use zeron_engine::{EngineCore, HarnessRegistry};
@@ -32,9 +32,9 @@ async fn wait(core: &EngineCore, mut predicate: impl FnMut() -> bool, what: &str
 #[tokio::test]
 #[ignore = "uses real model quota; select harness and inexpensive model explicitly"]
 async fn rapid_steers_preserve_children_context_and_held_queue() {
-    let name = std::env::var("ZERON_TEST_HARNESS").expect("select harness");
-    let model = std::env::var("ZERON_TEST_MODEL").ok();
-    let burst: usize = std::env::var("ZERON_TEST_BURST")
+    let name = std::env::var("GODSPEED_TEST_HARNESS").expect("select harness");
+    let model = std::env::var("GODSPEED_TEST_MODEL").ok();
+    let burst: usize = std::env::var("GODSPEED_TEST_BURST")
         .ok()
         .map(|s| s.parse().unwrap())
         .unwrap_or(3);

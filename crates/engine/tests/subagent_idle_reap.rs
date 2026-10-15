@@ -34,7 +34,7 @@ fn init_env() {
     ONCE.call_once(|| {
         // SAFETY: called before any engine (and thus any reader of the var)
         // exists in this test process; all tests share the one value.
-        unsafe { std::env::set_var("ZERON_SESSION_IDLE_MS", IDLE_MS.to_string()) };
+        unsafe { std::env::set_var("GODSPEED_SESSION_IDLE_MS", IDLE_MS.to_string()) };
     });
 }
 

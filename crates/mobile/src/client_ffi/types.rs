@@ -1077,7 +1077,7 @@ pub struct FileMatch {
     pub is_dir: bool,
 }
 
-/// The canonical mention link the host understands (`[name](zeron-file:path)`).
+/// The canonical mention link the host understands (`[name](godspeed-file:path)`).
 #[uniffi::export]
 pub fn file_mention_link(path: String, is_dir: bool) -> String {
     zeron_proto::file_mentions::local_file_link(&path, is_dir)

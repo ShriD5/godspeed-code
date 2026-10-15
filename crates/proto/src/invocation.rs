@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
-pub const INVOCATION_SCHEME: &str = "zeron-invoke:";
+pub const INVOCATION_SCHEME: &str = "godspeed-invoke:";
 
 fn escape_label(label: &str) -> String {
     label
@@ -606,7 +606,7 @@ mod tests {
             "first /compact then [$review](/repo/a%20b/SKILL.md) finally"
         );
         assert_eq!(invocation_prompt("/$not-a-chip"), "/$not-a-chip");
-        assert!(invocation_links("[x](zeron-invoke:bad)").is_empty());
+        assert!(invocation_links("[x](godspeed-invoke:bad)").is_empty());
         for code in [
             format!("`{}`", command.link()),
             format!("```\n{}\n```", command.link()),

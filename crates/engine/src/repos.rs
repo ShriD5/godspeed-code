@@ -1,13 +1,13 @@
 //! Repos — this device's git repositories, branches, worktrees, and the folder
-//! browser (feature-inventory §3.5; port of zeron's `repos.ts` + `folder-lister.ts`).
+//! browser (feature-inventory §3.5; port of godspeed's `repos.ts` + `folder-lister.ts`).
 //!
 //! Repos are device-local (paths differ per machine), so the known set is a plain
 //! JSON list (`{data_dir}/repos.json`) — no sync. Existing repos can live anywhere
 //! the user points us; cloned/created ones land in `{data_dir}/repos`. Worktrees are
-//! created under `~/.zeron/worktrees/<repoName>/<worktreeName>` (NOT the data
+//! created under `~/.godspeed/worktrees/<repoName>/<worktreeName>` (NOT the data
 //! dir — worktrees are user-facing working checkouts), with an auto-generated name +
-//! matching `zeron/<name>` branch. Device preferences can choose another root;
-//! `ZERON_WORKTREES_DIR` takes precedence over those preferences.
+//! matching `godspeed/<name>` branch. Device preferences can choose another root;
+//! `GODSPEED_WORKTREES_DIR` takes precedence over those preferences.
 //!
 //! All git access is via subprocess (`tokio::process`) — never libgit2.
 
@@ -59,7 +59,7 @@ const ADJECTIVES: &[&str] = &[
     "sharp", "gentle", "vivid", "amber", "cobalt",
 ];
 const NOUNS: &[&str] = &[
-    "otter", "harbor", "falcon", "cedar", "meadow", "zeron", "delta", "ember", "lynx", "maple",
+    "otter", "harbor", "falcon", "cedar", "meadow", "godspeed", "delta", "ember", "lynx", "maple",
     "onyx", "quartz", "raven", "summit", "willow", "aspen",
 ];
 
@@ -173,7 +173,7 @@ impl Repos {
     }
 
     /// Where projectless chats' folders live on this host: the engine data
-    /// dir's `scratch` (`~/.zeron/scratch` for the default data dir), as
+    /// dir's `scratch` (`~/.godspeed/scratch` for the default data dir), as
     /// t3code keeps its under `~/.t3/scratch`.
     pub(crate) fn scratch_root(&self) -> PathBuf {
         self.inner.data_dir.join("scratch")
@@ -184,14 +184,14 @@ impl Repos {
     }
 
     /// Device preferences live in `data_dir`. New worktrees use the custom
-    /// location or `~/.zeron/worktrees`; a nonempty `$ZERON_WORKTREES_DIR`
+    /// location or `~/.godspeed/worktrees`; a nonempty `$GODSPEED_WORKTREES_DIR`
     /// overrides both (including test isolation).
     pub fn new(data_dir: &Path, device_id: &str) -> Self {
         Self::with_worktree_preferences(
             data_dir,
             device_id,
-            home_dir().join(".zeron").join("worktrees"),
-            std::env::var_os("ZERON_WORKTREES_DIR")
+            home_dir().join(".godspeed").join("worktrees"),
+            std::env::var_os("GODSPEED_WORKTREES_DIR")
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
         )
@@ -779,7 +779,7 @@ impl Repos {
     }
 
     /// Public commit history in topological order. Only user-facing branches,
-    /// remotes, and tags seed the walk, so Zeron's internal refs never leak
+    /// remotes, and tags seed the walk, so Godspeed's internal refs never leak
     /// into the graph or keep otherwise-unreachable checkpoints visible.
     pub async fn history(
         &self,
@@ -1342,7 +1342,7 @@ impl Repos {
     // ── worktrees ───────────────────────────────────────────────────────────
 
     /// `git worktree add` an isolated checkout under
-    /// `{worktrees_root}/<repoName>/<generatedName>`, on a fresh `zeron/<name>`
+    /// `{worktrees_root}/<repoName>/<generatedName>`, on a fresh `godspeed/<name>`
     /// branch off `branch`.
     pub async fn create_worktree(
         &self,
@@ -1389,7 +1389,7 @@ impl Repos {
                 ADJECTIVES[(seed % ADJECTIVES.len() as u64) as usize],
                 NOUNS[((seed / 31) % NOUNS.len() as u64) as usize]
             );
-            if !base.join(&candidate).exists() && !existing.contains(&format!("zeron/{candidate}"))
+            if !base.join(&candidate).exists() && !existing.contains(&format!("godspeed/{candidate}"))
             {
                 name = Some(candidate);
                 break;
@@ -1401,7 +1401,7 @@ impl Repos {
         #[cfg(windows)]
         validate_windows_worktree_path(&path.to_string_lossy())?;
         std::fs::create_dir_all(&base)?;
-        let branch_name = format!("zeron/{name}");
+        let branch_name = format!("godspeed/{name}");
         #[cfg(windows)]
         self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
             .await?;
@@ -1537,10 +1537,10 @@ impl Repos {
         .is_ok()
     }
 
-    /// Rename a zeron-created worktree branch after its chat's generated title
-    /// (port of zeron's `renameWorktreeBranch`). Guards:
+    /// Rename a godspeed-created worktree branch after its chat's generated title
+    /// (port of godspeed's `renameWorktreeBranch`). Guards:
     /// - respect an external checkout/rename: only act while the worktree is still
-    ///   on `expected_branch` AND that branch is the original `zeron/<folderName>`;
+    ///   on `expected_branch` AND that branch is the original `godspeed/<folderName>`;
     /// - a title-slug collision gets a stable 6-hex suffix (hash of the worktree
     ///   path); a collision on THAT too fails.
     ///
@@ -1557,7 +1557,7 @@ impl Repos {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        if current != expected_branch || expected_branch != format!("zeron/{folder}") {
+        if current != expected_branch || expected_branch != format!("godspeed/{folder}") {
             return Ok(current);
         }
         let preferred = worktree_branch_from_title(title);
@@ -1586,7 +1586,7 @@ impl Repos {
     }
 
     /// Best-effort worktree removal (if it still exists), then prune stale refs.
-    /// Deletes the worktree's branch ONLY when zeron created it (`zeron/…`) — the
+    /// Deletes the worktree's branch ONLY when godspeed created it (`godspeed/…`) — the
     /// user may have checked out their own branch inside the worktree.
     pub async fn delete_worktree(
         &self,
@@ -1616,7 +1616,7 @@ impl Repos {
             }
         }
         let _ = self.git(&["worktree", "prune"], Some(repo_path)).await;
-        if branch.starts_with("zeron/") {
+        if branch.starts_with("godspeed/") {
             let _ = self.git(&["branch", "-D", &branch], Some(repo_path)).await;
         }
         Ok(())
@@ -1690,7 +1690,7 @@ impl Repos {
     /// The walk runs on a DETACHED OS thread (not the tokio blocking pool): a
     /// readdir wedged in the kernel can't be cancelled, and a poisoned blocking
     /// pool — or a runtime shutdown waiting on it — must never be possible. On
-    /// timeout the thread is simply abandoned (the zeron backend's disposable
+    /// timeout the thread is simply abandoned (the godspeed backend's disposable
     /// worker, minus the terminate()).
     #[doc(hidden)]
     pub async fn list_folders_with(
@@ -1763,7 +1763,7 @@ async fn disposable_worker<T: Send + 'static>(
 fn list_folders_blocking(target: &Path) -> Result<FolderListing, EngineError> {
     let read = std::fs::read_dir(target).map_err(|e| match e.kind() {
         std::io::ErrorKind::PermissionDenied => {
-            EngineError::Other("Zeron doesn't have access to this folder on the device.".into())
+            EngineError::Other("Godspeed doesn't have access to this folder on the device.".into())
         }
         _ => EngineError::Other(format!("could not read that folder: {e}")),
     })?;
@@ -2334,8 +2334,8 @@ fn canonical_search_root(root: &Path) -> Result<PathBuf, EngineError> {
         .map_err(|e| EngineError::Other(format!("could not search workspace: {e}")))
 }
 
-/// Turn a generated chat title into the semantic portion of a Zeron branch
-/// (port of zeron's `worktreeBranchFromTitle`). Zeron NFKD-normalizes accented
+/// Turn a generated chat title into the semantic portion of a Godspeed branch
+/// (port of godspeed's `worktreeBranchFromTitle`). Godspeed NFKD-normalizes accented
 /// letters first; native keeps it ASCII-only (generated titles are Title Case
 /// English), so non-ASCII characters collapse into the `-` separator.
 pub fn worktree_branch_from_title(title: &str) -> String {
@@ -2352,7 +2352,7 @@ pub fn worktree_branch_from_title(title: &str) -> String {
     }
     slug.truncate(48);
     let slug = slug.trim_matches('-');
-    format!("zeron/{}", if slug.is_empty() { "update" } else { slug })
+    format!("godspeed/{}", if slug.is_empty() { "update" } else { slug })
 }
 
 fn bounded_field(value: &str, max_chars: usize) -> String {
@@ -2624,7 +2624,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|b| !b.starts_with("zeron/"))
+                .all(|b| !b.starts_with("godspeed/"))
         );
 
         // A sibling location for the same parent is fine.
@@ -2688,7 +2688,7 @@ mod tests {
         let (tmp, repos, repo) = two_step_fixture(0).await;
         let path = tmp.path().join("new checkout");
         repos
-            .add_worktree_in_two_steps(&repo, &path, "zeron/test", "main")
+            .add_worktree_in_two_steps(&repo, &path, "godspeed/test", "main")
             .await
             .unwrap();
         let head = repos
@@ -2731,7 +2731,7 @@ mod tests {
             .unwrap();
         let path = tmp.path().join("failed checkout");
         let error = repos
-            .add_worktree_in_two_steps(&repo, &path, "zeron/failed", "main")
+            .add_worktree_in_two_steps(&repo, &path, "godspeed/failed", "main")
             .await
             .unwrap_err();
         assert!(error.to_string().contains("smudge"), "{error}");
@@ -2755,7 +2755,7 @@ mod tests {
         let path = tmp.path().join("hook failure");
         assert!(
             repos
-                .add_worktree_in_two_steps(&repo, &path, "zeron/hook-failure", "main")
+                .add_worktree_in_two_steps(&repo, &path, "godspeed/hook-failure", "main")
                 .await
                 .is_err()
         );

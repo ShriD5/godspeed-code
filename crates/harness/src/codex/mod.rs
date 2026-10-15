@@ -234,8 +234,8 @@ impl CodexHarness {
                     "initialize",
                     json!({
                         "clientInfo": {
-                            "name": "zeron-native",
-                            "title": "Zeron",
+                            "name": "godspeed-native",
+                            "title": "Godspeed",
                             "version": env!("CARGO_PKG_VERSION"),
                         },
                         "capabilities": { "experimentalApi": true },
@@ -288,8 +288,8 @@ impl CodexHarness {
                     "initialize",
                     json!({
                         "clientInfo": {
-                            "name": "zeron-native",
-                            "title": "Zeron",
+                            "name": "godspeed-native",
+                            "title": "Godspeed",
                             "version": env!("CARGO_PKG_VERSION"),
                         },
                         "capabilities": { "experimentalApi": true },
@@ -380,7 +380,7 @@ fn reasoning_level(value: &str) -> Option<ReasoningLevel> {
     })
 }
 
-/// Codex accepts both names, but Zeron has historically persisted `fast`.
+/// Codex accepts both names, but Godspeed has historically persisted `fast`.
 /// Normalize the app server's `priority` id so live and fallback catalogs do
 /// not produce two different settings for the same tier.
 fn normalized_service_tier(value: &str) -> &str {
@@ -1013,7 +1013,7 @@ fn command_request(
         | "diff" | "mention" | "mcp" | "skills" | "plan" | "fast" | "logout" | "quit" | "exit"
         | "init" | "rename" | "feedback" | "ps" | "stop" | "clean" | "archive" | "delete" => {
             Err(HarnessError::Protocol(format!(
-                "/{name} is not mapped in Zeron's Codex integration. Available commands: /compact and /review."
+                "/{name} is not mapped in Godspeed's Codex integration. Available commands: /compact and /review."
             )))
         }
         _ => Ok(None),
@@ -1070,7 +1070,7 @@ async fn run_session(session: Session) {
 
     // ---- wire params ------------------------------------------------------
     // Parity with the Claude adapter, which auto-approves every `can_use_tool`
-    // regardless of `auto_approve` (zeron sessions run unattended; combined
+    // regardless of `auto_approve` (godspeed sessions run unattended; combined
     // with the danger-full-access override above this is codex's yolo mode):
     // never surface wire approvals. "on-request" turned
     // every command into a yes/no question (user report: "asking me for
@@ -1109,7 +1109,7 @@ async fn run_session(session: Session) {
         }
         p.insert("cwd".into(), Value::String(request.cwd.clone()));
         if let Some(mcp) = request.mcp.as_ref().filter(|_| !title_only) {
-            // Zeron's own MCP server as dotted config overrides on top of the
+            // Godspeed's own MCP server as dotted config overrides on top of the
             // user's `mcp_servers` table (the same layer the title run uses
             // to switch servers off).
             let overrides = p
@@ -1137,8 +1137,8 @@ async fn run_session(session: Session) {
                 "initialize",
                 json!({
                     "clientInfo": {
-                        "name": "zeron-native",
-                        "title": "Zeron",
+                        "name": "godspeed-native",
+                        "title": "Godspeed",
                         "version": env!("CARGO_PKG_VERSION"),
                     },
                     "capabilities": { "experimentalApi": true },
@@ -2038,7 +2038,7 @@ async fn steer_as_new_turn(
 }
 
 // ---------------------------------------------------------------------------
-// Approvals (approval-as-input parity with zeron's UX)
+// Approvals (approval-as-input parity with godspeed's UX)
 // ---------------------------------------------------------------------------
 
 type RequestInputFn = Box<
@@ -2357,20 +2357,20 @@ mod mcp_injection_tests {
     #[test]
     fn codex_mcp_overrides_use_the_dotted_mcp_servers_keys() {
         let mcp = zeron_proto::McpServer {
-            name: "zeron".into(),
-            command: "/opt/zeron/zeron".into(),
+            name: "godspeed".into(),
+            command: "/opt/godspeed/godspeed".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_CHAT_ID".to_owned(), "chat-1".to_owned())]
+            env: [("GODSPEED_CHAT_ID".to_owned(), "chat-1".to_owned())]
                 .into_iter()
                 .collect(),
         };
         let overrides: serde_json::Map<String, Value> =
             codex_mcp_overrides(&mcp).into_iter().collect();
-        assert_eq!(overrides["mcp_servers.zeron.command"], "/opt/zeron/zeron");
-        assert_eq!(overrides["mcp_servers.zeron.args"], json!(["mcp"]));
+        assert_eq!(overrides["mcp_servers.godspeed.command"], "/opt/godspeed/godspeed");
+        assert_eq!(overrides["mcp_servers.godspeed.args"], json!(["mcp"]));
         assert_eq!(
-            overrides["mcp_servers.zeron.env"],
-            json!({ "ZERON_CHAT_ID": "chat-1" })
+            overrides["mcp_servers.godspeed.env"],
+            json!({ "GODSPEED_CHAT_ID": "chat-1" })
         );
     }
 }
@@ -2399,7 +2399,7 @@ mod skill_discovery_tests {
             json!({"type":"skill","name":"review","path":"/repo/a b/SKILL.md"})
         );
         assert_eq!(input[2]["path"], "/repo/other/SKILL.md");
-        assert!(!input[0]["text"].as_str().unwrap().contains("zeron-invoke:"));
+        assert!(!input[0]["text"].as_str().unwrap().contains("godspeed-invoke:"));
         for raw in [
             "$review".into(),
             format!("`{}`", a.link()),
@@ -2441,8 +2441,8 @@ mod skill_discovery_tests {
             json!({"type":"skill", "name":"review`ui", "path":"/repo/é skill/SKILL.md"})
         );
         let text = input[0]["text"].as_str().unwrap();
-        assert!(!text.contains("zeron-invoke:"));
-        assert!(!text.contains("zeron-file:"));
+        assert!(!text.contains("godspeed-invoke:"));
+        assert!(!text.contains("godspeed-file:"));
         assert_eq!(text.matches("/repo/%C3%A9%20skill/SKILL.md").count(), 2);
     }
 

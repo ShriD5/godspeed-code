@@ -3,7 +3,7 @@
 
 Live mode uses an explicit local helper and Codex app-server over SSH. Only
 sanitized stage/counter results are printed; no SDP, transcript or raw errors.
-This diagnostic does not use Zeron's production relay or certify its MCP routing.
+This diagnostic does not use Godspeed's production relay or certify its MCP routing.
 """
 import argparse
 import asyncio

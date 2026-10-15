@@ -5,17 +5,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Zeron Dev</string>
+    <string>Godspeed Dev</string>
     <key>CFBundleExecutable</key>
-    <string>zeron</string>
+    <string>godspeed</string>
     <key>CFBundleIconFile</key>
-    <string>zeron.icns</string>
+    <string>godspeed.icns</string>
     <key>CFBundleIdentifier</key>
-    <string>sh.zeron.app.dev</string>
+    <string>site.shrithan.godspeed.dev</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Zeron Dev</string>
+    <string>Godspeed Dev</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,13 +29,13 @@
          the same isolated development instance. -->
     <key>LSEnvironment</key>
     <dict>
-        <key>ZERON_DATA_DIR</key>
+        <key>GODSPEED_DATA_DIR</key>
         <string>__DATA_DIR__</string>
-        <key>ZERON_IPC_PORT</key>
+        <key>GODSPEED_IPC_PORT</key>
         <string>__IPC_PORT__</string>
     </dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Zeron uses your microphone for on-device dictation and for voice sessions you start. Voice sessions stream your audio to OpenAI through your ChatGPT-authenticated Codex account.</string>
+    <string>Godspeed uses your microphone for on-device dictation and for voice sessions you start. Voice sessions stream your audio to OpenAI through your ChatGPT-authenticated Codex account.</string>
     <!-- macOS 26 attaches one-time-code AutoFill (a SafariPlatformSupport
          helper process) to every text input unless the app opts out. -->
     <key>NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac</key>

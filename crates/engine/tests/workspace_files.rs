@@ -487,7 +487,7 @@ async fn projectless_files_stay_inside_a_chat_directory_within_a_git_repo() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn projectless_home_is_required_for_files_catalogs_and_terminal() {
-    const CHILD: &str = "ZERON_MISSING_HOME_FIXTURE";
+    const CHILD: &str = "GODSPEED_MISSING_HOME_FIXTURE";
     if std::env::var_os(CHILD).is_none() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([

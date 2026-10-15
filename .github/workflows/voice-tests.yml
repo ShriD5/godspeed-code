@@ -10,7 +10,7 @@ on:
       - 'crates/rpc/**'
       - 'crates/client/**'
       - 'crates/mobile/**'
-      - 'apps/ios/Zeron/Voice/**'
+      - 'apps/ios/Godspeed/Voice/**'
       - 'apps/ios/ZeronTests/RemoteVoiceLifecycleTests.swift'
       - 'dist/voice/**'
       - 'scripts/package-voice-runtime.py'
@@ -117,7 +117,7 @@ jobs:
       - name: Initialize a projected Windows runtime (no provider or audio devices)
         if: runner.os == 'Windows'
         run: |
-          $env:ZERON_VOICE_MEDIA_DIR = Join-Path $env:RUNNER_TEMP 'zeron-media/codex-resources/voice'
-          python scripts/package-voice-runtime.py --download --destination $env:ZERON_VOICE_MEDIA_DIR
+          $env:GODSPEED_VOICE_MEDIA_DIR = Join-Path $env:RUNNER_TEMP 'godspeed-media/codex-resources/voice'
+          python scripts/package-voice-runtime.py --download --destination $env:GODSPEED_VOICE_MEDIA_DIR
           if ($LASTEXITCODE -ne 0) { throw 'Voice runtime packaging failed' }
           cargo test --locked -p zeron-voice-media --lib packaged_native_runtime_initializes_without_audio_devices -- --ignored

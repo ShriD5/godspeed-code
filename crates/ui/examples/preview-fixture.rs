@@ -25,7 +25,7 @@ fn capture(directory: &std::path::Path, name: &str) -> anyhow::Result<()> {
     };
     #[cfg(not(target_os = "macos"))]
     let status = {
-        let capture_window = std::env::var("ZERON_BROWSER_CAPTURE_WINDOW").ok();
+        let capture_window = std::env::var("GODSPEED_BROWSER_CAPTURE_WINDOW").ok();
         let windows = std::process::Command::new("xdotool")
             .args([
                 "search",
@@ -182,7 +182,7 @@ fn main() -> anyhow::Result<()> {
                 let stable = snapshot.services.iter().find(|s|s.name=="Vite").unwrap().url(snapshot.proxy_port);
                 capture(&output,"preview-servers-dark")?;
                 std::fs::write(output.join("ready.txt"),&stable)?;
-                if std::env::var_os("ZERON_PREVIEW_AUTO_OPEN").is_some() {
+                if std::env::var_os("GODSPEED_PREVIEW_AUTO_OPEN").is_some() {
                     // CI sends a real GPUI pointer sequence through hit testing.
                     let position = browser.read_with(cx,|b,_|b.fixture_preview_open_position()).ok_or_else(||anyhow::anyhow!("Open button was not laid out"))?;
                     gpui::AnyWindowHandle::from(window).update(cx,|_,w,cx| {

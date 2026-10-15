@@ -1867,8 +1867,8 @@ async fn idle_voice_runtime_has_no_initial_turn_and_preserves_mcp() {
     let mut req = request("must never be submitted");
     req.cwd = dir.path().display().to_string();
     req.mcp = Some(zeron_proto::McpServer {
-        name: "zeron".into(),
-        command: "zeron".into(),
+        name: "godspeed".into(),
+        command: "godspeed".into(),
         args: vec!["mcp".into()],
         env: Default::default(),
     });
@@ -1939,8 +1939,8 @@ async fn external_voice_keeps_canonical_events_without_any_local_helper() {
     let mut req = request("");
     req.cwd = dir.path().display().to_string();
     req.mcp = Some(zeron_proto::McpServer {
-        name: "zeron".into(),
-        command: "zeron".into(),
+        name: "godspeed".into(),
+        command: "godspeed".into(),
         args: vec!["mcp".into()],
         env: Default::default(),
     });

@@ -261,7 +261,7 @@ impl Render for ArchivedPage {
                     .clone()
                     .unwrap_or_else(|| "Untitled session".into())
                     .into();
-                // Unknown device → no fragment at all (zeron renders the
+                // Unknown device → no fragment at all (godspeed renders the
                 // device span only when the name resolves).
                 let device: Option<SharedString> =
                     device_names.get(&chat.device_id).cloned().map(Into::into);
@@ -274,7 +274,7 @@ impl Render for ArchivedPage {
                     crate::state::chat_location(&chat).map(Into::into);
                 let is_busy = busy.as_deref() == Some(chat.id.as_str());
                 let chat_id = chat.id.clone();
-                // zeron settings.archived.tsx row: archive tile, medium title
+                // godspeed settings.archived.tsx row: archive tile, medium title
                 // + tabular time, quiet device · location meta, Unarchive.
                 div()
                     .id(("archived-row", ix))
@@ -333,7 +333,7 @@ impl Render for ArchivedPage {
                             )
                             .child({
                                 // device · location, separator at the line's
-                                // own tone (zeron: a plain span inheriting
+                                // own tone (godspeed: a plain span inheriting
                                 // `text-muted-foreground/55`).
                                 let mut meta = div()
                                     .mt(px(2.0))
@@ -398,7 +398,7 @@ impl Render for ArchivedPage {
             .collect();
 
         let body: AnyElement = if items.is_empty() {
-            // Centered empty state (zeron settings.archived.tsx).
+            // Centered empty state (godspeed settings.archived.tsx).
             div()
                 .mt(px(96.0))
                 .flex()
@@ -408,7 +408,7 @@ impl Render for ArchivedPage {
                 .text_color(theme.text_muted)
                 .child(
                     // `opacity-40` on top of the inherited muted/50 — an
-                    // effectively ~20% glyph (zeron settings.archived.tsx).
+                    // effectively ~20% glyph (godspeed settings.archived.tsx).
                     crate::icons::icon(crate::icons::ARCHIVE_MINIMALISTIC)
                         .size(px(28.0))
                         .text_color(theme.text_muted.opacity(0.2)),

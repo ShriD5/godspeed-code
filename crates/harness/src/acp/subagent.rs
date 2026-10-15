@@ -682,7 +682,7 @@ mod tests {
         let result = json!({
             "type": "tool_result",
             "tool_call_id": "call-1-0",
-            "content": "1→# zeron — Architecture",
+            "content": "1→# godspeed — Architecture",
         });
         assert!(matches!(
             entry_events(&result).as_slice(),

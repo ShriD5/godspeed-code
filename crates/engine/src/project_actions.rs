@@ -1,4 +1,4 @@
-//! Host-local project Actions and explicit `zeron.json` imports.
+//! Host-local project Actions and explicit `godspeed.json` imports.
 //!
 //! Commands are intentionally stored outside the synced workspace registry. The
 //! owning engine is the only authority that can persist or execute them.
@@ -24,7 +24,7 @@ pub const MAX_PROJECT_ACTION_ID_BYTES: usize = 96;
 
 const STORE_FILE: &str = "project-actions.json";
 const STORE_VERSION: u32 = 1;
-const PROJECT_FILE: &str = "zeron.json";
+const PROJECT_FILE: &str = "godspeed.json";
 const MAX_PROJECT_FILE_BYTES: u64 = 256 * 1024;
 const SETUP_HANDOFF_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -335,9 +335,9 @@ fn launch_project_action_with_environment(
     always_include_worktree: bool,
 ) -> Result<ProjectActionRun, EngineError> {
     let mut environment =
-        HashMap::from([("ZERON_PROJECT_ROOT".to_string(), root_string(project_root))]);
+        HashMap::from([("GODSPEED_PROJECT_ROOT".to_string(), root_string(project_root))]);
     if always_include_worktree || cwd != project_root {
-        environment.insert("ZERON_WORKTREE_PATH".to_string(), root_string(cwd));
+        environment.insert("GODSPEED_WORKTREE_PATH".to_string(), root_string(cwd));
     }
     let session = terminals.open_with_command(
         &root_string(cwd),
@@ -618,7 +618,7 @@ fn read_project_file_bytes(reader: impl Read) -> Result<Vec<u8>, String> {
 }
 
 fn project_file_issue(message: String) -> (Vec<ProjectActionDraft>, Option<String>) {
-    (Vec::new(), Some(format!("Invalid zeron.json: {message}")))
+    (Vec::new(), Some(format!("Invalid godspeed.json: {message}")))
 }
 
 #[cfg(test)]
@@ -999,7 +999,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn project_file_special_files_do_not_block() {
-        const CHILD_ENV: &str = "ZERON_TEST_PROJECT_FILE_SPECIAL_FILES";
+        const CHILD_ENV: &str = "GODSPEED_TEST_PROJECT_FILE_SPECIAL_FILES";
         if std::env::var_os(CHILD_ENV).is_some() {
             use std::os::unix::{ffi::OsStrExt, fs::symlink, net::UnixListener};
             let (_temp, store_root, project_root) = roots();

@@ -597,7 +597,7 @@ enum MutateParams {
         /// Cwd override (isolated-worktree path); default = the space's folder.
         #[serde(default)]
         cwd: Option<String>,
-        /// The chat whose agent is creating this one (Zeron MCP); recorded
+        /// The chat whose agent is creating this one (Godspeed MCP); recorded
         /// on the row as `parentChatId` for orchestration trees.
         #[serde(default)]
         parent_chat_id: Option<String>,
@@ -658,7 +658,7 @@ enum MutateParams {
     ChangeSidebarPin {
         change: zeron_proto::SidebarPinChange,
     },
-    /// Full-config replace on the chat row (zeron `SetChatConfig`): the
+    /// Full-config replace on the chat row (godspeed `SetChatConfig`): the
     /// composer's mid-session model / reasoning / options changes, LWW-synced
     /// so they survive restarts and reach every device.
     #[serde(rename_all = "camelCase")]
@@ -1424,7 +1424,7 @@ async fn run_requested_install(
     cancel: zeron_harness::CancellationToken,
 ) -> Result<(), zeron_harness::HarnessError> {
     #[cfg(test)]
-    if let Ok(script) = std::env::var(format!("ZERON_INSTALLER_COMMAND_{harness:?}").to_uppercase())
+    if let Ok(script) = std::env::var(format!("GODSPEED_INSTALLER_COMMAND_{harness:?}").to_uppercase())
     {
         return zeron_harness::install::install_with_command(harness, &script, cancel).await;
     }
@@ -3941,13 +3941,13 @@ mod tests {
     #[cfg(unix)]
     async fn installer_rpc_fixture(mode: &str) {
         use std::{os::unix::fs::PermissionsExt, sync::Arc};
-        if std::env::var_os("ZERON_INSTALL_FIXTURE_CHILD").is_none() {
+        if std::env::var_os("GODSPEED_INSTALL_FIXTURE_CHILD").is_none() {
             let root = tempfile::tempdir().unwrap();
             let bin = root.path().join("bin");
             std::fs::create_dir(&bin).unwrap();
             let script = match mode {
                 "success" => {
-                    "test -z \"$ZERON_INSTALL_FIXTURE_CHILD\" && test -z \"$CLAUDECODE\" && printf '#!/bin/sh\\necho 99.0.0\\n' > \"$CODEX_EXECUTABLE\" && /bin/chmod +x \"$CODEX_EXECUTABLE\""
+                    "test -z \"$GODSPEED_INSTALL_FIXTURE_CHILD\" && test -z \"$CLAUDECODE\" && printf '#!/bin/sh\\necho 99.0.0\\n' > \"$CODEX_EXECUTABLE\" && /bin/chmod +x \"$CODEX_EXECUTABLE\""
                 }
                 "failure" => "echo 'fixture failure api_key=private' >&2; exit 7",
                 "missing" => "exit 0",
@@ -3958,9 +3958,9 @@ mod tests {
             let test = format!("rpc::tests::installer_rpc_{mode}");
             let output = tokio::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &test, "--nocapture", "--include-ignored"])
-                .env("ZERON_INSTALL_FIXTURE_CHILD", root.path())
-                .env("ZERON_INSTALLER_COMMAND_CODEX", script)
-                .env("ZERON_NO_LOGIN_SHELL", "1")
+                .env("GODSPEED_INSTALL_FIXTURE_CHILD", root.path())
+                .env("GODSPEED_INSTALLER_COMMAND_CODEX", script)
+                .env("GODSPEED_NO_LOGIN_SHELL", "1")
                 .env("HOME", root.path())
                 .env("XDG_CONFIG_HOME", root.path().join("config"))
                 .env("CODEX_EXECUTABLE", bin.join("codex"))
@@ -3989,7 +3989,7 @@ mod tests {
             return;
         }
         let root =
-            std::path::PathBuf::from(std::env::var_os("ZERON_INSTALL_FIXTURE_CHILD").unwrap());
+            std::path::PathBuf::from(std::env::var_os("GODSPEED_INSTALL_FIXTURE_CHILD").unwrap());
         let registry = Arc::new(HarnessRegistry::new());
         registry.register(Arc::new(zeron_harness::CodexHarness::new()));
         let core = crate::EngineCore::assemble(
@@ -4098,7 +4098,7 @@ mod tests {
         use std::io::Write;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use zeron_harness::archive_install::{ArchivePin, ensure_installed, installed_entry};
-        if std::env::var_os("ZERON_INSTALL_RPC_TEST").is_none() {
+        if std::env::var_os("GODSPEED_INSTALL_RPC_TEST").is_none() {
             let root = tempfile::tempdir().unwrap();
             let output = tokio::process::Command::new(std::env::current_exe().unwrap())
                 .args([
@@ -4106,8 +4106,8 @@ mod tests {
                     "rpc::tests::explicit_install_rpc_verifies_archive_and_refreshes_descriptors",
                     "--nocapture",
                 ])
-                .env("ZERON_INSTALL_RPC_TEST", "1")
-                .env("ZERON_ADAPTERS_DIR", root.path())
+                .env("GODSPEED_INSTALL_RPC_TEST", "1")
+                .env("GODSPEED_ADAPTERS_DIR", root.path())
                 .output()
                 .await
                 .unwrap();

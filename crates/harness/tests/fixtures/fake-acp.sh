@@ -25,7 +25,7 @@ xnotify() { # $1 = update json object body — grok's extension channel (the
 read -r line || exit 1 # initialize
 has "$line" '"method":"initialize"' || exit 1
 has "$line" '"protocolVersion":1' || exit 1
-has "$line" '"name":"zeron"' || exit 1
+has "$line" '"name":"godspeed"' || exit 1
 has "$line" '"readTextFile":false' || exit 1
 emit "{\"id\":$(rid "$line"),\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true,\"_meta\":{\"availableCommands\":[{\"name\":\"compact\",\"description\":\"Compact the session\"},{\"name\":\"goal\",\"description\":\"Set a goal\",\"input\":{\"hint\":\"the goal\"}}]}},\"_meta\":{\"steering\":{\"supported\":true}}}}"
 
@@ -69,7 +69,7 @@ if has "$line" '"method":"session/load"'; then
     fi
   fi
 elif has "$line" '"method":"session/new"'; then
-  has "$line" '"mcpServers":[]' || has "$line" '"name":"zeron"' || exit 1
+  has "$line" '"mcpServers":[]' || has "$line" '"name":"godspeed"' || exit 1
   # Advertise config options: model (current differs from the tests' request,
   # forcing a set) and thought_level (current high). The model config option
   # feeds discovery first; the first-class `models` state (SessionModelState)
@@ -110,10 +110,10 @@ pid=$(rid "$promptline")
 case "$promptline" in
 
 *scenario:mcp*)
-  has "$line" '"command":"/path with spaces/zeron"' || exit 1
+  has "$line" '"command":"/path with spaces/godspeed"' || exit 1
   has "$line" '"args":["mcp"]' || exit 1
-  has "$line" '"name":"ZERON_CHAT_ID","value":"origin-chat"' || exit 1
-  has "$line" '"name":"ZERON_IPC_PORT","value":"27699"' || exit 1
+  has "$line" '"name":"GODSPEED_CHAT_ID","value":"origin-chat"' || exit 1
+  has "$line" '"name":"GODSPEED_IPC_PORT","value":"27699"' || exit 1
   update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"mcp configured"}}'
   emit "{\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"
   ;;
@@ -167,7 +167,7 @@ case "$promptline" in
   # prompt) must not settle the live turn; the real response follows.
   emit "{\"method\":\"_x.ai/session/prompt_complete\",\"params\":{\"sessionId\":\"$SID\",\"promptId\":\"stale-p0\",\"stopReason\":\"cancelled\",\"agentResult\":null}}"
   # A completion for ANOTHER session is equally inert.
-  emit "{\"method\":\"_x.ai/session/prompt_complete\",\"params\":{\"sessionId\":\"other\",\"promptId\":\"zeron-p1\",\"stopReason\":\"cancelled\",\"agentResult\":null}}"
+  emit "{\"method\":\"_x.ai/session/prompt_complete\",\"params\":{\"sessionId\":\"other\",\"promptId\":\"godspeed-p1\",\"stopReason\":\"cancelled\",\"agentResult\":null}}"
   sleep 1
   update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"real answer"}}'
   emit "{\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\",\"_meta\":{\"inputTokens\":9,\"outputTokens\":4}}}"

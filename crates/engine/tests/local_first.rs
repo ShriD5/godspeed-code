@@ -485,7 +485,7 @@ async fn workspace_recovers_from_an_unreachable_edge_without_restarting() {
 }
 
 #[tokio::test]
-async fn development_without_an_explicit_bearer_stays_offline() {
+async fn no_sign_in_and_no_bearer_runs_local() {
     let dir = tempfile::tempdir().unwrap();
     let (edge_url, requests, edge_task) = rejecting_edge().await;
     let config = config(dir.path(), edge_url, None, None);
@@ -493,15 +493,15 @@ async fn development_without_an_explicit_bearer_stays_offline() {
     let scope = Engine::initial_workspace_scope(&auth);
     let profile = Engine::resolve_profile(&config, &auth, scope)
         .unwrap()
-        .expect("development profile is ready");
+        .expect("local profile is ready");
 
-    assert_eq!(scope, WorkspaceScope::Development);
+    assert_eq!(scope, WorkspaceScope::Local);
     assert_eq!(auth.access_token().await.as_deref(), Ok("dev-user"));
     let runtime = Engine::assemble_runtime(&config, auth, profile)
         .await
         .unwrap();
 
-    assert_eq!(runtime.workspace_scope(), WorkspaceScope::Development);
+    assert_eq!(runtime.workspace_scope(), WorkspaceScope::Local);
     assert!(
         runtime.core().links().is_none(),
         "the synthetic dev identity must not enable Edge"

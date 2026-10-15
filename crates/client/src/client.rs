@@ -1292,8 +1292,8 @@ impl Client {
                     "crates/text/src/layout.rs",
                     "crates/text/src/prepare.rs",
                     "crates/markdown/src/parser.rs",
-                    "apps/ios/Zeron/Transcript/TranscriptListView.swift",
-                    "apps/ios/Zeron/Composer/ComposerBar.swift",
+                    "apps/ios/Godspeed/Transcript/TranscriptListView.swift",
+                    "apps/ios/Godspeed/Composer/ComposerBar.swift",
                     "docs/mobile-rewrite.md",
                     "README.md",
                 ];

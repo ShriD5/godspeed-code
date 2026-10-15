@@ -17,7 +17,7 @@ async fn manual_and_setup_actions_preserve_long_multiline_commands() {
     let terminals = Terminals::new();
     for setup in [false, true] {
         let prefix = "printf '%s' '";
-        let suffix = "' > payload\nprintf '%s' \"$ZERON_PROJECT_ROOT\" > project-root\nprintf '%s' \"$ZERON_WORKTREE_PATH\" > worktree-path\nprintf '%s' 'quotes: \" $() ` ; é' > literal\n";
+        let suffix = "' > payload\nprintf '%s' \"$GODSPEED_PROJECT_ROOT\" > project-root\nprintf '%s' \"$GODSPEED_WORKTREE_PATH\" > worktree-path\nprintf '%s' 'quotes: \" $() ` ; é' > literal\n";
         let payload =
             "a".repeat(MAX_PROJECT_ACTION_COMMAND_BYTES - prefix.len() - suffix.trim_end().len());
         let command = format!("{prefix}{payload}{suffix}");

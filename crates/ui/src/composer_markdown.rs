@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn injected_colors_use_source_offsets_after_unicode_and_mentions() {
-        let text = "héllo [file](zeron-file:src/main.rs)\n```rust\nfn main() { let café = 42; }\n```\n```python\ndef hello(): pass\n```";
+        let text = "héllo [file](godspeed-file:src/main.rs)\n```rust\nfn main() { let café = 42; }\n```\n```python\ndef hello(): pass\n```";
         let spans = syntax_spans(text);
         assert!(spans.iter().any(|span| &text[span.range.clone()] == "fn"
             && span.kind == zeron_syntax::HighlightKind::Keyword));

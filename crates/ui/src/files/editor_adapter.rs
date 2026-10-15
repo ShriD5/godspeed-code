@@ -1,4 +1,4 @@
-//! Zeron-owned styling and highlighting adapters for `gpui-base`.
+//! Godspeed-owned styling and highlighting adapters for `gpui-base`.
 
 use std::{ops::Range, rc::Rc, sync::Arc};
 
