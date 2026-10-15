@@ -542,6 +542,8 @@ pub fn default_registry() -> HarnessRegistry {
     // Warm the login-shell PATH snapshot in the background so the first
     // claude/codex resolve doesn't pay the shell-startup latency inline.
     zeron_harness::shell_env::prewarm();
+    // End agent processes an engine that died abruptly left running.
+    zeron_harness::process::registry::reap_orphaned_agents();
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(MockHarness {
         script: vec![
