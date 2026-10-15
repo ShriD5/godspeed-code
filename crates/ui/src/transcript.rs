@@ -2311,6 +2311,18 @@ pub fn flavour_seed(chat_id: &str) -> u64 {
     fnv1a(chat_id.as_bytes())
 }
 
+/// Run liveness for animation gating. `indicator` is the chat's
+/// staleness-checked indicator, or `None` for a subagent doc view, which
+/// follows its own `doc_live` flag instead. Pure.
+fn run_is_live(indicator: Option<crate::state::Indicator>, doc_live: bool) -> bool {
+    use crate::state::Indicator;
+    match indicator {
+        None => doc_live,
+        Some(Indicator::Working | Indicator::AwaitingInput) => true,
+        Some(Indicator::None | Indicator::Errored) => false,
+    }
+}
+
 /// The working trailer's "Sending…" bridge: true while an in-flight send is
 /// fresher than the session row's turn start — the row still carries the
 /// PREVIOUS turn (or none), so a timer would count the send round-trip and
@@ -7086,6 +7098,24 @@ impl Transcript {
         }
     }
 
+    /// Whether this transcript's run is live right now, from the app's view
+    /// of it rather than the doc's own `Streaming` flags (which a dead run
+    /// never clears). Subagent doc views have no Session row, so they follow
+    /// `doc_live` (run teardown finalizes their sinks); a chat is live while
+    /// its staleness-checked indicator says Working or AwaitingInput.
+    fn run_live(&self, cx: &gpui::App) -> bool {
+        let indicator = match (&self.doc_override, &self.chat_id) {
+            (Some(_), _) => None,
+            (None, Some(chat_id)) => Some(
+                self.state
+                    .read(cx)
+                    .indicator_for(chat_id, chrono::Utc::now()),
+            ),
+            (None, None) => Some(crate::state::Indicator::None),
+        };
+        run_is_live(indicator, self.doc_live)
+    }
+
     fn render_working_trailer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let now = chrono::Utc::now();
         // `turn` (the turn's start, ms) keys the rolling word and timer, so a
@@ -7941,8 +7971,17 @@ impl Transcript {
         // fold — any unresolved chip (a running tool, a live thought) keeps it
         // pulsing until the turn's work settles. Compute this before the
         // collapsed-body skip, which may empty `tools`.
-        let active =
-            collapses && (auto_open || (self.compact_mode && tools.iter().any(|t| !t.resolved)));
+        //
+        // `auto_open` and `resolved` come from the persisted doc, and a run
+        // that died mid-tool (killed agent, a journal that ends mid-stream,
+        // a dead entry synced from another device) leaves them claiming
+        // "streaming" forever. The shimmer leases the shared pulse clock on
+        // every paint, so trusting them alone repainted the window at ~30 fps
+        // and pinned a core until restart (Zeron #485). Only a run the app
+        // can see is live may animate; the fold state still follows the doc.
+        let active = collapses
+            && (auto_open || (self.compact_mode && tools.iter().any(|t| !t.resolved)))
+            && self.run_live(cx);
         if self.compact_mode && active {
             self.compact_live_entries.insert(row_id.clone());
         }
@@ -16114,6 +16153,21 @@ mod tests {
         // No send in flight: never a bridge, whatever the row says.
         assert!(!sending_bridge(None, Some(before)));
         assert!(!sending_bridge(None, None));
+    }
+
+    /// Zeron #485: a doc still flagged Streaming after its run died must not
+    /// keep the shimmer (and the 30 fps pulse clock) going.
+    #[test]
+    fn only_live_runs_animate() {
+        use crate::state::Indicator;
+        assert!(run_is_live(Some(Indicator::Working), false));
+        assert!(run_is_live(Some(Indicator::AwaitingInput), false));
+        // Idle or stale (the indicator already ages out dead sessions).
+        assert!(!run_is_live(Some(Indicator::None), true));
+        assert!(!run_is_live(Some(Indicator::Errored), true));
+        // Subagent doc views follow their own live flag.
+        assert!(run_is_live(None, true));
+        assert!(!run_is_live(None, false));
     }
 
     #[test]
