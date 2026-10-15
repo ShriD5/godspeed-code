@@ -79,6 +79,24 @@ impl AccessMode {
         }
     }
 
+    /// The less permissive of `self` and `cap` (`ALL` runs from least to
+    /// most access).
+    pub fn at_most(self, cap: AccessMode) -> AccessMode {
+        let rank = |m: AccessMode| Self::ALL.iter().position(|x| *x == m).unwrap_or(0);
+        if rank(self) <= rank(cap) { self } else { cap }
+    }
+
+    /// Whether an agent running in this mode could do what `approval` asks
+    /// without asking — the bar for an orchestrating agent approving it on
+    /// another chat's behalf.
+    pub fn covers(self, approval: &ApprovalRequest) -> bool {
+        match self {
+            Self::FullAccess => true,
+            Self::AutoAcceptEdits | Self::Auto => approval.kind.is_edit(),
+            Self::Supervised => false,
+        }
+    }
+
     /// The next mode supported by `harness`, wrapping (the composer's cycle
     /// shortcut).
     pub fn cycle(self, harness: HarnessId) -> Self {
@@ -391,6 +409,24 @@ mod tests {
             serde_json::to_value(AccessMode::AutoAcceptEdits).unwrap(),
             "auto-accept-edits"
         );
+    }
+
+    #[test]
+    fn at_most_caps_and_covers_follows_the_mode() {
+        assert_eq!(
+            AccessMode::FullAccess.at_most(AccessMode::AutoAcceptEdits),
+            AccessMode::AutoAcceptEdits
+        );
+        assert_eq!(
+            AccessMode::Supervised.at_most(AccessMode::FullAccess),
+            AccessMode::Supervised
+        );
+        let edit = ApprovalRequest::new(ApprovalKind::FileChange, "Edit a.rs");
+        let command = ApprovalRequest::new(ApprovalKind::Command, "Run make");
+        assert!(AccessMode::AutoAcceptEdits.covers(&edit));
+        assert!(!AccessMode::AutoAcceptEdits.covers(&command));
+        assert!(AccessMode::FullAccess.covers(&command));
+        assert!(!AccessMode::Supervised.covers(&edit));
     }
 
     #[test]
