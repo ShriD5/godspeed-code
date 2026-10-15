@@ -63,6 +63,10 @@ pub(crate) fn context(
         HarnessId::Pi => {
             vec![root("PI_CODING_AGENT_DIR", home.join(".pi/agent")).join("auth.json")]
         }
+        HarnessId::Muse => {
+            let root = root("XDG_CONFIG_HOME", home.join(".config")).join("muse");
+            vec![root.join("auth.json"), root.join("settings.json")]
+        }
         HarnessId::Devin => {
             let data = root("XDG_DATA_HOME", home.join(".local/share"));
             let mut files = vec![data.join("devin/credentials.toml")];
@@ -103,6 +107,7 @@ pub(crate) fn context(
         HarnessId::Grok => &["GROK_", "XAI_"],
         HarnessId::Hermes => &["HERMES_", "OPENAI_", "ANTHROPIC_"],
         HarnessId::Pi => &["PI_", "OPENAI_", "ANTHROPIC_"],
+        HarnessId::Muse => &["MUSE_", "META_"],
         HarnessId::Devin => &["DEVIN_"],
         HarnessId::Antigravity => &["GEMINI_", "GOOGLE_"],
         HarnessId::Cursor => &["CURSOR_"],

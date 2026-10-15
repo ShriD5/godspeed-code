@@ -52,7 +52,9 @@ fn methods(id: HarnessId, platform: Platform) -> Vec<Method> {
     use Method::*;
     let windows = platform == Platform::Windows;
     match id {
-        Mock => vec![],
+        // Manual only for now: the Homebrew cask (`muse-code`) is the
+        // supported install, and Godspeed does not drive casks yet.
+        Mock | Muse => vec![],
         Antigravity => vec![Archive],
         ClaudeCode if windows => vec![PowerShell("irm https://claude.ai/install.ps1 | iex")],
         ClaudeCode => vec![Shell(
@@ -158,6 +160,7 @@ pub fn manual_command(id: HarnessId) -> Option<&'static str> {
         Grok => "npm install -g @xai-official/grok",
         Hermes => "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
         Devin => "curl -fsSL https://cli.devin.ai/install.sh | bash",
+        Muse => "brew install --cask muse-code",
         Antigravity | Mock => return None,
     })
 }
@@ -173,6 +176,7 @@ fn cli_and_dir(id: HarnessId) -> (&'static str, &'static str) {
         Grok => ("grok", "~/.grok/bin or the npm global bin"),
         Hermes => ("hermes", "~/.local/bin or ~/.hermes/bin"),
         Devin => ("devin", "~/.local/bin"),
+        Muse => ("muse", "the Homebrew bin"),
         Antigravity => ("agy_acp_server", "~/.godspeed/adapters"),
         Mock => ("mock", "PATH"),
     }
@@ -189,6 +193,7 @@ pub fn installed(id: HarnessId) -> bool {
         Grok => crate::AcpHarness::grok().installed(),
         Hermes => crate::AcpHarness::hermes().installed(),
         Devin => crate::AcpHarness::devin().installed(),
+        Muse => crate::MuseHarness::new().installed(),
         Antigravity => crate::AcpHarness::antigravity().installed(),
         Mock => false,
     }
@@ -391,7 +396,7 @@ async fn run(
 mod tests {
     use super::*;
 
-    const IDS: [HarnessId; 10] = [
+    const IDS: [HarnessId; 11] = [
         HarnessId::ClaudeCode,
         HarnessId::Codex,
         HarnessId::Cursor,
@@ -401,6 +406,7 @@ mod tests {
         HarnessId::Hermes,
         HarnessId::Devin,
         HarnessId::Antigravity,
+        HarnessId::Muse,
         HarnessId::Mock,
     ];
 
@@ -409,7 +415,10 @@ mod tests {
         for platform in [Platform::Unix, Platform::Mac, Platform::Windows] {
             for id in IDS {
                 let list = methods(id, platform);
-                assert_eq!(list.is_empty(), id == HarnessId::Mock);
+                assert_eq!(
+                    list.is_empty(),
+                    matches!(id, HarnessId::Mock | HarnessId::Muse)
+                );
                 for method in list {
                     assert!(available(method, platform, &|_| true, true));
                     assert!(!available(method, platform, &|_| false, false));
