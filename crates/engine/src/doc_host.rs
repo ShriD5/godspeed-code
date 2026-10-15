@@ -5893,7 +5893,8 @@ impl DocHost {
             }
         };
         let config = chat.config;
-        Some(zeron_proto::RunRequest {
+        let access = config.as_ref().map(|c| c.effective_access_mode());
+        let mut request = zeron_proto::RunRequest {
             mcp: None,
             prompt: prompt.to_string(),
             harness: config.as_ref().map(|c| c.harness),
@@ -5913,7 +5914,11 @@ impl DocHost {
             resume: None,
             worktree: None,
             access: None,
-        })
+        };
+        if let Some(mode) = access {
+            request.set_access_mode(mode);
+        }
+        Some(request)
     }
 
     fn save_snapshot(&self, handle: &ChatDocHandle) {
@@ -5987,17 +5992,60 @@ pub fn respond_input_prompt(
     let mut lines = vec!["Answering your earlier question:".to_string()];
     for answer in answers {
         let picked = answer.labels.join(", ");
-        let question = questions
-            .iter()
-            .find(|q| q.id == answer.question_id)
-            .map(|q| q.question.trim())
-            .filter(|q| !q.is_empty());
+        let asked = questions.iter().find(|q| q.id == answer.question_id);
+        // A permission the dead run asked for was never carried out: say
+        // what was decided, and that it did not happen.
+        if let Some(approval) = asked.and_then(|q| q.approval.as_ref()) {
+            let what = approval
+                .command
+                .as_deref()
+                .map(|c| format!("{} (`{c}`)", approval.title))
+                .unwrap_or_else(|| approval.title.clone());
+            let approved = answer
+                .labels
+                .iter()
+                .find_map(|l| approval.decision_for(l))
+                .is_some_and(|d| d.approves());
+            lines.push(if approved {
+                format!(
+                    "{what} — approved. The session restarted before it ran, so do it again if it is still needed."
+                )
+            } else {
+                format!("{what} — declined. Do not do it.")
+            });
+            continue;
+        }
+        let question = asked.map(|q| q.question.trim()).filter(|q| !q.is_empty());
         match question {
             Some(question) => lines.push(format!("{question} — {picked}")),
             None => lines.push(picked),
         }
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod respond_input_prompt_tests {
+    use super::respond_input_prompt;
+    use zeron_proto::{ApprovalKind, ApprovalRequest, UserInputAnswer};
+
+    #[test]
+    fn a_dead_runs_approval_says_what_was_decided_and_that_it_did_not_run() {
+        let mut approval = ApprovalRequest::new(ApprovalKind::Command, "Clean the build");
+        approval.command = Some("rm -rf build".into());
+        let question = approval.into_question("q1");
+        let answer = |label: &str| {
+            vec![UserInputAnswer {
+                question_id: "q1".into(),
+                labels: vec![label.into()],
+            }]
+        };
+        let approved = respond_input_prompt(std::slice::from_ref(&question), &answer("Approve"));
+        assert!(approved.contains("Clean the build (`rm -rf build`) — approved."));
+        assert!(approved.contains("restarted before it ran"));
+        let declined = respond_input_prompt(&[question], &answer("Decline"));
+        assert!(declined.ends_with("— declined. Do not do it."));
+    }
 }
 
 /// Percent-encode one URL path segment of a sidecar part id. PART_RE's

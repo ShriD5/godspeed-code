@@ -1515,6 +1515,23 @@ impl Inner {
         fresh_start: bool,
         completed_turn: Option<String>,
     ) {
+        self.write_status(chat_id, status, fresh_start, completed_turn, false);
+    }
+
+    /// `AwaitingInput`, flagged when the pending request is a permission
+    /// approval ("Needs approval" on every device's sidebar).
+    fn set_awaiting_input(&self, chat_id: &str, approval: bool) {
+        self.write_status(chat_id, SessionStatus::AwaitingInput, false, None, approval);
+    }
+
+    fn write_status(
+        &self,
+        chat_id: &str,
+        status: SessionStatus,
+        fresh_start: bool,
+        completed_turn: Option<String>,
+        awaiting_approval: bool,
+    ) {
         let now = Utc::now();
         let session = {
             let mut statuses = lock(&self.statuses);
@@ -1545,6 +1562,7 @@ impl Inner {
             }
             entry.status = status;
             entry.updated_at = now;
+            entry.awaiting_approval = status == SessionStatus::AwaitingInput && awaiting_approval;
             match status {
                 SessionStatus::Working if fresh_start || !was_active => {
                     entry.started_at = Some(now);
@@ -3212,10 +3230,11 @@ async fn drive_run(
                 inner.remember_harness_session(&chat_id, session_id, &run_cwd);
                 note_fork_history_session(&doc, carried_history, session_id);
             }
-            AgentEvent::InputRequested { .. } => {
+            AgentEvent::InputRequested { questions, .. } => {
                 // Known-id guaranteed: the unknown-id twin was dropped above,
                 // before the parked gate.
-                inner.set_status(&chat_id, SessionStatus::AwaitingInput, false);
+                let approval = questions.iter().any(UserInputQuestion::is_approval);
+                inner.set_awaiting_input(&chat_id, approval);
             }
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);

@@ -172,6 +172,16 @@ pub struct ChatConfig {
     pub access_mode: Option<crate::AccessMode>,
 }
 
+impl ChatConfig {
+    /// The thread's access mode; a config from before access modes reads it
+    /// off the sandbox level (workspace-write → auto-accept edits, the
+    /// default).
+    pub fn effective_access_mode(&self) -> crate::AccessMode {
+        self.access_mode
+            .unwrap_or_else(|| crate::AccessMode::from_legacy(self.sandbox, false))
+    }
+}
+
 /// Immutable-at-run-start repository context owned by one conversation.
 ///
 /// This is deliberately separate from the live checkout snapshot: another
