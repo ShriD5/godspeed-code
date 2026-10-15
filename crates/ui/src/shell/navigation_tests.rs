@@ -279,7 +279,7 @@ fn modal_and_picker_block_navigation_in_both_panes(cx: &mut TestAppContext) {
                     &shell.navigation_focus.main
                 };
                 window.focus(focus, cx);
-                shell.delete_confirm = Some("parent".into());
+                shell.request_delete_chat("parent".into(), cx);
             })
         });
         press(cx, true);

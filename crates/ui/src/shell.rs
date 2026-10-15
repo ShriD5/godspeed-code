@@ -73,6 +73,7 @@ mod chat_pull_requests;
 #[cfg(test)]
 mod chat_rename_tests;
 mod command_palette;
+mod delete_chat;
 mod file_mutations;
 mod find_bar;
 mod files_panel;
@@ -2202,8 +2203,7 @@ pub struct Shell {
     chat_submenu_left: bool,
     /// The chat title being edited in place on its row.
     chat_rename: Option<ChatRename>,
-    /// Chat id awaiting delete confirmation.
-    delete_confirm: Option<String>,
+    delete_confirm: Option<delete_chat::DeleteChatConfirm>,
     /// Global confirmation/error dialog for the Changes-pane trash action. The
     /// RPC task is retained separately so rerenders do not cancel it.
     discard_working_tree: Option<DiscardWorkingTreeFlow>,
@@ -2979,9 +2979,7 @@ impl Shell {
             self.debug_dialog = None;
             match which.as_str() {
                 "rename" => self.open_rename_chat(first, cx),
-                "delete" => {
-                    self.delete_confirm = Some(first);
-                }
+                "delete" => self.request_delete_chat(first, cx),
                 _ => {}
             }
         }
@@ -6576,6 +6574,14 @@ impl Shell {
     }
 
     fn delete_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.mutate(
+            serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
+            cx,
+        );
+        self.forget_deleted_chat(chat_id, cx);
+    }
+
+    fn forget_deleted_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.delete_confirm = None;
         if let Some(tabs) = self.right_tabs.get(&chat_id) {
             for surface in tabs {
@@ -6595,10 +6601,6 @@ impl Shell {
         }
         self.composer
             .update(cx, |composer, cx| composer.purge_chat(&chat_id, cx));
-        self.mutate(
-            serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
-            cx,
-        );
         cx.notify();
     }
 
@@ -11048,8 +11050,7 @@ impl Shell {
                     .text_color(theme.danger)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.close_chat_menu(cx);
-                        this.delete_confirm = Some(delete_id.clone());
-                        cx.notify();
+                        this.request_delete_chat(delete_id.clone(), cx);
                     }))
                     .child(
                         icon(icons::TRASH_BIN_MINIMALISTIC)
@@ -11122,48 +11123,8 @@ impl Shell {
             overlays.push(overlay);
         }
 
-        if let Some(chat_id) = self.delete_confirm.clone() {
-            let title = transcript::single_line(
-                &self
-                    .state
-                    .read(cx)
-                    .chats
-                    .iter()
-                    .find(|c| c.id == chat_id)
-                    .and_then(|c| c.title.clone())
-                    .unwrap_or_else(|| "New session".into()),
-            );
-            let card = popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Delete session?"))
-                .child(div().mt(px(6.0)).child(popover::dialog_body(
-                    &theme,
-                    format!("\u{201C}{title}\u{201D} will be permanently deleted. This can\u{2019}t be undone."),
-                )))
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(
-                            popover::btn_ghost(&theme, "Cancel", "delete-chat-cancel")
-                                .id("delete-chat-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.delete_confirm = None;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            popover::btn_danger(&theme, "Delete")
-                                .id("delete-chat-confirm")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.delete_chat(chat_id.clone(), cx)
-                                })),
-                        ),
-                )
-                .into_any_element();
-            overlays.push(popover::modal("delete-chat-dialog", viewport, card));
+        if let Some(dialog) = self.render_delete_chat_dialog(viewport, &theme, cx) {
+            overlays.push(dialog);
         }
 
         if let Some(flow) = self.discard_working_tree.clone() {
