@@ -4103,6 +4103,7 @@ mod tests {
             status,
             started_at: None,
             updated_at: now - TimeDelta::seconds(updated_secs_ago),
+            awaiting_approval: false,
         }
     }
 
@@ -4348,6 +4349,7 @@ mod tests {
             status: SessionStatus::Working,
             started_at: Some(now),
             updated_at: now,
+            awaiting_approval: false,
         };
         assert!(state.apply_sessions_at(vec![row.clone()], now));
         row.updated_at = now + TimeDelta::seconds(30);
@@ -4380,6 +4382,7 @@ mod tests {
             status: SessionStatus::Working,
             started_at: Some(now),
             updated_at: now,
+            awaiting_approval: false,
         }];
         let mut row = device("host", "Host");
         row.last_seen_at = Some(now);
@@ -5368,6 +5371,7 @@ mod tests {
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: serde_json::Map::new(),
             sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            access_mode: None,
         };
         state.apply_chat_config("a", config.clone());
         assert_eq!(
@@ -5392,6 +5396,7 @@ mod tests {
                 reasoning: None,
                 model_options: serde_json::Map::new(),
                 sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                access_mode: None,
             },
         );
     }

@@ -348,6 +348,7 @@ async fn exercise_projectless(mode: Mode) {
                         attachments: Vec::new(),
                         worktree: None,
                         resume: None,
+                        access: None,
                     },
                     message_id: message_id.into(),
                 },

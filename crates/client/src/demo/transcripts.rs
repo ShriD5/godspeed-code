@@ -373,6 +373,7 @@ fn picker(host: &str, now: i64) -> Vec<SessionMessageEntry> {
                             prefill: None,
                             multiline: false,
                             multi_select: false,
+                            approval: None,
                         },
                         UserInputQuestion {
                             id: "q2".into(),
@@ -387,6 +388,7 @@ fn picker(host: &str, now: i64) -> Vec<SessionMessageEntry> {
                             prefill: None,
                             multiline: false,
                             multi_select: true,
+                            approval: None,
                         },
                     ],
                     resolved: false,
@@ -854,6 +856,7 @@ pub(crate) fn asking() -> Vec<Step> {
             prefill: None,
             multiline: false,
             multi_select: false,
+            approval: None,
         }]),
     ]
 }

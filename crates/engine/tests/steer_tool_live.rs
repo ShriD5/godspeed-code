@@ -117,6 +117,7 @@ async fn steering_never_aborts_a_running_tool() {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::DangerFullAccess,
+                access_mode: None,
             },
         )
         .unwrap();
@@ -156,6 +157,7 @@ async fn steering_never_aborts_a_running_tool() {
                     attachments: vec![],
                     worktree: None,
                     resume: None,
+                    access: None,
                 },
             },
         )

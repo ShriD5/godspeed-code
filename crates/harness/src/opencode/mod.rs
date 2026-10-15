@@ -3721,6 +3721,7 @@ fn map_questions(props: &Value) -> Vec<UserInputQuestion> {
                         prefill: None,
                         multiline: false,
                         multi_select: q.get("multiple").and_then(Value::as_bool).unwrap_or(false),
+                        approval: None,
                     })
                 })
                 .collect()

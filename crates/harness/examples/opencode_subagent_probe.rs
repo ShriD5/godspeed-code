@@ -64,6 +64,7 @@ async fn main() {
         attachments: Vec::new(),
         resume: None,
         worktree: None,
+        access: None,
     };
     let mut stream = OpencodeHarness::new()
         .run(request, controls)

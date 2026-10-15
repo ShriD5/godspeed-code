@@ -1948,6 +1948,7 @@ mod tests {
             started_at: None,
             updated_at: at,
             running_subagents: 0,
+            awaiting_approval: false,
         }
     }
 

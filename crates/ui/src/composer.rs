@@ -9420,6 +9420,7 @@ impl Composer {
                         resume: None,
                         attachments: attachment_paths,
                         worktree: run_worktree,
+                        access: None,
                     },
                     message_id: message_id.clone(),
                 };
@@ -12672,6 +12673,7 @@ mod tests {
                 started_at: Some(updated),
                 updated_at: updated,
                 running_subagents: 0,
+                awaiting_approval: false,
             }];
             state.selected_chat = Some("c".into());
             state.watch_clock_transitions(cx);
@@ -15183,6 +15185,7 @@ mod tests {
             prefill: None,
             multiline: false,
             multi_select: multi,
+            approval: None,
         }
     }
 

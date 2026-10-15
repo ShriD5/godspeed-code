@@ -212,6 +212,7 @@ impl TitleGenerator {
                 attachments: Vec::new(),
                 resume: None,
                 worktree: None,
+                access: None,
             };
             match tokio::time::timeout(
                 std::time::Duration::from_secs(30),
@@ -382,6 +383,7 @@ mod tests {
             resume: None,
             attachments: vec![],
             worktree: None,
+            access: None,
         };
         let result = collect_text(&harness, request, None).await;
         assert!(

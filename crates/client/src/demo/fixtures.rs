@@ -430,6 +430,7 @@ pub(crate) fn seed(
                 reasoning: Some(demo.reasoning),
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                access_mode: None,
             }),
             last_message_preview: Some(demo.preview.into()),
             last_message_at: Some(ms(last)),
@@ -451,6 +452,7 @@ pub(crate) fn seed(
                 status,
                 started_at: Some(ms(now - 95_000)),
                 updated_at: Utc::now(),
+                awaiting_approval: false,
             })?;
         }
         if let (Some((number, state, title)), Some(source)) = (demo.pr, &source_context) {

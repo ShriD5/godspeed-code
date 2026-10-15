@@ -8142,6 +8142,7 @@ impl Shell {
             match status {
                 zeron_proto::ChatIndicator::Working => Some("Working"),
                 zeron_proto::ChatIndicator::AwaitingInput => Some("Input"),
+                zeron_proto::ChatIndicator::AwaitingApproval => Some("Needs approval"),
                 zeron_proto::ChatIndicator::Errored => Some("Failed"),
                 zeron_proto::ChatIndicator::Completed => Some("Done"),
                 zeron_proto::ChatIndicator::Idle => None,
@@ -14445,6 +14446,7 @@ mod tests {
             started_at: Some(updated_at),
             updated_at,
             running_subagents: 0,
+            awaiting_approval: false,
         }
     }
 

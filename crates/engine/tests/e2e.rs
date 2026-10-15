@@ -39,6 +39,7 @@ fn run_request(prompt: &str) -> RunRequest {
         attachments: Vec::new(),
         worktree: None,
         resume: None,
+        access: None,
     }
 }
 
@@ -1580,6 +1581,7 @@ async fn respond_input_resolves_pending_question() {
                     prefill: None,
                     multiline: false,
                     multi_select: false,
+                    approval: None,
                 }])
                 .await
                 .unwrap_or_default();
@@ -1735,6 +1737,7 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
                     prefill: None,
                     multiline: false,
                     multi_select: false,
+                    approval: None,
                 }])
                 .await
                 .unwrap_or_default();
@@ -1928,6 +1931,7 @@ async fn interrupt_unblocks_a_run_awaiting_input() {
                         prefill: None,
                         multiline: false,
                         multi_select: false,
+                        approval: None,
                     }])
                     .await;
                     interrupt.cancelled().await;
@@ -2077,6 +2081,7 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
                     prefill: None,
                     multiline: false,
                     multi_select: false,
+                    approval: None,
                 };
                 // The pre-fix Claude/Codex shape: surface the question under
                 // the harness's own id BEFORE asking through the bridge.
@@ -2441,6 +2446,7 @@ async fn real_claude_sees_uploaded_image_inline() {
         attachments: vec![path],
         resume: None,
         worktree: None,
+        access: None,
     };
     core.doc_host
         .queue_command(

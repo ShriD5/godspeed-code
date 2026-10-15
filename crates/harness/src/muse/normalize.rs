@@ -689,6 +689,7 @@ pub(super) fn approval_question(params: &Value) -> (UserInputQuestion, Vec<(Stri
         multi_select: false,
         prefill: None,
         multiline: false,
+        approval: None,
     };
     (question, choices)
 }
@@ -746,6 +747,7 @@ pub(super) fn input_questions(params: &Value) -> Vec<(String, UserInputQuestion)
                     multi_select: q["selection"]["mode"] == "multiple",
                     prefill: None,
                     multiline: false,
+                    approval: None,
                 },
             )
         })

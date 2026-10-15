@@ -125,6 +125,7 @@ impl Suite {
             attachments: vec![],
             worktree: None,
             resume: None,
+            access: None,
         }
     }
 
@@ -192,6 +193,7 @@ impl Suite {
                     reasoning: None,
                     model_options: Default::default(),
                     sandbox: SandboxLevel::DangerFullAccess,
+                    access_mode: None,
                 },
             )
             .unwrap();
@@ -1189,6 +1191,7 @@ fn restart_request(name: &str, cwd: &str, prompt: &str) -> RunRequest {
         attachments: vec![],
         worktree: None,
         resume: None,
+        access: None,
     }
 }
 
@@ -1278,6 +1281,7 @@ async fn restart_durability() {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::DangerFullAccess,
+                access_mode: None,
             },
         )
         .unwrap();

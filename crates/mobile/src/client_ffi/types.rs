@@ -392,7 +392,11 @@ impl From<zc::ChatIndicator> for ChatIndicator {
     fn from(i: zc::ChatIndicator) -> Self {
         match i {
             zc::ChatIndicator::Working => ChatIndicator::Working,
-            zc::ChatIndicator::AwaitingInput => ChatIndicator::AwaitingInput,
+            // The phone answers an approval through its question sheet (the
+            // decision labels are the options) until it grows its own state.
+            zc::ChatIndicator::AwaitingInput | zc::ChatIndicator::AwaitingApproval => {
+                ChatIndicator::AwaitingInput
+            }
             zc::ChatIndicator::Errored => ChatIndicator::Errored,
             zc::ChatIndicator::Completed => ChatIndicator::Completed,
             zc::ChatIndicator::Idle => ChatIndicator::Idle,
@@ -834,6 +838,7 @@ impl TryFrom<ChatConfig> for zc::ChatConfig {
                 SandboxLevel::WorkspaceWrite => zeron_proto::SandboxLevel::WorkspaceWrite,
                 SandboxLevel::DangerFullAccess => zeron_proto::SandboxLevel::DangerFullAccess,
             },
+            access_mode: None,
         })
     }
 }

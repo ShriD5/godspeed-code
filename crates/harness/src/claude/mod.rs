@@ -1406,6 +1406,7 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
                             .into(),
                     })
                     .collect(),
+                    approval: None,
             }
         })
         .collect()

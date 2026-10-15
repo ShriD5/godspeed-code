@@ -266,6 +266,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
             reasoning: None,
             model_options: Default::default(),
             sandbox: SandboxLevel::WorkspaceWrite,
+            access_mode: None,
         }),
         last_message_preview: None,
         last_message_at: None,
@@ -302,6 +303,7 @@ fn session(chat_id: &str, device_id: &str, status: SessionStatus) -> Session {
         status,
         started_at: Some(ts(3_000)),
         updated_at: ts(3_500),
+        awaiting_approval: false,
     }
 }
 

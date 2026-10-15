@@ -3,6 +3,7 @@
 //! Ported from godspeed's `packages/control/src/wire.ts` + `packages/harness/src/types.ts`.
 //! Context occupancy is replicated per chat; billing `Usage` remains a harness passthrough.
 
+pub mod access;
 pub mod agent;
 pub mod agents;
 pub mod attachment_mentions;
@@ -20,6 +21,7 @@ pub mod view;
 pub mod voice;
 pub mod workspace;
 
+pub use access::*;
 pub use agent::*;
 pub use entities::*;
 pub use preview::*;

@@ -909,6 +909,7 @@ impl Inner {
             reasoning: agent.draft.reasoning,
             model_options: Default::default(),
             sandbox: agent.draft.sandbox,
+            access_mode: None,
         };
         let chat_id = new_id();
         self.workspace.create_chat(
@@ -942,6 +943,7 @@ impl Inner {
                     worktree: None,
                     // The host injects Godspeed's MCP server itself.
                     mcp: None,
+                    access: None,
                 },
                 message_id: new_id(),
             },

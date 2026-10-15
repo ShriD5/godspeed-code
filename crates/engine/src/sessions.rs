@@ -1278,6 +1278,7 @@ impl SessionsEngine {
                             attachments: Vec::new(),
                             resume: None,
                             worktree: None,
+                            access: None,
                         })
                     });
                 let Some(mut request) = request else {
@@ -1527,6 +1528,7 @@ impl Inner {
                     started_at: None,
                     updated_at: now,
                     running_subagents: 0,
+                    awaiting_approval: false,
                 });
             // `started_at` is the elapsed-timer base and must only ever mean
             // "this turn". Entering Working from a settled state always
@@ -3773,6 +3775,7 @@ mod tests {
             resume: None,
             attachments: Vec::new(),
             worktree: None,
+            access: None,
         }
     }
 

@@ -3109,6 +3109,7 @@ fn handle_server_request_live(
         prefill: None,
         multiline: false,
         multi_select: false,
+        approval: None,
     };
     let client = client.clone();
     let request_input = std::sync::Arc::clone(request_input);

@@ -488,6 +488,11 @@ impl WorkspaceDoc {
         set_opt_ms(&row, "startedAt", session.started_at)?;
         row.insert("updatedAt", session.updated_at.timestamp_millis())?;
         row.insert("runningSubagents", i64::from(session.running_subagents))?;
+        if session.awaiting_approval {
+            row.insert("awaitingApproval", true)?;
+        } else {
+            row.delete("awaitingApproval")?;
+        }
         self.doc.commit();
         Ok(())
     }
@@ -782,6 +787,8 @@ pub(crate) struct RawSession {
     updated_at: i64,
     #[serde(default)]
     running_subagents: u32,
+    #[serde(default)]
+    awaiting_approval: bool,
 }
 
 impl From<RawSession> for Session {
@@ -794,6 +801,7 @@ impl From<RawSession> for Session {
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
             running_subagents: raw.running_subagents,
+            awaiting_approval: raw.awaiting_approval,
         }
     }
 }
@@ -866,6 +874,7 @@ mod tests {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                access_mode: None,
             }),
             last_message_preview: None,
             last_message_at: None,
@@ -902,6 +911,7 @@ mod tests {
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
             running_subagents: 0,
+            awaiting_approval: false,
         }
     }
 
@@ -933,6 +943,7 @@ mod tests {
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
+            access_mode: None,
         };
         assert!(ws.set_chat_config("chat-1", &config).unwrap());
         let row = ws.chat("chat-1").unwrap().expect("row exists");

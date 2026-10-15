@@ -104,6 +104,7 @@ impl Harness for ScriptedHarness {
                     prefill: None,
                     multiline: false,
                     multi_select: false,
+                    approval: None,
                 }])
                 .await
                 .unwrap_or_default();

@@ -458,6 +458,7 @@ impl DemoHost {
                     _ => None,
                 },
                 updated_at: now,
+                awaiting_approval: false,
             })
         });
     }

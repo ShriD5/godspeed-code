@@ -2660,6 +2660,9 @@ pub(crate) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hs
         // Blue: "asking you a question" must read differently from "busy
         // working" at a glance.
         ChatIndicator::AwaitingInput => theme.accent.opacity(0.6),
+        // Amber: a permission prompt blocks the agent until someone says
+        // yes or no, and must not read as an ordinary question.
+        ChatIndicator::AwaitingApproval => theme.warning.opacity(0.85),
         ChatIndicator::Errored => theme.danger.opacity(0.65),
         // Green: finished-but-unseen reads as "ready for you".
         ChatIndicator::Completed => {
