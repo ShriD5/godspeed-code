@@ -31,7 +31,7 @@ pub(crate) fn rollout_files(home: &Path) -> Vec<(PathBuf, bool)> {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, archived, out);
-            } else if path.extension().is_some_and(|e| e == "jsonl") {
+            } else if path.extension().is_some_and(|e| e == "jsonl") && path.is_file() {
                 out.push((path, archived));
             }
         }
