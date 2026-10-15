@@ -254,6 +254,11 @@ enum Command {
     Settings,
     Theme(AppearanceMode),
     ArchiveThread,
+    // Git write actions on the focused chat's checkout.
+    GitCommit,
+    GitPush,
+    GitPull,
+    GitCreatePullRequest,
 }
 
 impl Command {
@@ -266,6 +271,10 @@ impl Command {
             Self::Theme(AppearanceMode::Light) => "Switch to light theme",
             Self::Theme(AppearanceMode::Dark) => "Switch to dark theme",
             Self::ArchiveThread => "Archive thread",
+            Self::GitCommit => "Commit changes",
+            Self::GitPush => "Push",
+            Self::GitPull => "Pull",
+            Self::GitCreatePullRequest => "Create pull request",
         }
     }
 
@@ -276,6 +285,10 @@ impl Command {
             Self::Settings => icons::SETTINGS,
             Self::Theme(mode) => mode.icon(),
             Self::ArchiveThread => icons::ARCHIVE_MINIMALISTIC,
+            Self::GitCommit => icons::CHECK,
+            Self::GitPush => icons::ARROW_UP,
+            Self::GitPull => icons::ARROW_DOWN,
+            Self::GitCreatePullRequest => icons::PULL_REQUEST,
         }
     }
 }
@@ -372,6 +385,25 @@ fn commands_for(query: &str, is_dark: bool, can_archive: bool) -> Vec<Command> {
     .into_iter()
     .chain(can_archive.then_some(Command::ArchiveThread))
     .filter(|command| matches_query(query, command.label()))
+    .collect()
+}
+
+/// Git commands, offered while the focused chat has a checkout.
+fn git_commands_for(query: &str, can_git: bool) -> Vec<Command> {
+    if !can_git {
+        return Vec::new();
+    }
+    [
+        Command::GitCommit,
+        Command::GitPush,
+        Command::GitPull,
+        Command::GitCreatePullRequest,
+    ]
+    .into_iter()
+    .filter(|command| {
+        // "git" finds them all, as do their own names.
+        matches_query(query, command.label()) || matches_query(query, &format!("git {}", command.label()))
+    })
     .collect()
 }
 
@@ -640,11 +672,13 @@ impl Shell {
         };
         let query = palette.search.read(cx).text().trim().to_lowercase();
         let can_archive = self.state.read(cx).archivable_selected_chat().is_some();
+        let can_git = self.palette_git_target(cx).is_some();
         let commands = |section| {
             PaletteSection::new(
                 section,
                 commands_for(&query, Theme::of(cx).appearance.is_dark(), can_archive)
                     .into_iter()
+                    .chain(git_commands_for(&query, can_git))
                     .map(RowKind::Command),
             )
         };
@@ -872,6 +906,12 @@ impl Shell {
             RowKind::Command(Command::Settings) => self.open_last_settings(cx),
             RowKind::Command(Command::Theme(_)) => unreachable!(),
             RowKind::Command(Command::ArchiveThread) => self.archive_selected_chat(cx),
+            RowKind::Command(Command::GitCommit) => self.palette_commit(window, cx),
+            RowKind::Command(Command::GitPush) => self.palette_sync_action(methods::GIT_PUSH, cx),
+            RowKind::Command(Command::GitPull) => self.palette_sync_action(methods::GIT_PULL, cx),
+            RowKind::Command(Command::GitCreatePullRequest) => {
+                self.palette_create_pull_request(window, cx)
+            }
             RowKind::Chat(id) => self.open_chat(id, cx),
             RowKind::File { path, is_dir } => {
                 self.open_palette_path(path, is_dir, None, window, cx)
@@ -921,7 +961,11 @@ impl Shell {
             Command::NewProject => ShortcutId::NewProject,
             Command::Settings => return Some(crate::settings::badge_combo("mod-,")),
             Command::ArchiveThread => ShortcutId::ArchiveSession,
-            Command::Theme(_) => return None,
+            Command::Theme(_)
+            | Command::GitCommit
+            | Command::GitPush
+            | Command::GitPull
+            | Command::GitCreatePullRequest => return None,
         };
         let combo = self.settings.keymap.get(id);
         let valid = Keystroke::parse(&platform_combo(combo)).is_ok();
@@ -2750,6 +2794,26 @@ mod tests {
         enter.release();
         assert!(enter.press(false));
         assert!(!enter.press(true));
+    }
+
+    #[test]
+    fn git_commands_need_a_checkout_and_match_by_name_or_git() {
+        assert!(git_commands_for("", false).is_empty());
+        assert_eq!(
+            git_commands_for("", true),
+            vec![
+                Command::GitCommit,
+                Command::GitPush,
+                Command::GitPull,
+                Command::GitCreatePullRequest
+            ]
+        );
+        assert_eq!(git_commands_for("git", true).len(), 4);
+        assert_eq!(git_commands_for("push", true), vec![Command::GitPush]);
+        assert_eq!(
+            git_commands_for("pull request", true),
+            vec![Command::GitCreatePullRequest]
+        );
     }
 
     #[test]
