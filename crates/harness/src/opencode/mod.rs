@@ -1438,6 +1438,9 @@ struct ChildRun {
     feed: SessionFeed,
     /// Chip settled (tagged Done sent); late traffic drops.
     done: bool,
+    /// The child session reported an error; its terminal idle settles the
+    /// chip as failed.
+    failed: bool,
 }
 
 /// A `task` chip awaiting its child session id.
@@ -3027,6 +3030,45 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         .get("status")
         .and_then(|s| s.get("type"))
         .and_then(Value::as_str);
+    // A child session's own end settles its chip. A background spawn's call
+    // completes at once (see [`task_completion`]), so these frames are its
+    // only end; a foreground child's arrive just before its call completes.
+    if !is_ours
+        && let Some(child) = event_session.and_then(|s| children.get_mut(s))
+        && !child.done
+    {
+        let ended = match kind {
+            "session.error" => {
+                child.failed = true;
+                None
+            }
+            "session.idle" => Some(if child.failed {
+                DoneStatus::Errored
+            } else {
+                DoneStatus::Completed
+            }),
+            "session.status" if status == Some("idle") => Some(if child.failed {
+                DoneStatus::Errored
+            } else {
+                DoneStatus::Completed
+            }),
+            "session.interrupted" => Some(DoneStatus::Interrupted),
+            _ => None,
+        };
+        if let Some(status) = ended {
+            child.done = true;
+            let done = tag(
+                &child.parent_tool_use_id,
+                AgentEvent::Done {
+                    status,
+                    result: None,
+                    error: None,
+                    session_id: None,
+                },
+            );
+            return forward(event_tx, vec![done]).await;
+        }
+    }
     if is_ours && (kind == "session.idle" || (kind == "session.status" && status == Some("idle"))) {
         // OpenCode can emit both idle encodings for one completion. The first
         // may submit a queued prompt before we consume the second. Until that
@@ -3052,7 +3094,22 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         "session.status" if is_ours => {
             let status = props.get("status").unwrap_or(&Value::Null);
             match status.get("type").and_then(Value::as_str) {
-                Some("busy") => turn.idle_ready = true,
+                Some("busy") => {
+                    // Busy with no prompt of ours in flight: opencode woke
+                    // the session itself (a background subagent finished
+                    // and its notice re-invoked the parent). Arm a turn so
+                    // the wake's own idle ends it with a Done; unarmed, the
+                    // wake streamed into a chat that never left Working.
+                    // Until the wake shows activity of its own, the status
+                    // poll checks it is real, so a stray busy can't leave
+                    // the chat Working.
+                    if !turn.active {
+                        *turn = TurnState::begin(None);
+                        turn.note_activity();
+                        turn.status_poll = Some(tokio::time::Instant::now() + turn.status_backoff);
+                    }
+                    turn.idle_ready = true;
+                }
                 Some("retry") => {
                     turn.idle_ready = true;
                     let attempt = status.get("attempt").and_then(Value::as_u64).unwrap_or(0);
@@ -3554,6 +3611,21 @@ fn task_completion(part: &Value) -> Option<(String, bool)> {
     if !matches!(status, "completed" | "error") {
         return None;
     }
+    // A `background: true` spawn completes its call at once, while the
+    // child keeps working (2.x `subagent`: metadata `status: "running"`).
+    // Its own terminal frames settle it, not this part.
+    let backgrounded = state
+        .get("metadata")
+        .and_then(|m| m.get("status"))
+        .and_then(Value::as_str)
+        == Some("running")
+        || state
+            .get("output")
+            .and_then(Value::as_str)
+            .is_some_and(|o| o.starts_with("The subagent is working in the background"));
+    if status == "completed" && backgrounded {
+        return None;
+    }
     let child = state
         .get("metadata")
         .and_then(|m| m.get("sessionId").or_else(|| m.get("sessionID")))
@@ -3582,6 +3654,7 @@ fn bind_child(
                     parent_tool_use_id: p.tool_part_id,
                     feed: SessionFeed::default(),
                     done: false,
+                    failed: false,
                 },
             );
             true
@@ -3822,6 +3895,7 @@ fn register_spawn(
                 parent_tool_use_id: part_id.to_owned(),
                 feed: SessionFeed::default(),
                 done: false,
+                failed: false,
             },
         );
         return;
@@ -3849,6 +3923,7 @@ fn register_spawn(
                 parent_tool_use_id: part_id.to_owned(),
                 feed: SessionFeed::default(),
                 done: false,
+                failed: false,
             },
         );
         return;
@@ -4255,11 +4330,13 @@ fn normalize_v2_frame_with_session_models(
                         .join("\n")
                 })
                 .unwrap_or_default();
+            // `metadata` says whether a subagent call finished or only
+            // backgrounded its child (`{sessionID, status: "running"}`).
             vec![v2_tool_part(
                 &data,
                 id,
                 &name,
-                &json!({ "status": "completed", "output": output }),
+                &json!({ "status": "completed", "output": output, "metadata": data.get("metadata") }),
             )]
         }
         "session.tool.failed" | "session.tool.error" => {
@@ -4276,7 +4353,7 @@ fn normalize_v2_frame_with_session_models(
                 &data,
                 id,
                 &name,
-                &json!({ "status": "error", "error": message }),
+                &json!({ "status": "error", "error": message, "metadata": data.get("metadata") }),
             )]
         }
         "session.step.ended" => {

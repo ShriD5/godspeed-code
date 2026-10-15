@@ -2672,6 +2672,146 @@ async fn v2_spawn_names_bind_child_traffic_to_the_parent_chip() {
     }
 }
 
+/// zeronsh/zeron#845, opencode 2.x `background: true`: the spawn's call
+/// completes at once with `metadata.status: "running"` while the child keeps
+/// working. The chip must stay live, stream the child, and settle once on the
+/// child's own end; then opencode re-invokes the parent with the completion
+/// notice (a busy with no prompt of ours), and that wake must end with its
+/// own Done instead of leaving the chat Working.
+#[tokio::test]
+async fn v2_background_subagents_settle_on_their_end_and_the_wake_turn_ends() {
+    let mut wire = TurnWire::start_config(
+        false,
+        true,
+        true,
+        None,
+        "2.0.26",
+        json!({"keepSteering": true}),
+        false,
+    )
+    .await;
+    wire.request("/api/model").await;
+    wire.request("/prompt").await;
+    let parent = |kind: &str, extra: Value| {
+        let mut data = json!({"sessionID": "fixture", "assistantMessageID": "pm"});
+        data.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        (kind.to_owned(), data)
+    };
+    for (kind, data) in [
+        parent("session.execution.started", json!({})),
+        parent("session.step.started", json!({})),
+        parent("session.tool.input.started", json!({"id": "spawn", "name": "subagent"})),
+        parent(
+            "session.tool.called",
+            json!({"id": "spawn", "input": {"description": "Sleep", "prompt": "sleep 5", "background": true}}),
+        ),
+    ] {
+        wire.v2(&kind, data);
+    }
+    wire.v2("session.created", json!({"sessionID": "child", "parentID": "fixture", "title": "Sleep"}));
+    for (kind, data) in [
+        parent(
+            "session.tool.success",
+            json!({"id": "spawn", "content": [{"type": "text", "text": "The subagent is working in the background (sessionID: child)."}],
+                   "metadata": {"sessionID": "child", "status": "running"}}),
+        ),
+        parent("session.text.delta", json!({"ordinal": 0, "delta": "Launched it."})),
+        parent("session.execution.succeeded", json!({})),
+    ] {
+        wire.v2(&kind, data);
+    }
+    let (status, text) = wire.done().await;
+    assert_eq!((status, text.as_str()), (DoneStatus::Completed, "Launched it."));
+
+    // The child works on after the parent turn ended, then finishes.
+    wire.v2("session.step.started", json!({"sessionID": "child", "assistantMessageID": "cm"}));
+    wire.v2(
+        "session.text.delta",
+        json!({"sessionID": "child", "assistantMessageID": "cm", "ordinal": 0, "delta": "slept"}),
+    );
+    wire.v2("session.execution.succeeded", json!({"sessionID": "child"}));
+    let mut child = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let AgentEvent::Subagent { event, .. } = wire.events.recv().await.unwrap().unwrap() {
+                let done = matches!(event.as_ref(), AgentEvent::Done { .. });
+                child.push(*event);
+                if done {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        child.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "slept")),
+        "the child streamed while running: {child:?}"
+    );
+    assert!(matches!(
+        child.last(),
+        Some(AgentEvent::Done { status: DoneStatus::Completed, .. })
+    ));
+    assert_eq!(
+        child
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Done { .. }))
+            .count(),
+        1
+    );
+
+    // The wake: opencode re-invokes the parent on its own.
+    let wake = |kind: &str, extra: Value| {
+        let mut data = json!({"sessionID": "fixture", "assistantMessageID": "wm"});
+        data.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        (kind.to_owned(), data)
+    };
+    for (kind, data) in [
+        wake("session.execution.started", json!({})),
+        wake("session.step.started", json!({})),
+        wake("session.text.delta", json!({"ordinal": 0, "delta": "The subagent finished."})),
+        wake("session.execution.succeeded", json!({})),
+    ] {
+        wire.v2(&kind, data);
+    }
+    let (status, text) = wire.done().await;
+    assert_eq!(status, DoneStatus::Completed);
+    assert_eq!(text, "The subagent finished.");
+}
+
+#[test]
+fn a_backgrounded_spawn_is_not_its_childs_end() {
+    let part = |state: Value| json!({"type": "tool", "tool": "subagent", "state": state});
+    assert_eq!(
+        task_completion(&part(json!({"status": "completed", "metadata": {"sessionID": "c", "status": "running"}}))),
+        None
+    );
+    assert_eq!(
+        task_completion(&part(json!({"status": "completed", "output": "The subagent is working in the background (sessionID: c)."}))),
+        None
+    );
+    assert_eq!(
+        task_completion(&part(json!({"status": "completed", "metadata": {"sessionID": "c", "status": "completed"}}))),
+        Some(("c".into(), false))
+    );
+    assert_eq!(
+        task_completion(&part(json!({"status": "error", "metadata": {"sessionID": "c"}}))),
+        Some(("c".into(), true))
+    );
+    // The 2.x normalizer carries the metadata that tells them apart.
+    let mut names = HashMap::new();
+    normalize_v2_frame(
+        json!({"type": "session.tool.input.started", "data": {"sessionID": "s", "assistantMessageID": "m", "id": "t", "name": "subagent"}}),
+        &mut names,
+    );
+    let frames = normalize_v2_frame(
+        json!({"type": "session.tool.success", "data": {"sessionID": "s", "assistantMessageID": "m", "id": "t",
+            "content": [{"type": "text", "text": "x"}], "metadata": {"sessionID": "c", "status": "running"}}}),
+        &mut names,
+    );
+    assert_eq!(frames[0]["properties"]["part"]["state"]["metadata"]["status"], "running");
+}
+
 #[test]
 fn native_skill_catalog_rejects_unrepresentable_commands() {
     use zeron_proto::invocation::{Invocation, Skill, invocation_links};
