@@ -83,7 +83,7 @@ directly comparable; the movers are listed below.
 | Same-provider model/effort switch mid-thread | ✅ | in place or restart plus resume |
 | Usage and rate-limit display | ✅ | composer ring, more providers than T3 (`ui/src/account_usage.rs`, `agent_accounts/usage.rs`) |
 | Usage windows survive a failed probe | ✅ | `a0c5eb9f` |
-| Limited status, Resume at reset, Snooze until reset, auto-resume | ❌ | reset times are already parsed; nothing schedules a continuation |
+| Limited status, Resume at reset, Snooze until reset, auto-resume | ✅ | per-driver detection with reset times, usage-window fallback, held sends, engine timer that survives restarts and sleep (`engine/src/limit_recovery.rs`, `harness/src/limits.rs`); snooze marks rather than hides (no sidebar snooze yet); same chat, same account only |
 | `/usage-limits` in the composer | ❌ | |
 | Pooled limits across accounts, CLIProxyAPI hubs, "Use reset" credits | ❌ | |
 
@@ -148,7 +148,7 @@ directly comparable; the movers are listed below.
 | Thread search | ✅ | palette (and the sidebar's search button) scores title / project / branch / device / PR plus message text from the first character, from each engine's local message index (`engine/src/message_index.rs`, `SearchMessages`); opening a hit scrolls to the message |
 | Pin | ✅ | `shell/sidebar_pins.rs`, synced |
 | Lifecycle sections (Working / Snoozed / Settled) | 🟡 | user-named sections plus archive instead |
-| Status labels | 🟡 | Working, Input, Needs approval, Failed, Done, Queued, subagent pill; no Limited, no unsent-draft |
+| Status labels | 🟡 | Working, Input, Needs approval, Failed, Limited, Done, Queued, subagent pill; no unsent-draft |
 | Working duration and diff stats on rows | ❌ | `working_since_ms` exists in `client/src/session`, never rendered |
 | Settle, snooze, wake, auto-settle (inactivity, merged PR) | ❌ | |
 | Multi-select, drag-to-settle, undo toast with `mod+z` | ❌ | |
@@ -405,7 +405,7 @@ phone · zero telemetry.
 ## Biggest remaining gaps (by user impact)
 
 1. **PR review and merge**: submit review, line comments, reply/resolve, merge and auto-merge, draft/ready, viewed marks. Today the PR board is read-only plus comment and agent handoff.
-2. **Usage-limit recovery**: Limited status, Resume at reset, snooze, auto-resume. Heavy subscription users hit this daily and Godspeed already has the reset times.
+2. ~~**Usage-limit recovery**~~: done (Limited status, Resume at reset, snooze, auto-resume, always-on agents wait for the reset). Left: hiding snoozed chats from Active, `/usage-limits`, account fallback.
 3. **Thread lifecycle**: settle, snooze, auto-settle on merged PR or inactivity, multi-select with undo, working duration and diff stats on rows. The sidebar is the surface users look at all day.
 4. ~~**Find in thread and message-text thread search**~~ shipped: local message index plus ⌘F find bar (T3 searches server-side from two characters).
 5. **Delegation that wakes the parent** (child finished, blocked or needs approval) plus a `/goal` row. Multi-agent orchestration is the main use of the MCP server.

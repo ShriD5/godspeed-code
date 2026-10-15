@@ -397,7 +397,9 @@ impl From<zc::ChatIndicator> for ChatIndicator {
             zc::ChatIndicator::AwaitingInput | zc::ChatIndicator::AwaitingApproval => {
                 ChatIndicator::AwaitingInput
             }
-            zc::ChatIndicator::Errored => ChatIndicator::Errored,
+            // A usage-limited turn reads as stopped on the phone until the
+            // app grows its own Limited state; the desktop owns recovery.
+            zc::ChatIndicator::Errored | zc::ChatIndicator::Limited => ChatIndicator::Errored,
             zc::ChatIndicator::Completed => ChatIndicator::Completed,
             zc::ChatIndicator::Idle => ChatIndicator::Idle,
         }

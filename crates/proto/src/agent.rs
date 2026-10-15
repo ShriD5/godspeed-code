@@ -692,6 +692,19 @@ pub enum AgentEvent {
     Error {
         message: String,
     },
+    /// The turn was blocked by the account's usage or rate limit — never a
+    /// full context window, which stays an ordinary [`Self::Error`].
+    /// `reset_at` is when the provider says the window reopens, if it says.
+    /// Drivers emit it before the turn's errored `Done`; the engine marks the
+    /// chat Limited from it and never folds it into the transcript.
+    #[serde(rename_all = "camelCase")]
+    UsageLimit {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_at: Option<chrono::DateTime<chrono::Utc>>,
+        /// The window that ran out, when the provider names it ("5-hour").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     InputRequested {
         request_id: String,

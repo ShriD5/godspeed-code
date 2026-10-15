@@ -131,6 +131,7 @@ fn status_label(status: AgentRunStatus) -> &'static str {
         AgentRunStatus::Succeeded => "Done",
         AgentRunStatus::Failed => "Failed",
         AgentRunStatus::Skipped => "Skipped",
+        AgentRunStatus::Limited => "Limited",
     }
 }
 

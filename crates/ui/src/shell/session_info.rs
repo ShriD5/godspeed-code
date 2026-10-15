@@ -44,6 +44,23 @@ fn info_row(theme: &Theme, glyph: AnyElement, label: SharedString) -> gpui::Div 
         .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
+/// The session card's one-line usage-limit status. Pure.
+fn limit_summary(limit: &zeron_proto::ChatLimit, now: chrono::DateTime<Utc>) -> String {
+    use zeron_proto::LimitRecovery;
+    let Some(at) = limit.reset_at else {
+        return "Limited · reset time unknown".to_owned();
+    };
+    if at <= now {
+        return "Limited · the limit has reset".to_owned();
+    }
+    let time = at.with_timezone(&chrono::Local).format("%b %-d, %-I:%M %p");
+    match limit.recovery {
+        LimitRecovery::ResumeAtReset => format!("Limited · resumes {time}"),
+        LimitRecovery::Snoozed => format!("Snoozed until {time}"),
+        LimitRecovery::Ask => format!("Limited · resets {time}"),
+    }
+}
+
 fn row_glyph(path: &'static str, theme: &Theme) -> AnyElement {
     icon(path)
         .size(px(15.0))
@@ -216,6 +233,20 @@ impl Shell {
                 .id("session-info-branch")
                 .tooltip(crate::settings::widgets::text_tooltip(branch))
         });
+        // Stopped on a usage limit: when it resets, and whether it resumes.
+        let limit_row = chat.limit.as_ref().map(|limit| {
+            let label: SharedString = limit_summary(limit, now).into();
+            info_row(
+                &theme,
+                icon(icons::CLOCK_CIRCLE)
+                    .size(px(15.0))
+                    .text_color(theme.limited)
+                    .into_any_element(),
+                label.clone(),
+            )
+            .id("session-info-limit")
+            .tooltip(crate::settings::widgets::text_tooltip(label))
+        });
 
         // ── This conversation.
         let busy = self.side_chat_creating;
@@ -256,6 +287,7 @@ impl Shell {
             .child(device_row)
             .child(project_row)
             .children(branch_row)
+            .children(limit_row)
             .child(popover::picker_divider())
             .child(side_chat)
             .child(fork)

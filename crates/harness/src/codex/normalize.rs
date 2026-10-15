@@ -122,6 +122,87 @@ pub(crate) fn turn_error_message(params: &Value) -> Option<String> {
         })
 }
 
+/// The structured class of a Codex error (`codexErrorInfo` on an `error`
+/// notification or a turn's `error`): `Some(true)` for a usage limit — or a
+/// request that gave up on HTTP 429 — `Some(false)` for any other class
+/// (a full context window among them), `None` when there is no class.
+pub(crate) fn error_class_is_limit(error: &Value) -> Option<bool> {
+    let info = field(error, &["codexErrorInfo", "codex_error_info"]).filter(|v| !v.is_null())?;
+    let (key, detail) = match info {
+        Value::String(key) => (key.clone(), None),
+        Value::Object(map) => {
+            let (key, detail) = map.iter().next()?;
+            (key.clone(), Some(detail))
+        }
+        _ => return None,
+    };
+    if key.replace('_', "").eq_ignore_ascii_case("usageLimitExceeded") {
+        return Some(true);
+    }
+    let status = detail
+        .and_then(|d| field(d, &["httpStatusCode", "http_status_code"]))
+        .and_then(Value::as_u64);
+    Some(status == Some(429))
+}
+
+/// A Codex error object reports a usage limit: its structured class when it
+/// has one, else its text (never a full context window).
+pub(crate) fn error_is_limit(error: &Value, now: chrono::DateTime<chrono::Utc>) -> bool {
+    error_class_is_limit(error).unwrap_or_else(|| {
+        let message = str_field(error, &["message"]);
+        crate::limits::classify(&message, now).is_some()
+    })
+}
+
+/// When a Codex limit lifts, from the latest `account/rateLimits/updated`
+/// snapshot: the exhausted window's `resetsAt` (the later one when both
+/// are spent — the turn can only run once both reopen). `None` when no
+/// window reads exhausted.
+pub(crate) fn rate_limit_reset(snapshot: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    let limits = field(snapshot, &["rateLimits", "rate_limits"]).unwrap_or(snapshot);
+    ["primary", "secondary"]
+        .iter()
+        .filter_map(|key| limits.get(*key).filter(|w| !w.is_null()))
+        .filter(|window| {
+            field(window, &["usedPercent", "used_percent"])
+                .and_then(Value::as_f64)
+                .is_some_and(|used| used >= 100.0)
+        })
+        .filter_map(|window| {
+            let secs = field(window, &["resetsAt", "resets_at"]).and_then(Value::as_i64)?;
+            chrono::DateTime::from_timestamp(secs, 0)
+        })
+        .max()
+}
+
+/// The [`AgentEvent::UsageLimit`] to emit before an errored turn's `Done`:
+/// when the turn's own error is a limit, or an earlier final `error`
+/// notification was and the turn's error names no other class. The reset is
+/// the exhausted rate-limit window's, else whatever the error text says.
+pub(crate) fn turn_limit_event(
+    turn_error: Option<&Value>,
+    limited_earlier: Option<&str>,
+    rate_limits: Option<&Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<AgentEvent> {
+    let own = turn_error.is_some_and(|e| error_is_limit(e, now));
+    let earlier = limited_earlier.is_some()
+        && turn_error.is_none_or(|e| error_class_is_limit(e) != Some(false));
+    if !own && !earlier {
+        return None;
+    }
+    let text = turn_error
+        .map(|e| str_field(e, &["message"]))
+        .filter(|m| !m.is_empty())
+        .or_else(|| limited_earlier.map(str::to_owned))
+        .unwrap_or_default();
+    let reset = rate_limits
+        .and_then(rate_limit_reset)
+        .filter(|at| *at > now)
+        .or_else(|| crate::limits::parse_reset(&text, now));
+    Some(crate::limits::event(reset, None))
+}
+
 /// `thread/tokenUsage/updated` → a [`AgentEvent::Usage`] snapshot of the LAST
 /// turn's tokens (held by the session loop, emitted before `Done`).
 pub(crate) fn usage_event(params: &Value) -> Option<AgentEvent> {
@@ -1153,6 +1234,71 @@ mod generated_image_tests {
             assert!(!wire.contains("INLINE_IMAGE_SENTINEL"));
             assert!(!wire.contains("private prompt"));
         }
+    }
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_792_000_000, 0).unwrap()
+    }
+
+    /// `usageLimitExceeded` and a 429 retry exhaustion (t3code #16288) are
+    /// limits; a full context window is its own class even when its text
+    /// mentions limits; unclassed errors fall back to the text.
+    #[test]
+    fn codex_error_classes_split_limits_from_context_and_other_failures() {
+        for error in [
+            json!({"message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"}),
+            json!({"message": "exceeded retry limit", "codexErrorInfo": {"responseTooManyFailedAttempts": {"httpStatusCode": 429}}}),
+            json!({"message": "stream error", "codex_error_info": {"http_connection_failed": {"http_status_code": 429}}}),
+            json!({"message": "You've hit your usage limit. Try again in 3 hours 2 minutes."}),
+        ] {
+            assert!(error_is_limit(&error, now()), "{error}");
+        }
+        for error in [
+            json!({"message": "Codex ran out of room in the model's context window.", "codexErrorInfo": "contextWindowExceeded"}),
+            json!({"message": "rate limit of the context window", "codexErrorInfo": "contextWindowExceeded"}),
+            json!({"message": "stream error", "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 502}}}),
+            json!({"message": "Your input exceeds the context window of this model."}),
+            json!({"message": "boom"}),
+        ] {
+            assert!(!error_is_limit(&error, now()), "{error}");
+        }
+    }
+
+    /// The reset comes from the exhausted rate-limit window (t3code #14169:
+    /// the countdown the usage page already shows), else the error text,
+    /// else nothing — and a context-window failure never yields one.
+    #[test]
+    fn turn_limit_events_take_the_exhausted_windows_reset() {
+        let reset = now() + chrono::TimeDelta::hours(4);
+        let snapshot = json!({"rateLimits": {
+            "primary": {"usedPercent": 100.0, "windowDurationMins": 300, "resetsAt": reset.timestamp()},
+            "secondary": {"usedPercent": 41.0, "windowDurationMins": 10080, "resetsAt": reset.timestamp() + 86_400},
+        }});
+        let error = json!({"message": "You've hit your usage limit.", "codexErrorInfo": "usageLimitExceeded"});
+        assert_eq!(
+            turn_limit_event(Some(&error), None, Some(&snapshot), now()),
+            Some(AgentEvent::UsageLimit { reset_at: Some(reset), window: None })
+        );
+        // No exhausted window: the text's wait.
+        let calm = json!({"rateLimits": {"primary": {"usedPercent": 12.0, "resetsAt": reset.timestamp()}}});
+        let error = json!({"message": "You've hit your usage limit. Try again in 2 hours.", "codexErrorInfo": "usageLimitExceeded"});
+        assert_eq!(
+            turn_limit_event(Some(&error), None, Some(&calm), now()),
+            Some(AgentEvent::UsageLimit { reset_at: Some(now() + chrono::TimeDelta::hours(2)), window: None })
+        );
+        // Nothing names a reset.
+        let bare = json!({"message": "usage limit", "codexErrorInfo": "usageLimitExceeded"});
+        assert_eq!(
+            turn_limit_event(Some(&bare), None, None, now()),
+            Some(AgentEvent::UsageLimit { reset_at: None, window: None })
+        );
+        // An earlier final error notification carries the turn.
+        assert!(turn_limit_event(None, Some("429 Too Many Requests"), None, now()).is_some());
+        // Context full stays distinct, even after a limit notification.
+        let full = json!({"message": "context", "codexErrorInfo": "contextWindowExceeded"});
+        assert_eq!(turn_limit_event(Some(&full), None, Some(&snapshot), now()), None);
+        assert_eq!(turn_limit_event(Some(&full), Some("rate limit"), None, now()), None);
+        assert_eq!(turn_limit_event(Some(&json!({"message": "boom"})), None, None, now()), None);
     }
 
     #[test]

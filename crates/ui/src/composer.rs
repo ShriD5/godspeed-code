@@ -42,6 +42,7 @@ use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
 mod chip;
+mod limit_banner;
 pub use chip::ChipKind;
 use chip::*;
 pub(crate) use chip::{
@@ -11359,6 +11360,12 @@ impl Render for Composer {
             let wizard = self.render_wizard(cx);
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
+
+        // A usage-limited chat says when it resets and what happens then,
+        // directly above the box its next message is typed in.
+        let container = container.when_some(self.render_limit_banner(&theme, cx), |el, banner| {
+            el.child(banner)
+        });
 
         // What is waiting to be sent, stacked directly above the box it was
         // typed in — the queue is a property of this composer, not a panel

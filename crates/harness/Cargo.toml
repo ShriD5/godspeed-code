@@ -24,6 +24,8 @@ required-features = ["native-fixture"]
 [dependencies]
 zeron-voice-media.workspace = true
 zeron-proto.workspace = true
+chrono.workspace = true
+chrono-tz = "0.10"
 base64 = "0.22"
 reqwest.workspace = true
 tokio.workspace = true

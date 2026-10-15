@@ -1466,6 +1466,30 @@ impl RegistryDoc {
         Ok(true)
     }
 
+    /// Set or clear the chat's usage-limit marker (LWW per field like every
+    /// registry write). The host writes it when a turn hits a limit and
+    /// when recovery ends; any device may write a recovery choice.
+    pub fn set_chat_limit(
+        &mut self,
+        chat_id: &str,
+        limit: Option<&zeron_proto::ChatLimit>,
+    ) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        let value = match limit {
+            Some(limit) => serde_json::to_value(limit)?,
+            None => Value::Null,
+        };
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([("limit", value)]),
+        );
+        Ok(true)
+    }
+
     /// Host-side sidebar freshness: preview + timestamp of the latest message.
     pub fn set_chat_last_message(
         &mut self,
@@ -1672,6 +1696,14 @@ impl RegistryDoc {
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
                     ("lastSeenAt", opt_ms(chat.last_seen_at)),
                     ("parentChatId", opt_str(chat.parent_chat_id.as_deref())),
+                    (
+                        "limit",
+                        chat.limit
+                            .as_ref()
+                            .map(serde_json::to_value)
+                            .transpose()?
+                            .unwrap_or(Value::Null),
+                    ),
                 ]),
             );
         }

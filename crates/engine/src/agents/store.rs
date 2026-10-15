@@ -295,6 +295,39 @@ impl AgentStore {
         Ok(())
     }
 
+    /// Until when the agent's fires wait for a usage-limit reset.
+    pub(crate) fn limited_until(&self, id: &str) -> Result<Option<DateTime<Utc>>, EngineError> {
+        let value: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![format!("limited_until:{id}")],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_err)?;
+        Ok(value.and_then(|v| v.parse::<i64>().ok()).map(from_ms))
+    }
+
+    pub(crate) fn set_limited_until(
+        &self,
+        id: &str,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<(), EngineError> {
+        let key = format!("limited_until:{id}");
+        let conn = self.conn();
+        match until {
+            Some(until) => conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, ms(until).to_string()],
+            ),
+            None => conn.execute("DELETE FROM meta WHERE key = ?1", params![key]),
+        }
+        .map_err(store_err)?;
+        Ok(())
+    }
+
     pub(crate) fn set_paused(&self, id: &str, reason: Option<&str>) -> Result<(), EngineError> {
         self.conn()
             .execute(

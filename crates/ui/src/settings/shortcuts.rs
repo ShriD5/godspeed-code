@@ -84,6 +84,8 @@ pub struct ShortcutsPage {
     semantic_access_prompted: bool,
     /// Settings → General's thread naming card (its own title-bound picker).
     thread_naming: Entity<crate::settings::thread_naming::ThreadNamingCard>,
+    /// Settings → General's usage-limit recovery default.
+    usage_limits: Entity<crate::settings::usage_limits::UsageLimitsCard>,
     worktrees: Entity<super::worktrees::WorktreeSettingsCard>,
     _state: Entity<AppState>,
 }
@@ -128,6 +130,10 @@ impl ShortcutsPage {
             thread_naming: {
                 let state = state.clone();
                 cx.new(|cx| crate::settings::thread_naming::ThreadNamingCard::new(state, cx))
+            },
+            usage_limits: {
+                let state = state.clone();
+                cx.new(|cx| crate::settings::usage_limits::UsageLimitsCard::new(state, cx))
             },
             worktrees: cx.new(|cx| super::worktrees::WorktreeSettingsCard::new(state.clone(), cx)),
             _state: state,
@@ -959,6 +965,7 @@ impl Render for ShortcutsPage {
                                             .child(pull_request_destination_row),
                                     ))
                                     .child(self.thread_naming.clone())
+                                    .child(self.usage_limits.clone())
                                     .child(self.worktrees.clone()),
                             ),
                     )

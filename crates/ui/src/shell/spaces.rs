@@ -2664,6 +2664,9 @@ pub(crate) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hs
         // yes or no, and must not read as an ordinary question.
         ChatIndicator::AwaitingApproval => theme.warning.opacity(0.85),
         ChatIndicator::Errored => theme.danger.opacity(0.65),
+        // Violet: stopped on a usage limit, waiting for its window to
+        // reset — neither failed nor asking.
+        ChatIndicator::Limited => theme.limited.opacity(0.8),
         // Green: finished-but-unseen reads as "ready for you".
         ChatIndicator::Completed => {
             theme.success.opacity(0.9) // emerald-400
@@ -7676,6 +7679,7 @@ mod tests {
             harness_session_id: None,
             harness_session_cwd: None,
             parent_chat_id: None,
+            limit: None,
             space_id: None,
             last_seen_at: None,
             room_gen: None,

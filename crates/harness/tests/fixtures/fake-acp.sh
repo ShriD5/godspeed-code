@@ -537,6 +537,14 @@ case "$promptline" in
   emit "{\"id\":$pid,\"result\":{\"stopReason\":\"refusal\"}}"
   ;;
 
+*scenario:quota*)
+  emit "{\"id\":$pid,\"error\":{\"code\":429,\"message\":\"RESOURCE_EXHAUSTED: Quota exceeded. Please retry in 2h 30m.\"}}"
+  ;;
+
+*scenario:context-full*)
+  emit "{\"id\":$pid,\"error\":{\"code\":-32603,\"message\":\"Request exceeds the model context window (token limit reached)\"}}"
+  ;;
+
 *scenario:resumed*)
   update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"back again"}}'
   emit "{\"id\":$pid,\"result\":{\"stopReason\":\"end_turn\"}}"

@@ -317,6 +317,7 @@ pub mod codex;
 pub mod cursor;
 pub(crate) mod executable;
 pub mod install;
+pub mod limits;
 pub(crate) mod jsonrpc;
 pub mod mock;
 mod model_context;
