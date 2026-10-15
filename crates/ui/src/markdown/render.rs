@@ -1313,15 +1313,7 @@ pub(super) fn flat_text_presented_element(
             .map(|(range, url)| {
                 (
                     range.start..glyph_end(range),
-                    LinkTarget::new(
-                        flat.original
-                            .as_ref()
-                            .map_or(&flat.text[range.clone()], |original| {
-                                &original.text[original.offsets.original(range.start)
-                                    ..original.offsets.original(range.end)]
-                            }),
-                        url,
-                    ),
+                    LinkTarget::new(link_source_label(flat, range), url),
                 )
             })
             .collect(),
@@ -1339,6 +1331,34 @@ pub(super) fn flat_text_presented_element(
         slots: flat.file_glyphs.clone(),
     }
     .into_any_element()
+}
+
+/// The text a link's displayed range came from, for the link target's label.
+/// The range maps back through the label/slot offset map; a map that goes
+/// non-monotonic (a truncation stage over a slot stage that doesn't line up)
+/// can hand back an inverted or mid-codepoint range, and slicing that
+/// panicked during prepaint and took the whole app down (Zeron #892). The
+/// label only feeds copy and the hover tooltip, so a clamped range — or the
+/// shown text when the mapped one is unusable — is always good enough.
+fn link_source_label<'a>(flat: &'a FlatText, range: &std::ops::Range<usize>) -> &'a str {
+    let shown = clamped_slice(&flat.text, range.start, range.end).unwrap_or("");
+    let Some(original) = flat.original.as_ref() else {
+        return shown;
+    };
+    clamped_slice(
+        &original.text,
+        original.offsets.original(range.start),
+        original.offsets.original(range.end),
+    )
+    .unwrap_or(shown)
+}
+
+/// `text[start..end]` with both ends clamped to the text and floored to char
+/// boundaries; `None` when the range is inverted.
+fn clamped_slice(text: &str, start: usize, end: usize) -> Option<&str> {
+    let start = text.floor_char_boundary(start.min(text.len()));
+    let end = text.floor_char_boundary(end.min(text.len()));
+    (start <= end).then(|| &text[start..end])
 }
 
 /// Selection tint shared with native inputs and the composer.
@@ -3815,6 +3835,36 @@ mod tests {
             "font or color changes invalidate runs"
         );
         assert!(cache.code.is_empty());
+    }
+
+    /// Zeron #892: an offset map that maps a link's range backwards (or into
+    /// a codepoint) must fall back, not panic in prepaint.
+    #[test]
+    fn link_label_survives_inverted_and_mid_char_ranges() {
+        use super::super::link_presentation::{OffsetMap, OriginalText};
+        let flat = |original: Option<OriginalText>| FlatText {
+            original,
+            text: "see docs → here".into(),
+            runs: Vec::new(),
+            links: Vec::new(),
+            code_ranges: Vec::new(),
+            file_glyphs: Vec::new(),
+        };
+        // A non-monotonic map: shown offset 4 lands past shown offset 8 in
+        // the source, the shape the crash report's `104..96` came from.
+        let inverted = flat(Some(OriginalText {
+            text: "see the full documentation → here".into(),
+            offsets: OffsetMap {
+                omissions: vec![(20..24, 4..4), (4..8, 8..8)],
+                prior: None,
+            },
+        }));
+        assert_eq!(link_source_label(&inverted, &(4..8)), "docs");
+        // Mid-codepoint and out-of-bounds ends floor/clamp instead of panic.
+        let plain = flat(None);
+        assert_eq!(link_source_label(&plain, &(8..10)), " ");
+        assert_eq!(link_source_label(&plain, &(9..400)), "→ here");
+        assert_eq!(link_source_label(&plain, &(8..2)), "");
     }
 }
 
