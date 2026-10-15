@@ -1092,6 +1092,201 @@ impl GitHubCli {
     }
 }
 
+// ── Git write actions: pull request and repository creation ────────────────
+
+/// Pull request creation timeout: `gh` resolves the repository, then posts.
+const GITHUB_WRITE_TIMEOUT: Duration = Duration::from_secs(90);
+/// `gh repo create --push` also uploads the whole history.
+const GITHUB_PUBLISH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// A `gh` write failure. Unlike [`ChangeRequestError`], these carry `gh`'s
+/// own explanation: the user asked for this action and needs to know why it
+/// did not happen.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum GitHubWriteError {
+    #[error(
+        "GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run `gh auth login`."
+    )]
+    CliUnavailable,
+    #[error("GitHub CLI is not signed in. Run `gh auth login` in a terminal, then try again.")]
+    Authentication,
+    #[error("A pull request for this branch already exists: {0}")]
+    PullRequestExists(String),
+    #[error("GitHub did not answer in time. Check your connection and try again.")]
+    Timeout,
+    #[error("gh: {0}")]
+    Failed(String),
+}
+
+/// What `gh pr create` should open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestDraft {
+    pub title: String,
+    pub body: String,
+    pub base: String,
+    pub head: String,
+    pub draft: bool,
+}
+
+impl GitHubCli {
+    /// `gh pr create` in the checkout. The body travels on stdin so long text
+    /// never hits command-line limits. Returns the new pull request's URL.
+    pub async fn create_pull_request(
+        &self,
+        cwd: &Path,
+        draft: &PullRequestDraft,
+    ) -> Result<String, GitHubWriteError> {
+        let mut args: Vec<String> = vec![
+            "pr".into(),
+            "create".into(),
+            "--title".into(),
+            draft.title.clone(),
+            "--body-file".into(),
+            "-".into(),
+            "--base".into(),
+            draft.base.clone(),
+            "--head".into(),
+            draft.head.clone(),
+        ];
+        if draft.draft {
+            args.push("--draft".into());
+        }
+        let output = self
+            .run_write(
+                cwd,
+                args,
+                Some(draft.body.clone().into_bytes()),
+                GITHUB_WRITE_TIMEOUT,
+            )
+            .await?;
+        first_url(&output.stdout).ok_or_else(|| {
+            GitHubWriteError::Failed("gh did not report the pull request URL".into())
+        })
+    }
+
+    /// `gh repo create <name> --source <cwd> --push`. Returns the repository URL.
+    pub async fn create_repository(
+        &self,
+        cwd: &Path,
+        name: &str,
+        private: bool,
+    ) -> Result<String, GitHubWriteError> {
+        let args = vec![
+            "repo".into(),
+            "create".into(),
+            name.to_string(),
+            if private { "--private" } else { "--public" }.into(),
+            "--source".into(),
+            cwd.to_string_lossy().into_owned(),
+            "--remote".into(),
+            "origin".into(),
+            "--push".into(),
+        ];
+        let output = self
+            .run_write(cwd, args, None, GITHUB_PUBLISH_TIMEOUT)
+            .await?;
+        first_url(&output.stdout)
+            .or_else(|| first_url(&output.stderr))
+            .ok_or_else(|| {
+                GitHubWriteError::Failed("gh did not report the repository URL".into())
+            })
+    }
+
+    /// The default branch of the checkout's GitHub repository, as `gh` sees it.
+    pub async fn checkout_default_branch(&self, cwd: &Path) -> Option<String> {
+        let output = self
+            .runner
+            .run(ProcessRequest {
+                program: "gh".into(),
+                args: vec![
+                    "repo".into(),
+                    "view".into(),
+                    "--json".into(),
+                    "defaultBranchRef".into(),
+                ],
+                stdin: None,
+                cwd: Some(cwd.to_path_buf()),
+                env: vec![("GH_PROMPT_DISABLED".into(), "1".into())],
+                timeout: GITHUB_TIMEOUT,
+                output_limit: GITHUB_OUTPUT_LIMIT,
+            })
+            .await
+            .ok()?;
+        if !output.success || output.stdout_truncated {
+            return None;
+        }
+        let view: GhRepoView = serde_json::from_slice(&output.stdout).ok()?;
+        view.default_branch_ref
+            .map(|reference| reference.name)
+            .filter(|name| !name.is_empty())
+    }
+
+    async fn run_write(
+        &self,
+        cwd: &Path,
+        args: Vec<String>,
+        stdin: Option<Vec<u8>>,
+        timeout: Duration,
+    ) -> Result<ProcessOutput, GitHubWriteError> {
+        let output = self
+            .runner
+            .run(ProcessRequest {
+                program: "gh".into(),
+                args,
+                stdin,
+                cwd: Some(cwd.to_path_buf()),
+                env: vec![("GH_PROMPT_DISABLED".into(), "1".into())],
+                timeout,
+                output_limit: GITHUB_OUTPUT_LIMIT,
+            })
+            .await
+            .map_err(|error| match error {
+                ProcessRunError::Spawn(io::ErrorKind::NotFound) => GitHubWriteError::CliUnavailable,
+                ProcessRunError::Timeout => GitHubWriteError::Timeout,
+                ProcessRunError::Spawn(_) | ProcessRunError::Io => {
+                    GitHubWriteError::Failed("could not run the GitHub CLI".into())
+                }
+            })?;
+        if output.success {
+            return Ok(output);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("already exists")
+            && let Some(url) = first_url(&output.stderr).or_else(|| first_url(&output.stdout))
+        {
+            return Err(GitHubWriteError::PullRequestExists(url));
+        }
+        Err(match classify_github_failure(&output.stderr) {
+            ChangeRequestError::Authentication => GitHubWriteError::Authentication,
+            _ => GitHubWriteError::Failed(gh_failure_detail(&stderr)),
+        })
+    }
+}
+
+/// The first `https://` token in `gh` output.
+fn first_url(bytes: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(bytes)
+        .split_whitespace()
+        .find(|token| token.starts_with("https://"))
+        .map(|url| url.trim_end_matches(['.', ',', ')']).to_string())
+}
+
+/// `gh`'s explanation: its non-empty lines, bounded for a dialog.
+fn gh_failure_detail(stderr: &str) -> String {
+    let detail = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let detail: String = detail.chars().take(400).collect();
+    if detail.is_empty() {
+        "the GitHub CLI failed without an explanation".into()
+    } else {
+        detail
+    }
+}
+
 /// Board requests run against GitHub.com without a checkout or interactive prompts.
 fn github_request() -> ProcessRequest {
     ProcessRequest {
@@ -4470,6 +4665,52 @@ printf '%s\n' '[{"number":90,"title":"Host-resolved pull request","url":"https:/
         assert_eq!(
             context.head_selectors,
             ["acme:feature/shared", "feature/shared"]
+        );
+    }
+
+    #[tokio::test]
+    async fn github_writes_classify_missing_cli_auth_and_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let draft = PullRequestDraft {
+            title: "T".into(),
+            body: "B".into(),
+            base: "main".into(),
+            head: "feature".into(),
+            draft: false,
+        };
+        let runner = FakeProcessRunner::with_responses([
+            Err(ProcessRunError::Spawn(io::ErrorKind::NotFound)),
+            command_failure("To get started with GitHub CLI, please run:  gh auth login"),
+            command_failure("pull request create failed: GraphQL: No commits between main and feature"),
+            Err(ProcessRunError::Timeout),
+        ]);
+        let github = GitHubCli::with_runner(runner.clone());
+        for expected in [
+            GitHubWriteError::CliUnavailable,
+            GitHubWriteError::Authentication,
+            GitHubWriteError::Failed(
+                "pull request create failed: GraphQL: No commits between main and feature".into(),
+            ),
+            GitHubWriteError::Timeout,
+        ] {
+            assert_eq!(
+                github.create_pull_request(dir.path(), &draft).await,
+                Err(expected)
+            );
+        }
+        assert!(
+            GitHubWriteError::Authentication
+                .to_string()
+                .contains("gh auth login")
+        );
+        let request = &runner.requests()[0];
+        assert_eq!(request.program, "gh");
+        assert_eq!(request.stdin.as_deref(), Some(b"B".as_slice()));
+        assert_eq!(request.cwd.as_deref(), Some(dir.path()));
+        assert!(
+            request
+                .env
+                .contains(&("GH_PROMPT_DISABLED".into(), "1".into()))
         );
     }
 }

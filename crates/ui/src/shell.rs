@@ -74,6 +74,7 @@ mod chat_rename_tests;
 mod command_palette;
 mod file_mutations;
 mod files_panel;
+mod git_actions_ui;
 mod harness_updates;
 mod navigation_focus;
 #[cfg(test)]
@@ -2102,6 +2103,11 @@ pub struct Shell {
     /// RPC task is retained separately so rerenders do not cancel it.
     discard_working_tree: Option<DiscardWorkingTreeFlow>,
     discard_working_tree_task: Option<Task<()>>,
+    /// The Create pull request dialog (git write actions).
+    create_pull_request: Option<(
+        Entity<crate::git_actions::CreatePullRequestDialog>,
+        Subscription,
+    )>,
     /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
@@ -2612,6 +2618,7 @@ impl Shell {
             delete_confirm: None,
             discard_working_tree: None,
             discard_working_tree_task: None,
+            create_pull_request: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
             sidebar_section_migration: None,
@@ -4270,6 +4277,9 @@ impl Shell {
                                 Some(DiscardWorkingTreeFlow::Confirm(request.clone()));
                             cx.notify();
                         }
+                    }
+                    ChangesEvent::CreatePullRequest(target) => {
+                        this.open_create_pull_request(target.clone(), window, cx);
                     }
                 },
             );
@@ -10499,6 +10509,9 @@ impl Shell {
             cx.notify();
             return true;
         }
+        if self.close_create_pull_request(cx) {
+            return true;
+        }
         if let Some(update) = crate::app_update::AppUpdate::global(cx)
             && update.read(cx).prompt().is_some()
         {
@@ -10895,6 +10908,10 @@ impl Shell {
                 viewport,
                 card,
             ));
+        }
+
+        if let Some(dialog) = self.render_create_pull_request(viewport) {
+            overlays.push(dialog);
         }
 
         if let Some(sync) = self.render_sync_overlay(viewport, cx) {

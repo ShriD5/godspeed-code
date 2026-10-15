@@ -74,6 +74,9 @@ struct Inner {
     entries: Mutex<HashMap<ChangeRequestCacheKey, Arc<CacheEntry>>>,
     timing: Timing,
     shutdown: CancellationToken,
+    /// Wakes sleeping watchers early: a write (push, new pull request) just
+    /// changed what they would find.
+    nudge: tokio::sync::Notify,
 }
 
 /// Shared host-side cache. It owns no polling task: a stream drives refreshes only
@@ -110,6 +113,7 @@ impl CheckoutChangeRequests {
                 entries: Mutex::new(HashMap::new()),
                 timing,
                 shutdown: CancellationToken::new(),
+                nudge: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -312,6 +316,27 @@ impl CheckoutChangeRequests {
     pub fn shutdown(&self) {
         self.inner.shutdown.cancel();
     }
+
+    /// Re-resolve `checkout_id` now: a pull request was just created or its
+    /// branch pushed. Cached answers expire and sleeping watchers wake.
+    pub fn refresh_checkout(&self, checkout_id: &str) {
+        let entries: Vec<_> = self
+            .inner
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(key, _)| key.checkout_id == checkout_id)
+            .map(|(_, entry)| entry.clone())
+            .collect();
+        for entry in entries {
+            // A refresh holding the lock is already re-reading.
+            if let Ok(mut state) = entry.state.try_lock() {
+                state.next_refresh = Instant::now();
+            }
+        }
+        self.inner.nudge.notify_waiters();
+    }
 }
 
 struct DemandLease {
@@ -351,6 +376,7 @@ impl SubscriptionState {
     async fn sleep(&self, duration: Duration) -> bool {
         tokio::select! {
             _ = self.service.inner.shutdown.cancelled() => false,
+            _ = self.service.inner.nudge.notified() => true,
             _ = tokio::time::sleep(duration) => true,
         }
     }

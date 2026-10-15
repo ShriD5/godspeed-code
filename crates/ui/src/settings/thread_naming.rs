@@ -1,5 +1,7 @@
 //! Settings → General → Thread naming: which agent and model title new
 //! threads, chosen with the composer's own model picker (title-bound mode).
+//! The same model writes commit messages, pull request text and branch
+//! names; "Remove agent credits" strips agent trailers from those.
 
 use gpui::{AnyElement, Context, Entity, Subscription, Task, div, prelude::*, px};
 use zeron_engine::registry::TitleSettings;
@@ -123,7 +125,18 @@ impl Render for ThreadNamingCard {
                             .aria_label("Name threads with the session agent")
                             .focus_visible(|s| s.border_2().border_color(theme.accent))
                             .on_click(cx.listener(|card, _, _, cx| {
-                                card.call(Some(TitleSettings::default()), cx)
+                                // Reset the model choice only.
+                                let remove_agent_credits = card
+                                    .settings
+                                    .ready()
+                                    .is_none_or(|settings| settings.remove_agent_credits);
+                                card.call(
+                                    Some(TitleSettings {
+                                        remove_agent_credits,
+                                        ..TitleSettings::default()
+                                    }),
+                                    cx,
+                                )
                             })),
                     )
                 })
@@ -139,10 +152,39 @@ impl Render for ThreadNamingCard {
                 .into_any_element(),
         };
         let description = if follows_session {
-            "Each thread is named by its own agent."
+            "Each thread is named by its own agent, which also writes commit messages and pull requests."
         } else {
-            "A small model keeps titles fast and cheap."
+            "A small model keeps titles, commit messages and pull requests fast and cheap."
         };
+        let credits = self.settings.ready().cloned();
+        let credits_on = credits
+            .as_ref()
+            .is_none_or(|settings| settings.remove_agent_credits);
+        let credits_toggle = widgets::toggle_switch(&theme, credits_on, "remove-agent-credits")
+            .id("remove-agent-credits-toggle")
+            .flex_none()
+            .role(gpui::Role::Switch)
+            .aria_label("Remove agent credits")
+            .aria_toggled(if credits_on {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+            .when_some(credits, |el, settings| {
+                el.cursor_pointer()
+                    .tab_index(0)
+                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                    .on_click(cx.listener(move |card, _, _, cx| {
+                        card.call(
+                            Some(TitleSettings {
+                                remove_agent_credits: !settings.remove_agent_credits,
+                                ..settings.clone()
+                            }),
+                            cx,
+                        )
+                    }))
+            })
+            .when(self.settings.ready().is_none(), |el| el.opacity(0.5));
         widgets::section_card(&theme)
             .child(
                 widgets::card_row(&theme, true)
@@ -157,6 +199,24 @@ impl Render for ThreadNamingCard {
                             )),
                     )
                     .child(control),
+            )
+            .child(
+                widgets::card_row(&theme, false)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.0))
+                            .child(widgets::row_title(&theme, "Remove agent credits"))
+                            .child(widgets::meta_line(
+                                &theme,
+                                vec![
+                                    div()
+                                        .child("Strip Co-Authored-By and \u{201C}Generated with\u{201D} lines from commit messages and pull requests.")
+                                        .into_any_element(),
+                                ],
+                            )),
+                    )
+                    .child(credits_toggle),
             )
     }
 }

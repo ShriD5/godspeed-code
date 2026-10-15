@@ -20,6 +20,8 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Task, Window, div, point, px,
 };
 
+use gpui::prelude::FluentBuilder as _;
+
 use crate::motion::CubicBezier;
 use crate::theme::Theme;
 
@@ -91,6 +93,8 @@ struct Toast {
     id: u64,
     kind: ToastKind,
     message: SharedString,
+    /// Opened by the toast's "Open" action (a created pull request).
+    link: Option<SharedString>,
     created: Instant,
     /// Countdown left, and when it last resumed (`None` while paused).
     remaining: Duration,
@@ -146,6 +150,15 @@ struct ToastStore {
 impl Global for ToastStore {}
 
 fn push(cx: &mut App, kind: ToastKind, message: SharedString) {
+    push_with_link(cx, kind, message, None);
+}
+
+fn push_with_link(
+    cx: &mut App,
+    kind: ToastKind,
+    message: SharedString,
+    link: Option<SharedString>,
+) {
     let message: SharedString = message.trim().to_owned().into();
     if message.is_empty() {
         return;
@@ -160,6 +173,7 @@ fn push(cx: &mut App, kind: ToastKind, message: SharedString) {
         .find(|toast| toast.closing.is_none())
         && front.kind == kind
         && front.message == message
+        && front.link == link
     {
         front.remaining = DURATION;
         front.resumed = (!store.hovered).then_some(now);
@@ -171,6 +185,7 @@ fn push(cx: &mut App, kind: ToastKind, message: SharedString) {
             id,
             kind,
             message,
+            link,
             created: now,
             remaining: DURATION,
             resumed: (!hovered).then_some(now),
@@ -203,6 +218,16 @@ pub fn success(cx: &mut App, message: impl Into<SharedString>) {
 /// A neutral notice.
 pub fn info(cx: &mut App, message: impl Into<SharedString>) {
     push(cx, ToastKind::Info, message.into());
+}
+
+/// A confirmation toast with an "Open" action for `url` ("Pull request #42
+/// created").
+pub fn success_with_link(
+    cx: &mut App,
+    message: impl Into<SharedString>,
+    url: impl Into<SharedString>,
+) {
+    push_with_link(cx, ToastKind::Success, message.into(), Some(url.into()));
 }
 
 /// Surface a view's pending error as a toast, once: takes it out of `slot`.
@@ -458,6 +483,7 @@ pub fn render_toaster(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         }
         let kind = toast.kind;
         let message = toast.message.clone();
+        let link = toast.link.clone();
         let content = div()
             .id(("toast-content", id as usize))
             .w_full()
@@ -471,6 +497,23 @@ pub fn render_toaster(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             .text_color(theme.text)
             .child(kind_icon(kind, &theme))
             .child(div().flex_1().min_w_0().child(message.clone()))
+            .when_some(link, |row, url| {
+                row.child(
+                    div()
+                        .id(("toast-link", id as usize))
+                        .flex_none()
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .text_color(theme.text)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .hover(|s| s.bg(crate::theme::wash(0.10)))
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| cx.open_url(&url))
+                        .child("Open"),
+                )
+            })
             .child(
                 // Measure the natural height for the stack's layout.
                 gpui::canvas(
@@ -632,6 +675,7 @@ mod tests {
             id: store.next_id,
             kind: ToastKind::Error,
             message: message.to_owned().into(),
+            link: None,
             created: now,
             remaining: DURATION,
             resumed: Some(now),

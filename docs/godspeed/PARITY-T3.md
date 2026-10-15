@@ -79,7 +79,7 @@ this audit. ✅ has it (equal or better) · 🟡 partial · ❌ missing · ⛔ o
 |---|---|---|
 | Thread titles, configurable model | ✅ | Codex/Claude only |
 | Regenerate title | ❌ | |
-| Commit messages, PR title/body, branch names, review guides | ❌ | |
+| Commit messages, PR title/body, branch names, review guides | 🟡 | same model as titles, repo-style aware, agent credits stripped; no review guides |
 
 ## 6. Sidebar
 
@@ -176,9 +176,9 @@ this audit. ✅ has it (equal or better) · 🟡 partial · ❌ missing · ⛔ o
 
 | Item | Status | Notes |
 |---|---|---|
-| Commit / push / pull / sync | ❌ | **no git write actions at all** |
-| Create PR with generated text | ❌ | |
-| Init existing folder, publish repo | ❌ | |
+| Commit / push / pull / sync | ✅ | engine RPC; ff-only pull, never force; Changes pane strip + palette |
+| Create PR with generated text | ✅ | `gh pr create`, PR template aware, draft, base picker |
+| Init existing folder, publish repo | ✅ | `git init`, `gh repo create --source . --push` |
 | Branch picker, discard changes | ✅ | |
 | Auto pull / fetch interval | ❌ | |
 | PR board with filters, sorting, starring | 🟡 | open PRs only, ➕ attention triage |
@@ -188,7 +188,7 @@ this audit. ✅ has it (equal or better) · 🟡 partial · ❌ missing · ⛔ o
 | Reviewers, labels, reactions, stacks | ❌ | |
 | Checkout PR into worktree | 🟡 | copies the command |
 | Agent handoff from PR (review, fix checks, resolve conflicts) | ✅ | |
-| GitHub | 🟡 | via `gh`, read-mostly |
+| GitHub | 🟡 | via `gh`; PR create + publish, otherwise read-only |
 | GitLab, Bitbucket, Azure DevOps, Forgejo, GitCafe | ❌ | |
 
 ## 13. MCP and automation

@@ -1,6 +1,10 @@
 //! Automatic session titles from the first user prompt. Device preferences select
 //! the harness and model; restricted title drivers run outside the repository.
 //! Failures fall back to the prompt's first words. A user rename always wins.
+//!
+//! [`generate_text`] is the shared restricted run behind every generated text
+//! (titles here; commit messages, PR text and branch names in
+//! `text_generation`), so one model choice governs them all.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -151,92 +155,115 @@ impl TitleGenerator {
         prompt: &str,
         _cwd: &str,
     ) -> Option<String> {
-        let settings = self.inner.registry.title_settings();
-        let enabled = self.inner.registry.enabled_set();
-        let harness_id = settings.harness.or_else(|| {
-            if zeron_harness::supports_titles(harness_id) {
-                Some(harness_id)
-            } else {
+        let title_prompt = format!(
+            "{SESSION_TITLE_TASK}\n\nSession request (JSON string):\n{}",
+            serde_json::to_string(prompt).ok()?
+        );
+        generate_text(
+            &self.inner.registry,
+            Some(harness_id),
+            &title_prompt,
+            std::time::Duration::from_secs(30),
+            clean_title,
+        )
+        .await
+    }
+}
+
+/// The title task, sent ahead of the quoted session request.
+pub(crate) const SESSION_TITLE_TASK: &str = "Task: write a session title. Return only a concise 3-5 word title in Title Case, without quotes or punctuation.";
+
+/// One restricted text-generation run on the device's configured text model
+/// (Settings → Thread naming): titles, commit messages, pull request text and
+/// branch names all come through here. `session_harness` is the fallback
+/// when no harness is configured (the chat's own agent, for titles). Runs in
+/// a scratch directory with a read-only sandbox, retries a couple of times,
+/// and returns the first non-empty `clean`ed answer.
+pub(crate) async fn generate_text(
+    registry: &HarnessRegistry,
+    session_harness: Option<HarnessId>,
+    prompt: &str,
+    timeout: std::time::Duration,
+    clean: impl Fn(&str) -> String,
+) -> Option<String> {
+    let settings = registry.title_settings();
+    let enabled = registry.enabled_set();
+    let harness_id = settings.harness.or_else(|| {
+        session_harness
+            .filter(|id| zeron_harness::supports_titles(*id))
+            .or_else(|| {
                 enabled
                     .iter()
                     .copied()
                     .find(|id| zeron_harness::supports_titles(*id))
-            }
-        })?;
-        if !zeron_harness::supports_titles(harness_id) {
+            })
+    })?;
+    if !zeron_harness::supports_titles(harness_id) {
+        return None;
+    }
+    // Order this entire isolated subprocess against a queued update for
+    // the same CLI. The fair registry gate prevents late title work from
+    // jumping ahead of an accepted writer.
+    let execution_lease = Arc::new(registry.execution_lease(harness_id).await);
+    // No repository instructions, files, or active coding-session context.
+    let scratch = tempfile::tempdir().ok()?;
+    let harness = match registry.resolve(harness_id) {
+        Ok(harness) => harness,
+        Err(err) => {
+            tracing::debug!(error = %err, "text generation harness unavailable");
             return None;
         }
-        // Order this entire isolated subprocess against a queued update for
-        // the same CLI. The fair registry gate prevents late title work from
-        // jumping ahead of an accepted writer.
-        let execution_lease = Arc::new(self.inner.registry.execution_lease(harness_id).await);
-        // No repository instructions, files, or active coding-session context.
-        let scratch = tempfile::tempdir().ok()?;
-        let harness = match self.inner.registry.resolve(harness_id) {
-            Ok(harness) => harness,
-            Err(err) => {
-                tracing::debug!(error = %err, "titling harness unavailable");
-                return None;
-            }
-        };
-        let model = match settings.model {
-            Some(model) => Some(model),
-            None => cheapest_model(
-                &tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    self.inner
-                        .registry
-                        .discover_models_with_lease(harness_id, execution_lease.clone()),
-                )
-                .await
-                .ok()?
-                .unwrap_or_default(),
-            ),
-        };
-        let title_prompt = format!(
-            "{}\n\nSession request (JSON string):\n{}",
-            zeron_harness::TITLE_INSTRUCTIONS,
-            serde_json::to_string(prompt).ok()?
-        );
-        for attempt in 0..=RETRY_DELAYS_MS.len() {
-            let request = RunRequest {
-                mcp: None,
-                prompt: title_prompt.clone(),
-                harness: Some(harness_id),
-                model: model.clone(),
-                reasoning: Some(ReasoningLevel::Minimal),
-                model_options: serde_json::Map::new(),
-                cwd: scratch.path().to_string_lossy().into_owned(),
-                sandbox: SandboxLevel::ReadOnly,
-                auto_approve: false,
-                attachments: Vec::new(),
-                resume: None,
-                worktree: None,
-            };
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                collect_text(harness.as_ref(), request, Some(execution_lease.clone())),
+    };
+    let model = match settings.model {
+        Some(model) => Some(model),
+        None => cheapest_model(
+            &tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                registry.discover_models_with_lease(harness_id, execution_lease.clone()),
             )
             .await
-            .unwrap_or_else(|_| Err(EngineError::Other("title generation timed out".into())))
-            {
-                Ok(raw) => {
-                    let candidate = clean_title(&raw);
-                    if !candidate.is_empty() {
-                        return Some(candidate);
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(attempt = attempt + 1, error = %err,
-                        "automatic chat title generation attempt failed");
+            .ok()?
+            .unwrap_or_default(),
+        ),
+    };
+    for attempt in 0..=RETRY_DELAYS_MS.len() {
+        let request = RunRequest {
+            mcp: None,
+            prompt: prompt.to_string(),
+            harness: Some(harness_id),
+            model: model.clone(),
+            reasoning: Some(ReasoningLevel::Minimal),
+            model_options: serde_json::Map::new(),
+            cwd: scratch.path().to_string_lossy().into_owned(),
+            sandbox: SandboxLevel::ReadOnly,
+            auto_approve: false,
+            attachments: Vec::new(),
+            resume: None,
+            worktree: None,
+        };
+        match tokio::time::timeout(
+            timeout,
+            collect_text(harness.as_ref(), request, Some(execution_lease.clone())),
+        )
+        .await
+        .unwrap_or_else(|_| Err(EngineError::Other("text generation timed out".into())))
+        {
+            Ok(raw) => {
+                let candidate = clean(&raw);
+                if !candidate.is_empty() {
+                    return Some(candidate);
                 }
             }
-            if let Some(delay) = RETRY_DELAYS_MS.get(attempt) {
-                tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+            Err(err) => {
+                tracing::warn!(attempt = attempt + 1, error = %err,
+                    "text generation attempt failed");
             }
         }
-        None
+        if let Some(delay) = RETRY_DELAYS_MS.get(attempt) {
+            tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+        }
     }
+    None
 }
 
 /// The cheapest model a harness offers (godspeed's `cheapestModel` heuristic):
@@ -461,6 +488,7 @@ mod tests {
             .set_title_settings(crate::registry::TitleSettings {
                 harness: Some(HarnessId::ClaudeCode),
                 model: Some("chosen-title-model".into()),
+                ..Default::default()
             })
             .unwrap();
         let generator = TitleGenerator::new(core.workspace.clone(), registry, core.repos.clone());

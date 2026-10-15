@@ -47,6 +47,7 @@ use zeron_proto::{Chat, CheckoutDiff, GitHistoryCommit};
 use zeron_rpc::methods;
 
 use crate::comments::{self, CommentSide, ReviewComment};
+use crate::git_actions::{GitPanel, GitPanelEvent, GitTarget};
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::history::{
     GitHistory, GitHistoryCount, GitHistoryEvent, GitHistoryFetchButton, GitHistorySearchControl,
@@ -1695,6 +1696,9 @@ pub struct Changes {
     /// Pinned commit for a [`DiffScope::Commit`] pane (sha + subject drive
     /// the fetch and the surface-tab title).
     commit: Option<GitHistoryCommit>,
+    /// Commit box + Push / Pull / Sync strip (working-tree scope only).
+    git_panel: Option<Entity<GitPanel>>,
+    git_panel_events: Option<Subscription>,
     _observe: Subscription,
 }
 
@@ -1716,6 +1720,8 @@ pub enum ChangesEvent {
     /// The working-tree trash button was clicked. The shell owns the global
     /// confirmation dialog and only then dispatches the destructive RPC.
     DiscardWorkingTree(DiscardWorkingTreeRequest),
+    /// The git strip asked for the Create pull request dialog (shell-owned).
+    CreatePullRequest(GitTarget),
 }
 
 impl gpui::EventEmitter<ChangesEvent> for Changes {}
@@ -1786,6 +1792,8 @@ impl Changes {
             history_view_button: None,
             history_events: None,
             commit: None,
+            git_panel: None,
+            git_panel_events: None,
             _observe: observe,
         }
     }
@@ -1813,6 +1821,52 @@ impl Changes {
 
     pub fn is_history(&self) -> bool {
         self.scope == DiffScope::History
+    }
+
+    /// A diff tab (not a commit pin or History) — it can host the git strip.
+    pub fn can_commit(&self) -> bool {
+        self.commit.is_none() && self.scope != DiffScope::History
+    }
+
+    /// Show the working tree and put the caret in the commit message box
+    /// (command palette → Commit).
+    pub fn focus_commit_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scope != DiffScope::WorkingTree {
+            self.set_scope(DiffScope::WorkingTree, cx);
+        }
+        let panel = self.git_panel(cx);
+        let handle = panel.read(cx).message_focus(cx);
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    fn git_panel(&mut self, cx: &mut Context<Self>) -> Entity<GitPanel> {
+        if let Some(panel) = &self.git_panel {
+            return panel.clone();
+        }
+        let panel = cx.new(|cx| GitPanel::new(self.state.clone(), cx));
+        self.git_panel_events = Some(cx.subscribe(&panel, |_, _, event, cx| match event {
+            GitPanelEvent::CreatePullRequest(target) => {
+                cx.emit(ChangesEvent::CreatePullRequest(target.clone()))
+            }
+        }));
+        self.git_panel = Some(panel.clone());
+        panel
+    }
+
+    /// The git strip for the selected chat's checkout, kept in step with the
+    /// watched diff (its checksum moves on every commit and edit).
+    fn render_git_panel(&mut self, cx: &mut Context<Self>) -> Option<Entity<GitPanel>> {
+        if self.scope != DiffScope::WorkingTree || self.commit.is_some() {
+            return None;
+        }
+        let target = GitTarget::for_selected_chat(self.state.read(cx))?;
+        let checksum = self.resolved(cx).map(|diff| diff.checksum);
+        let panel = self.git_panel(cx);
+        panel.update(cx, |panel, cx| {
+            panel.set_context(Some(target), checksum.as_deref(), cx)
+        });
+        Some(panel)
     }
 
     /// The surface-tab title (contextual, user request): the pinned commit's
@@ -5187,6 +5241,7 @@ impl Render for Changes {
             }
         };
 
+        let git_panel = self.render_git_panel(cx);
         div()
             .size_full()
             .flex()
@@ -5208,6 +5263,7 @@ impl Render for Changes {
                 )
             })
             .child(content)
+            .children(git_panel)
             .into_any_element()
     }
 }

@@ -28,6 +28,7 @@ mod fs_watch;
 pub mod harness_updates;
 pub(crate) mod home_index;
 mod http_error;
+pub mod git_actions;
 pub mod instance_lock;
 pub mod local_import;
 mod model_catalogs;
@@ -41,6 +42,7 @@ pub mod sessions;
 pub mod source_control;
 pub mod spaces;
 pub mod terminals;
+pub mod text_generation;
 pub mod titles;
 mod transcript_history;
 pub mod uploads;
@@ -60,6 +62,7 @@ pub use diff_sync::{
     discard_working_tree, merge_base, read_diff_file_text, snapshot_tree, working_diff_base,
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
+pub use git_actions::{GitActionError, GitActions};
 pub use instance_lock::InstanceLock;
 pub use profile::EngineProfile;
 pub use project_actions::ProjectActionsStore;
@@ -71,10 +74,11 @@ pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
 pub use source_control::{
     BranchHeadContext, ChangeRequestError, ChangeRequestProvider, ChangeRequestResolution,
     ChangeRequestResolver, CheckoutChangeRequestLookup, CheckoutSourceContext, GitHubCli,
-    GitRemote, parse_git_remote,
+    GitHubWriteError, GitRemote, PullRequestDraft, parse_git_remote,
 };
 pub use spaces::SpacesSync;
 pub use terminals::Terminals;
+pub use text_generation::TextGenerator;
 pub use titles::TitleGenerator;
 pub use uploads::{AttachmentChunk, Uploads};
 pub use workspace_files::WorkspaceFiles;
