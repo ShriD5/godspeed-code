@@ -1129,6 +1129,7 @@ async fn target_device_id_routes_over_the_relay() {
                 "repoPath": project_root,
                 "worktreePath": setup_worktree,
                 "targetDeviceId": "device-b",
+                "force": true,
             }),
         )
         .await
