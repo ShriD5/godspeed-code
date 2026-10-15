@@ -1672,9 +1672,71 @@ fn session_permissions(req: &wire::ControlRequestBody) -> Vec<Value> {
     })]
 }
 
+/// A question's text as the tool input wrote it: the key its answer goes
+/// back under.
+fn question_text(q: &Value) -> &str {
+    ["question", "prompt"]
+        .iter()
+        .find_map(|k| q.get(*k).and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+/// The option descriptions and `preview`s (a draft, a code snippet, a
+/// mockup the user is asked to approve) appended to the question text: the
+/// wire type carries option labels only, and a card showing "Post / Skip"
+/// without the draft asks the user to approve text they cannot see.
+fn question_with_option_details(question: &str, options: &[Value]) -> String {
+    const PREVIEW_LINES: usize = 40;
+    const PREVIEW_CHARS: usize = 4000;
+    let mut details = Vec::new();
+    for option in options {
+        let text = |key: &str| {
+            option
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        };
+        let Some(label) = text("label").or_else(|| text("value")) else {
+            continue;
+        };
+        let (description, preview) = (text("description"), text("preview"));
+        if description.is_none() && preview.is_none() {
+            continue;
+        }
+        let mut entry = match description {
+            Some(description) => format!("• {label}: {description}"),
+            None => format!("• {label}"),
+        };
+        if let Some(preview) = preview {
+            let mut truncated = preview.lines().count() > PREVIEW_LINES;
+            let mut shown: String = preview
+                .lines()
+                .take(PREVIEW_LINES)
+                .map(|line| format!("\n    {line}"))
+                .collect();
+            if shown.chars().count() > PREVIEW_CHARS {
+                shown = shown.chars().take(PREVIEW_CHARS).collect();
+                truncated = true;
+            }
+            if truncated {
+                shown.push_str("\n    …");
+            }
+            entry.push_str(&shown);
+        }
+        details.push(entry);
+    }
+    if details.is_empty() {
+        question.to_owned()
+    } else {
+        format!("{question}\n\n{}", details.join("\n"))
+    }
+}
+
 /// Parse Claude's `AskUserQuestion` tool input into [`UserInputQuestion`]s
 /// (tolerant of `header`/`title`, `question`/`prompt`, string or object
-/// options — option descriptions are dropped, the wire type carries labels).
+/// options). Options carry their labels; descriptions and previews ride the
+/// question text ([`question_with_option_details`]).
 fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
     let raw = input.get("questions").and_then(Value::as_array);
     raw.map(|a| a.as_slice())
@@ -1683,10 +1745,15 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
         .map(|q| {
             let field =
                 |keys: [&str; 2]| keys.iter().find_map(|k| q.get(*k).and_then(Value::as_str));
+            let options = q
+                .get("options")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             UserInputQuestion {
                 id: uuid::Uuid::new_v4().to_string(),
                 header: field(["header", "title"]).unwrap_or("Question").into(),
-                question: field(["question", "prompt"]).unwrap_or("").into(),
+                question: question_with_option_details(question_text(q), options),
                 prefill: None,
                 multiline: false,
                 multi_select: ["multiSelect", "multi_select"]
@@ -1715,8 +1782,9 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
         .collect()
 }
 
-/// Merge the user's answers back into the tool input, keyed by question text
-/// (single-select ⇒ a string, multi-select ⇒ an array), as the tool expects.
+/// Merge the user's answers back into the tool input, keyed by the input's
+/// own question text (single-select ⇒ a string, multi-select ⇒ an array),
+/// as the tool expects. `questions` are [`parse_questions`]'s, in order.
 fn updated_input_with_answers(
     input: &Value,
     questions: &[UserInputQuestion],
@@ -1726,8 +1794,13 @@ fn updated_input_with_answers(
         Value::Object(map) => map.clone(),
         _ => serde_json::Map::new(),
     };
+    let raw = input
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let mut by_question = serde_json::Map::new();
-    for q in questions {
+    for (index, q) in questions.iter().enumerate() {
         let labels: Vec<String> = answers
             .iter()
             .find(|a| a.question_id == q.id)
@@ -1738,7 +1811,8 @@ fn updated_input_with_answers(
         } else {
             Value::String(labels.into_iter().next().unwrap_or_default())
         };
-        by_question.insert(q.question.clone(), value);
+        let key = raw.get(index).map_or(q.question.as_str(), question_text);
+        by_question.insert(key.to_owned(), value);
     }
     updated.insert("answers".into(), Value::Object(by_question));
     Value::Object(updated)
@@ -1829,6 +1903,40 @@ mod tests {
         let with = args(&harness.build_command(&new, &request, true));
         let at = with.iter().position(|a| a == "--thinking-display").unwrap();
         assert_eq!(with[at + 1], "summarized");
+    }
+
+    /// pingdotgg/t3code#14237: an option's `preview` (the draft the user is
+    /// asked to post, a code snippet) and its description reach the card,
+    /// and the answer still goes back under the tool input's own question.
+    #[test]
+    fn option_descriptions_and_previews_reach_the_question() {
+        let input = json!({"questions": [{
+            "header": "Review",
+            "question": "Post this comment?",
+            "options": [
+                {"label": "Post", "description": "Publish as written", "preview": "Looks good,\nbut rename `foo`."},
+                {"label": "Skip"},
+            ],
+        }]});
+        let qs = parse_questions(&input);
+        assert_eq!(qs[0].options, ["Post", "Skip"]);
+        assert_eq!(
+            qs[0].question,
+            "Post this comment?\n\n• Post: Publish as written\n    Looks good,\n    but rename `foo`."
+        );
+        let answers = vec![UserInputAnswer {
+            question_id: qs[0].id.clone(),
+            labels: vec!["Post".into()],
+        }];
+        let updated = updated_input_with_answers(&input, &qs, &answers);
+        assert_eq!(updated["answers"], json!({"Post this comment?": "Post"}));
+        // Long previews are capped, visibly.
+        let long = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text = question_with_option_details("Q", &[json!({"label": "A", "preview": long})]);
+        assert!(text.contains("line 39") && !text.contains("line 40"));
+        assert!(text.ends_with("\n    …"));
+        // Nothing to add: the question is unchanged.
+        assert_eq!(question_with_option_details("Q", &[json!("A"), json!({"label": "B"})]), "Q");
     }
 
     #[test]
