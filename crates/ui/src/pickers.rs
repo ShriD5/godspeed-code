@@ -768,6 +768,10 @@ struct SettingGroup {
 pub struct Pickers {
     state: Entity<AppState>,
     config: DraftConfig,
+    /// Whether the composer has room for the access-mode chip beside the
+    /// model (it never squeezes the one-line composer's text below its
+    /// minimum; the shortcut still cycles the mode).
+    show_access_chip: bool,
     /// Thread-naming binding (Settings → General): the model picker reads and
     /// emits the local device's title settings instead of a composer draft.
     /// `config.harness` then only tracks the tab being browsed.
@@ -1114,6 +1118,7 @@ impl Pickers {
             search_reset_muted: false,
             focus: cx.focus_handle(),
             boot_focus_pending: boot_open.is_some(),
+            show_access_chip: true,
             focus_on_mount: false,
             load_task: None,
             refs_task: None,
@@ -1460,6 +1465,14 @@ impl Pickers {
             self.animate_close(cx);
         }
         cx.notify();
+    }
+
+    /// The composer says whether the access chip fits beside the model.
+    pub fn set_show_access_chip(&mut self, show: bool, cx: &mut Context<Self>) {
+        if self.show_access_chip != show {
+            self.show_access_chip = show;
+            cx.notify();
+        }
     }
 
     /// Step to the next access mode the harness supports (the shortcut).
@@ -6619,14 +6632,16 @@ impl Render for Pickers {
         // The access mode beside the model: what the agent may do before it
         // asks. A mode the harness can't honor reads as a warning — a run in
         // it is refused rather than widened.
-        let access_chip = (self.title.is_none()).then(|| {
+        let access_chip = (self.title.is_none() && self.show_access_chip).then(|| {
             let resolved = self.resolved(cx);
             let mode = resolved.access_mode;
             let unsupported = !resolved.access_supported();
+            // Icon-only: the compact one-line composer has no room for a
+            // second label; the tooltip and menu name the mode.
             let chip = self
                 .trigger_chip(
                     PickerKind::Access,
-                    mode.label().into(),
+                    SharedString::default(),
                     !unsupported,
                     Some((
                         access_mode_icon(mode),
@@ -6638,14 +6653,17 @@ impl Render for Pickers {
                     )),
                     false,
                     false,
-                    unsupported.then(|| ("unavailable".into(), Some(theme.warning))),
+                    None,
                     &theme,
                     cx,
                 )
+                .w(px(32.0))
+                .px(px(8.0))
+                .gap(px(0.0))
                 .tooltip(crate::settings::widgets::text_tooltip(if unsupported {
-                    "This agent can't run in this access mode — pick another"
+                    format!("{} — not available for this agent; pick another", mode.label())
                 } else {
-                    mode.description()
+                    format!("{} — {}", mode.label(), mode.description())
                 }));
             attach_overlay_end(chip, &mut overlay, PickerKind::Access, "access-popover", closing)
         });

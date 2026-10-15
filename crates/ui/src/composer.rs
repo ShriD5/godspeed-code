@@ -103,6 +103,9 @@ fn route_chrome_opacities(new_thread_chrome: f32) -> (f32, f32) {
 const COMPOSER_WIDTH_EPSILON: f32 = 0.5;
 /// Below this pill input width the composer always expands.
 pub const MIN_COMPACT_INPUT_WIDTH: f32 = 200.0;
+/// The compact pill's surface width from which the access-mode chip fits
+/// beside the model without taking the text under [`MIN_COMPACT_INPUT_WIDTH`].
+const ACCESS_CHIP_MIN_SURFACE: f32 = 600.0;
 /// Input text metrics: `text-[14px] leading-relaxed` = 14 × 1.625 = 22.75.
 pub const INPUT_LINE_HEIGHT: f32 = 22.75;
 pub const INPUT_TEXT_SIZE: f32 = 14.0;
@@ -11622,6 +11625,12 @@ impl Render for Composer {
             },
             |width| (width - 2.0 * Theme::SPACE_LG).max(0.0),
         );
+        // The access chip rides beside the model when it can't push the
+        // one-line composer's text under its minimum width. Width alone
+        // decides, so a compact/expanded flip never moves the model chip.
+        let show_access_chip = surface_width >= ACCESS_CHIP_MIN_SURFACE;
+        self.pickers
+            .update(cx, |pickers, cx| pickers.set_show_access_chip(show_access_chip, cx));
         let model_picker = div()
             .min_w_0()
             .max_w(px(surface_width * 0.45))
