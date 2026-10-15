@@ -28,6 +28,7 @@ pub mod import;
 pub mod notifications;
 pub mod shortcuts;
 pub mod thread_naming;
+pub mod usage_limits;
 pub mod wallpaper;
 pub mod wallpaper_colors;
 pub mod widgets;
