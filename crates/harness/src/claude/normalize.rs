@@ -253,6 +253,14 @@ pub(crate) struct Normalizer {
     /// This turn already surfaced an assistant-level error; the result's own
     /// copy of it would only repeat the same failure.
     turn_error_shown: bool,
+    /// Tool calls the user declined through an approval card. The result's
+    /// `permission_denials` lists them too; only the rest were denied
+    /// without the user ever seeing them.
+    pub user_denials: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// `permission_denied` reasons by tool call, for the denial notice.
+    denial_reasons: std::collections::HashMap<String, String>,
+    /// Denials already reported, in case a result repeats earlier ones.
+    reported_denials: std::collections::HashSet<String>,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
 }
@@ -268,6 +276,9 @@ impl Normalizer {
             assistant_message_id: new_message_id(),
             streamed_text: false,
             turn_error_shown: false,
+            user_denials: Default::default(),
+            denial_reasons: Default::default(),
+            reported_denials: Default::default(),
             session_id: None,
         }
     }
@@ -382,6 +393,67 @@ impl Normalizer {
         (prev, self.assistant_message_id.clone())
     }
 
+    /// The notice for tool calls the CLI denied on its own this turn (the
+    /// auto-mode classifier, a deny rule, a hook), or `None` when every
+    /// denial was the user's own answer or was already reported.
+    fn denial_notice(&mut self, denials: &[Value]) -> Option<String> {
+        let declined = self
+            .user_denials
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut lines = Vec::new();
+        for denial in denials {
+            let id = denial
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if declined.contains(id) || (!id.is_empty() && !self.reported_denials.insert(id.to_owned())) {
+                continue;
+            }
+            let tool = denial
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .unwrap_or("a tool");
+            let input = denial.get("tool_input").unwrap_or(&Value::Null);
+            let target = ["command", "file_path", "url", "path", "pattern"]
+                .iter()
+                .find_map(|k| input.get(*k).and_then(Value::as_str))
+                .map(|t| {
+                    let t = t.lines().next().unwrap_or_default();
+                    let short: String = t.chars().take(80).collect();
+                    if short.len() < t.len() {
+                        format!(" `{short}…`")
+                    } else {
+                        format!(" `{short}`")
+                    }
+                })
+                .unwrap_or_default();
+            let reason = self
+                .denial_reasons
+                .get(id)
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default();
+            lines.push(format!("- {tool}{target}{reason}"));
+        }
+        if lines.is_empty() {
+            return None;
+        }
+        const SHOWN: usize = 5;
+        let total = lines.len();
+        let more = total.saturating_sub(SHOWN);
+        lines.truncate(SHOWN);
+        if more > 0 {
+            lines.push(format!("- and {more} more"));
+        }
+        let what = if total == 1 { "action was" } else { "actions were" };
+        Some(format!(
+            "{total} {what} blocked without asking, so this turn may be unfinished:\n{}\n\
+             Allow them in Claude's permission settings or use a different access mode, then ask again.",
+            lines.join("\n")
+        ))
+    }
+
     /// Normalize one stdout frame into 0+ unified events. `interrupted` folds
     /// a post-interrupt `result` into `Done { status: Interrupted }`.
     pub fn normalize(&mut self, frame: Frame, interrupted: bool) -> Vec<AgentEvent> {
@@ -470,6 +542,15 @@ impl Normalizer {
                             _ => "Context compaction failed.".to_owned(),
                         };
                         return vec![AgentEvent::Error { message }];
+                    }
+                    return Vec::new();
+                }
+                if f.subtype == "permission_denied" {
+                    if let (Some(id), Some(reason)) = (
+                        f.tool_use_id.filter(|id| !id.is_empty()),
+                        f.decision_reason.filter(|r| !r.trim().is_empty()),
+                    ) {
+                        self.denial_reasons.insert(id, reason.trim().to_owned());
                     }
                     return Vec::new();
                 }
@@ -866,6 +947,19 @@ impl Normalizer {
                         },
                         result: None,
                         error,
+                        session_id: f.session_id,
+                    }
+                } else if f.subtype == "success"
+                    && !interrupted
+                    && let Some(notice) = self.denial_notice(&f.permission_denials)
+                {
+                    // The turn "succeeded" only in that it ended: the agent
+                    // was blocked and nobody was asked. Ending Errored makes
+                    // the chat ask for attention instead of reading done.
+                    AgentEvent::Done {
+                        status: DoneStatus::Errored,
+                        result: f.result,
+                        error: Some(notice),
                         session_id: f.session_id,
                     }
                 } else if f.subtype == "success" {
@@ -1795,6 +1889,65 @@ mod tests {
             }]
         );
         assert!(normalize_one(r#"{"type":"system","subtype":"status","status":"requesting"}"#).is_empty());
+    }
+
+    /// Auto mode's classifier (or a deny rule) refuses a call inside the
+    /// CLI, the agent gives up, and the result still says `success`
+    /// (pingdotgg/t3code#18386). Its `permission_denials` must make the turn
+    /// ask for attention — except the calls the user declined themselves,
+    /// and denials an earlier result already reported.
+    #[test]
+    fn denials_nobody_was_asked_about_need_attention() {
+        let mut norm = Normalizer::new();
+        norm.user_denials.lock().unwrap().insert("toolu_declined".into());
+        norm.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_auto","decision_reason_type":"classifier","decision_reason":"cannot assess the action","message":"denied"}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let result = r#"{"type":"result","subtype":"success","result":"I could not continue.","session_id":"s","permission_denials":[
+            {"tool_name":"Bash","tool_use_id":"toolu_auto","tool_input":{"command":"gh issue create --title x"}},
+            {"tool_name":"Edit","tool_use_id":"toolu_declined","tool_input":{"file_path":"/a"}}
+        ]}"#;
+        let events = norm.normalize(crate::claude::wire::parse_frame(result).unwrap(), false);
+        match events.last() {
+            Some(AgentEvent::Done {
+                status: DoneStatus::Errored,
+                result: Some(result),
+                error: Some(error),
+                ..
+            }) => {
+                assert_eq!(result, "I could not continue.");
+                assert!(error.starts_with("1 action was blocked"), "{error}");
+                assert!(
+                    error.contains("- Bash `gh issue create --title x` (cannot assess the action)"),
+                    "{error}"
+                );
+                assert!(!error.contains("Edit"), "the user's own decline: {error}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // The same denial repeated by a later result is not news.
+        let events = norm.normalize(crate::claude::wire::parse_frame(result).unwrap(), false);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { status: DoneStatus::Completed, .. })
+        ));
+        // Only user declines, or an interrupted turn: plain endings.
+        let mut norm = Normalizer::new();
+        norm.user_denials.lock().unwrap().insert("toolu_declined".into());
+        let declined = r#"{"type":"result","subtype":"success","permission_denials":[{"tool_name":"Edit","tool_use_id":"toolu_declined","tool_input":{}}]}"#;
+        assert!(matches!(
+            norm.normalize(crate::claude::wire::parse_frame(declined).unwrap(), false).last(),
+            Some(AgentEvent::Done { status: DoneStatus::Completed, .. })
+        ));
+        let auto = r#"{"type":"result","subtype":"success","permission_denials":[{"tool_name":"Bash","tool_use_id":"x","tool_input":{}}]}"#;
+        assert!(matches!(
+            Normalizer::new().normalize(crate::claude::wire::parse_frame(auto).unwrap(), true).last(),
+            Some(AgentEvent::Done { status: DoneStatus::Interrupted, .. })
+        ));
     }
 
     #[test]

@@ -92,6 +92,9 @@ pub(crate) struct SystemFrame {
     /// `post_tokens`.
     #[serde(default)]
     pub compact_metadata: Option<Value>,
+    /// `permission_denied`: the reason the deciding component gave.
+    #[serde(default)]
+    pub decision_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -245,6 +248,11 @@ pub(crate) struct ResultFrame {
     /// Why the turn ended (`prompt_too_long`, `blocking_limit`, …).
     #[serde(default)]
     pub terminal_reason: Option<String>,
+    /// Tool calls denied without the user (`{tool_name, tool_use_id,
+    /// tool_input}`): the auto-mode classifier, deny rules, hooks — plus
+    /// the ones the user declined through us.
+    #[serde(default)]
+    pub permission_denials: Vec<Value>,
     #[serde(default)]
     pub usage: UsageBody,
     #[serde(default)]
@@ -291,6 +299,10 @@ pub(crate) struct ControlRequestBody {
     /// The CLI forbids remembering this approval.
     #[serde(default)]
     pub suppress_always_allow_rule: bool,
+    /// The call being decided; a denial here reappears in the result's
+    /// `permission_denials`.
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
 }
 
 /// Parse one stdout JSONL line. `Err` = not JSON; unknown types = `Other`.

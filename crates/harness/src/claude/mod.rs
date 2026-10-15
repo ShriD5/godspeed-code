@@ -990,12 +990,21 @@ async fn run_session(session: Session) {
                     }
                     if let Frame::ControlRequest(req) = frame {
                         if title_only {
+                            if let Some(id) = &req.request.tool_use_id {
+                                lock_denials(&norm.user_denials).insert(id.clone());
+                            }
                             let line = control_response_line(&req.request_id, serde_json::json!({
                                 "behavior": "deny", "message": "Tools are disabled for title generation"
                             }));
                             let _ = stdin_tx.send(StdinMsg::Line(line));
                         } else {
-                            handle_control_request(req, &config, &request_input, &stdin_tx);
+                            handle_control_request(
+                                req,
+                                &config,
+                                &request_input,
+                                &stdin_tx,
+                                &norm.user_denials,
+                            );
                         }
                         continue;
                     }
@@ -1413,11 +1422,20 @@ type RequestInputFn = Box<
 /// approval (allowed outright only under full access, as a belt to the
 /// CLI's own bypass). Both wait in a subtask so the frame loop keeps flowing
 /// — the CLI blocks the tool until SOME response arrives.
+type Denials = Arc<std::sync::Mutex<std::collections::HashSet<String>>>;
+
+fn lock_denials(denials: &Denials) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+    denials
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn handle_control_request(
     req: ControlRequestFrame,
     config: &RunRequest,
     request_input: &Arc<RequestInputFn>,
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
+    user_denials: &Denials,
 ) {
     if req.request.subtype != "can_use_tool" {
         tracing::debug!(
@@ -1435,8 +1453,14 @@ fn handle_control_request(
         let approval = approval_request(&req.request, &config.cwd);
         let request_input = Arc::clone(request_input);
         let stdin_tx = stdin_tx.clone();
+        let user_denials = Arc::clone(user_denials);
         tokio::spawn(async move {
             let decision = crate::approval::ask(request_input.as_ref(), approval).await;
+            if !decision.approves()
+                && let Some(id) = &req.request.tool_use_id
+            {
+                lock_denials(&user_denials).insert(id.clone());
+            }
             let response = permission_result(&req.request, decision);
             let line = control_response_line(&req.request_id, response);
             let _ = stdin_tx.send(StdinMsg::Line(line));
