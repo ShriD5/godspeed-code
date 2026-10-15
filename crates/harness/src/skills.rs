@@ -214,6 +214,11 @@ fn discover_at(harness: HarnessId, cwd: &Path, home: &Path) -> Result<Vec<Skill>
             roots.push((dir.join(suffix), String::new()));
         }
     }
+    // `roots` is in override order (later wins). Scan it most-specific first
+    // and keep the first skill per name instead, so precedence is unchanged
+    // but the shared budget goes to the project before a large global or
+    // plugin root can exhaust it and hide the project's own skills.
+    roots.reverse();
     let mut found = BTreeMap::new();
     let mut remaining = MAX_DISCOVERY_ENTRIES;
     for (root, namespace) in roots {
@@ -303,7 +308,7 @@ fn scan_root(
                 }
                 skill.name = format!("{namespace}{}", skill.name);
                 if zeron_proto::invocation::valid_invocation_name(&skill.name) {
-                    found.insert(skill.name.clone(), skill);
+                    found.entry(skill.name.clone()).or_insert(skill);
                 }
             }
         }
@@ -457,13 +462,14 @@ mod tests {
         let home = temp.path().join("home");
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        write(&home, ".agents/skills/global.md", "Global");
+        // A huge global root must not starve the project's own skills.
+        write(&repo, ".pi/skills/project.md", "Project");
         for index in 0..4200 {
-            write(&repo, &format!(".pi/skills/skill-{index}.md"), "Body");
+            write(&home, &format!(".agents/skills/skill-{index}.md"), "Body");
         }
         let skills = discover_at(HarnessId::Pi, &repo, &home).unwrap();
         assert_eq!(skills.len(), MAX_DISCOVERY_ENTRIES);
-        assert!(skills.iter().any(|skill| skill.name == "global"));
+        assert!(skills.iter().any(|skill| skill.name == "project"));
 
         // Directories count too; pending nested work cannot restart the budget.
         let mut found = BTreeMap::new();
