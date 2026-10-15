@@ -611,6 +611,10 @@ impl ChatImporter {
         if let Err(err) = self.run_inner(request, &mut emit, &mut summary) {
             summary.errors.push(err.to_string());
         }
+        // New chats were saved straight to the store, past any doc handle.
+        if let Some(index) = self.inner.doc_host.message_index() {
+            index.request_reconcile();
+        }
         emit(ChatImportProgress::Summary {
             summary: summary.clone(),
         });

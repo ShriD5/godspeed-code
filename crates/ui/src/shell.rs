@@ -74,6 +74,7 @@ mod chat_pull_requests;
 mod chat_rename_tests;
 mod command_palette;
 mod file_mutations;
+mod find_bar;
 mod files_panel;
 mod git_actions_ui;
 mod harness_updates;
@@ -124,6 +125,7 @@ actions!(
         ToggleFiles,
         AddSpacePalette,
         ToggleCommandPalette,
+        FindInThread,
         OpenModelPicker,
         CycleAccessMode,
         NewSession,
@@ -514,6 +516,18 @@ pub fn apply_keymap(
         ),
     ]);
     crate::browser::bind_keys(cx, keymap);
+    // Fixed: ⌘F finds in the open thread, unless a remapped shortcut took it.
+    let find = Keystroke::parse(&platform_combo(find_bar::COMBO)).ok();
+    let find_taken = ShortcutId::ALL
+        .iter()
+        .any(|id| Keystroke::parse(&platform_combo(keymap.get(*id))).ok() == find);
+    if !find_taken {
+        cx.bind_keys([KeyBinding::new(
+            &platform_combo(find_bar::COMBO),
+            FindInThread,
+            None,
+        )]);
+    }
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
     // the user cleared it on purpose.
@@ -2167,6 +2181,8 @@ pub struct Shell {
     /// The New project palette's collapsed-breadcrumbs (`…`) menu.
     project_crumb_menu: popover::Popup<()>,
     command_palette: Option<command_palette::CommandPalette>,
+    /// Find in thread (⌘F), `Some` while its bar is open.
+    find_bar: Option<find_bar::FindBar>,
     /// The focus whose workspace search index was last warmed (see `search_warm`).
     search_warm: Option<search_warm::SearchWarm>,
     /// Per chat, the files opened in editor tabs, most recent first.
@@ -2676,6 +2692,7 @@ impl Shell {
             add_space: None,
             project_crumb_menu: popover::Popup::default(),
             command_palette: None,
+            find_bar: None,
             search_warm: None,
             recent_files: std::collections::HashMap::new(),
             pending_workspace_command: None,
@@ -7563,8 +7580,11 @@ impl Shell {
             ),
         ) + CLUSTER_BUTTONS_WIDTH
             + TITLEBAR_ACTION_SLOT_WIDTH * self.titlebar_plus_alpha(cx);
-        let left = (sidebar - Theme::SPACE_SM - 24.0).max(cluster_end + TITLEBAR_GROUP_GAP);
+        // Search (threads and their messages), then the view options.
+        let left = (sidebar - Theme::SPACE_SM - 24.0 * 2.0 - 4.0)
+            .max(cluster_end + TITLEBAR_GROUP_GAP);
         let theme = Theme::of(cx).clone();
+        let search = self.render_sidebar_search_trigger(&theme, cx);
         let trigger = self.render_sidebar_view_trigger(&theme, cx);
         Some(
             div()
@@ -7575,7 +7595,9 @@ impl Shell {
                 .pt(px(Theme::TITLEBAR_TOP_PAD))
                 .flex()
                 .items_center()
+                .gap(px(4.0))
                 .opacity(reveal)
+                .child(search)
                 .child(trigger)
                 .into_any_element(),
         )
@@ -11365,6 +11387,11 @@ impl Shell {
             self.transcript
                 .update(cx, |transcript, cx| transcript.finish_route_exit(cx));
         }
+        let find_bar = if has_selection {
+            self.render_find_bar(window, cx)
+        } else {
+            None
+        };
         let outlet: AnyElement = if has_selection || departing_transcript {
             div()
                 .relative()
@@ -11388,6 +11415,7 @@ impl Shell {
                 .when(departing_transcript, |el| {
                     el.child(div().absolute().inset_0().occlude())
                 })
+                .children(find_bar)
                 .into_any_element()
         } else if !has_spaces && !no_project {
             // Onboarding (first boot / after the destructive wipe): no folders
@@ -13900,6 +13928,9 @@ impl Render for Shell {
             )
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FindInThread, window, cx| {
+                this.open_find_bar(window, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenModelPicker, window, cx| {
                 if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {

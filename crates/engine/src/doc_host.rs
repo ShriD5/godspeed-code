@@ -282,6 +282,9 @@ struct DocHostInner {
     /// Uploads store (engine assembly) — resolves `pending://` attachment
     /// refs and jails transfer reads to the uploads dir.
     uploads: OnceLock<crate::uploads::Uploads>,
+    /// Local full-text index over transcripts (engine assembly): every doc
+    /// change notes its chat, purges drop it.
+    message_index: OnceLock<crate::MessageIndex>,
     /// Connectivity watch (`WatchConnectivity`): lazily-started monitor
     /// publishes the edge posture on change (see `watch_connectivity`).
     connectivity: OnceLock<watch::Sender<zeron_proto::Connectivity>>,
@@ -987,6 +990,7 @@ impl DocHost {
                 seed_waiting: Mutex::new(HashSet::new()),
                 drain_waiting: Mutex::new(HashSet::new()),
                 uploads: OnceLock::new(),
+                message_index: OnceLock::new(),
                 connectivity: OnceLock::new(),
                 connectivity_started: AtomicBool::new(false),
                 transfers: watch::channel(Vec::new()).0,
@@ -1156,6 +1160,15 @@ impl DocHost {
     /// and the transfer-read jail.
     pub fn set_uploads(&self, uploads: crate::uploads::Uploads) {
         let _ = self.inner.uploads.set(uploads);
+    }
+
+    /// Wire the message index (engine assembly): doc changes feed it live.
+    pub fn set_message_index(&self, index: crate::MessageIndex) {
+        let _ = self.inner.message_index.set(index);
+    }
+
+    pub fn message_index(&self) -> Option<&crate::MessageIndex> {
+        self.inner.message_index.get()
     }
 
     /// Wire the peer-link cache (engine assembly, edge runtimes only) — the
@@ -3398,6 +3411,9 @@ impl DocHost {
         drop(removed);
         if let Err(err) = self.inner.store.delete_snapshot(chat_id) {
             tracing::warn!(chat = %chat_id, error = %err, "snapshot delete failed");
+        }
+        if let Some(index) = self.inner.message_index.get() {
+            index.remove_chat(chat_id);
         }
     }
 
@@ -6450,6 +6466,10 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
                     break; // doc handle (and its change sender) is gone
                 }
                 let Some(handle) = weak.upgrade() else { break };
+                // The index debounces on its own thread; noting is a map insert.
+                if let Some(index) = host.inner.message_index.get() {
+                    index.note_changed(&handle.chat_id, &handle.doc);
+                }
                 let publishing = handle.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     publishing.publish_messages_if_watched();

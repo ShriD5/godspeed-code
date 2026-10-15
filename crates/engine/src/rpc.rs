@@ -52,6 +52,7 @@
 
 mod agents;
 mod git_actions;
+mod message_search;
 mod voice_chat;
 mod voice_remote;
 use async_trait::async_trait;
@@ -724,6 +725,7 @@ pub struct EngineRpc {
     harness_updates: Option<crate::harness_updates::HarnessUpdateCoordinator>,
     local_import: Option<crate::local_import::LocalImporter>,
     chat_import: Option<crate::chat_import::ChatImporter>,
+    message_index: Option<crate::MessageIndex>,
     agents: Option<crate::agents::Agents>,
     engine_info: EngineInfo,
 }
@@ -774,6 +776,7 @@ impl EngineRpc {
             harness_updates: None,
             local_import: None,
             chat_import: None,
+            message_index: None,
             agents: None,
             engine_info,
         }
@@ -819,6 +822,12 @@ impl EngineRpc {
     /// Attach the chat importer (T3 Code / Claude Code / Codex history).
     pub fn with_chat_import(mut self, importer: crate::chat_import::ChatImporter) -> Self {
         self.chat_import = Some(importer);
+        self
+    }
+
+    /// Attach the transcript search index (`SearchMessages`).
+    pub fn with_message_index(mut self, index: crate::MessageIndex) -> Self {
+        self.message_index = Some(index);
         self
     }
 
@@ -1632,6 +1641,10 @@ fn forwardable(method: &str) -> bool {
     if voice_remote::handles(method) || agents::handles(method) {
         return true;
     }
+    // Each engine searches its own transcripts.
+    if message_search::handles(method) {
+        return true;
+    }
     // Git write actions run where the checkout lives.
     if git_actions::handles(method) {
         return true;
@@ -2044,6 +2057,9 @@ impl RpcService for EngineRpc {
         }
         if agents::handles(method) {
             return self.agents_rpc(method, params).await;
+        }
+        if message_search::handles(method) {
+            return self.message_search_rpc(params).await;
         }
         if git_actions::handles(method) {
             return self.git_action(method, params).await;
@@ -4575,6 +4591,7 @@ mod tests {
         assert!(!forwardable(methods::ENGINE_READY));
         assert!(forwardable(methods::QUEUE_COMMAND));
         assert!(forwardable(methods::SEARCH_FILES));
+        assert!(forwardable(methods::SEARCH_MESSAGES));
         assert!(forwardable(methods::SEARCH_GIT_HISTORY));
         assert!(forwardable(methods::FETCH_ALL));
         assert!(forwardable(methods::RESOLVE_GIT_AVATARS));

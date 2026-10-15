@@ -14,9 +14,9 @@ T3 feature list built from `docs/user/*.md`, `packages/contracts/src/{settings,r
 
 | Status | Count |
 |---|---:|
-| ✅ has it | 104 |
-| 🟡 partial | 56 |
-| ❌ missing | 83 |
+| ✅ has it | 106 |
+| 🟡 partial | 55 |
+| ❌ missing | 82 |
 | ⛔ out of scope | 11 |
 | ➕ Godspeed-only (not counted) | 6 |
 
@@ -145,7 +145,7 @@ directly comparable; the movers are listed below.
 |---|---|---|
 | New thread, project filter, grouping, sorting | ✅ | ➕ group by device, compact rows, show/hide metadata |
 | New thread without a project (scratch folder) | ✅ | `proto/src/projectless.rs`, "Don't work in a project" |
-| Thread search | 🟡 | palette scores title / project / branch / device / PR, not message text (`shell/thread_search.rs`) |
+| Thread search | ✅ | palette (and the sidebar's search button) scores title / project / branch / device / PR plus message text from the first character, from each engine's local message index (`engine/src/message_index.rs`, `SearchMessages`); opening a hit scrolls to the message |
 | Pin | ✅ | `shell/sidebar_pins.rs`, synced |
 | Lifecycle sections (Working / Snoozed / Settled) | 🟡 | user-named sections plus archive instead |
 | Status labels | 🟡 | Working, Input, Needs approval, Failed, Done, Queued, subagent pill; no Limited, no unsent-draft |
@@ -173,7 +173,7 @@ directly comparable; the movers are listed below.
 | GitHub alerts, details blocks, video, image gallery, copyable messages | ❌ | |
 | Inline changed-files card per reply | 🟡 | Changes pane has a latest-turn scope; no inline card |
 | Interrupted divider | ❌ | |
-| Find in thread (`mod+f`) | ❌ | |
+| Find in thread (`mod+f`) | ✅ | `shell/find_bar.rs` + `ui/src/transcript_find.rs`: whole virtualized transcript, count, Enter / Shift+Enter, case toggle; closed compact-work folds are not searched |
 | Cite selection into composer | ❌ | |
 | Visual replies (agent-built pages) | ✅ | native Luau visuals (`ui/src/visuals.rs`) instead of sandboxed HTML; works on any harness |
 | MCP Apps (interactive tool results) | ❌ | |
@@ -407,14 +407,14 @@ phone · zero telemetry.
 1. **PR review and merge**: submit review, line comments, reply/resolve, merge and auto-merge, draft/ready, viewed marks. Today the PR board is read-only plus comment and agent handoff.
 2. **Usage-limit recovery**: Limited status, Resume at reset, snooze, auto-resume. Heavy subscription users hit this daily and Godspeed already has the reset times.
 3. **Thread lifecycle**: settle, snooze, auto-settle on merged PR or inactivity, multi-select with undo, working duration and diff stats on rows. The sidebar is the surface users look at all day.
-4. **Find in thread and message-text thread search** (T3 has both, search starts at two characters).
+4. ~~**Find in thread and message-text thread search**~~ shipped: local message index plus ⌘F find bar (T3 searches server-side from two characters).
 5. **Delegation that wakes the parent** (child finished, blocked or needs approval) plus a `/goal` row. Multi-agent orchestration is the main use of the MCP server.
 6. **Per-project settings, per-project model default, custom/hidden models, provider instances** (binary path, env, launch args, parallel accounts). Blocks OpenRouter, proxy and enterprise setups.
 7. **Agent-driven preview browser** (click, type, snapshot, record) and device simulators. T3's loop of "agent checks its own UI work" has no equivalent.
 8. **Remote access without the edge**: pairing links, Tailscale, SSH backends; the headless engine is only reachable through the self-hosted edge.
 9. **Onboarding**: welcome wizard, agent check, project import. First run is an empty sidebar plus one banner.
 10. **Composer ergonomics**: prompt recall (ArrowUp), stash, start-in-background, multi-model fan-out, `#` PR chips, terminal-excerpt and citation chips.
-11. **Keybindings**: 16 rebindable actions, no file, no `when`; missing back/forward, reopen tab, find, settle, split terminal.
+11. **Keybindings**: 16 rebindable actions, no file, no `when`; missing back/forward, reopen tab, settle, split terminal.
 12. **Outside-agent MCP**: HTTP endpoint with OAuth, plus worktree/PR/file tools; today it is a stdio chat orchestrator.
 13. **Settings structure**: search, per-project overrides, Source Control, Storage, Diagnostics pages, project icon picker.
 14. **Worktree lifecycle**: cleanup policies (age, merged, settled), submodule modes, origin toggle, run-on-settle script.
@@ -437,7 +437,7 @@ phone · zero telemetry.
 | Harness updates | notify or auto-when-idle policy per harness |
 | Privacy | zero telemetry; T3 users filed #4123 |
 | Visuals | agent-written Luau drawn with native elements, theme-exact, works for every harness without hosting a webview |
-| Local thread search | client-side scoring, no server round trip (T3 needs the server and two characters) |
+| Local thread search | titles and message text from the first keystroke, no server round trip: a persisted per-engine inverted index answers a 43k-message synthetic corpus in under 4 ms per query (release; `message_index/tests.rs`). T3 needs the server and two characters |
 | Process hygiene | agent process groups recorded and reaped at engine start, scratch dirs reclaimed, bounded subscriber queues, JSON-RPC line cap |
 
 ### Opportunities to clearly beat T3
@@ -447,7 +447,7 @@ phone · zero telemetry.
 | 1 | **Speed receipts**: reproducible turn-latency and resource benchmark against the same CLI under T3 and Godspeed, published in the repo | T3's most-reacted perf issue is "20+ min vs 3m24s for the same Codex task" (#695, 31 reactions); a measured thin-client number is a headline | S | `docs/performance*.md`, `crates/ui/examples/macos-resource-profile.rs` |
 | 2 | **Resume at reset** reusing the always-on scheduler's one-shot trigger | T3 ships this; here it is nearly free: next-fire persistence, misfire grace and skip-if-running already exist, and the engine is headless-capable | M | `engine/src/agents/schedule.rs`, `engine/src/sessions.rs`, `agent_accounts/usage.rs`, `ui/src/composer.rs` |
 | 3 | **Delegation that wakes the parent** and bubbles child approvals up | T3 #15082 and Zeron #768 are open; MCP already has `wait_for_turn`, `respond_to_input` | M | `crates/mcp/src/tools.rs`, `engine/src/sessions.rs`, `client/src/session/mod.rs` |
-| 4 | **Instant find**: in-thread find plus message-text search over a local index, spanning imported Claude/Codex/Cursor history | T3 search is server-side, two-character minimum; local index plus virtual list gives per-keystroke results across everything you ever ran | M | `ui/src/transcript.rs`, `shell/thread_search.rs`, `client/src/session/transcript.rs`, `engine/src/workspace_search.rs` |
+| 4 | **Instant find** (shipped): in-thread find plus message-text search over a local index, spanning imported Claude/Codex/Cursor history | T3 search is server-side, two-character minimum; local index plus virtual list gives per-keystroke results across everything you ever ran | M | `ui/src/transcript.rs`, `shell/thread_search.rs`, `client/src/session/transcript.rs`, `engine/src/workspace_search.rs` |
 | 5 | **Native PR review and merge** via `gh`, with agent handoff on each thread | the PR pane already has tree, activity, checks and handoff; adding review submit, resolve and merge makes review a 120 fps native flow | L | `engine/src/source_control.rs`, `ui/src/pull_request_detail.rs`, `pull_request_interactions.rs`, `rpc/src/lib.rs` |
 | 6 | **PR babysitter agent**: GitHub trigger for always-on agents (poll or webhook) that fixes failing checks | T3's `watch_pull_request` lives inside one thread and stops at settle; an agent with memory and inbox survives restarts | M | `engine/src/agents.rs`, `proto/src/agents.rs`, `engine/src/source_control.rs` |
 | 7 | **Phone approvals with push**: APNs through the self-hosted edge plus the existing Live Activity target | approvals already reach the phone; push makes "agent waiting" actionable from the lock screen | M | `edge/src`, `apps/ios/ZeronLiveActivity`, `crates/mobile/src/client_ffi` |

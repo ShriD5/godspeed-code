@@ -3154,6 +3154,10 @@ pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
     rows: Vec<Row>,
+    /// Find in thread: needle, matches over every row, the current one.
+    pub(crate) find: Option<crate::transcript_find::FindState>,
+    /// A search result to scroll to once its chat's rows arrive.
+    pub(crate) pending_reveal: Option<crate::transcript_find::PendingReveal>,
     last_source: Option<(Option<String>, TranscriptReplayState, u64)>,
     chat_id: Option<String>,
     /// The shell may retain this already-laid-out view briefly for its exit.
@@ -3559,7 +3563,10 @@ impl Transcript {
             })
             .ok();
         });
-        let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
+        let observe = cx.observe(&state, |this: &mut Self, _, cx| {
+            this.sync(cx);
+            this.after_sync_find(cx);
+        });
         cx.on_release(|this: &mut Self, cx| {
             this.close_diagram_zoom(cx);
             crate::image_media::release_media(this.diagrams.borrow_mut().drain(), cx);
@@ -3638,6 +3645,8 @@ impl Transcript {
             compact_worked_fade_at: HashMap::new(),
             compact_fold_heights: HashMap::new(),
             compact_fold_settle: None,
+            find: None,
+            pending_reveal: None,
             highlights: HighlightStore::default(),
             show_jump_button: false,
             last_scroll_distance: 0.0,

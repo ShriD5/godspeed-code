@@ -3,6 +3,10 @@
 //! some field; a match scores its field's weight, plus half again when it
 //! starts a word. Archived threads score half, and ties go to the most
 //! recently active thread.
+//!
+//! Message text (the engines' `SearchMessages` hits) adds up to [`MESSAGE`],
+//! scaled against the query's best hit: a strong message match lands a chat
+//! among project matches, and a title match still outranks it.
 
 /// Field weights: a title hit outranks any number of metadata hits.
 const TITLE: u32 = 100;
@@ -10,6 +14,8 @@ const PROJECT: u32 = 40;
 const BRANCH: u32 = 30;
 const DEVICE: u32 = 20;
 const PULL_REQUEST: u32 = 20;
+/// The best message hit of the query scores this; weaker hits scale down.
+const MESSAGE: u32 = 60;
 
 /// The searchable text of one thread.
 #[derive(Debug, Default, Clone, Copy)]
@@ -63,6 +69,19 @@ fn field_score(haystack: &str, term: &str, weight: u32) -> Option<u32> {
         best = Some(weight);
     }
     best
+}
+
+/// A chat's message-hit score: its hit relative to the query's best hit
+/// (`top`), halved for archived threads like the metadata score.
+pub(super) fn message_score(score: f32, top: f32, archived: bool) -> u32 {
+    let scaled = if top > 0.0 {
+        (MESSAGE as f32 * (score / top).clamp(0.0, 1.0)).round() as u32
+    } else {
+        0
+    };
+    // Every hit counts for something, so a matched chat is never dropped.
+    let scaled = scaled.max(1);
+    if archived { scaled.div_ceil(2) } else { scaled }
 }
 
 /// Best first: higher score, then more recent activity, then the caller's
@@ -153,6 +172,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(archived, active / 2);
+    }
+
+    #[test]
+    fn message_hits_rank_between_title_and_metadata() {
+        assert_eq!(message_score(8.0, 8.0, false), MESSAGE);
+        assert_eq!(message_score(2.0, 8.0, false), 15);
+        assert_eq!(message_score(0.0, 8.0, false), 1, "a hit always counts");
+        assert_eq!(message_score(8.0, 8.0, true), MESSAGE / 2);
+        let title = score_thread(&title("deploy"), &search_terms("deploy")).unwrap();
+        assert!(title > message_score(8.0, 8.0, false));
+        let project = score_thread(
+            &ThreadFields {
+                project: "deploy",
+                ..Default::default()
+            },
+            &search_terms("deploy"),
+        )
+        .unwrap();
+        assert!(project == MESSAGE, "a word-start project hit ties the best message");
     }
 
     #[test]
