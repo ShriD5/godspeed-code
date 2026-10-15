@@ -38,6 +38,8 @@ impl ScratchDir {
     /// only aids debugging; the pid and a process-local counter keep concurrent
     /// runs of the same adapter apart.
     pub(crate) fn new(label: &str) -> std::io::Result<Self> {
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(|| sweep_stale(&std::env::temp_dir(), std::process::id()));
         let label: String = label
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -71,6 +73,78 @@ impl ScratchDir {
         for key in TEMP_VARS {
             command.env(key, self.path());
         }
+    }
+}
+
+/// Scratch roots and unpack directories older than this, whose owner can't
+/// be checked, are leftovers.
+const STALE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Reclaim what an earlier engine left in `temp`: scratch roots of an engine
+/// that died before its guards dropped (`godspeed-<label>-<pid>-<n>`, owner
+/// gone), and Antigravity `_MEI*` unpack directories from builds before the
+/// scratch root existed — a gigabyte each. Only directories carrying the
+/// Antigravity bundle's own files count; other PyInstaller apps share the
+/// `_MEI` prefix and are never touched.
+fn sweep_stale(temp: &Path, own_pid: u32) {
+    let Ok(entries) = std::fs::read_dir(temp) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let stale = if let Some(rest) = name.strip_prefix("godspeed-") {
+            // `<label>-<pid>-<n>`: the label may itself contain dashes.
+            let mut parts = rest.rsplitn(3, '-');
+            let (Some(counter), Some(pid), Some(_label)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let (Ok(_), Ok(pid)) = (counter.parse::<u64>(), pid.parse::<u32>()) else {
+                continue;
+            };
+            pid != own_pid && !owner_alive(pid, &path)
+        } else if name.starts_with("_MEI") {
+            ["agy_acp_licenses.txt", "localharness", "localharness.exe"]
+                .iter()
+                .any(|marker| path.join(marker).exists())
+                && older_than(&path, STALE_AGE)
+        } else {
+            false
+        };
+        if stale && let Err(error) = std::fs::remove_dir_all(&path) {
+            tracing::debug!(path = %path.display(), %error, "could not reclaim stale adapter temp dir");
+        }
+    }
+}
+
+fn older_than(path: &Path, age: Duration) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|elapsed| elapsed > age)
+}
+
+/// Whether the engine that made a scratch root may still be using it.
+fn owner_alive(pid: u32, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        let _ = path;
+        // SAFETY: signal 0 only probes for existence. EPERM still means alive.
+        let probed = unsafe { libc::kill(pid as i32, 0) };
+        probed == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        !older_than(path, STALE_AGE)
     }
 }
 
@@ -114,6 +188,45 @@ mod tests {
             dir.path().to_path_buf()
         };
         assert!(!root.exists(), "scratch directory survived the guard");
+    }
+
+    /// pingdotgg/t3code#12239: an engine killed before its guards drop
+    /// leaves its scratch roots, and builds before the scratch root left
+    /// `_MEI*` unpacks in the shared temp dir (56 GB on one machine). Both
+    /// are reclaimed — only those, never a live engine's or another
+    /// PyInstaller app's.
+    #[cfg(unix)]
+    #[test]
+    fn stale_scratch_roots_and_antigravity_unpacks_are_reclaimed() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        let dead = exited.id();
+        exited.wait().unwrap();
+        let own = std::process::id();
+        let dir = |name: &str| {
+            let path = temp.path().join(name);
+            std::fs::create_dir_all(path.join("_MEI0001")).unwrap();
+            path
+        };
+        let orphan = dir(&format!("godspeed-agy-acp-server-exe-{dead}-0"));
+        let mine = dir(&format!("godspeed-agy-acp-server-exe-{own}-3"));
+        let other_live = dir("godspeed-pi-mcp-1-0");
+        let unrelated = dir("godspeed-probe-501");
+        let old_agy = dir("_MEIold");
+        std::fs::write(old_agy.join("agy_acp_licenses.txt"), "").unwrap();
+        let fresh_agy = dir("_MEIfresh");
+        std::fs::write(fresh_agy.join("agy_acp_licenses.txt"), "").unwrap();
+        let other_app = dir("_MEIother");
+        let past = std::time::SystemTime::now() - Duration::from_secs(3 * 24 * 60 * 60);
+        for path in [&old_agy, &other_app] {
+            std::fs::File::open(path).unwrap().set_modified(past).unwrap();
+        }
+        sweep_stale(temp.path(), own);
+        assert!(!orphan.exists(), "a dead engine's scratch root");
+        assert!(!old_agy.exists(), "an old Antigravity unpack");
+        for kept in [&mine, &other_live, &unrelated, &fresh_agy, &other_app] {
+            assert!(kept.exists(), "{}", kept.display());
+        }
     }
 
     #[test]
