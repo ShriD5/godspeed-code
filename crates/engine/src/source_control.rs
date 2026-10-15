@@ -261,31 +261,9 @@ impl ChangeRequestResolver {
     async fn github_slug(&self, remote_url: &str) -> Option<String> {
         let remote = parse_git_remote(remote_url)?;
         let slug = format!("{}/{}", remote.owner, remote.repository);
-        if remote.host.eq_ignore_ascii_case("github.com") {
-            return Some(slug);
-        }
-        if !is_ssh_remote(remote_url) || !valid_ssh_alias(&remote.host) {
-            return None;
-        }
-        let output = self
-            .inspector
-            .runner
-            .run(ProcessRequest {
-                program: "ssh".into(),
-                args: vec!["-G".into(), remote.host.clone()],
-                stdin: None,
-                cwd: None,
-                env: Vec::new(),
-                timeout: SSH_CONFIG_TIMEOUT,
-                output_limit: GIT_OUTPUT_LIMIT,
-            })
+        resolved_remote_host(self.inspector.runner.as_ref(), remote_url, &remote.host)
             .await
-            .ok()?;
-        if !output.success || output.stdout_truncated {
-            return None;
-        }
-        ssh_config_hostname(&String::from_utf8_lossy(&output.stdout))
-            .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
+            .eq_ignore_ascii_case("github.com")
             .then_some(slug)
     }
 
@@ -1468,6 +1446,50 @@ fn valid_ssh_alias(host: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+/// The host a remote really reaches. An SSH remote may name a host alias
+/// from `~/.ssh/config` (`git@github-work:acme/app.git`, one key per GitHub
+/// account); `ssh -G` resolves it locally without connecting. Anything else,
+/// or an alias ssh can't resolve, is the host as written.
+async fn resolved_remote_host(runner: &dyn ProcessRunner, remote_url: &str, host: &str) -> String {
+    if host.eq_ignore_ascii_case("github.com")
+        || !is_ssh_remote(remote_url)
+        || !valid_ssh_alias(host)
+    {
+        return host.to_string();
+    }
+    let output = runner
+        .run(ProcessRequest {
+            program: "ssh".into(),
+            args: vec!["-G".into(), host.to_string()],
+            stdin: None,
+            cwd: None,
+            env: Vec::new(),
+            timeout: SSH_CONFIG_TIMEOUT,
+            output_limit: GIT_OUTPUT_LIMIT,
+        })
+        .await;
+    match output {
+        Ok(output) if output.success && !output.stdout_truncated => {
+            ssh_config_hostname(&String::from_utf8_lossy(&output.stdout))
+                .filter(|resolved| !resolved.is_empty())
+                .map_or_else(|| host.to_string(), |resolved| resolved.to_ascii_lowercase())
+        }
+        _ => host.to_string(),
+    }
+}
+
+/// Whether `remote_url` points at GitHub (github.com, a `github` host such
+/// as an Enterprise install, or an SSH alias for either).
+pub async fn remote_is_github(remote_url: &str) -> bool {
+    let Some(remote) = parse_git_remote(remote_url) else {
+        return false;
+    };
+    remote.host.contains("github")
+        || resolved_remote_host(&SystemProcessRunner, remote_url, &remote.host)
+            .await
+            .contains("github")
+}
+
 /// The `hostname` line of `ssh -G` output: the host an alias connects to.
 fn ssh_config_hostname(config: &str) -> Option<&str> {
     config.lines().find_map(|line| {
@@ -1605,12 +1627,17 @@ impl GitCheckoutInspector {
             remote_url
         };
 
-        let branch = BranchHeadContext::resolve(
+        let mut branch = BranchHeadContext::resolve(
             local_branch,
             upstream_ref.as_deref(),
             remote_name.as_deref(),
             remote_url.as_deref(),
         );
+        // A remote through an SSH host alias names the forge it reaches, so
+        // provider calls address github.com rather than the alias.
+        if let (Some(url), Some(host)) = (branch.remote_url.clone(), branch.host.clone()) {
+            branch.host = Some(resolved_remote_host(self.runner.as_ref(), &url, &host).await);
+        }
         // The default branch is read from local refs only. `refs/remotes/
         // <remote>/HEAD` is a fetch-time cache and may be absent; the provider
         // resolves the remote's default branch itself when needed. Never fall
@@ -2858,6 +2885,59 @@ mod tests {
         let config = "user git\nhostname github.com\nport 22\n";
         assert_eq!(ssh_config_hostname(config), Some("github.com"));
         assert_eq!(ssh_config_hostname("user git\n"), None);
+    }
+
+    /// Real local git; `ssh -G` answers as if `~/.ssh/config` mapped the
+    /// alias to github.com.
+    struct SshAliasRunner;
+
+    #[async_trait]
+    impl ProcessRunner for SshAliasRunner {
+        async fn run(&self, request: ProcessRequest) -> Result<ProcessOutput, ProcessRunError> {
+            if request.program == "ssh" {
+                assert_eq!(request.args, ["-G", "github-work"]);
+                return command_success("user git\nhostname github.com\n");
+            }
+            SystemProcessRunner.run(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_checkout_behind_an_ssh_alias_on_a_non_origin_remote_is_github() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for args in [
+            &["init", "-q", "-b", "feature"][..],
+            &["remote", "add", "fork", "git@github-work:acme/app.git"],
+            &["config", "branch.feature.remote", "fork"],
+            &["config", "branch.feature.merge", "refs/heads/feature"],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        }
+        let source = GitCheckoutInspector::new(Arc::new(SshAliasRunner))
+            .inspect(repo)
+            .await
+            .unwrap();
+        assert_eq!(source.branch.remote_name.as_deref(), Some("fork"));
+        assert_eq!(source.branch.host.as_deref(), Some("github.com"));
+        assert_eq!(source.branch.owner.as_deref(), Some("acme"));
+        assert_eq!(source.branch.repository.as_deref(), Some("app"));
+        // Unresolvable or non-SSH hosts stay as written.
+        let failing = FakeProcessRunner::with_responses([Err(ProcessRunError::Timeout)]);
+        assert_eq!(
+            resolved_remote_host(failing.as_ref(), "git@work:acme/app.git", "work").await,
+            "work"
+        );
+        assert_eq!(
+            resolved_remote_host(failing.as_ref(), "https://ghe.corp/acme/app", "ghe.corp").await,
+            "ghe.corp"
+        );
+        assert_eq!(failing.requests().len(), 1);
     }
 
     #[tokio::test]
