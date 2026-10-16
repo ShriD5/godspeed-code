@@ -1,7 +1,8 @@
 //! Settings → Agents: always-on agents hosted by this device's engine
 //! (`zeron_proto::agents`). Lists each agent with its status and next fire,
 //! a small create/edit form (one schedule trigger per agent here; the engine
-//! accepts more), and the run inbox, whose rows open the run's chat.
+//! accepts more), the run inbox, whose rows open the run's chat, and the
+//! Telegram bot that fronts them (`settings::telegram`).
 
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, EventEmitter, SharedString, Subscription, Task,
@@ -16,6 +17,7 @@ use zeron_rpc::methods;
 
 use crate::composer::ComposerInput;
 use crate::popover;
+use crate::settings::telegram::TelegramSection;
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -81,6 +83,7 @@ pub struct AgentsPage {
     runs: Vec<AgentRun>,
     harnesses: Vec<(HarnessId, String)>,
     editor: Option<Editor>,
+    telegram: Entity<TelegramSection>,
     error: Option<SharedString>,
     watch_task: Option<Task<()>>,
     harness_task: Option<Task<()>>,
@@ -138,6 +141,7 @@ fn status_label(status: AgentRunStatus) -> &'static str {
 impl AgentsPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let telegram = cx.new(|cx| TelegramSection::new(state.clone(), cx));
         let mut page = Self {
             state,
             scroll: widgets::PageScroll::default(),
@@ -145,6 +149,7 @@ impl AgentsPage {
             runs: Vec::new(),
             harnesses: Vec::new(),
             editor: None,
+            telegram,
             error: None,
             watch_task: None,
             harness_task: None,
@@ -900,7 +905,8 @@ impl Render for AgentsPage {
                                 .children(error)
                                 .children(editor)
                                 .child(agents)
-                                .child(inbox),
+                                .child(inbox)
+                                .child(self.telegram.clone()),
                         ),
                 )
                 .fade_overflow_y(&self.scroll.scroll),
