@@ -369,7 +369,11 @@ impl TelegramSection {
             _ => "your bot".into(),
         };
         let mut card = widgets::section_card(theme).mt(px(0.0));
-        let code_row = match &status.link_code {
+        let live_code = status
+            .link_code
+            .as_ref()
+            .filter(|code| code.expires_at > chrono::Utc::now());
+        let code_row = match live_code {
             Some(code) => {
                 let copy = code.code.clone();
                 let expires = code

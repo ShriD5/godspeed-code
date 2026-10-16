@@ -34,9 +34,7 @@ pub(super) struct Reply {
 enum TurnState {
     /// The chat is gone; nothing will ever answer.
     Gone,
-    Waiting {
-        running: bool,
-    },
+    Waiting,
     Done(Reply),
 }
 
@@ -155,13 +153,13 @@ impl Inner {
         };
         let running = self.deps.sessions.turn_in_flight(&turn.chat_id);
         let Some(entries) = self.entries(&turn.chat_id) else {
-            return TurnState::Waiting { running };
+            return TurnState::Waiting;
         };
         let Some(index) = entries
             .iter()
             .position(|e| e.id == turn.message_id && e.role == MessageRole::User)
         else {
-            return TurnState::Waiting { running };
+            return TurnState::Waiting;
         };
         let answered_later = entries[index + 1..]
             .iter()
@@ -203,7 +201,7 @@ impl Inner {
                     stopped: false,
                 })
             }
-            _ => TurnState::Waiting { running },
+            _ => TurnState::Waiting,
         }
     }
 
@@ -217,8 +215,14 @@ impl Inner {
                 TurnState::Gone => {
                     let _ = self.store.remove_turn(&turn.message_id);
                 }
-                TurnState::Waiting { running } => {
-                    if running {
+                TurnState::Waiting => {
+                    // Typing while it works; not while it waits on the user.
+                    let working = self
+                        .deps
+                        .sessions
+                        .session_status(&turn.chat_id)
+                        .is_some_and(|s| s.status == SessionStatus::Working);
+                    if working {
                         self.typing(api, turn.tg_chat, false).await;
                     }
                 }
