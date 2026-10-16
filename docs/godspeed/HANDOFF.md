@@ -117,11 +117,10 @@ Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later
 
 ## Before going public
 
-- Reset the version from Zeron's `0.2.113`; rename the theme family still called after Zeron; the
-  iOS app (`apps/ios`) is still Zeron-branded; replace the in-app Zeron logo SVG.
+- Rename the theme family still called after Zeron; the iOS app (`apps/ios`) is still
+  Zeron-branded; replace the in-app Zeron logo SVG.
 - Sign and notarize (needs the owner's Developer ID), set up a release feed (auto-update is off),
   decide on CI.
-- Benchmarks in the README.
 
 ## Owner to-dos
 

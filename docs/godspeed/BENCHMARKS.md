@@ -15,7 +15,7 @@ GUI rendering, window memory, or agent/model task speed. See
 |---|---|
 | Machine | MacBook Air, Mac14,2, Apple M2 (4P + 4E cores), 16 GB |
 | OS | macOS 27.0 (26A428), Darwin 27.0.0 |
-| Godspeed | 0.2.113, `/Applications/Godspeed.app/Contents/MacOS/godspeed`, release build made 20 minutes after `d752f8cd` (main) |
+| Godspeed | 0.2.113 (the version inherited from Zeron; reset to 0.1.0 later), `/Applications/Godspeed.app/Contents/MacOS/godspeed`, release build made 20 minutes after `d752f8cd` (main) |
 | Godspeed binary SHA-256 | `e8e44b698147c56ea10421b27e103cdaa4f8ced867daa67ed9899a598416388d` |
 | T3 Code | 0.0.40 (installed `/Applications/T3 Code (Alpha).app`), Electron 43.4.1, Node 24.18.1 |
 | T3 launcher SHA-256 | `65f5609a31dac03f7891bb27ba06c585f93cc930e545a9ff29bb0986af9eea66` |
