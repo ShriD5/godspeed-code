@@ -48,16 +48,9 @@ the iPhone app and Windows/Linux builds. Full comparison and issue list:
   on macOS 27.
 - Open the DMG and drag Godspeed into Applications.
 
-The app is ad-hoc signed but not notarized, so macOS blocks the first launch. Either:
-
-- **macOS 15 or later:** open Godspeed once, then go to System Settings → Privacy & Security and
-  click **Open Anyway**.
-- **macOS 14 or earlier:** right-click Godspeed in Applications and choose **Open**.
-- **Any version:** remove the quarantine flag in Terminal:
-
-  ```sh
-  xattr -dr com.apple.quarantine /Applications/Godspeed.app
-  ```
+Releases from 0.3.0 on are signed with a Developer ID and notarized by Apple, so the app opens
+normally. (0.1.0 and 0.2.0 were unsigned; for those, use System Settings → Privacy & Security →
+**Open Anyway**.)
 
 There is no auto-update yet. Download new releases from the
 [releases page](https://github.com/ShriD5/godspeed/releases).
