@@ -71,7 +71,7 @@ Known flaky only under heavy load (pass alone): `version_probe_bounds_hangs_and_
   history only. The owner has not run the real import yet.
 - ~45 upstream issue fixes across drivers, engine and UI (see `ISSUES-TRIAGE.md`), plus a skill
   discovery fix (project skills first).
-- App icon: a silver low-poly speedster (`design/icon/sp-electric.jpg`).
+- App icon: painterly low-poly speedster with a single-fin helmet (`design/icon/godspeed-icon-3.png`, made by Codex in Zeron's style; no DC tells).
 
 ## Done on 2026-10-16
 
@@ -117,7 +117,6 @@ Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later
 
 ## Before going public
 
-- Redo the icon: the image model drifted to Flash-style ear wings (DC trademark).
 - Reset the version from Zeron's `0.2.113`; rename the theme family still called after Zeron; the
   iOS app (`apps/ios`) is still Zeron-branded; replace the in-app Zeron logo SVG.
 - Sign and notarize (needs the owner's Developer ID), set up a release feed (auto-update is off),
