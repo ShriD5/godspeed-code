@@ -11,7 +11,7 @@ on:
       - 'crates/client/**'
       - 'crates/mobile/**'
       - 'apps/ios/Godspeed/Voice/**'
-      - 'apps/ios/ZeronTests/RemoteVoiceLifecycleTests.swift'
+      - 'apps/ios/GodspeedTests/RemoteVoiceLifecycleTests.swift'
       - 'dist/voice/**'
       - 'scripts/package-voice-runtime.py'
       - 'crates/proto/src/voice.rs'

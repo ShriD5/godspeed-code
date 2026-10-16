@@ -199,7 +199,7 @@ Zeron runs the helper of the user's separately installed standalone Codex, on
 every platform; Zeron packages do not contain or redistribute Codex binaries or
 its native audio runtime. This adaptation uses asynchronous bounded pipes and
 the Zeron engine's owner leases. The iOS voice endpoint
-(`apps/ios/Zeron/Voice/CodexVoicePeer.swift`) implements the transport behavior
+(`apps/ios/Godspeed/Voice/CodexVoicePeer.swift`) implements the transport behavior
 described by `codex-rs/voice-host/src/transport.rs` at
 `a956835d020762cb2b570053af06f643a11c0ecc` without copying its code.
 

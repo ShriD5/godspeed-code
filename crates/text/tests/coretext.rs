@@ -1,6 +1,6 @@
 //! CoreText ground truth (macOS only): lay a corpus out with zeron-text and with CTFramesetter
 //! using the *same font bytes*, and compare line starts — the methodology of
-//! apps/ios/ZeronTests/LineBreakAccuracyTests.swift, runnable with plain `cargo test`.
+//! apps/ios/GodspeedTests/LineBreakAccuracyTests.swift, runnable with plain `cargo test`.
 //!
 //! `cargo test -p zeron-text --release --test coretext -- --nocapture` prints accuracy and the
 //! first mismatches. `ZT_CT_VERBOSE=n` prints up to `n` mismatches with line texts;
