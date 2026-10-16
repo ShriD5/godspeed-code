@@ -124,10 +124,45 @@ Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later
 - Zeron's upstream tags (fetched from `upstream`) reuse names like `v0.1.0`. The local copy of
   Zeron's `v0.1.0` was deleted so Godspeed's could be created; don't push upstream tags to `origin`.
 
+## Cloud and iPhone app
+
+Branch `feat/cloud-ios-prep` (2026-10-16) prepared Zeron-style sync on the owner's accounts without
+deploying anything or choosing a sign-in method:
+
+- Edge config targets Cloudflare account `f715952f0d5650529fe9401bcca31e2e` as worker
+  `godspeed-edge` on workers.dev, R2 bucket `godspeed-blobs`. Zeron's routes, WorkOS client id and
+  releases bucket are gone. Exact deploy commands, secrets and vars: `edge/DEPLOY.md`.
+- iOS app rebranded to Godspeed: folders/project/scheme `apps/ios/Godspeed*`, bundle id
+  `site.shrithan.godspeed.ios`, team `QPUV967B5U`, URL scheme `godspeed`, icon from
+  `dist/godspeed.png`. It builds for the simulator and for arm64 devices (unsigned). Its
+  `Endpoints` are placeholders (`.invalid` edge, empty client id), same as the desktop.
+
+Remaining, in order:
+
+1. **Deploy the edge** (`edge/DEPLOY.md`): enable R2, create `godspeed-blobs`, `wrangler deploy`,
+   note the `godspeed-edge.<subdomain>.workers.dev` URL, check `/health`.
+2. **Choose sign-in**: WorkOS (create a WorkOS app, redirect URI `godspeed://callback`, put the
+   client id in the edge's `WORKOS_CLIENT_ID` and `wrangler secret put WORKOS_API_KEY`) or a
+   pairing-code scheme (new edge routes + client code; nothing exists yet).
+3. **Bake the edge URL and sign-in config into both apps**: desktop
+   `crates/client/src/auth.rs` (`PRODUCTION_EDGE_URL`, `WORKOS_CLIENT_ID`) and
+   `apps/godspeed/src/main.rs` (`DEFAULT_EDGE_URL`, env fallbacks `GODSPEED_EDGE_URL`,
+   `GODSPEED_WORKOS_CLIENT_ID`); iOS `apps/ios/Godspeed/Shell/SignInViewController.swift`
+   (`Endpoints`).
+4. **APNs key for push**: Apple Developer → Keys (APNs), then `wrangler secret put APNS_KEY_P8` and
+   `APNS_KEY_ID`. Team and topic are already set in `edge/wrangler.jsonc`.
+5. **TestFlight**: create the App Store Connect app for `site.shrithan.godspeed.ios`, archive in
+   Xcode and upload (`apps/ios/README.md`). Zeron's TestFlight workflow was not carried over.
+
+Known leftovers: the edge's `/auth/cli/callback` page title still says "Zeron" (auth code was left
+untouched on purpose); internal identifiers stay `zeron-*` (crates, the `zeron-preview://` image
+link, `x-zeron-*` headers) because the core and the desktop speak them. The committed UniFFI
+bindings (`apps/ios/Godspeed/Core/Generated/zeron_core.swift`) were stale after the desktop
+rebrand (checksum mismatch at launch) and were regenerated on this branch.
+
 ## Before going public
 
-- Rename the theme family still called after Zeron; the iOS app (`apps/ios`) is still
-  Zeron-branded; replace the in-app Zeron logo SVG.
+- Rename the theme family still called after Zeron; replace the in-app Zeron logo SVG.
 - Sign and notarize (needs the owner's Developer ID), set up a release feed (auto-update is off),
   decide on CI.
 
