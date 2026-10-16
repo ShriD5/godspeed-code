@@ -20,6 +20,7 @@ pub mod motion;
 pub mod preview;
 pub mod projectless;
 pub mod sidebar_pins;
+pub mod telegram;
 pub mod view;
 pub mod voice;
 pub mod workspace;
