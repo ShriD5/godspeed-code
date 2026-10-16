@@ -10,8 +10,9 @@ export interface Env {
   CHAT_ROOMS: DurableObjectNamespace;
   BLOBS: R2Bucket;
   /** Release artifacts (headless tarballs, dmgs, latest.txt) served at
-   * /releases/* for the curl-install flow. */
-  RELEASES: R2Bucket;
+   * /releases/* for the curl-install flow. Optional: unbound ⇒ /releases/*
+   * and /install.sh answer 404 (Godspeed's deployment, see DEPLOY.md). */
+  RELEASES?: R2Bucket;
   WORKOS_CLIENT_ID: string;
   /** "workos" (verify AuthKit JWTs) or "dev" (bearer == userId, never prod). */
   AUTH_MODE: string;
@@ -26,7 +27,7 @@ export interface Env {
    * key id. Unset ⇒ session notifications are decided and logged, not sent. */
   APNS_KEY_P8?: string;
   APNS_KEY_ID?: string;
-  /** Apple team id and the app's bundle id (defaults: the Zeron iOS app). */
+  /** Apple team id and the app's bundle id (defaults: the Godspeed iOS app). */
   APNS_TEAM_ID?: string;
   APNS_TOPIC?: string;
 }
@@ -37,8 +38,8 @@ export const apnsConfig = (env: Env) =>
     ? {
         keyP8: env.APNS_KEY_P8,
         keyId: env.APNS_KEY_ID,
-        teamId: env.APNS_TEAM_ID ?? "5XY3M483YQ",
-        topic: env.APNS_TOPIC ?? "sh.zeron.ios"
+        teamId: env.APNS_TEAM_ID ?? "QPUV967B5U",
+        topic: env.APNS_TOPIC ?? "site.shrithan.godspeed.ios"
       }
     : undefined;
 

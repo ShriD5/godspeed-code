@@ -120,9 +120,15 @@ export default {
       return json({ ok: true, auth: env.AUTH_MODE === "dev" ? "dev" : "workos" });
     }
 
-    // ── public install surface (also routed from zeron.sh): the
-    //    `curl | sh` installer and the release artifacts it downloads ───────
-    if (url.pathname === "/install.sh" && (request.method === "GET" || request.method === "HEAD")) {
+    // ── public install surface: the `curl | sh` installer and the release
+    //    artifacts it downloads. Served only when a RELEASES bucket is bound.
+    //    Godspeed's deployment binds none (releases live on GitHub, and
+    //    install.sh still installs Zeron from zeron.sh), so both 404 there. ──
+    if (
+      env.RELEASES &&
+      url.pathname === "/install.sh" &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
       return new Response(request.method === "HEAD" ? null : installSh, {
         headers: {
           "content-type": "application/x-sh",
@@ -131,6 +137,7 @@ export default {
       });
     }
     if (
+      env.RELEASES &&
       parts[0] === "releases" &&
       parts.length >= 2 &&
       (request.method === "GET" || request.method === "HEAD")
