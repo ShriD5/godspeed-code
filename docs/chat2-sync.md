@@ -143,7 +143,7 @@ root).
 
 Estimate: 4–5 days.
 
-**C4. iOS** (`apps/ios/Zeron/Sync/`): `ChatRoomClient.swift` cloned from
+**C4. iOS** (`apps/ios/Godspeed/Sync/`): `ChatRoomClient.swift` cloned from
 `RegistryClient.swift`; delete `LoroProtocol.swift` once s2 dies. Shared framing test
 vectors across Rust/TS/Swift (registry precedent). Estimate: 3–4 days, can trail
 desktop by a release.

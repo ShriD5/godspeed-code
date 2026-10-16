@@ -66,11 +66,11 @@ separate layer, split at the exact glyph offset.
 | --- | --- |
 | Paint/measure agreement at 7 widths, streaming ≡ full parse, prefix reuse, toggles, mentions | `cargo test -p zeron-mobile --lib layout` |
 | Layout timing (3,300 rows) | `cargo test --release -p zeron-mobile --lib bench_layout -- --ignored --nocapture` |
-| Line breaks vs CoreText on the same font bytes | `ZeronTests/LineBreakAccuracyTests`, `crates/text/tests/coretext.rs` |
-| Demo end-to-end (send → echo → reply, questions, queue, offline host) | `crates/client/tests/demo.rs`, `ZeronUITests/SessionFlowTests` |
+| Line breaks vs CoreText on the same font bytes | `GodspeedTests/LineBreakAccuracyTests`, `crates/text/tests/coretext.rs` |
+| Demo end-to-end (send → echo → reply, questions, queue, offline host) | `crates/client/tests/demo.rs`, `GodspeedUITests/SessionFlowTests` |
 | Live sync against an in-process edge | `crates/client/tests/live.rs` |
-| Real stack (wrangler dev edge + headless engine, mock harness) | `ZeronUITests/LiveStackTests` |
-| Frame pacing (hitch ratio, idle + streaming) | `-lab -bench`, `ZeronUITests/ScrollPerformanceTests` |
+| Real stack (wrangler dev edge + headless engine, mock harness) | `GodspeedUITests/LiveStackTests` |
+| Frame pacing (hitch ratio, idle + streaming) | `-lab -bench`, `GodspeedUITests/ScrollPerformanceTests` |
 
 Reference numbers (M-series Mac, iPhone 17 Pro simulator): cold layout of
 3,300 rows 30 ms; width change 0.42 ms; display list 0.8 µs/row; streamed
@@ -82,4 +82,4 @@ token 0.19 ms; display-link flings through 3,300 rows — 0 hitches idle
 `scripts/ios/build-core.sh` (run by the Xcode "Rust core" phase) builds
 `zeron-mobile` for the active platform with the `mobile` cargo profile (always
 optimized), and regenerates the committed UniFFI bindings in
-`apps/ios/Zeron/Core/Generated/`.
+`apps/ios/Godspeed/Core/Generated/`.

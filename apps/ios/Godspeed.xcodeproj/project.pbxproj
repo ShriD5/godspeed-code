@@ -1,0 +1,700 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A100000000000000000000E1 /* Exceptions for "Godspeed" folder in "Godspeed" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A1000000000000000000T001 /* Godspeed */;
+		};
+		A400000000000000000000E1 /* Exceptions for "GodspeedLiveActivity" folder in "GodspeedLiveActivity" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A4000000000000000000T001 /* GodspeedLiveActivity */;
+		};
+		A400000000000000000000E2 /* Exceptions for "Godspeed" folder in "GodspeedLiveActivity" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Fonts/Geist-Medium.ttf",
+				"Fonts/GeistMono-Medium.ttf",
+			);
+			target = A4000000000000000000T001 /* GodspeedLiveActivity */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A1000000000000000000G001 /* Godspeed */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A100000000000000000000E1 /* Exceptions for "Godspeed" folder in "Godspeed" target */,
+				A400000000000000000000E2 /* Exceptions for "Godspeed" folder in "GodspeedLiveActivity" target */,
+			);
+			path = Godspeed;
+			sourceTree = "<group>";
+		};
+		A2000000000000000000G001 /* GodspeedTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GodspeedTests;
+			sourceTree = "<group>";
+		};
+		A3000000000000000000G001 /* GodspeedUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GodspeedUITests;
+			sourceTree = "<group>";
+		};
+		A4000000000000000000G001 /* GodspeedLiveActivity */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A400000000000000000000E1 /* Exceptions for "GodspeedLiveActivity" folder in "GodspeedLiveActivity" target */,
+			);
+			path = GodspeedLiveActivity;
+			sourceTree = "<group>";
+		};
+		A5000000000000000000G001 /* GodspeedShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GodspeedShared;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXContainerItemProxy section */
+		A2000000000000000000X001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000PJ01 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000000000000000000T001;
+			remoteInfo = Godspeed;
+		};
+		A3000000000000000000X001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000PJ01 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000000000000000000T001;
+			remoteInfo = Godspeed;
+		};
+		A4000000000000000000X001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000PJ01 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A4000000000000000000T001;
+			remoteInfo = GodspeedLiveActivity;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		A2000000000000000000D001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000000000000000000T001 /* Godspeed */;
+			targetProxy = A2000000000000000000X001 /* PBXContainerItemProxy */;
+		};
+		A3000000000000000000D001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000000000000000000T001 /* Godspeed */;
+			targetProxy = A3000000000000000000X001 /* PBXContainerItemProxy */;
+		};
+		A4000000000000000000D001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A4000000000000000000T001 /* GodspeedLiveActivity */;
+			targetProxy = A4000000000000000000X001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXFileReference section */
+		A1000000000000000000PR01 /* Godspeed.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Godspeed.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000PR01 /* GodspeedTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GodspeedTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3000000000000000000PR01 /* GodspeedUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GodspeedUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A4000000000000000000PR01 /* GodspeedLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GodspeedLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXBuildFile section */
+        B71000000000000000000001 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = B71000000000000000000002 /* WebRTC */; };
+		A4000000000000000000BF01 /* GodspeedLiveActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A4000000000000000000PR01 /* GodspeedLiveActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+/* Begin PBXCopyFilesBuildPhase section */
+		A1000000000000000000CP01 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A4000000000000000000BF01 /* GodspeedLiveActivity.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+/* Begin XCRemoteSwiftPackageReference section */
+        B71000000000000000000003 /* WebRTC */ = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/stasel/WebRTC.git"; requirement = {kind = exactVersion; version = 150.0.0; }; };
+/* End XCRemoteSwiftPackageReference section */
+/* Begin XCSwiftPackageProductDependency section */
+        B71000000000000000000002 /* WebRTC */ = {isa = XCSwiftPackageProductDependency; package = B71000000000000000000003; productName = WebRTC; };
+/* End XCSwiftPackageProductDependency section */
+/* Begin PBXFrameworksBuildPhase section */
+		A1000000000000000000F001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+                B71000000000000000000001 /* WebRTC in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A4000000000000000000F001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A1000000000000000000G000 = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000G001 /* Godspeed */,
+				A2000000000000000000G001 /* GodspeedTests */,
+				A3000000000000000000G001 /* GodspeedUITests */,
+				A4000000000000000000G001 /* GodspeedLiveActivity */,
+				A5000000000000000000G001 /* GodspeedShared */,
+				A1000000000000000000G002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1000000000000000000G002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000000000000000PR01 /* Godspeed.app */,
+				A2000000000000000000PR01 /* GodspeedTests.xctest */,
+				A3000000000000000000PR01 /* GodspeedUITests.xctest */,
+				A4000000000000000000PR01 /* GodspeedLiveActivity.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1000000000000000000T001 /* Godspeed */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000000000000000000C001 /* Build configuration list for PBXNativeTarget "Godspeed" */;
+			buildPhases = (
+				A1000000000000000000SH01 /* Rust core */,
+				A1000000000000000000S001 /* Sources */,
+				A1000000000000000000F001 /* Frameworks */,
+				A1000000000000000000R001 /* Resources */,
+				A1000000000000000000CP01 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A4000000000000000000D001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A1000000000000000000G001 /* Godspeed */,
+				A5000000000000000000G001 /* GodspeedShared */,
+			);
+			name = Godspeed;
+			packageProductDependencies = (
+                B71000000000000000000002 /* WebRTC */,			);
+			productName = Godspeed;
+			productReference = A1000000000000000000PR01 /* Godspeed.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A2000000000000000000T001 /* GodspeedTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A2000000000000000000C001 /* Build configuration list for PBXNativeTarget "GodspeedTests" */;
+			buildPhases = (
+				A2000000000000000000S001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A2000000000000000000D001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A2000000000000000000G001 /* GodspeedTests */,
+			);
+			name = GodspeedTests;
+			packageProductDependencies = (
+			);
+			productName = GodspeedTests;
+			productReference = A2000000000000000000PR01 /* GodspeedTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A3000000000000000000T001 /* GodspeedUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A3000000000000000000C001 /* Build configuration list for PBXNativeTarget "GodspeedUITests" */;
+			buildPhases = (
+				A3000000000000000000S001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A3000000000000000000D001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A3000000000000000000G001 /* GodspeedUITests */,
+			);
+			name = GodspeedUITests;
+			packageProductDependencies = (
+			);
+			productName = GodspeedUITests;
+			productReference = A3000000000000000000PR01 /* GodspeedUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		A4000000000000000000T001 /* GodspeedLiveActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A4000000000000000000C001 /* Build configuration list for PBXNativeTarget "GodspeedLiveActivity" */;
+			buildPhases = (
+				A4000000000000000000S001 /* Sources */,
+				A4000000000000000000F001 /* Frameworks */,
+				A4000000000000000000R001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A4000000000000000000G001 /* GodspeedLiveActivity */,
+				A5000000000000000000G001 /* GodspeedShared */,
+			);
+			name = GodspeedLiveActivity;
+			packageProductDependencies = (
+			);
+			productName = GodspeedLiveActivity;
+			productReference = A4000000000000000000PR01 /* GodspeedLiveActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1000000000000000000PJ01 /* Project object */ = {
+			isa = PBXProject;
+            packageReferences = (B71000000000000000000003);
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					A1000000000000000000T001 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					A4000000000000000000T001 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+				};
+			};
+			buildConfigurationList = A1000000000000000000C000 /* Build configuration list for PBXProject "Godspeed" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A1000000000000000000G000;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A1000000000000000000G002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1000000000000000000T001 /* Godspeed */,
+				A2000000000000000000T001 /* GodspeedTests */,
+				A3000000000000000000T001 /* GodspeedUITests */,
+				A4000000000000000000T001 /* GodspeedLiveActivity */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000000000000000000R001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A4000000000000000000R001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A1000000000000000000SH01 /* Rust core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Rust core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "exec \"$SRCROOT/../../scripts/ios/build-core.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000000000000000000S001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A2000000000000000000S001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3000000000000000000S001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A4000000000000000000S001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A1000000000000000000BC01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A1000000000000000000BC02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A1000000000000000000BC03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/ios-core/iphoneos";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/ios-core/iphonesimulator";
+				OTHER_LDFLAGS = (
+					"-lzeron_mobile",
+					"-lc++",
+					"-framework",
+					Security,
+					"-framework",
+					SystemConfiguration,
+				);
+				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/ios-core/iphoneos/include";
+				"SWIFT_INCLUDE_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/ios-core/iphonesimulator/include";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Godspeed.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QPUV967B5U;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Godspeed/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A1000000000000000000BC04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/ios-core/iphoneos";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/ios-core/iphonesimulator";
+				OTHER_LDFLAGS = (
+					"-lzeron_mobile",
+					"-lc++",
+					"-framework",
+					Security,
+					"-framework",
+					SystemConfiguration,
+				);
+				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/ios-core/iphoneos/include";
+				"SWIFT_INCLUDE_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/ios-core/iphonesimulator/include";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Godspeed.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QPUV967B5U;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Godspeed/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A2000000000000000000BC03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/ios-core/iphoneos/include";
+				"SWIFT_INCLUDE_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/ios-core/iphonesimulator/include";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Godspeed.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Godspeed";
+			};
+			name = Debug;
+		};
+		A3000000000000000000BC03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Godspeed;
+			};
+			name = Debug;
+		};
+		A2000000000000000000BC04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = "$(SRCROOT)/../../target/ios-core/iphoneos/include";
+				"SWIFT_INCLUDE_PATHS[sdk=iphonesimulator*]" = "$(SRCROOT)/../../target/ios-core/iphonesimulator/include";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Godspeed.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Godspeed";
+			};
+			name = Release;
+		};
+		A3000000000000000000BC04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Godspeed;
+			};
+			name = Release;
+		};
+		A4000000000000000000BC03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QPUV967B5U;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = GodspeedLiveActivity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Godspeed;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A4000000000000000000BC04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = QPUV967B5U;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = GodspeedLiveActivity/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Godspeed;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = site.shrithan.godspeed.ios.LiveActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1000000000000000000C000 /* Build configuration list for PBXProject "Godspeed" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000BC01 /* Debug */,
+				A1000000000000000000BC02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1000000000000000000C001 /* Build configuration list for PBXNativeTarget "Godspeed" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000BC03 /* Debug */,
+				A1000000000000000000BC04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A2000000000000000000C001 /* Build configuration list for PBXNativeTarget "GodspeedTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A2000000000000000000BC03 /* Debug */,
+				A2000000000000000000BC04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A3000000000000000000C001 /* Build configuration list for PBXNativeTarget "GodspeedUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A3000000000000000000BC03 /* Debug */,
+				A3000000000000000000BC04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A4000000000000000000C001 /* Build configuration list for PBXNativeTarget "GodspeedLiveActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A4000000000000000000BC03 /* Debug */,
+				A4000000000000000000BC04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = A1000000000000000000PJ01 /* Project object */;
+}

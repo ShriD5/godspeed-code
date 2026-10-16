@@ -114,7 +114,7 @@ frames or volume-meter stream are added to sync or the command ledger.
 ## iOS
 
 Build the Rust core with `scripts/ios/build-core.sh iphonesimulator` (or `iphoneos`
-for a physical device). Open `apps/ios/Zeron.xcodeproj` and use the **Zeron** scheme.
+for a physical device). Open `apps/ios/Godspeed.xcodeproj` and use the **Godspeed** scheme.
 Sign a physical-device build using your existing development team. No Codex
 executable or OpenAI credentials are installed in the iOS app.
 
@@ -144,10 +144,10 @@ Offline iOS lifecycle tests (no microphone permission or provider):
 
 ```sh
 scripts/ios/build-core.sh iphonesimulator
-ZERON_SKIP_CORE=1 xcodebuild -project apps/ios/Zeron.xcodeproj -scheme Zeron \
+GODSPEED_SKIP_CORE=1 xcodebuild -project apps/ios/Godspeed.xcodeproj -scheme Godspeed \
   -destination 'platform=iOS Simulator,name=Zeron iPhone 17 Pro' \
   ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGN_IDENTITY=- \
-  -only-testing:ZeronTests/RemoteVoiceLifecycleTests test
+  -only-testing:GodspeedTests/RemoteVoiceLifecycleTests test
 ```
 
 Use an available ARM64 simulator name on your machine. The Rust build script

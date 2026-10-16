@@ -128,10 +128,10 @@ an iPhone. Changed Swift files passed a tree-sitter syntax parse and `git diff
 On a Mac with the project dependencies installed and `SIMULATOR_UDID` set:
 
 ```sh
-xcodebuild test -project apps/ios/Zeron.xcodeproj -scheme Zeron \
+xcodebuild test -project apps/ios/Godspeed.xcodeproj -scheme Godspeed \
   -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-  -only-testing:ZeronTests/GeneratedImageTests \
-  -only-testing:ZeronTests/TranscriptLayoutTests
+  -only-testing:GodspeedTests/GeneratedImageTests \
+  -only-testing:GodspeedTests/TranscriptLayoutTests
 ```
 
 For the device check, generate an image on a desktop host and open its chat on

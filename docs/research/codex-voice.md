@@ -164,7 +164,7 @@ Data flow:
 - Usage is billed to the user's Codex plan or credits by OpenAI.
 
 The microphone purpose strings (`dist/macos/Info*.plist`,
-`apps/ios/Zeron/Info.plist`) state that voice sessions stream audio to OpenAI;
+`apps/ios/Godspeed/Info.plist`) state that voice sessions stream audio to OpenAI;
 dictation stays on device.
 
 Notices: `THIRD_PARTY_NOTICES.md` covers the Apache-2.0 Codex protocol

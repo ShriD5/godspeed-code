@@ -1,7 +1,9 @@
 // Isolated development-auth test deployment. No production routes.
 // Delete this worker and its bucket after running the transport matrix.
+// AUTH_MODE=dev accepts any bearer as the user id: never leave it deployed.
 {
-  "name": "zeron-transport-385-20260915",
+  "name": "godspeed-transport-test",
+  "account_id": "f715952f0d5650529fe9401bcca31e2e",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
   "workers_dev": true,
@@ -56,11 +58,11 @@
   "r2_buckets": [
     {
       "binding": "BLOBS",
-      "bucket_name": "zeron-transport-385-20260915"
+      "bucket_name": "godspeed-transport-test"
     },
     {
       "binding": "RELEASES",
-      "bucket_name": "zeron-transport-385-20260915"
+      "bucket_name": "godspeed-transport-test"
     }
   ],
   "vars": {
