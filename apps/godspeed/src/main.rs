@@ -91,10 +91,13 @@ enum DaemonCommand {
     Status,
 }
 
-/// Godspeed has no hosted edge yet, so sync is self-host only: set
-/// `GODSPEED_EDGE_URL` to your own deployment of `edge/`. The `.invalid`
-/// placeholder (RFC 2606) can never resolve, so nothing reaches Zeron's edge.
-const DEFAULT_EDGE_URL: &str = "https://edge.godspeed.invalid";
+/// Production edge (Cloudflare Worker + Durable Objects on workers.dev).
+/// `GODSPEED_EDGE_URL` overrides (local dev / self-hosting).
+const DEFAULT_EDGE_URL: &str = "https://godspeed-edge.shrid5.workers.dev";
+
+/// Production WorkOS AuthKit client id: public (it appears in every authorize
+/// URL). `GODSPEED_WORKOS_CLIENT_ID` overrides; an empty value turns sign-in off.
+const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01M52B7VJ0PRXA4Y63HQKYYRA8";
 
 fn edge_url_from_env() -> String {
     std::env::var("GODSPEED_EDGE_URL")
@@ -103,12 +106,15 @@ fn edge_url_from_env() -> String {
         .unwrap_or_else(|| DEFAULT_EDGE_URL.into())
 }
 
-/// WorkOS client id resolution: sign-in is off unless `GODSPEED_WORKOS_CLIENT_ID`
-/// names a WorkOS client for a self-hosted edge. An empty value also means off.
-fn workos_client_id_from_env(_edge_token: &Option<String>) -> Option<String> {
-    std::env::var("GODSPEED_WORKOS_CLIENT_ID")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+/// WorkOS client id resolution: an explicit env value wins (empty = off); a
+/// `GODSPEED_EDGE_TOKEN` dev bearer keeps dev mode; otherwise the production client.
+fn workos_client_id_from_env(edge_token: &Option<String>) -> Option<String> {
+    match std::env::var("GODSPEED_WORKOS_CLIENT_ID") {
+        Ok(v) if v.trim().is_empty() => None,
+        Ok(v) => Some(v),
+        Err(_) if edge_token.is_some() => None,
+        Err(_) => Some(DEFAULT_WORKOS_CLIENT_ID.into()),
+    }
 }
 
 /// mimalloc, macOS only: libmalloc never returns the streaming churn's

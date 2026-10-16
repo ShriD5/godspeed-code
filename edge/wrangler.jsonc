@@ -68,7 +68,7 @@
     // rejected (fail closed). Zeron's own client id was removed: keeping it
     // would let any Zeron account use this edge. Secrets (WORKOS_API_KEY,
     // APNS_KEY_P8, APNS_KEY_ID) are listed in DEPLOY.md.
-    "WORKOS_CLIENT_ID": "unset",
+    "WORKOS_CLIENT_ID": "client_01M52B7VJ0PRXA4Y63HQKYYRA8",
     "AUTH_MODE": "workos",
     // Push: the Godspeed iOS app's team and bundle id (defaults in env.ts).
     "APNS_TEAM_ID": "QPUV967B5U",

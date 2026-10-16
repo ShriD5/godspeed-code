@@ -25,11 +25,11 @@ use crate::lock;
 /// Refresh this long before `exp` (legacy AppConfig: 60s early margin).
 pub const EARLY_REFRESH_SECS: i64 = 60;
 
-/// Hosted endpoints. Godspeed has none yet: the `.invalid` edge never resolves
-/// and the empty WorkOS client keeps mobile sign-in off. Mobile always talks to prod —
+/// Production endpoints: the Godspeed edge on Cloudflare and its WorkOS client.
+/// Mobile always talks to prod —
 /// a stale override once broke sign-in in the worst ghost way.
-pub const PRODUCTION_EDGE_URL: &str = "https://edge.godspeed.invalid";
-pub const WORKOS_CLIENT_ID: &str = "";
+pub const PRODUCTION_EDGE_URL: &str = "https://godspeed-edge.shrid5.workers.dev";
+pub const WORKOS_CLIENT_ID: &str = "client_01M52B7VJ0PRXA4Y63HQKYYRA8";
 pub const WORKOS_API_BASE: &str = "https://api.workos.com";
 /// OAuth redirect: `godspeed://callback?code=…&state=…`.
 pub const CALLBACK_SCHEME: &str = "godspeed";

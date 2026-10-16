@@ -7,8 +7,8 @@ import UIKit
 /// (RFC 2606) never resolves, so nothing reaches Zeron's edge. Debug builds can
 /// point at a dev edge with `-edge <url>`.
 enum Endpoints {
-    static let edgeURL = URL(string: "https://edge.godspeed.invalid")!
-    static let workosClientId = ""
+    static let edgeURL = URL(string: "https://godspeed-edge.shrid5.workers.dev")!
+    static let workosClientId = "client_01M52B7VJ0PRXA4Y63HQKYYRA8"
     static let callbackScheme = "godspeed"
 
     static func authorizeURL(state: String) -> URL {
