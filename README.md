@@ -6,7 +6,7 @@
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
-> **Early access.** Godspeed 0.1.0 is the first release. Expect rough edges. See
+> **Early access.** Godspeed 0.2.0 is an early release. Expect rough edges. See
 > [ROADMAP.md](docs/godspeed/ROADMAP.md) for what is done and what is next.
 
 Godspeed runs the coding-agent CLIs you already have (Claude Code, Codex, Cursor and more) in one
@@ -19,6 +19,26 @@ in to each agent with its own CLI.
 Godspeed is a fork of [Zeron](https://github.com/zeronsh/zeron) by Wing, used under the MIT license.
 Zeron built the native GPUI shell, the headless engine and most of the agent drivers. Godspeed adds
 the features listed below on top. If you like this app, go star Zeron.
+
+### What Godspeed adds over Zeron
+
+| | Zeron | Godspeed |
+|---|---|---|
+| Approvals | Agents run without asking | Four access modes per chat, approval cards with the exact command or diff |
+| Git | View diffs and PRs | Commit, push, pull, sync and open PRs with generated messages |
+| Always-on agents | None | Cron, webhook and file triggers, memory, inbox, Telegram bot |
+| Muse Code | Not supported | Native driver |
+| Moving in | Start from scratch | Import from T3 Code, Claude Code, Codex and Cursor; sessions continue |
+| Search | Chat titles | Every message, locally indexed, plus Cmd+F in a chat |
+| Usage limits | Run fails | Resumes on the same account when the limit resets |
+| Chat lifecycle | Archive | Settle, snooze, wake, unread, undo |
+| Upstream bugs | Open | 16 Zeron and 36 T3 Code issues fixed |
+| Account | Zeron's cloud sign-in | Local-only, no account; sync on your own Cloudflare |
+
+All of that at the same speed: cold start is 65 ms for both, and memory after a 400-chat workload is
+within 1 MiB ([benchmark](docs/godspeed/BENCHMARKS-ZERON.md)). Zeron is still ahead on hosted sync,
+the iPhone app and Windows/Linux builds. Full comparison and issue list:
+[VS-ZERON.md](docs/godspeed/VS-ZERON.md).
 
 ## Download
 
@@ -130,7 +150,8 @@ Local-only by default. Multi-device sync needs your own deployment of `edge/`: s
 ## Docs
 
 - [Roadmap](docs/godspeed/ROADMAP.md)
-- [Benchmarks](docs/godspeed/BENCHMARKS.md)
+- [Benchmarks vs T3 Code](docs/godspeed/BENCHMARKS.md) and [vs Zeron](docs/godspeed/BENCHMARKS-ZERON.md)
+- [Godspeed vs Zeron](docs/godspeed/VS-ZERON.md)
 - [Parity with T3 Code](docs/godspeed/PARITY-T3.md)
 - [Architecture](ARCHITECTURE.md) (inherited from Zeron)
 - [Agent installation](crates/harness/README.md)
