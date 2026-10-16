@@ -2,6 +2,13 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.3.0 (2026-10-16)
+
+### Added
+
+- **Cloud sync** on Godspeed's own edge (Cloudflare Workers + Durable Objects, `godspeed-edge.shrid5.workers.dev`) with WorkOS sign-in. Installs still start local-only; choose **Enable sync** in the account menu to sign in and move to a synced workspace that your other devices can follow. Local chats stay on the device unless you choose to import them. Self-hosters can point `GODSPEED_EDGE_URL` and `GODSPEED_WORKOS_CLIENT_ID` at their own deployment; an empty `GODSPEED_WORKOS_CLIENT_ID` turns sign-in off.
+- **Godspeed for iOS** (in development): the iPhone app is rebranded and points at the same edge. Not on TestFlight yet.
+
 ## 0.2.0 (2026-10-16)
 
 ### Added
