@@ -5,8 +5,8 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 
 ## 1. Launch and basics
 
-- [ ] Open from Spotlight. Expect: speedster icon in the Dock, window opens in under a second.
-- [ ] Quit and reopen. Expect: same window size/position, same chat selected.
+- [x] Open from Spotlight. Expect: speedster icon in the Dock, window opens in under a second.
+- [x] Quit and reopen. Expect: same window size/position, same chat selected.
 - [ ] Settings opens (Cmd+,). Expect: no blank pages.
 - [ ] `godspeed status` in a terminal while the app is open. Expect: engine running, local only.
 
@@ -14,9 +14,9 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 
 - [ ] Sidebar shows your projects (≈69) and chats (≈369) from T3, Claude, Codex and Cursor.
 - [ ] Open a big imported T3 thread. Expect: full transcript, scrolls smoothly, images shown.
-- [ ] Send a message in an imported **Claude** chat. Expect: it continues the original session (it
+- [x] Send a message in an imported **Claude** chat. Expect: it continues the original session (it
       remembers earlier context).
-- [ ] Same for an imported **Codex** chat.
+- [x] Same for an imported **Codex** chat.
 - [ ] Open an imported **Cursor** chat. Expect: readable history; a new message starts a fresh session.
 - [ ] Settings → Import. Expect: sources listed with "already imported" counts; re-running imports
       nothing new.
@@ -25,9 +25,9 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 
 - [ ] Settings → Providers lists Claude, Codex, Cursor, Grok, OpenCode, Pi, Antigravity, Devin,
       Hermes, Muse with installed/not-installed state.
-- [ ] New chat on **Claude**: model picker shows your models; effort/fast options work.
-- [ ] New chat on **Codex**: models load; reasoning effort works.
-- [ ] **Cursor**: Settings → Accounts → connect (browser sign-in). Then a chat runs.
+- [x] New chat on **Claude**: model picker shows your models; effort/fast options work.
+- [x] New chat on **Codex**: models load; reasoning effort works.
+- [x] **Cursor**: Settings → Accounts → connect (browser sign-in). Then a chat runs.
 - [ ] **Muse**: after `muse login`, a chat runs. Without login: clear "run muse login" message.
 - [ ] Account usage ring in the composer shows plan usage; clicking switches accounts if you have two.
 
@@ -144,8 +144,8 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 
 ## 15. Appearance
 
-- [ ] Light/dark/system; pick a built-in theme; import a VS Code theme file.
-- [ ] Chat width and font size settings apply.
+- [x] Light/dark/system; pick a built-in theme; import a VS Code theme file.
+- [x] Chat width and font size settings apply.
 - [ ] Nothing still says "Zeron" in the UI (report any you see).
 
 ## 16. Robustness
