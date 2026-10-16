@@ -127,6 +127,11 @@ dmgbuild.build_dmg(
 )
 PY
 rm -f "$BG_TIFF"
+if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
+  # Sign the dmg itself too: without it `spctl -t install` / `-t open` reject
+  # the image ("no usable signature") even when it is notarized and stapled.
+  codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$DMG"
+fi
 if $NOTARIZE; then
   notarize "$DMG"
   xcrun stapler staple "$DMG"
