@@ -2,6 +2,24 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 (2026-10-16)
+
+### Added
+
+- **Telegram bot for always-on agents**, in the style of open-dots. Link your Telegram chat with a
+  one-time code, then message the bot to run tasks in persistent threads (reply to a result to
+  continue it, `/new` for a fresh one, `/stop` to interrupt). Pick the provider, model, project and
+  access mode with `/provider`, `/model`, `/project` and `/access`. Schedule recurring prompts with
+  `/schedule hourly|daily HH:MM|weekdays HH:MM|weekly <day> HH:MM|every 30m <prompt>` in your own
+  time zone (`/tz`), and manage them with `/schedules`. Approvals arrive as Allow once / Allow for
+  session / Deny buttons showing the exact command or files, and never auto-deny. Scheduled run
+  results are sent to the chat. Set it up in Settings → Agents → Telegram. Runs in the engine, so it
+  works on a headless server too.
+
+### Fixed
+
+- A local-only install no longer offers to restart into sync ("Sync needs a restart").
+
 ## 0.1.0 (2026-10-16)
 
 First release of Godspeed, a fork of [Zeron](https://github.com/zeronsh/zeron) by Wing. The version
