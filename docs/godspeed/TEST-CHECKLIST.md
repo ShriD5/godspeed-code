@@ -7,7 +7,7 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 
 - [x] Open from Spotlight. Expect: speedster icon in the Dock, window opens in under a second.
 - [x] Quit and reopen. Expect: same window size/position, same chat selected.
-- [ ] Settings opens (Cmd+,). Expect: no blank pages.
+- [x] Settings opens (Cmd+,). Expect: no blank pages.
 - [ ] `godspeed status` in a terminal while the app is open. Expect: engine running, local only.
 
 ## 2. Imported chats
@@ -23,7 +23,7 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 
 ## 3. Providers and accounts
 
-- [ ] Settings → Providers lists Claude, Codex, Cursor, Grok, OpenCode, Pi, Antigravity, Devin,
+- [x] Settings → Providers lists Claude, Codex, Cursor, Grok, OpenCode, Pi, Antigravity, Devin,
       Hermes, Muse with installed/not-installed state.
 - [x] New chat on **Claude**: model picker shows your models; effort/fast options work.
 - [x] New chat on **Codex**: models load; reasoning effort works.
