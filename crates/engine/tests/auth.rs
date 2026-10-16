@@ -284,6 +284,14 @@ async fn wait_for<T: Clone + PartialEq>(
 // Tests
 // ---------------------------------------------------------------------------
 
+#[test]
+fn no_sign_in_without_workos_or_an_explicit_bearer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = Auth::new(AuthConfig::new("http://127.0.0.1:1", dir.path()));
+    assert!(!auth.workos_enabled());
+    assert!(matches!(auth.state(), AuthState::SignedOut));
+}
+
 #[tokio::test]
 async fn dev_mode_is_signed_in_with_configured_bearer() {
     let dir = tempfile::tempdir().expect("tempdir");
