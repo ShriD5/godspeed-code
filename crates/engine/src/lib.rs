@@ -47,6 +47,7 @@ pub mod run_journal;
 pub mod sessions;
 pub mod source_control;
 pub mod spaces;
+pub mod telegram;
 pub mod terminals;
 pub mod text_generation;
 pub mod titles;
@@ -84,6 +85,7 @@ pub use source_control::{
     GitHubWriteError, GitRemote, PullRequestDraft, parse_git_remote,
 };
 pub use spaces::SpacesSync;
+pub use telegram::Telegram;
 pub use terminals::Terminals;
 pub use text_generation::TextGenerator;
 pub use titles::TitleGenerator;
@@ -163,6 +165,8 @@ pub struct EngineCore {
     pub harness_updates: harness_updates::HarnessUpdateCoordinator,
     /// Always-on agents: device-scoped definitions + scheduler + inbox.
     pub agents: Agents,
+    /// Telegram bot fronting the agents and Telegram-started threads.
+    pub telegram: Telegram,
     pub delegations: delegation::DelegationNotifications,
     /// Usage-limit recovery: Limited markers, held sends, resume at reset.
     pub limit_recovery: limit_recovery::LimitRecoveryService,
@@ -396,6 +400,17 @@ impl EngineCore {
         // agents handle here would be a cycle that outlives shutdown.
         let agent_run = agents.owns_chat_probe();
         limit_recovery.set_auto_resume_filter(Arc::new(move |chat_id| !agent_run(chat_id)));
+        let telegram = Telegram::open(
+            data_dir,
+            telegram::TelegramDeps {
+                workspace: workspace.clone(),
+                doc_host: doc_host.clone(),
+                sessions: sessions.clone(),
+                registry: registry.clone(),
+                agents: agents.clone(),
+            },
+        )?;
+        telegram.start();
         limit_recovery.start();
         let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());
         chat_lifecycle.start();
@@ -423,6 +438,7 @@ impl EngineCore {
             agent_accounts,
             harness_updates,
             agents,
+            telegram,
             delegations,
             limit_recovery,
             chat_lifecycle,
@@ -564,6 +580,7 @@ impl EngineCore {
         .with_previews(self.previews.clone())
         .with_harness_updates(self.harness_updates.clone())
         .with_agents(self.agents.clone())
+        .with_telegram(self.telegram.clone())
         .with_limit_recovery(self.limit_recovery.clone())
         .with_chat_lifecycle(self.chat_lifecycle.clone())
         .with_chat_import(self.chat_import.clone())
@@ -597,6 +614,7 @@ impl EngineCore {
     /// snapshot.
     pub async fn shutdown(&self) {
         // First: no new agent run or resume may start against a draining engine.
+        self.telegram.shutdown().await;
         self.delegations.shutdown().await;
         self.agents.shutdown().await;
         self.limit_recovery.shutdown().await;

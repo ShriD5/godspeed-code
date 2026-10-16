@@ -286,6 +286,25 @@ pub mod methods {
     /// `{ids, read?, archived?}` → `{changed}`.
     pub const MARK_AGENT_RUNS: &str = "MarkAgentRuns";
 
+    // Telegram bot for always-on agents (`zeron_proto::telegram`). Device-
+    // scoped like the agents, so relay-forwardable. No method ever returns
+    // the bot token.
+    /// `{}` → `TelegramStatus`.
+    pub const GET_TELEGRAM: &str = "GetTelegram";
+    /// Stream of `TelegramStatus`: current first, then one per change.
+    pub const WATCH_TELEGRAM: &str = "WatchTelegram";
+    /// `{token}` → `TelegramStatus`. Saves the token and (re)starts the poller.
+    pub const SET_TELEGRAM_TOKEN: &str = "SetTelegramToken";
+    /// `{}` → `TelegramStatus`. Forgets the token and stops the poller.
+    pub const CLEAR_TELEGRAM_TOKEN: &str = "ClearTelegramToken";
+    /// `{}` → `TelegramLinkCode`: a fresh one-time code (the old one dies).
+    pub const CREATE_TELEGRAM_LINK_CODE: &str = "CreateTelegramLinkCode";
+    /// `{chatId}` → `TelegramStatus`.
+    pub const UNLINK_TELEGRAM_CHAT: &str = "UnlinkTelegramChat";
+    /// `{defaults: TelegramDefaults}` → `TelegramStatus`. Applies to chats
+    /// linked from now on.
+    pub const SET_TELEGRAM_DEFAULTS: &str = "SetTelegramDefaults";
+
     // Usage-limit recovery (`zeron_proto::ChatLimit`). Relay-forwardable: the
     // chat's host device owns the recovery timer and its default.
     /// `{}` → `LimitRecoverySettings`.

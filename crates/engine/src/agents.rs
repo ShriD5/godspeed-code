@@ -22,8 +22,8 @@
 //! - **Memory.** `{data_dir}/agents/{id}/MEMORY.md` is injected into every
 //!   run's prompt, and the agent is told it may update the file.
 //!
-//! Not yet: GitHub event triggers (use the webhook trigger with a GitHub
-//! webhook for now) and chat channels such as Telegram.
+//! Telegram fronts these agents in [`crate::telegram`]. Not yet: GitHub
+//! event triggers (use the webhook trigger with a GitHub webhook for now).
 
 mod prompt;
 mod schedule;

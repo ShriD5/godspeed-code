@@ -27,6 +27,7 @@ pub mod harnesses;
 pub mod import;
 pub mod notifications;
 pub mod shortcuts;
+pub mod telegram;
 pub mod thread_naming;
 pub mod thread_lifecycle;
 pub mod usage_limits;
