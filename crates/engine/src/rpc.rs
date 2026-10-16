@@ -56,6 +56,7 @@ mod chat_lifecycle;
 mod limit_recovery;
 mod git_actions;
 mod message_search;
+mod telegram;
 mod voice_chat;
 mod voice_remote;
 use async_trait::async_trait;
@@ -746,6 +747,7 @@ pub struct EngineRpc {
     chat_import: Option<crate::chat_import::ChatImporter>,
     message_index: Option<crate::MessageIndex>,
     agents: Option<crate::agents::Agents>,
+    telegram: Option<crate::telegram::Telegram>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
     engine_info: EngineInfo,
@@ -799,6 +801,7 @@ impl EngineRpc {
             chat_import: None,
             message_index: None,
             agents: None,
+            telegram: None,
             limit_recovery: None,
             chat_lifecycle: None,
             engine_info,
@@ -878,6 +881,12 @@ impl EngineRpc {
     /// Attach the always-on agents service (agent RPCs + webhooks).
     pub fn with_agents(mut self, agents: crate::agents::Agents) -> Self {
         self.agents = Some(agents);
+        self
+    }
+
+    /// Attach the Telegram bot (its settings RPCs).
+    pub fn with_telegram(mut self, telegram: crate::telegram::Telegram) -> Self {
+        self.telegram = Some(telegram);
         self
     }
 
@@ -1703,7 +1712,10 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 /// list (plus [`is_stream_method`] for streams) to make more of the surface
 /// device-addressable — the handlers themselves need no changes.
 fn forwardable(method: &str) -> bool {
-    if voice_remote::handles(method) || agents::handles(method) || limit_recovery::handles(method)
+    if voice_remote::handles(method)
+        || agents::handles(method)
+        || telegram::handles(method)
+        || limit_recovery::handles(method)
     {
         return true;
     }
@@ -1833,6 +1845,7 @@ fn is_stream_method(method: &str) -> bool {
         methods::WATCH_DOC_MESSAGES
             | methods::WATCH_QUEUE
             | methods::WATCH_AGENTS
+            | methods::WATCH_TELEGRAM
             | methods::SUBSCRIBE_TERMINAL
             | methods::WATCH_CHECKOUT_DIFFS
             | methods::WATCH_WORKSPACE_GIT_STATUS
@@ -2123,6 +2136,9 @@ impl RpcService for EngineRpc {
         }
         if agents::handles(method) {
             return self.agents_rpc(method, params).await;
+        }
+        if telegram::handles(method) {
+            return self.telegram_rpc(method, params).await;
         }
         if message_search::handles(method) {
             return self.message_search_rpc(params).await;
