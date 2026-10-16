@@ -186,12 +186,16 @@ impl Inner {
                 }
                 TurnState::Done(reply)
             }
+            // Errored after this message was written, with nothing to show.
             None if !running
                 && self
                     .deps
                     .sessions
                     .session_status(&turn.chat_id)
-                    .is_some_and(|s| s.status == SessionStatus::Errored) =>
+                    .is_some_and(|s| {
+                        s.status == SessionStatus::Errored
+                            && s.updated_at.timestamp_millis() >= entries[index].created_at
+                    }) =>
             {
                 TurnState::Done(Reply {
                     text: String::new(),

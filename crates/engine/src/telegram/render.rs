@@ -12,6 +12,7 @@ use super::callback::Callback;
 pub(crate) const MAX_MESSAGE: usize = 4096;
 const MAX_COMMAND: usize = 2000;
 const MAX_PATHS: usize = 10;
+const MAX_PATH: usize = 200;
 const MAX_DIFF_FILES: usize = 10;
 const MAX_DIFF_PREVIEW_LINES: usize = 12;
 const MAX_PREVIEW_LINE: usize = 100;
@@ -157,7 +158,10 @@ fn approval_body(approval: &ApprovalRequest) -> String {
         ));
     }
     if let Some(cwd) = &approval.cwd {
-        out.push_str(&format!("\nin <code>{}</code>", escape_html(cwd)));
+        out.push_str(&format!(
+            "\nin <code>{}</code>",
+            escape_html(&truncated(cwd, MAX_PATH))
+        ));
     }
     let show_paths = approval.kind != ApprovalKind::FileChange || approval.diff.is_none();
     if show_paths && !approval.paths.is_empty() {
@@ -165,7 +169,7 @@ fn approval_body(approval: &ApprovalRequest) -> String {
             .paths
             .iter()
             .take(MAX_PATHS)
-            .map(|p| format!("<code>{}</code>", escape_html(p)))
+            .map(|p| format!("<code>{}</code>", escape_html(&truncated(p, MAX_PATH))))
             .collect();
         if approval.paths.len() > MAX_PATHS {
             paths.push(format!("and {} more", approval.paths.len() - MAX_PATHS));
