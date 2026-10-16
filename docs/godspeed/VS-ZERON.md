@@ -115,7 +115,8 @@ not captured). The machine was not fully idle during the run. Method, raw data a
 - **Platforms.** Zeron publishes Windows and Linux builds. Godspeed only ships a macOS (Apple
   silicon) build so far; the code still builds elsewhere but is untested there.
 - **Release cadence and community.** Zeron ships almost daily with a larger contributor base.
-  Godspeed picks up Zeron's fixes by cherry-picking, so it can lag behind.
+  Godspeed picks up Zeron's fixes by porting them, so it can lag behind. As of 2026-10-16 it
+  includes every Zeron commit up to `3b2f7802`.
 
 If you want the hosted experience on every platform today, use Zeron. If you want approvals, git,
 always-on agents and a one-step move from T3 Code on a Mac, use Godspeed.
