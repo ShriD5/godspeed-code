@@ -812,6 +812,11 @@ impl EngineRpc {
 
     /// Attach the auth service (AuthStatus + AuthRpc mutations).
     pub fn with_auth(mut self, auth: Auth) -> Self {
+        if auth.workos_enabled() {
+            self.engine_info
+                .capabilities
+                .push(zeron_proto::capabilities::WORKSPACE_SYNC_V1.into());
+        }
         self.auth = Some(auth);
         self
     }

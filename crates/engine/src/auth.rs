@@ -293,6 +293,7 @@ impl Auth {
             None
         };
         let initial = match (&workos, &stored) {
+            (None, _) if !config.explicit_dev_bearer => AuthState::SignedOut,
             (None, _) => AuthState::SignedIn {
                 user: AuthUser {
                     id: config.dev_user_id.clone(),

@@ -18,6 +18,9 @@ pub mod capabilities {
     /// The host creates a projectless chat's scratch folder
     /// (`crate::projectless`) when it runs; older hosts only know `~`.
     pub const PROJECTLESS_SCRATCH_V1: &str = "projectless-scratch-v1";
+    /// The engine can sign in to a sync edge. Advertised only when one is
+    /// configured, so a local-only install never offers sync.
+    pub const WORKSPACE_SYNC_V1: &str = "workspace-sync-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,

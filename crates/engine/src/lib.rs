@@ -826,11 +826,15 @@ impl Engine {
         workspace_scope: WorkspaceScope,
     ) -> Result<EngineInfo, EngineError> {
         std::fs::create_dir_all(&config.data_dir)?;
+        let mut capabilities = zeron_proto::capabilities::current();
+        if config.workos_client_id.is_some() {
+            capabilities.push(zeron_proto::capabilities::WORKSPACE_SYNC_V1.into());
+        }
         Ok(EngineInfo {
             device_id: load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
             cursor_sdk_version: Some(zeron_harness::CursorHarness::sdk_version().into()),
-            capabilities: zeron_proto::capabilities::current(),
+            capabilities,
         })
     }
 

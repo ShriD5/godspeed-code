@@ -1893,9 +1893,14 @@ fn local_work_phrase(chats: usize, spaces: usize) -> Option<String> {
     }
 }
 
-fn account_menu_action(scope: Option<WorkspaceScope>, flow: SyncFlow) -> Option<AccountMenuAction> {
+fn account_menu_action(
+    scope: Option<WorkspaceScope>,
+    flow: SyncFlow,
+    sync_available: bool,
+) -> Option<AccountMenuAction> {
     match scope {
         Some(WorkspaceScope::Local) => match flow {
+            SyncFlow::Idle if !sync_available => None,
             SyncFlow::Idle => Some(AccountMenuAction::EnableSync),
             SyncFlow::Enabling | SyncFlow::Canceling => Some(AccountMenuAction::SyncInProgress),
             SyncFlow::SwitchOffer { .. } | SyncFlow::RestartPending { .. } => {
@@ -10196,7 +10201,10 @@ impl Shell {
         let pull_requests = self.render_pull_requests_button(theme, cx);
         let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
-        let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
+        let action = {
+            let state = self.state.read(cx);
+            account_menu_action(state.workspace_scope, self.sync_flow, state.sync_available)
+        };
         // The profile pill hugs avatar + name (shrinking so long names fade
         // out); the gap between it and the settings button is not interactive.
         let initial: SharedString = user_line
@@ -15256,16 +15264,21 @@ mod tests {
     #[test]
     fn account_actions_follow_the_attached_workspace_scope() {
         assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Local), SyncFlow::Idle),
+            account_menu_action(Some(WorkspaceScope::Local), SyncFlow::Idle, true),
             Some(AccountMenuAction::EnableSync)
         );
         assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Synced), SyncFlow::Idle),
+            account_menu_action(Some(WorkspaceScope::Synced), SyncFlow::Idle, true),
             Some(AccountMenuAction::SignOut)
         );
         assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Development), SyncFlow::Idle),
+            account_menu_action(Some(WorkspaceScope::Development), SyncFlow::Idle, true),
             None
+        );
+        assert_eq!(
+            account_menu_action(Some(WorkspaceScope::Local), SyncFlow::Idle, false),
+            None,
+            "a local-only install never offers sync"
         );
     }
 
@@ -15342,6 +15355,7 @@ mod tests {
             account_menu_action(
                 Some(WorkspaceScope::Local),
                 SyncFlow::SwitchOffer { notice_open: false },
+                true,
             ),
             Some(AccountMenuAction::RestartPending)
         );
@@ -15428,7 +15442,7 @@ mod tests {
         // no local runtime left to re-derive an offer from, so this menu row
         // is the only path back to the retry dialog.
         assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Synced), dismissed),
+            account_menu_action(Some(WorkspaceScope::Synced), dismissed, true),
             Some(AccountMenuAction::RestartPending),
             "retry must remain reachable after dismissal"
         );
@@ -15436,13 +15450,14 @@ mod tests {
             account_menu_action(
                 Some(WorkspaceScope::Synced),
                 SyncFlow::ImportFailed { notice_open: true },
+                true,
             ),
             Some(AccountMenuAction::RestartPending)
         );
 
         // Resolving the failure restores the normal synced menu.
         assert_eq!(
-            account_menu_action(Some(WorkspaceScope::Synced), SyncFlow::Idle),
+            account_menu_action(Some(WorkspaceScope::Synced), SyncFlow::Idle, true),
             Some(AccountMenuAction::SignOut)
         );
     }

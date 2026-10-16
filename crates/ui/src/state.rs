@@ -765,6 +765,8 @@ pub struct AppState {
     /// Fixed data boundary of the attached engine. Authentication may change
     /// in place, but changing this scope requires assembling a new runtime.
     pub workspace_scope: Option<WorkspaceScope>,
+    /// Whether the attached engine has a sync edge configured.
+    pub sync_available: bool,
     /// Auth stream value; `None` until the engine reports one (M4).
     pub auth: Option<AuthState>,
     pub devices: Vec<Device>,
@@ -943,6 +945,7 @@ impl AppState {
         Self {
             connection: ConnectionStatus::Connecting,
             workspace_scope: None,
+            sync_available: false,
             auth: None,
             devices: Vec::new(),
             device_presentation: None,
@@ -2627,6 +2630,7 @@ impl AppState {
         let supports_harness_updates =
             engine_info.supports(zeron_proto::capabilities::HARNESS_UPDATES_V1);
         self.workspace_scope = Some(engine_info.workspace_scope);
+        self.sync_available = engine_info.supports(zeron_proto::capabilities::WORKSPACE_SYNC_V1);
         self.local_device_id = Some(engine_info.device_id.clone());
         self.link_roots_revision = self.link_roots_revision.wrapping_add(1);
         if !supports_harness_updates {

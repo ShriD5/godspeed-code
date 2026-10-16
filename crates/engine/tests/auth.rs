@@ -289,6 +289,7 @@ async fn dev_mode_is_signed_in_with_configured_bearer() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut config = AuthConfig::new("http://127.0.0.1:1", dir.path());
     config.dev_user_id = "wing-dev".into();
+    config.explicit_dev_bearer = true;
     let auth = Auth::new(config);
     assert!(!auth.workos_enabled());
     assert!(!auth.loaded_workos_session());
