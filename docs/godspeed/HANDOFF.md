@@ -115,6 +115,15 @@ always-on design kept (no open-dots port).
 Open questions for the owner: Antigravity only unlocks some models when the client claims to be
 Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later".
 
+## Releases
+
+- `v0.1.0` published 2026-10-16 (tag on `8841f23f`): ad-hoc signed, not notarized, Apple silicon
+  DMG plus a copy named `Godspeed-macos-arm64.dmg` so the README's `releases/latest/download` link
+  works, the app tarball and `SHA256SUMS`. For the next release: bump `[workspace.package]` version,
+  add a CHANGELOG entry, run `scripts/package-macos.sh`, upload the same four assets.
+- Zeron's upstream tags (fetched from `upstream`) reuse names like `v0.1.0`. The local copy of
+  Zeron's `v0.1.0` was deleted so Godspeed's could be created; don't push upstream tags to `origin`.
+
 ## Before going public
 
 - Rename the theme family still called after Zeron; the iOS app (`apps/ios`) is still
