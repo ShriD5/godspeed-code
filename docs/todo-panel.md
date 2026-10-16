@@ -90,8 +90,8 @@ cargo test --locked -p zeron-doc todo
 cargo test --locked -p zeron-ui --lib todo_panel
 ```
 
-Live: `ZERON_HARNESS=mock ZERON_MOCK_TODO=1 ZERON_MOCK_DELAY_MS=900` (see
-`CONTRIBUTORS.md`) walks an 8-item list through every state.
+Live: `GODSPEED_HARNESS=mock GODSPEED_MOCK_TODO=1 GODSPEED_MOCK_DELAY_MS=900` (see
+`CONTRIBUTING.md`) walks an 8-item list through every state.
 
 ## Not done
 
