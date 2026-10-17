@@ -72,6 +72,7 @@ pub mod running_pill;
 pub mod settings;
 pub mod shell;
 pub mod sound;
+pub mod speedster;
 pub mod state;
 pub(crate) mod surface_chrome;
 pub mod syntax_cache;
@@ -255,6 +256,7 @@ pub fn run_app(config: UiConfig) {
         })
         .detach();
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+        speedster::init(state.clone(), cx);
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).
