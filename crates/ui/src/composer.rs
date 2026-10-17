@@ -100,10 +100,6 @@ fn is_long_paste(text: &str) -> bool {
     text.len() > LONG_PASTE_CHARS && text.chars().count() > LONG_PASTE_CHARS
 }
 
-/// The approval card's command box: about twelve 18px lines (padding
-/// included) before a long heredoc scrolls inside the box.
-const APPROVAL_COMMAND_MAX_HEIGHT: f32 = 12.0 * 18.0 + 16.0;
-
 /// Route chrome dissolves around the middle of the shared-element move. The
 /// two ramps never overlap, which avoids duplicate picker ids/popovers while
 /// still letting their surrounding geometry collapse continuously.
@@ -644,7 +640,10 @@ fn wizard_escape_goes_back(key: &str, input_focused: bool, input_empty: bool) ->
 /// The decision Enter (`approve`) or Esc (decline) answers with: the first
 /// one-time approval (else any approval), or the plain decline (else the
 /// first refusal on offer).
-fn approval_default_index(approval: &zeron_proto::ApprovalRequest, approve: bool) -> Option<usize> {
+pub(crate) fn approval_default_index(
+    approval: &zeron_proto::ApprovalRequest,
+    approve: bool,
+) -> Option<usize> {
     use zeron_proto::ApprovalDecision as D;
     let find = |want: &[D]| {
         want.iter().find_map(|w| {
@@ -10228,99 +10227,6 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx).clone();
-        let mono = theme.font_mono.clone();
-        // The command is what the user is approving, so all of it must be
-        // readable in place: `w_full` + `min_w_0` give the text a definite
-        // width to wrap against (gpui breaks mid-token when a pipeline or a
-        // path has no space to break at) instead of running off the card's
-        // edge, and a tall heredoc scrolls inside its own box rather than
-        // shoving the decision buttons out of the window (T3 16197).
-        let code_block = |text: SharedString| {
-            div()
-                .id("approval-command")
-                .w_full()
-                .min_w_0()
-                .max_h(px(APPROVAL_COMMAND_MAX_HEIGHT))
-                .overflow_y_scroll()
-                .mt(px(10.0))
-                .px(px(12.0))
-                .py(px(8.0))
-                .rounded(px(10.0))
-                .bg(crate::theme::ink(0.05))
-                .font_family(mono.clone())
-                .text_size(crate::typography::ui_rems(12.5))
-                .line_height(px(18.0))
-                .text_color(theme.text)
-                .whitespace_normal()
-                .child(text)
-        };
-        let meta = |label: &'static str, value: SharedString| {
-            div()
-                .mt(px(6.0))
-                .flex()
-                .flex_row()
-                .gap(px(6.0))
-                .text_size(crate::typography::ui_rems(12.0))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(theme.text_muted.opacity(0.65))
-                        .child(SharedString::from(label)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .font_family(mono.clone())
-                        .text_color(theme.text_muted)
-                        .child(value),
-                )
-        };
-        const MAX_PATHS: usize = 6;
-        const MAX_DIFF_LINES: usize = 400;
-        let paths = (!approval.paths.is_empty()).then(|| {
-            let mut shown: Vec<String> = approval.paths.iter().take(MAX_PATHS).cloned().collect();
-            if approval.paths.len() > MAX_PATHS {
-                shown.push(format!("+{} more", approval.paths.len() - MAX_PATHS));
-            }
-            shown.join("\n")
-        });
-        let diff = approval.diff.as_deref().map(|diff| {
-            let lines = diff.lines().take(MAX_DIFF_LINES).enumerate().map(|(ix, line)| {
-                let color = if line.starts_with("+++") || line.starts_with("---") {
-                    theme.text_muted
-                } else if line.starts_with('+') {
-                    theme.success
-                } else if line.starts_with('-') {
-                    theme.danger
-                } else if line.starts_with("@@") {
-                    theme.accent
-                } else {
-                    theme.text.opacity(0.85)
-                };
-                div()
-                    .id(("approval-diff-line", ix))
-                    .text_color(color)
-                    .child(SharedString::from(if line.is_empty() {
-                        " ".to_owned()
-                    } else {
-                        line.to_owned()
-                    }))
-            });
-            div()
-                .id("approval-diff")
-                .mt(px(10.0))
-                .max_h(px(220.0))
-                .overflow_y_scroll()
-                .px(px(12.0))
-                .py(px(8.0))
-                .rounded(px(10.0))
-                .bg(crate::theme::ink(0.05))
-                .font_family(mono.clone())
-                .text_size(crate::typography::ui_rems(12.0))
-                .line_height(px(17.0))
-                .children(lines)
-        });
         let approve_ix = approval_default_index(&approval, true);
         let decline_ix = approval_default_index(&approval, false);
         let buttons = approval.decisions.iter().enumerate().map(|(ix, option)| {
@@ -10423,21 +10329,9 @@ impl Composer {
                     .text_color(theme.text)
                     .child(SharedString::from(approval.title.clone())),
             )
-            .when_some(approval.reason.clone(), |el, reason| {
-                el.child(
-                    div()
-                        .mt(px(4.0))
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(theme.text_muted.opacity(0.75))
-                        .child(SharedString::from(reason)),
-                )
-            })
-            .when_some(approval.command.clone(), |el, command| {
-                el.child(code_block(command.into()))
-            })
-            .when_some(approval.cwd.clone(), |el, cwd| el.child(meta("in", cwd.into())))
-            .when_some(paths, |el, paths| el.child(meta("files", paths.into())))
-            .children(diff)
+            .children(crate::approval_view::approval_details(
+                &approval, &theme, "approval",
+            ))
             .child(
                 div()
                     .mt(px(14.0))
