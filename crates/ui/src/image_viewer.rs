@@ -509,6 +509,7 @@ mod tests {
                     .into_any_element()
             }
         }
+        let _platform = crate::platform_turn();
         gpui_platform::headless().run(|cx| {
             cx.set_global(crate::theme::Theme::dark());
             let window = cx.open_window(gpui::WindowOptions {

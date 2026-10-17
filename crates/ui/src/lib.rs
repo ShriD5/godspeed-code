@@ -88,6 +88,15 @@ pub mod visuals;
 pub mod voice;
 mod workspace_links;
 
+/// Building a macOS gpui platform (even a headless one) reads the keyboard
+/// layout, and macOS 27 aborts the process when two threads do that at once.
+/// Tests that build one hold this while they do.
+#[cfg(test)]
+pub(crate) fn platform_turn() -> std::sync::MutexGuard<'static, ()> {
+    static PLATFORM: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PLATFORM.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 use std::path::PathBuf;
 
 use futures::{FutureExt as _, StreamExt as _};

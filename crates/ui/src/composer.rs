@@ -15746,6 +15746,7 @@ mod tests {
     #[test]
     fn resolved_layout_does_not_keep_notifying_on_repaint() {
         use std::cell::Cell;
+        let _platform = crate::platform_turn();
         gpui_platform::headless().run(|cx| {
             cx.set_global(Theme::dark());
             let handle = cx.open_window(gpui::WindowOptions::default(), |_, cx| {

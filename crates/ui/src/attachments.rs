@@ -1847,9 +1847,14 @@ mod generated_image_tests {
         assert_eq!(unchipped_attachments("Image 1", &paths).len(), 4);
     }
 
+    fn test_background_executor() -> gpui::BackgroundExecutor {
+        let _platform = crate::platform_turn();
+        gpui_platform::background_executor()
+    }
+
     #[tokio::test]
     async fn a_queued_file_reads_back_with_its_bytes_and_display_name() {
-        let executor = gpui_platform::background_executor();
+        let executor = test_background_executor();
         for bytes in [b"# notes\n".to_vec(), Vec::new()] {
             let engine = EngineHandle::from_test_client(zeron_rpc::memory_client(Arc::new(
                 FileRpc(bytes.clone()),
@@ -1877,7 +1882,7 @@ mod generated_image_tests {
 
     #[tokio::test]
     async fn generated_image_chunk_reader_targets_owner_and_bounds_decode() {
-        let executor = gpui_platform::background_executor();
+        let executor = test_background_executor();
         for (width, target, expected, succeeds) in [
             (64, Some("remote-owner"), "image/png", true),
             (64, None, "image/png", true),
