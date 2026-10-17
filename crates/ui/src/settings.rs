@@ -1203,11 +1203,12 @@ pub enum ShortcutId {
     NavigateForward,
     ToggleDiffPane,
     ReopenClosedTab,
+    MissionControl,
     JumpSession(usize),
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 21 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 22 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
@@ -1229,6 +1230,7 @@ impl ShortcutId {
         ShortcutId::NavigateForward,
         ShortcutId::ToggleDiffPane,
         ShortcutId::ReopenClosedTab,
+        ShortcutId::MissionControl,
         ShortcutId::JumpSession(0),
         ShortcutId::JumpSession(1),
         ShortcutId::JumpSession(2),
@@ -1268,6 +1270,7 @@ impl ShortcutId {
             ShortcutId::NavigateForward => "Go forward",
             ShortcutId::ToggleDiffPane => "Toggle changes pane",
             ShortcutId::ReopenClosedTab => "Reopen closed tab",
+            ShortcutId::MissionControl => "Open Mission Control",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1320,6 +1323,7 @@ impl ShortcutId {
             ShortcutId::NavigateForward => "mod-]",
             ShortcutId::ToggleDiffPane => "mod-shift-g",
             ShortcutId::ReopenClosedTab => "mod-shift-t",
+            ShortcutId::MissionControl => "mod-shift-k",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1360,6 +1364,7 @@ pub struct KeymapConfig {
     pub navigate_forward: String,
     pub toggle_diff_pane: String,
     pub reopen_closed_tab: String,
+    pub mission_control: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
     /// [`UiSettings::load`] discards the WHOLE file on a parse error, so a
     /// fixed-length array would let one malformed entry reset every unrelated
@@ -1432,6 +1437,7 @@ impl Default for KeymapConfig {
             navigate_forward: ShortcutId::NavigateForward.default_combo().into(),
             toggle_diff_pane: ShortcutId::ToggleDiffPane.default_combo().into(),
             reopen_closed_tab: ShortcutId::ReopenClosedTab.default_combo().into(),
+            mission_control: ShortcutId::MissionControl.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
         }
     }
@@ -1461,6 +1467,7 @@ impl KeymapConfig {
             ShortcutId::NavigateForward => &self.navigate_forward,
             ShortcutId::ToggleDiffPane => &self.toggle_diff_pane,
             ShortcutId::ReopenClosedTab => &self.reopen_closed_tab,
+            ShortcutId::MissionControl => &self.mission_control,
             ShortcutId::JumpSession(slot) => self
                 .jump_session
                 .get(slot)
@@ -1492,6 +1499,7 @@ impl KeymapConfig {
             ShortcutId::NavigateForward => self.navigate_forward = combo,
             ShortcutId::ToggleDiffPane => self.toggle_diff_pane = combo,
             ShortcutId::ReopenClosedTab => self.reopen_closed_tab = combo,
+            ShortcutId::MissionControl => self.mission_control = combo,
             ShortcutId::JumpSession(slot) => {
                 if slot < JUMP_SLOTS {
                     if self.jump_session.len() < JUMP_SLOTS {

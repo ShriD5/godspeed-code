@@ -291,6 +291,7 @@ enum Command {
     NewChat,
     NewProject,
     Settings,
+    MissionControl,
     Theme(AppearanceMode),
     ArchiveThread,
     // Git write actions on the focused chat's checkout.
@@ -306,6 +307,7 @@ impl Command {
             Self::NewChat => "New chat",
             Self::NewProject => "New project",
             Self::Settings => "Open settings",
+            Self::MissionControl => "Open Mission Control",
             Self::Theme(AppearanceMode::System) => "Switch to system theme",
             Self::Theme(AppearanceMode::Light) => "Switch to light theme",
             Self::Theme(AppearanceMode::Dark) => "Switch to dark theme",
@@ -322,6 +324,7 @@ impl Command {
             Self::NewChat => icons::PEN_NEW_SQUARE,
             Self::NewProject => icons::FOLDER,
             Self::Settings => icons::SETTINGS,
+            Self::MissionControl => icons::WIDGET,
             Self::Theme(mode) => mode.icon(),
             Self::ArchiveThread => icons::ARCHIVE_MINIMALISTIC,
             Self::GitCommit => icons::CHECK,
@@ -415,6 +418,7 @@ fn commands_for(query: &str, is_dark: bool, can_archive: bool) -> Vec<Command> {
         Command::NewChat,
         Command::NewProject,
         Command::Settings,
+        Command::MissionControl,
         Command::Theme(if is_dark {
             AppearanceMode::Light
         } else {
@@ -1121,6 +1125,7 @@ impl Shell {
             RowKind::Command(Command::NewChat) => self.open_new_session(None, cx),
             RowKind::Command(Command::NewProject) => self.open_add_space(cx),
             RowKind::Command(Command::Settings) => self.open_last_settings(cx),
+            RowKind::Command(Command::MissionControl) => self.open_mission_control(window, cx),
             RowKind::Command(Command::Theme(_)) => unreachable!(),
             RowKind::Command(Command::ArchiveThread) => self.archive_selected_chat(cx),
             RowKind::Command(Command::GitCommit) => self.palette_commit(window, cx),
@@ -1185,6 +1190,7 @@ impl Shell {
             Command::NewProject => ShortcutId::NewProject,
             Command::Settings => return Some(crate::settings::badge_combo("mod-,")),
             Command::ArchiveThread => ShortcutId::ArchiveSession,
+            Command::MissionControl => ShortcutId::MissionControl,
             Command::Theme(_)
             | Command::GitCommit
             | Command::GitPush
@@ -3161,6 +3167,7 @@ mod tests {
                 Command::NewChat,
                 Command::NewProject,
                 Command::Settings,
+                Command::MissionControl,
                 Command::Theme(AppearanceMode::Light)
             ]
         );

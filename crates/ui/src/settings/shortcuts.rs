@@ -736,7 +736,8 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::ArchiveSession
         | ShortcutId::SettleSession
         | ShortcutId::NavigateBack
-        | ShortcutId::NavigateForward => "Sessions",
+        | ShortcutId::NavigateForward
+        | ShortcutId::MissionControl => "Sessions",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
