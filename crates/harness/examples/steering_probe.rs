@@ -55,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         worktree: None,
         resume: None,
         access: None,
+        env: Default::default(),
     };
     let controls = RunControls {
         realtime: None,

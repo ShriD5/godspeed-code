@@ -24,6 +24,7 @@ pub mod telegram;
 pub mod view;
 pub mod voice;
 pub mod workspace;
+pub mod worktree_env;
 
 pub use access::*;
 pub use agent::*;
@@ -33,6 +34,10 @@ pub use message_search::*;
 pub use preview::*;
 pub use sidebar_pins::*;
 pub use workspace::*;
+pub use worktree_env::{
+    WakeWorktreeOutcome, WorktreeCopyRule, WorktreeEnvironment, WorktreeEnvironmentSnapshot,
+    WorktreeEnvironmentStatus, WorktreePortBlock, WorktreePorts, WorktreeSetupState,
+};
 
 /// Parse "0.2.12" (tolerating a `-suffix`/`+build` tail on the last part)
 /// into a comparable triple — the fleet feature-gate primitive (device rows

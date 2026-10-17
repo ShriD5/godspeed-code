@@ -932,6 +932,8 @@ impl DemoHost {
             name: name.into(),
             current,
             worktree_path: worktree.map(str::to_owned),
+            worktree_ports: None,
+            worktree_sleeping: false,
         };
         if path.contains("godspeed") {
             vec![

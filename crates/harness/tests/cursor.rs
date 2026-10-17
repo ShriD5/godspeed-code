@@ -44,6 +44,7 @@ fn request(prompt: &str) -> RunRequest {
         worktree: None,
         resume: None,
         access: None,
+        env: Default::default(),
     }
 }
 

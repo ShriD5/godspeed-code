@@ -80,6 +80,7 @@ async fn start(
         worktree: None,
         mcp: None,
         access: None,
+        env: Default::default(),
     };
     let stream = harness.run(request, controls).await.unwrap();
     Run {

@@ -128,6 +128,7 @@ fn request(prompt: &str) -> RunRequest {
         attachments: Vec::new(),
         worktree: None,
         access: None,
+        env: Default::default(),
     }
 }
 

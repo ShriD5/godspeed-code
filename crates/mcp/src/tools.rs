@@ -1477,6 +1477,7 @@ impl Tools {
                     attachments: Vec::new(),
                     worktree: None,
                     access: None,
+                    env: Default::default(),
                 };
                 let mut request = request;
                 if let Some(config) = &config {

@@ -112,6 +112,7 @@ fn run(
         worktree: None,
         resume: None,
         access: None,
+        env: Default::default(),
     }
 }
 

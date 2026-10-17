@@ -133,6 +133,7 @@ fn run_payload(message_id: &str, pending_ref: &str) -> SessionCommandPayload {
             worktree: None,
             resume: None,
             access: None,
+            env: Default::default(),
         },
         message_id: message_id.into(),
     }

@@ -274,6 +274,7 @@ fn request(prompt: &str) -> RunRequest {
         resume: None,
         worktree: None,
         access: None,
+        env: Default::default(),
     }
 }
 

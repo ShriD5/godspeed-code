@@ -9572,6 +9572,7 @@ impl Composer {
                         attachments: attachment_paths,
                         worktree: run_worktree,
                         access: Some(zeron_proto::RunAccess::new(resolved.access_mode)),
+                        env: Default::default(),
                     },
                     message_id: message_id.clone(),
                 };

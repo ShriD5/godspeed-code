@@ -205,6 +205,7 @@ fn send(core: &EngineCore, world: &World, prompt: &str) {
                     worktree: None,
                     mcp: None,
                     access: None,
+                    env: Default::default(),
                 },
                 message_id: format!("msg-{}", prompt.replace(' ', "-")),
             },

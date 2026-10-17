@@ -126,6 +126,7 @@ fn run_payload(message_id: &str, repo_path: &str, space_id: Option<&str>) -> Ses
                 space_id: space_id.map(str::to_string),
             }),
             access: None,
+            env: Default::default(),
         },
         message_id: message_id.into(),
     }

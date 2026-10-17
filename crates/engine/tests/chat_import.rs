@@ -1081,6 +1081,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
         worktree: None,
         resume: None,
         access: None,
+        env: Default::default(),
     }
 }
 

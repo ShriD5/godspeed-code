@@ -152,6 +152,7 @@ mod tests {
             worktree: None,
             mcp: None,
             access: None,
+            env: Default::default(),
         };
         let err = crate::refuse_unsupported_access(HarnessId::Pi, "Pi", &request).unwrap_err();
         assert_eq!(

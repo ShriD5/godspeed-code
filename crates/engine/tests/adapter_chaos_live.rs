@@ -126,6 +126,7 @@ impl Suite {
             worktree: None,
             resume: None,
             access: None,
+            env: Default::default(),
         }
     }
 
@@ -1192,6 +1193,7 @@ fn restart_request(name: &str, cwd: &str, prompt: &str) -> RunRequest {
         worktree: None,
         resume: None,
         access: None,
+        env: Default::default(),
     }
 }
 

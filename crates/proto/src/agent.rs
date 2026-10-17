@@ -259,6 +259,12 @@ pub struct RunRequest {
     /// legacy `sandbox` / `auto_approve` pair, which senders keep in step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<crate::RunAccess>,
+    /// Extra environment for the agent process, filled in by the HOST from
+    /// the worktree environment of `cwd` (ports, paths). Additive +
+    /// serde-defaulted; harnesses that share one server across chats can't
+    /// apply it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 impl RunRequest {

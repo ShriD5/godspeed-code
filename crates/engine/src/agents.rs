@@ -1034,6 +1034,7 @@ impl Inner {
                     // The host injects Godspeed's MCP server itself.
                     mcp: None,
                     access: Some(access),
+                    env: Default::default(),
                 },
                 message_id: new_id(),
             },
