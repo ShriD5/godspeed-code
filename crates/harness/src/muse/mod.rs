@@ -99,11 +99,17 @@ impl MuseHarness {
         })
     }
 
-    fn spawn(&self, cwd: &Path, args: &[&str]) -> Result<Host, HarnessError> {
+    fn spawn(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Host, HarnessError> {
         let exe = self.resolve_executable()?;
         let mut cmd = Command::new(&exe);
         crate::process::owned::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
+        crate::apply_run_env(&mut cmd, env);
         // The CLI's own `muse login` is the account Godspeed runs on: an
         // inherited META_API_KEY would silently override it. Updates are the
         // user's (or Homebrew's) call, never a mid-session restart.
@@ -148,6 +154,7 @@ impl MuseHarness {
         let mut host = self.spawn(
             &cwd,
             &["--disable-shell", "--disable-write", "--no-session-log"],
+            &Default::default(),
         )?;
         let (mut tx, rx) = oneshot::channel();
         let grace = self.kill_grace;
@@ -400,7 +407,7 @@ impl Harness for MuseHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        let host = self.spawn(Path::new(&request.cwd), &serve_args(&request))?;
+        let host = self.spawn(Path::new(&request.cwd), &serve_args(&request), &request.env)?;
         let (tx, rx) = mpsc::channel(256);
         let kill_grace = self.kill_grace;
         let interrupt_grace = self.interrupt_grace;

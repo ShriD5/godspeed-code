@@ -40,6 +40,10 @@ const REAPER_INTERVAL: Duration = Duration::from_secs(60);
 struct LiveTerminal {
     // Keep the private action script alive until the shell exits or the tab is closed.
     initial_script: Option<tempfile::NamedTempFile>,
+    /// Canonical working directory the shell started in.
+    cwd: std::path::PathBuf,
+    /// The shell process, for stopping it with everything it started.
+    pid: Option<u32>,
     #[cfg(all(test, windows))]
     process_id: u32,
     master: Option<Box<dyn portable_pty::MasterPty + Send>>,
@@ -356,6 +360,7 @@ impl Terminals {
             (pair.master, child)
         };
         let killer = child.clone_killer();
+        let pid = child.process_id();
         let reader = master
             .try_clone_reader()
             .map_err(|e| EngineError::Other(format!("pty reader: {e}")))?;
@@ -366,6 +371,8 @@ impl Terminals {
         let id = new_id();
         let session = Arc::new(Mutex::new(LiveTerminal {
             initial_script,
+            cwd: std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.into()),
+            pid,
             #[cfg(all(test, windows))]
             process_id: child.process_id().expect("ConPTY child has a process id"),
             master: Some(master),
@@ -542,6 +549,35 @@ impl Terminals {
                 "Windows terminal reader did not finish cleanup".into(),
             ))
         }
+    }
+
+    /// Stop every live terminal started in `root` or below, together with
+    /// everything its shell started (dev servers in their own process
+    /// groups included), and drop the sessions. Returns how many stopped.
+    pub async fn stop_within(&self, root: &std::path::Path) -> usize {
+        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let targets: Vec<(String, Option<u32>)> = lock(&self.inner.sessions)
+            .iter()
+            .filter_map(|(id, session)| {
+                let session = lock(session);
+                (!session.exited && session.cwd.starts_with(&root))
+                    .then(|| (id.clone(), session.pid))
+            })
+            .collect();
+        for (id, pid) in &targets {
+            #[cfg(unix)]
+            if let Some(pid) = *pid {
+                let mut tree = zeron_harness::process::descendants(pid).await;
+                tree.push(pid as i32);
+                zeron_harness::process::terminate_tree(&tree, Duration::from_secs(2)).await;
+            }
+            #[cfg(not(unix))]
+            let _ = pid;
+            if let Err(error) = self.close(id) {
+                tracing::debug!(terminal = %id, %error, "stopped terminal already gone");
+            }
+        }
+        targets.len()
     }
 
     /// Any live PTY (the reaper prunes exited ones) — restarts kill shells, so

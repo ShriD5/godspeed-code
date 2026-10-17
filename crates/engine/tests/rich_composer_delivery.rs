@@ -161,6 +161,7 @@ fn request(prompt: &str) -> RunRequest {
         attachments: vec![],
         worktree: None,
         access: None,
+        env: Default::default(),
     }
 }
 fn rich_text(label: &str) -> (String, String) {

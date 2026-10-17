@@ -158,6 +158,7 @@ async fn steering_never_aborts_a_running_tool() {
                     worktree: None,
                     resume: None,
                     access: None,
+                    env: Default::default(),
                 },
             },
         )

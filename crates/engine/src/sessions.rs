@@ -1291,6 +1291,7 @@ impl SessionsEngine {
                             resume: None,
                             worktree: None,
                             access: None,
+                            env: Default::default(),
                         })
                     });
                 let Some(mut request) = request else {
@@ -3951,6 +3952,7 @@ mod tests {
             attachments: Vec::new(),
             worktree: None,
             access: None,
+            env: Default::default(),
         }
     }
 

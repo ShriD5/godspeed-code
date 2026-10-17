@@ -113,6 +113,7 @@ fn run_payload(message_id: &str) -> SessionCommandPayload {
             worktree: None,
             resume: None,
             access: None,
+            env: Default::default(),
         },
         message_id: message_id.into(),
     }

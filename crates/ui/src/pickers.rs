@@ -38,6 +38,20 @@ const FOOTER_CHIP_RADIUS: f32 = 6.0;
 
 /// Both sides of the composer handoff share one leading-aligned workspace
 /// cluster. Available width belongs after the pair, never between its labels.
+/// A ref row's right-aligned tag: `current` beats the worktree state, which
+/// carries the worktree's ports.
+fn ref_tag(row: &RepoRef) -> Option<String> {
+    if row.current {
+        return Some("current".into());
+    }
+    row.worktree_path.as_ref()?;
+    let state = if row.worktree_sleeping { "sleeping" } else { "worktree" };
+    Some(match &row.worktree_ports {
+        Some(ports) => format!("{state} {}", ports.label()),
+        None => state.into(),
+    })
+}
+
 fn workspace_footer_row() -> gpui::Div {
     div()
         .w_full()
@@ -4260,13 +4274,7 @@ impl Pickers {
                                         selected.as_deref() == Some(row.name.as_str());
                                     // Right-aligned muted tag (t3code `text-[10px]
                                     // text-muted-foreground/45`): current beats worktree.
-                                    let tag: Option<&'static str> = if row.current {
-                                        Some("current")
-                                    } else if row.worktree_path.is_some() {
-                                        Some("worktree")
-                                    } else {
-                                        None
-                                    };
+                                    let tag = ref_tag(&row);
                                     let is_switching =
                                         switching.as_deref() == Some(row.name.as_str());
                                     popover::picker_row(
@@ -7626,7 +7634,25 @@ mod tests {
             name: name.into(),
             current,
             worktree_path: worktree.map(str::to_string),
+            worktree_ports: None,
+            worktree_sleeping: false,
         }
+    }
+
+    #[test]
+    fn ref_tags_show_worktree_ports_and_sleep() {
+        assert_eq!(ref_tag(&repo_ref("main", true, Some("/wt"))).as_deref(), Some("current"));
+        assert_eq!(ref_tag(&repo_ref("topic", false, None)), None);
+        let mut row = repo_ref("wt", false, Some("/wt"));
+        assert_eq!(ref_tag(&row).as_deref(), Some("worktree"));
+        row.worktree_ports = Some(zeron_proto::WorktreePorts {
+            base: 41000,
+            count: 2,
+            names: Default::default(),
+        });
+        assert_eq!(ref_tag(&row).as_deref(), Some("worktree :41000–41001"));
+        row.worktree_sleeping = true;
+        assert_eq!(ref_tag(&row).as_deref(), Some("sleeping :41000–41001"));
     }
 
     #[gpui::test]

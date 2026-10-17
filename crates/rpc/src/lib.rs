@@ -201,6 +201,18 @@ pub mod methods {
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     /// `{repoPath?}` → `OrphanWorktree[]`: Godspeed worktrees no chat uses.
     pub const LIST_ORPHAN_WORKTREES: &str = "ListOrphanWorktrees";
+    // Worktree environments: per-project config on the owning engine, and
+    // per-worktree ports and sleep state on the device holding the worktree.
+    /// `{spaceId}` → `WorktreeEnvironmentSnapshot`.
+    pub const GET_WORKTREE_ENVIRONMENT: &str = "GetWorktreeEnvironment";
+    /// `{spaceId, environment}` → `WorktreeEnvironmentSnapshot`.
+    pub const SET_WORKTREE_ENVIRONMENT: &str = "SetWorktreeEnvironment";
+    /// `{path}` → `WorktreeEnvironmentStatus | null`.
+    pub const GET_WORKTREE_STATUS: &str = "GetWorktreeStatus";
+    /// `{path}` → `WorktreeEnvironmentStatus`.
+    pub const SLEEP_WORKTREE: &str = "SleepWorktree";
+    /// `{path, cols?, rows?}` → `WakeWorktreeOutcome | null`.
+    pub const WAKE_WORKTREE: &str = "WakeWorktree";
     // Project Actions are private state on the device that owns the project.
     pub const LIST_PROJECT_ACTIONS: &str = "ListProjectActions";
     pub const UPSERT_PROJECT_ACTION: &str = "UpsertProjectAction";

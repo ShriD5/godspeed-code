@@ -102,7 +102,7 @@ impl PiHarness {
         })
     }
     async fn probe(&self, cwd: &Path, models: bool) -> Result<Value, HarnessError> {
-        let mut process = self.spawn(cwd, &["--no-session".into()], None)?;
+        let mut process = self.spawn(cwd, &["--no-session".into()], None, &Default::default())?;
         let (mut tx, rx) = tokio::sync::oneshot::channel();
         let grace = self.kill_grace;
         tokio::spawn(async move {
@@ -124,6 +124,7 @@ impl PiHarness {
         cwd: &Path,
         args: &[String],
         mcp: Option<&zeron_proto::McpServer>,
+        env: &std::collections::BTreeMap<String, String>,
     ) -> Result<Process, HarnessError> {
         let exe = self.resolve_executable()?;
         if self.executable.is_none() {
@@ -142,6 +143,7 @@ impl PiHarness {
         if let Some(dir) = &self.agent_dir {
             cmd.env("PI_CODING_AGENT_DIR", dir);
         }
+        crate::apply_run_env(&mut cmd, env);
         cmd.args(["--mode", "rpc", "--no-themes"])
             .args(args)
             .current_dir(cwd)
@@ -371,7 +373,12 @@ impl Harness for PiHarness {
         if lost_context.is_some() {
             request.resume = None;
         }
-        let process = self.spawn(Path::new(&request.cwd), &args, request.mcp.as_ref())?;
+        let process = self.spawn(
+            Path::new(&request.cwd),
+            &args,
+            request.mcp.as_ref(),
+            &request.env,
+        )?;
         let (tx, rx) = mpsc::channel(256);
         let kill_grace = self.kill_grace;
         let interrupt_grace = self.interrupt_grace;

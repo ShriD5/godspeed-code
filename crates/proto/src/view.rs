@@ -727,6 +727,8 @@ mod checkout_tests {
             name: name.into(),
             current: false,
             worktree_path: None,
+            worktree_ports: None,
+            worktree_sleeping: false,
         }
     }
 
@@ -735,6 +737,8 @@ mod checkout_tests {
             name: name.into(),
             current: false,
             worktree_path: Some(path.into()),
+            worktree_ports: None,
+            worktree_sleeping: false,
         }
     }
 

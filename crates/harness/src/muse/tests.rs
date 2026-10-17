@@ -523,6 +523,7 @@ fn launch_settings_follow_the_sandbox_and_approval_posture() {
         worktree: None,
         mcp: None,
         access: None,
+        env: Default::default(),
     };
     assert_eq!(serve_args(&request), ["--trust-workspace"]);
     assert_eq!(picked_model(&request), None);

@@ -181,6 +181,8 @@ struct ReposInner {
     /// launches pick names, add worktrees and write `.git/config` one at a
     /// time instead of colliding on branch names and Git's ref/config locks.
     worktree_locks: std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// Ports, sleep state and setup steps of worktree environments.
+    worktree_records: crate::worktree_env::records::WorktreeRecords,
 }
 
 #[derive(Clone)]
@@ -248,8 +250,16 @@ impl Repos {
                 github_avatar_pages: std::sync::Mutex::new(HashSet::new()),
                 workspace_search: WorkspaceSearch::new(),
                 worktree_locks: std::sync::Mutex::new(HashMap::new()),
+                worktree_records: crate::worktree_env::records::WorktreeRecords::open(
+                    data_dir,
+                    crate::worktree_env::ports::PortRange::DEFAULT,
+                ),
             }),
         }
+    }
+
+    pub(crate) fn worktree_records(&self) -> &crate::worktree_env::records::WorktreeRecords {
+        &self.inner.worktree_records
     }
 
     pub fn worktree_settings(&self) -> zeron_proto::WorktreeSettingsStatus {
@@ -794,10 +804,18 @@ impl Repos {
         }
         Ok(names
             .into_iter()
-            .map(|name| RepoRef {
-                current: current.as_deref() == Some(name.as_str()),
-                worktree_path: worktrees.get(&name).cloned(),
-                name,
+            .map(|name| {
+                let worktree_path = worktrees.get(&name).cloned();
+                let record = worktree_path
+                    .as_deref()
+                    .and_then(|path| self.inner.worktree_records.get(Path::new(path)));
+                RepoRef {
+                    current: current.as_deref() == Some(name.as_str()),
+                    worktree_ports: record.as_ref().and_then(|record| record.ports.clone()),
+                    worktree_sleeping: record.is_some_and(|record| record.sleeping),
+                    worktree_path,
+                    name,
+                }
             })
             .collect())
     }
@@ -1416,12 +1434,49 @@ impl Repos {
         repo_path: &Path,
         branch: &str,
     ) -> Result<Worktree, EngineError> {
+        self.create_worktree_with_branch(repo_path, branch, None)
+            .await
+    }
+
+    /// [`Self::create_worktree`], naming the branch from `branch_template`
+    /// (`{{prefix}}`, `{{slug}}`, `{{project}}`) when one is given.
+    pub async fn create_worktree_with_branch(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+        branch_template: Option<&str>,
+    ) -> Result<Worktree, EngineError> {
         let _serialized = self.worktree_lock(repo_path).await;
         let prefix = self.worktree_branch_prefix();
         let repo_name = repo_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "repo".to_string());
+        if let Some(template) = branch_template {
+            zeron_proto::worktree_env::validate_branch_template(template)
+                .map_err(EngineError::Other)?;
+        }
+        let branch_for = |name: &str| -> Result<String, EngineError> {
+            let Some(template) = branch_template else {
+                return Ok(format!("{prefix}{name}"));
+            };
+            let branch = zeron_proto::worktree_env::render_template(template, |variable| {
+                match variable {
+                    "prefix" => Some(prefix.clone()),
+                    "slug" => Some(name.to_string()),
+                    "project" => Some(repo_name.clone()),
+                    _ => None,
+                }
+            })
+            .map_err(EngineError::Other)?;
+            if zeron_proto::worktree_env::valid_branch_name(&branch) {
+                Ok(branch)
+            } else {
+                Err(EngineError::Other(format!(
+                    "The branch template makes \"{branch}\", which isn't a valid branch name"
+                )))
+            }
+        };
         // Snapshot the destination once per creation. Changes never relocate
         // existing worktrees or alter the cwd already stored on a chat.
         let base = self.inner.worktrees.root().join(&repo_name);
@@ -1458,8 +1513,7 @@ impl Repos {
                 ADJECTIVES[(seed % ADJECTIVES.len() as u64) as usize],
                 NOUNS[((seed / 31) % NOUNS.len() as u64) as usize]
             );
-            if !base.join(&candidate).exists() && !existing.contains(&format!("{prefix}{candidate}"))
-            {
+            if !base.join(&candidate).exists() && !existing.contains(&branch_for(&candidate)?) {
                 name = Some(candidate);
                 break;
             }
@@ -1470,7 +1524,7 @@ impl Repos {
         #[cfg(windows)]
         validate_windows_worktree_path(&path.to_string_lossy())?;
         std::fs::create_dir_all(&base)?;
-        let branch_name = format!("{prefix}{name}");
+        let branch_name = branch_for(&name)?;
         #[cfg(windows)]
         self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
             .await?;
@@ -1710,24 +1764,7 @@ impl Repos {
         } else {
             String::new()
         };
-        if exists && !force {
-            match self.uncommitted_paths(worktree_path).await {
-                Some(0) => {}
-                Some(n) => {
-                    return Err(EngineError::Other(format!(
-                        "{WORKTREE_DIRTY}: {n} uncommitted change{} in {}",
-                        if n == 1 { "" } else { "s" },
-                        worktree_path.display()
-                    )));
-                }
-                None => {
-                    return Err(EngineError::Other(format!(
-                        "{WORKTREE_DIRTY}: couldn't read the status of {}",
-                        worktree_path.display()
-                    )));
-                }
-            }
-        }
+        self.ensure_removable(worktree_path, force).await?;
         if exists {
             let path = worktree_path.to_string_lossy();
             let mut args = vec!["worktree", "remove"];
@@ -1749,6 +1786,34 @@ impl Repos {
             let delete = if force { "-D" } else { "-d" };
             if let Err(err) = self.git(&["branch", delete, "--", &branch], Some(repo_path)).await {
                 tracing::info!(%branch, error = %err, "worktree branch kept");
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse (with [`WORKTREE_DIRTY`]) to remove a worktree holding
+    /// uncommitted work unless the caller confirmed it with `force`.
+    pub async fn ensure_removable(
+        &self,
+        worktree_path: &Path,
+        force: bool,
+    ) -> Result<(), EngineError> {
+        if worktree_path.exists() && !force {
+            match self.uncommitted_paths(worktree_path).await {
+                Some(0) => {}
+                Some(n) => {
+                    return Err(EngineError::Other(format!(
+                        "{WORKTREE_DIRTY}: {n} uncommitted change{} in {}",
+                        if n == 1 { "" } else { "s" },
+                        worktree_path.display()
+                    )));
+                }
+                None => {
+                    return Err(EngineError::Other(format!(
+                        "{WORKTREE_DIRTY}: couldn't read the status of {}",
+                        worktree_path.display()
+                    )));
+                }
             }
         }
         Ok(())

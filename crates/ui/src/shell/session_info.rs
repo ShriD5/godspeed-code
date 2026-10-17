@@ -271,6 +271,8 @@ impl Shell {
             .child(popover::picker_icon_slot(row_glyph(icons::FORK, &theme)))
             .child(div().flex_1().child("Fork chat"));
 
+        let worktree = self.render_session_info_worktree(&theme, cx);
+
         // ── The project's run actions.
         let actions = self.render_session_info_actions(&theme, cx);
 
@@ -288,6 +290,7 @@ impl Shell {
             .child(project_row)
             .children(branch_row)
             .children(limit_row)
+            .children(worktree)
             .child(popover::picker_divider())
             .child(side_chat)
             .child(fork)
@@ -475,6 +478,7 @@ impl Shell {
         if let Some(issue) = snapshot.project_file_issue.clone() {
             rows.push(note(issue.into(), theme.text_muted));
         }
+        rows.push(self.render_environment_entry(theme, cx));
         rows.push(
             popover::picker_row(theme, false, false, "session-info-add-action")
                 .id("session-info-add-action")

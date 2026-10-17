@@ -102,6 +102,7 @@ mod thread_search;
 use side_chats::SideChatTab;
 mod tabs;
 mod voice_stage;
+mod worktree_env_ui;
 use voice_stage::VOICE_STAGE_ORB_SCALE;
 
 use spaces::{AddSpaceFlow, RenameSpaceDialog};
@@ -2172,6 +2173,7 @@ pub struct Shell {
     right_plus: popover::Popup<()>,
     /// Host-owned project Actions cached per (device, space).
     project_actions: crate::project_actions::ProjectActionsController,
+    worktree_env: crate::worktree_env::WorktreeEnvController,
     /// Diff surfaces by id — each tab its own [`Changes`] viewer with its own
     /// scope/base pick and diff watch (multiple diff panels, user request).
     diffs: std::collections::HashMap<u64, Entity<Changes>>,
@@ -2737,6 +2739,7 @@ impl Shell {
             right_terminal: None,
             right_plus: popover::Popup::default(),
             project_actions: crate::project_actions::ProjectActionsController::default(),
+            worktree_env: crate::worktree_env::WorktreeEnvController::default(),
             diffs: std::collections::HashMap::new(),
             files: std::collections::HashMap::new(),
             files_subs: std::collections::HashMap::new(),
@@ -11221,6 +11224,9 @@ impl Shell {
             overlays.push(overlay);
         }
         if let Some(overlay) = self.render_project_action_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_environment_overlay(viewport, window, cx) {
             overlays.push(overlay);
         }
 

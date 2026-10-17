@@ -980,6 +980,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         worktree: None,
         resume: None,
         access: None,
+        env: Default::default(),
     };
     core.sessions
         .dispatch(chat_id, HarnessId::Mock, request, None)
@@ -1027,6 +1028,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         worktree: None,
         resume: None,
         access: None,
+        env: Default::default(),
     };
     core.sessions
         .dispatch(chat_id, HarnessId::Mock, request, None)

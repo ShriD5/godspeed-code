@@ -554,6 +554,12 @@ pub struct RepoRef {
     /// Path of the linked worktree this branch is checked out in, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    /// Ports reserved for that worktree by its project's environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_ports: Option<crate::WorktreePorts>,
+    /// That worktree is asleep: its terminals and dev servers are stopped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worktree_sleeping: bool,
 }
 
 /// Public Git reference attached to a commit in the history graph.

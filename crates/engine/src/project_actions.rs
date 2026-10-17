@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeron_proto::{
     ProjectAction, ProjectActionDraft, ProjectActionIcon, ProjectActionRun, ProjectActionsSnapshot,
+    WorktreeEnvironment, WorktreeEnvironmentSnapshot,
 };
 
 use crate::{EngineError, Terminals};
@@ -54,6 +55,8 @@ struct StoredProjectActions {
     project_root: String,
     #[serde(default)]
     actions: Vec<ProjectAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    environment: Option<WorktreeEnvironment>,
 }
 
 struct ProjectActionsStoreInner {
@@ -144,6 +147,7 @@ impl ProjectActionsStore {
                 .or_insert_with(|| StoredProjectActions {
                     project_root: root.clone(),
                     actions: Vec::new(),
+                    environment: None,
                 });
             ensure_project_root(project, project_root)?;
 
@@ -275,6 +279,80 @@ impl ProjectActionsStore {
         }
         handoffs.remove(command_id).map(|stored| stored.outcome)
     }
+
+    /// The project's saved worktree environment, if any.
+    pub fn environment(
+        &self,
+        space_id: &str,
+        project_root: &Path,
+    ) -> Result<Option<WorktreeEnvironment>, EngineError> {
+        let state = lock(&self.inner.state);
+        let Some(project) = state.projects.get(space_id) else {
+            return Ok(None);
+        };
+        ensure_project_root(project, project_root)?;
+        Ok(project.environment.clone())
+    }
+
+    pub fn environment_snapshot(
+        &self,
+        space_id: &str,
+        project_root: &Path,
+    ) -> Result<WorktreeEnvironmentSnapshot, EngineError> {
+        let environment = self.environment(space_id, project_root)?;
+        Ok(environment_snapshot(space_id, project_root, environment))
+    }
+
+    /// Validate and save the project's worktree environment; an empty one
+    /// clears it.
+    pub fn set_environment(
+        &self,
+        space_id: &str,
+        project_root: &Path,
+        environment: WorktreeEnvironment,
+    ) -> Result<WorktreeEnvironmentSnapshot, EngineError> {
+        let environment = environment.normalized().map_err(EngineError::Other)?;
+        let saved = (!environment.is_empty()).then_some(environment);
+        {
+            let mut state = lock(&self.inner.state);
+            let mut next = state.clone();
+            let project = next
+                .projects
+                .entry(space_id.to_string())
+                .or_insert_with(|| StoredProjectActions {
+                    project_root: root_string(project_root),
+                    actions: Vec::new(),
+                    environment: None,
+                });
+            ensure_project_root(project, project_root)?;
+            project.environment = saved.clone();
+            persist(&self.inner.path, &next)?;
+            *state = next;
+        }
+        Ok(environment_snapshot(space_id, project_root, saved))
+    }
+}
+
+fn environment_snapshot(
+    space_id: &str,
+    project_root: &Path,
+    environment: Option<WorktreeEnvironment>,
+) -> WorktreeEnvironmentSnapshot {
+    let (importable, project_file_issue) = match load_project_file(project_root) {
+        Ok(Some(file)) => match file.env.map(WorktreeEnvironment::normalized).transpose() {
+            Ok(env) => (env.filter(|env| !env.is_empty()), None),
+            Err(error) => (None, Some(format!("Invalid godspeed.json env: {error}"))),
+        },
+        Ok(None) => (None, None),
+        Err(issue) => (None, Some(issue)),
+    };
+    let environment = environment.unwrap_or_default();
+    WorktreeEnvironmentSnapshot {
+        space_id: space_id.to_string(),
+        importable: importable.filter(|candidate| *candidate != environment),
+        environment,
+        project_file_issue,
+    }
 }
 
 fn prune_setup_handoffs(handoffs: &mut HashMap<String, StoredSetupHandoff>) {
@@ -301,7 +379,7 @@ pub fn launch_project_action(
     cols: u16,
     rows: u16,
 ) -> Result<ProjectActionRun, EngineError> {
-    launch_project_action_with_environment(terminals, action, project_root, cwd, cols, rows, false)
+    ActionLaunch::new(project_root, cwd, cols, rows).run(terminals, action)
 }
 
 /// Launch the setup Action for a newly created worktree. Setup always exposes
@@ -314,35 +392,79 @@ pub fn launch_project_setup_action(
     cols: u16,
     rows: u16,
 ) -> Result<ProjectActionRun, EngineError> {
-    launch_project_action_with_environment(
-        terminals,
-        action,
-        project_root,
-        worktree,
-        cols,
-        rows,
-        true,
-    )
+    ActionLaunch::new(project_root, worktree, cols, rows).run_setup(terminals, action)
+}
+
+/// Where an Action's terminal opens, plus the worktree environment (ports,
+/// paths) it inherits.
+pub struct ActionLaunch<'a> {
+    project_root: &'a Path,
+    cwd: &'a Path,
+    cols: u16,
+    rows: u16,
+    environment: BTreeMap<String, String>,
+}
+
+impl<'a> ActionLaunch<'a> {
+    pub fn new(project_root: &'a Path, cwd: &'a Path, cols: u16, rows: u16) -> Self {
+        Self {
+            project_root,
+            cwd,
+            cols,
+            rows,
+            environment: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_environment(mut self, environment: BTreeMap<String, String>) -> Self {
+        self.environment = environment;
+        self
+    }
+
+    pub fn run(
+        &self,
+        terminals: &Terminals,
+        action: &ProjectAction,
+    ) -> Result<ProjectActionRun, EngineError> {
+        self.launch(terminals, action, false)
+    }
+
+    /// Setup always exposes the worktree path, even when it equals the root.
+    pub fn run_setup(
+        &self,
+        terminals: &Terminals,
+        action: &ProjectAction,
+    ) -> Result<ProjectActionRun, EngineError> {
+        self.launch(terminals, action, true)
+    }
+
+    fn launch(
+        &self,
+        terminals: &Terminals,
+        action: &ProjectAction,
+        always_include_worktree: bool,
+    ) -> Result<ProjectActionRun, EngineError> {
+        launch_project_action_with_environment(terminals, action, self, always_include_worktree)
+    }
 }
 
 fn launch_project_action_with_environment(
     terminals: &Terminals,
     action: &ProjectAction,
-    project_root: &Path,
-    cwd: &Path,
-    cols: u16,
-    rows: u16,
+    launch: &ActionLaunch<'_>,
     always_include_worktree: bool,
 ) -> Result<ProjectActionRun, EngineError> {
+    let (project_root, cwd) = (launch.project_root, launch.cwd);
     let mut environment =
         HashMap::from([("GODSPEED_PROJECT_ROOT".to_string(), root_string(project_root))]);
     if always_include_worktree || cwd != project_root {
         environment.insert("GODSPEED_WORKTREE_PATH".to_string(), root_string(cwd));
     }
+    environment.extend(launch.environment.clone());
     let session = terminals.open_with_command(
         &root_string(cwd),
-        cols,
-        rows,
+        launch.cols,
+        launch.rows,
         &environment,
         &action.command,
     )?;
@@ -486,7 +608,10 @@ fn persist(path: &Path, file: &ProjectActionsFile) -> Result<(), EngineError> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectFile {
+    #[serde(default)]
     actions: Vec<ProjectFileAction>,
+    #[serde(default)]
+    env: Option<WorktreeEnvironment>,
 }
 
 #[derive(Deserialize)]
@@ -519,20 +644,27 @@ fn snapshot_from_actions(
     }
 }
 
-fn read_project_file(project_root: &Path) -> (Vec<ProjectActionDraft>, Option<String>) {
+/// The project's `godspeed.json`, `Ok(None)` when it has none, or the issue
+/// that makes it unusable.
+fn load_project_file(project_root: &Path) -> Result<Option<ProjectFile>, String> {
     let path = project_root.join(PROJECT_FILE);
+    let issue = |message: String| format!("Invalid godspeed.json: {message}");
     let file = match open_project_file(&path) {
         Ok(file) => file,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return (Vec::new(), None),
-        Err(err) => return project_file_issue(format!("could not read file: {err}")),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(issue(format!("could not read file: {err}"))),
     };
-    let bytes = match read_project_file_bytes(file) {
-        Ok(bytes) => bytes,
-        Err(err) => return project_file_issue(err),
-    };
-    let file: ProjectFile = match serde_json::from_slice(&bytes) {
-        Ok(file) => file,
-        Err(err) => return project_file_issue(format!("invalid JSON: {err}")),
+    let bytes = read_project_file_bytes(file).map_err(issue)?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|err| issue(format!("invalid JSON: {err}")))
+}
+
+fn read_project_file(project_root: &Path) -> (Vec<ProjectActionDraft>, Option<String>) {
+    let file = match load_project_file(project_root) {
+        Ok(Some(file)) => file,
+        Ok(None) => return (Vec::new(), None),
+        Err(issue) => return (Vec::new(), Some(issue)),
     };
     if file.actions.len() > MAX_PROJECT_ACTIONS {
         return project_file_issue(format!(

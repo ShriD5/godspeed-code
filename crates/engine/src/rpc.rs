@@ -60,6 +60,7 @@ mod message_search;
 mod telegram;
 mod voice_chat;
 mod voice_remote;
+mod worktree_env;
 use async_trait::async_trait;
 use base64::Engine as _;
 use futures::StreamExt;
@@ -1414,9 +1415,10 @@ impl EngineRpc {
         }) else {
             return Ok(());
         };
-        self.repos
+        self.worktree_environments()
             .delete_worktree(&repo, std::path::Path::new(&worktree.path), force)
             .await
+            .map(drop)
             .map_err(failed)
     }
 
@@ -1723,6 +1725,7 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 fn forwardable(method: &str) -> bool {
     if voice_remote::handles(method)
         || agents::handles(method)
+        || worktree_env::handles(method)
         || telegram::handles(method)
         || attention::handles(method)
         || limit_recovery::handles(method)
@@ -2147,6 +2150,9 @@ impl RpcService for EngineRpc {
         }
         if agents::handles(method) {
             return self.agents_rpc(method, params).await;
+        }
+        if worktree_env::handles(method) {
+            return self.worktree_env_rpc(method, params).await;
         }
         if telegram::handles(method) {
             return self.telegram_rpc(method, params).await;
@@ -3748,26 +3754,24 @@ impl RpcService for EngineRpc {
             }
             methods::CREATE_WORKTREE => {
                 let p: CreateWorktreeParams = parse_params(params)?;
-                let setup_space = match p.space_id.as_deref() {
+                let scope = match p.space_id.as_deref() {
                     Some(space_id) => {
-                        let space = self.local_project_action_space(space_id)?;
-                        let space_root = std::fs::canonicalize(&space.path)
-                            .map_err(|_| RpcError::Failed("Project root is unavailable".into()))?;
+                        let scope = self.project_scope(space_id)?;
                         let repo_root = std::fs::canonicalize(&p.repo_path).map_err(|_| {
                             RpcError::Failed("Worktree repository is unavailable".into())
                         })?;
-                        if space_root != repo_root {
+                        if scope.root != repo_root {
                             return Err(RpcError::Failed(
                                 "Worktree repository does not match project space".into(),
                             ));
                         }
-                        Some((space, space_root))
+                        Some(scope)
                     }
                     None => None,
                 };
-                let worktree = self
-                    .repos
-                    .create_worktree(std::path::Path::new(&p.repo_path), &p.branch)
+                let environments = self.worktree_environments();
+                let worktree = environments
+                    .create_worktree(std::path::Path::new(&p.repo_path), &p.branch, scope.as_ref())
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 let mut outcome = CreateWorktreeOutcome {
@@ -3775,40 +3779,19 @@ impl RpcService for EngineRpc {
                     setup_action: None,
                     setup_error: None,
                 };
-                if let Some((space, project_root)) = setup_space {
-                    match self
-                        .project_actions
-                        .setup_action(&space.id, std::path::Path::new(&space.path))
-                    {
-                        Ok(Some(action)) => {
-                            let worktree_root = std::fs::canonicalize(&outcome.worktree.path)
-                                .unwrap_or_else(|_| outcome.worktree.path.clone().into());
-                            match crate::project_actions::launch_project_setup_action(
-                                &self.terminals,
-                                &action,
-                                &project_root,
-                                &worktree_root,
-                                80,
-                                24,
-                            ) {
-                                Ok(run) => outcome.setup_action = Some(run),
-                                Err(err) => {
-                                    tracing::warn!(
-                                        space_id = %space.id,
-                                        worktree = %outcome.worktree.path,
-                                        error = %err,
-                                        "failed to start project setup Action"
-                                    );
-                                    outcome.setup_error = Some(err.to_string());
-                                }
-                            }
-                        }
-                        Ok(None) => {}
+                if let Some(scope) = scope {
+                    let mut worktree = outcome.worktree.clone();
+                    if let Ok(root) = std::fs::canonicalize(&worktree.path) {
+                        worktree.path = root.to_string_lossy().into_owned();
+                    }
+                    match environments.launch_setup(&scope, &worktree, 80, 24) {
+                        Ok(run) => outcome.setup_action = run,
                         Err(err) => {
                             tracing::warn!(
-                                space_id = %space.id,
+                                space_id = %scope.space_id,
+                                worktree = %outcome.worktree.path,
                                 error = %err,
-                                "failed to resolve project setup Action"
+                                "failed to start worktree setup"
                             );
                             outcome.setup_error = Some(err.to_string());
                         }
@@ -3818,7 +3801,8 @@ impl RpcService for EngineRpc {
             }
             methods::DELETE_WORKTREE => {
                 let p: DeleteWorktreeParams = parse_params(params)?;
-                self.repos
+                let teardown_error = self
+                    .worktree_environments()
                     .delete_worktree(
                         std::path::Path::new(&p.repo_path),
                         std::path::Path::new(&p.worktree_path),
@@ -3826,7 +3810,10 @@ impl RpcService for EngineRpc {
                     )
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
+                RpcReply::value(&serde_json::json!({
+                    "ok": true,
+                    "teardownError": teardown_error,
+                }))
             }
             methods::LIST_ORPHAN_WORKTREES => {
                 let p: ListOrphanWorktreesParams = if params.is_null() {
@@ -3915,14 +3902,15 @@ impl RpcService for EngineRpc {
                     .action(&space.id, std::path::Path::new(&space.path), &p.action_id)
                     .map_err(|err| RpcError::Failed(err.to_string()))?
                     .ok_or_else(|| RpcError::Failed("Project action not found".into()))?;
-                let run = crate::project_actions::launch_project_action(
-                    &self.terminals,
-                    &action,
+                let environment = self.worktree_environments().environment_for(&checkout);
+                let run = crate::project_actions::ActionLaunch::new(
                     &project_root,
                     &checkout,
                     p.cols,
                     p.rows,
                 )
+                .with_environment(environment)
+                .run(&self.terminals, &action)
                 .map_err(|err| RpcError::Failed(err.to_string()))?;
                 RpcReply::value(&run)
             }
@@ -3951,9 +3939,14 @@ impl RpcService for EngineRpc {
                     &self.repos.scratch_root(),
                 )
                 .map_err(|error| RpcError::Failed(error.to_string()))?;
+                let environment: std::collections::HashMap<String, String> = self
+                    .worktree_environments()
+                    .environment_for(std::path::Path::new(&cwd))
+                    .into_iter()
+                    .collect();
                 let session = self
                     .terminals
-                    .open(&cwd, p.cols, p.rows)
+                    .open_with_environment(&cwd, p.cols, p.rows, &environment)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&session)
             }
