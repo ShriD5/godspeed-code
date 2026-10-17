@@ -81,6 +81,7 @@ mod files_panel;
 mod git_actions_ui;
 pub(crate) mod harness_updates;
 mod inbox_entry;
+mod mission_control_entry;
 mod question_timeout_menu;
 mod navigation_focus;
 #[cfg(test)]
@@ -143,7 +144,8 @@ actions!(
         NavigateBack,
         NavigateForward,
         ToggleDiffPane,
-        ReopenClosedTab
+        ReopenClosedTab,
+        ToggleMissionControl
     ]
 );
 
@@ -565,6 +567,7 @@ pub fn apply_keymap(
     bind_unless_taken(cx, keymap, ShortcutId::NavigateForward, NavigateForward);
     bind_unless_taken(cx, keymap, ShortcutId::ToggleDiffPane, ToggleDiffPane);
     bind_unless_taken(cx, keymap, ShortcutId::ReopenClosedTab, ReopenClosedTab);
+    bind_unless_taken(cx, keymap, ShortcutId::MissionControl, ToggleMissionControl);
     // Off macOS the primary is ctrl, and ctrl+[ is Escape to a terminal.
     if !cfg!(target_os = "macos") {
         for id in [ShortcutId::NavigateBack, ShortcutId::NavigateForward] {
@@ -2244,6 +2247,8 @@ pub struct Shell {
     pull_requests_page: Option<Entity<PullRequestsPage>>,
     inbox_page: Option<Entity<crate::inbox::InboxPage>>,
     inbox_page_sub: Option<Subscription>,
+    /// The full-window Mission Control board, while open.
+    mission_control: Option<mission_control_entry::MissionControlOverlay>,
     /// Focus the inbox on its next render (entering the route).
     inbox_focus_pending: bool,
     /// The local engine's question timeouts, for the chat menu (loaded on use).
@@ -2792,6 +2797,7 @@ impl Shell {
             pull_requests_page: None,
             inbox_page: None,
             inbox_page_sub: None,
+            mission_control: None,
             inbox_focus_pending: false,
             question_timeouts: None,
             pull_request_pane: Default::default(),
@@ -6645,6 +6651,7 @@ impl Shell {
     /// the keys it records before they can dispatch.
     pub(super) fn overlay_owns_keyboard(&self, cx: &App) -> bool {
         self.command_palette.is_some()
+            || self.mission_control.is_some()
             || self.voice.read(cx).stage_open
             || self.section_dialog.is_some()
             || self.section_menu.is_some()
@@ -9818,6 +9825,7 @@ impl Shell {
             // (No titlebar strip: the unified window titlebar spans the whole
             // window above this column.)
             .child(self.render_inbox_entry(theme, cx))
+            .child(self.render_mission_control_entry(theme, cx))
             .child(filter_row)
             .child(sidebar_lists)
             // Global connection pill (durable-by-design UI truth): appears
@@ -11254,6 +11262,9 @@ impl Shell {
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         overlays.extend(self.render_section_overlays(viewport, window, cx));
+        if let Some(overlay) = self.render_mission_control_overlay(viewport, cx) {
+            overlays.push(overlay);
+        }
         if let Some(overlay) = self.render_command_palette(viewport, window, cx) {
             overlays.push(overlay);
         }
@@ -14203,6 +14214,9 @@ impl Render for Shell {
             )
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleMissionControl, window, cx| {
+                this.toggle_mission_control(window, cx);
             }))
             .on_action(cx.listener(|this, _: &FindInThread, window, cx| {
                 this.open_find_bar(window, cx);

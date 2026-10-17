@@ -47,6 +47,7 @@ pub(crate) mod image_viewer;
 pub mod links;
 pub mod loaders;
 pub mod markdown;
+pub mod mission_control;
 pub mod motion;
 mod new_thread_background_effects;
 mod new_thread_background_image;
