@@ -307,6 +307,217 @@ impl Speedster {
     }
 }
 
+/// Start the Dock driver. Off outside macOS and in tests.
+pub fn init(state: gpui::Entity<crate::state::AppState>, cx: &mut gpui::App) {
+    #[cfg(all(target_os = "macos", not(test)))]
+    dock::init(state, cx);
+    #[cfg(not(all(target_os = "macos", not(test))))]
+    let _ = (state, cx);
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+mod dock {
+    use std::time::{Duration, Instant};
+
+    use gpui::{App, BorrowAppContext, Entity, Global, Task, WeakEntity};
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{NSData, NSProcessInfo};
+
+    use super::{Frame, Mood, Observation, Speedster};
+    use crate::state::AppState;
+
+    /// Same order as [`Frame`].
+    static PNGS: [&[u8]; Frame::COUNT] = [
+        include_bytes!("../assets/speedster/idle_1@512.png"),
+        include_bytes!("../assets/speedster/idle_2@512.png"),
+        include_bytes!("../assets/speedster/sleeping_1@512.png"),
+        include_bytes!("../assets/speedster/sleeping_2@512.png"),
+        include_bytes!("../assets/speedster/jog_1@512.png"),
+        include_bytes!("../assets/speedster/jog_2@512.png"),
+        include_bytes!("../assets/speedster/jog_3@512.png"),
+        include_bytes!("../assets/speedster/jog_4@512.png"),
+        include_bytes!("../assets/speedster/sprint_1@512.png"),
+        include_bytes!("../assets/speedster/sprint_2@512.png"),
+        include_bytes!("../assets/speedster/sprint_3@512.png"),
+        include_bytes!("../assets/speedster/sprint_4@512.png"),
+        include_bytes!("../assets/speedster/alert_1@512.png"),
+        include_bytes!("../assets/speedster/alert_2@512.png"),
+        include_bytes!("../assets/speedster/celebrate_1@512.png"),
+        include_bytes!("../assets/speedster/celebrate_2@512.png"),
+        include_bytes!("../assets/speedster/tired@512.png"),
+        include_bytes!("../assets/speedster/oops@512.png"),
+    ];
+
+    /// What keeps the driver awake between app-state changes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Plan {
+        None,
+        /// Step a frame every interval.
+        Animate(Duration),
+        /// One wake-up for a transient ending or the nap starting.
+        Wake(Instant),
+    }
+
+    struct Dock {
+        state: WeakEntity<AppState>,
+        /// `None` while the setting is off.
+        machine: Option<Speedster>,
+        /// Decoded once, on first show.
+        images: [Option<Retained<NSImage>>; Frame::COUNT],
+        /// What AppKit holds now; `None` is the bundle icon.
+        shown: Option<Frame>,
+        mood: Option<Mood>,
+        frame: usize,
+        plan: Plan,
+        _task: Option<Task<()>>,
+    }
+
+    impl Global for Dock {}
+
+    pub(super) fn init(state: Entity<AppState>, cx: &mut App) {
+        cx.set_global(Dock {
+            state: state.downgrade(),
+            machine: None,
+            images: Default::default(),
+            shown: None,
+            mood: None,
+            frame: 0,
+            plan: Plan::None,
+            _task: None,
+        });
+        cx.observe(&state, |_, cx| sync(cx, true)).detach();
+        // The setting toggle, and Reduce Motion (preference or OS).
+        cx.observe_global::<crate::settings::SettingsStore>(|cx| sync(cx, false))
+            .detach();
+        cx.observe_global::<crate::motion::MotionState>(|cx| sync(cx, false))
+            .detach();
+        sync(cx, true);
+    }
+
+    fn sync(cx: &mut App, reread: bool) {
+        if cx.has_global::<Dock>() {
+            cx.update_global::<Dock, _>(|dock, cx| dock.sync(reread, cx));
+        }
+    }
+
+    impl Dock {
+        fn sync(&mut self, reread: bool, cx: &mut App) {
+            if !crate::settings::animated_dock_icon(cx) {
+                self.machine = None;
+                self.mood = None;
+                self.show(None);
+                self.set_plan(Plan::None, cx);
+                return;
+            }
+            let now = Instant::now();
+            let reread = reread || self.machine.is_none();
+            let machine = self
+                .machine
+                .get_or_insert_with(|| Speedster::new(chrono::Utc::now()));
+            if reread && let Some(state) = self.state.upgrade() {
+                machine.observe(Observation::of(state.read(cx), chrono::Utc::now()), now);
+            }
+            let (mood, deadline) = (machine.mood(now), machine.next_deadline(now));
+            if self.mood != Some(mood) {
+                self.mood = Some(mood);
+                self.frame = 0;
+            }
+            let still = crate::motion::reduced_outside_window(cx) || low_power();
+            if still {
+                self.frame = 0;
+            }
+            let frames = mood.frames();
+            self.show(Some(frames[self.frame % frames.len()]));
+            let plan = match mood.frame_interval() {
+                Some(interval) if !still => Plan::Animate(interval),
+                _ => deadline.map_or(Plan::None, Plan::Wake),
+            };
+            self.set_plan(plan, cx);
+        }
+
+        fn step(&mut self, cx: &mut App) {
+            if let Some(mood) = self.mood {
+                self.frame = (self.frame + 1) % mood.frames().len();
+            }
+            self.sync(false, cx);
+        }
+
+        fn set_plan(&mut self, plan: Plan, cx: &mut App) {
+            if self.plan == plan {
+                return;
+            }
+            self.plan = plan;
+            self._task = match plan {
+                Plan::None => None,
+                Plan::Animate(interval) => Some(cx.spawn(async move |cx| {
+                    loop {
+                        cx.background_executor().timer(interval).await;
+                        let stepped = cx.update(|cx| {
+                            cx.has_global::<Dock>()
+                                && cx.update_global::<Dock, _>(|dock, cx| {
+                                    dock.step(cx);
+                                    true
+                                })
+                        });
+                        if !stepped {
+                            break;
+                        }
+                    }
+                })),
+                Plan::Wake(at) => Some(cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(at.saturating_duration_since(Instant::now()))
+                        .await;
+                    cx.update(|cx| {
+                        if cx.has_global::<Dock>() {
+                            cx.update_global::<Dock, _>(|dock, cx| {
+                                // This task is done: an early wake must be able
+                                // to schedule the same deadline again.
+                                dock.plan = Plan::None;
+                                dock.sync(false, cx);
+                            });
+                        }
+                    });
+                })),
+            };
+        }
+
+        /// Touch AppKit only when the frame actually changes.
+        fn show(&mut self, frame: Option<Frame>) {
+            if self.shown == frame {
+                return;
+            }
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let image = match frame {
+                Some(frame) => {
+                    let slot = &mut self.images[frame.index()];
+                    if slot.is_none() {
+                        let data = NSData::with_bytes(PNGS[frame.index()]);
+                        *slot = NSImage::initWithData(NSImage::alloc(), &data);
+                    }
+                    let Some(image) = slot.as_deref() else {
+                        tracing::warn!(?frame, "Could not decode speedster frame");
+                        return;
+                    };
+                    Some(image)
+                }
+                None => None,
+            };
+            // SAFETY: nil restores the bundle icon (documented AppKit behavior).
+            unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(image) };
+            self.shown = frame;
+        }
+    }
+
+    fn low_power() -> bool {
+        NSProcessInfo::processInfo().isLowPowerModeEnabled()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

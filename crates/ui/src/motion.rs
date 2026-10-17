@@ -1167,7 +1167,7 @@ impl ReduceMotion {
 /// Inputs to the global flag: the persisted choices, plus what the OS and the
 /// main window last reported. Kept apart so a system change while the user has
 /// pinned On/Off still lands, and takes effect when they return to System.
-struct MotionState {
+pub(crate) struct MotionState {
     preference: ReduceMotion,
     pause_in_background: bool,
     system: bool,
@@ -1218,6 +1218,14 @@ pub fn preference(cx: &App) -> ReduceMotion {
 pub fn pause_in_background(cx: &App) -> bool {
     cx.try_global::<MotionState>()
         .is_some_and(|state| state.pause_in_background)
+}
+
+/// Reduced motion for surfaces outside the window, like the Dock icon: the
+/// preference and the OS setting, without the background pause (those
+/// surfaces matter most while the window is unfocused).
+pub fn reduced_outside_window(cx: &App) -> bool {
+    cx.try_global::<MotionState>()
+        .is_some_and(|state| resolve(state.preference, state.system, false, true))
 }
 
 /// The OS setting as last read; drives the Settings helper text.
