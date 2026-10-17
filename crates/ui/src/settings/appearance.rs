@@ -3803,7 +3803,7 @@ impl Render for AppearancePage {
         })
         .render(&self.reduce_motion_select, cx);
         let pause_in_background = crate::motion::pause_in_background(cx);
-        let motion_rows = vec![
+        let mut motion_rows = vec![
             widgets::card_row(&theme, true)
                 .child(
                     div()
@@ -3865,6 +3865,48 @@ impl Render for AppearancePage {
                 )
                 .into_any_element(),
         ];
+        // Only the macOS Dock hosts the speedster today.
+        if cfg!(target_os = "macos") {
+            let animated_dock_icon = crate::settings::animated_dock_icon(cx);
+            motion_rows.push(
+                widgets::card_row(&theme, false)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(widgets::row_title(&theme, "Animated Dock icon"))
+                            .child(widgets::meta_line(
+                                &theme,
+                                vec![
+                                    div()
+                                        .child(
+                                            "The speedster in the Dock shows what your agents are doing.",
+                                        )
+                                        .into_any_element(),
+                                ],
+                            )),
+                    )
+                    .child(
+                        widgets::toggle_switch(&theme, animated_dock_icon, "animated-dock-icon")
+                            .id("animated-dock-icon-toggle")
+                            .tab_index(0)
+                            .role(gpui::Role::Switch)
+                            .aria_label("Animated Dock icon")
+                            .focus_visible(|s| s.border_2().border_color(theme.accent))
+                            .cursor_pointer()
+                            .aria_toggled(if animated_dock_icon {
+                                gpui::Toggled::True
+                            } else {
+                                gpui::Toggled::False
+                            })
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                crate::settings::set_animated_dock_icon(!animated_dock_icon, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         let library_rows = self.render_theme_library_rows(&theme, cx);
         let library_warning = self
             .library_error

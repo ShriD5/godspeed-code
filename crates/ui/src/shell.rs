@@ -16656,6 +16656,7 @@ mod exit_regressions {
                 settings::update(SavePolicy::Immediate, cx, |settings| {
                     settings.reduce_motion = crate::motion::ReduceMotion::On;
                     settings.pause_animations_in_background = true;
+                    settings.animated_dock_icon = false;
                 });
                 // Any shell-owned change (sidebar width, panels) republishes
                 // the working copy; it must not revert the motion choices.
@@ -16663,6 +16664,7 @@ mod exit_regressions {
                 let saved = settings::current(cx);
                 assert_eq!(saved.reduce_motion, crate::motion::ReduceMotion::On);
                 assert!(saved.pause_animations_in_background);
+                assert!(!saved.animated_dock_icon);
             })
             .unwrap();
     }

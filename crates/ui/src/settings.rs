@@ -603,6 +603,19 @@ pub fn transcript_compact_mode(cx: &App) -> bool {
         .unwrap_or_default()
 }
 
+/// Read without cloning the settings: the Dock driver asks on every store
+/// change.
+pub fn animated_dock_icon(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_none_or(|store| store.current.animated_dock_icon)
+}
+
+pub fn set_animated_dock_icon(enabled: bool, cx: &mut App) {
+    update(SavePolicy::Immediate, cx, |settings| {
+        settings.animated_dock_icon = enabled;
+    });
+}
+
 pub fn set_transcript_compact_mode(enabled: bool, cx: &mut App) {
     if update(SavePolicy::Immediate, cx, |settings| {
         settings.transcript_compact_mode = enabled;
@@ -1027,6 +1040,8 @@ pub struct UiSettings {
     pub reduce_motion: crate::motion::ReduceMotion,
     /// Also snap animations while the main window is not focused.
     pub pause_animations_in_background: bool,
+    /// The speedster mascot replaces the Dock icon and mirrors agent activity.
+    pub animated_dock_icon: bool,
     /// Stable native Codex voice id only; devices and microphone state are never persisted.
     #[serde(default)]
     pub codex_voice: Option<String>,
@@ -1130,6 +1145,7 @@ impl Default for UiSettings {
             new_thread_background_effect: NewThreadBackgroundEffect::None,
             reduce_motion: crate::motion::ReduceMotion::System,
             pause_animations_in_background: false,
+            animated_dock_icon: true,
             codex_voice: None,
             codex_voice_device: None,
             legacy_accent_color: None,
@@ -1827,6 +1843,7 @@ impl UiSettings {
             new_thread_background_effect,
             reduce_motion,
             pause_animations_in_background,
+            animated_dock_icon,
             codex_voice,
             codex_voice_device,
             legacy_accent_color,
@@ -2152,6 +2169,7 @@ mod tests {
         );
         assert_eq!(loaded.reduce_motion, crate::motion::ReduceMotion::System);
         assert!(!loaded.pause_animations_in_background);
+        assert!(loaded.animated_dock_icon);
         assert_eq!(loaded.sidebar_width, 300.0);
         assert!(!loaded.sound_enabled);
         for sound in [
@@ -2919,6 +2937,7 @@ mod tests {
             new_thread_background_effect: NewThreadBackgroundEffect::Ascii,
             reduce_motion: crate::motion::ReduceMotion::On,
             pause_animations_in_background: true,
+            animated_dock_icon: false,
             legacy_accent_color: None,
         };
         settings.save(dir.path()).unwrap();
@@ -2933,6 +2952,7 @@ mod tests {
         assert!(json.contains(r#""zoom": 1.8"#));
         assert!(json.contains(r#""reduceMotion": "on""#));
         assert!(json.contains(r#""pauseAnimationsInBackground": true"#));
+        assert!(json.contains(r#""animatedDockIcon": false"#));
         assert!(json.contains(r#""terminalFontFamily": "installed:Menlo""#));
         assert!(json.contains(r#""terminalFontSize": 15.0"#));
         assert!(json.contains(r#""codeFontFamily": "geist""#));
