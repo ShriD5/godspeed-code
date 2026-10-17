@@ -782,6 +782,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
+        crate::apply_run_env(&mut cmd, &request.env);
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
@@ -2624,6 +2625,7 @@ mod tests {
             worktree: None,
             mcp: None,
             access: None,
+            env: Default::default(),
         };
         for (mode, policy, sandbox) in [
             (AccessMode::Supervised, "untrusted", SandboxLevel::ReadOnly),

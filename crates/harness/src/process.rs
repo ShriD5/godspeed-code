@@ -33,7 +33,7 @@ pub(crate) fn signal_target(child: &Child) -> Option<std::sync::Arc<crate::windo
 /// stop and SIGTERM both leave the shell running). Snapshot while the agent
 /// is alive: once it exits, its orphans are reparented and untraceable.
 #[cfg(unix)]
-pub(crate) async fn descendants(root: u32) -> Vec<i32> {
+pub async fn descendants(root: u32) -> Vec<i32> {
     let Ok(out) = tokio::process::Command::new("ps")
         .args(["-A", "-o", "pid=,ppid="])
         .stdin(std::process::Stdio::null())
@@ -66,7 +66,7 @@ pub(crate) async fn descendants(root: u32) -> Vec<i32> {
 /// Terminate `pids` and the process groups they lead: SIGTERM, then SIGKILL
 /// whatever is still running after `grace`.
 #[cfg(unix)]
-pub(crate) async fn terminate_tree(pids: &[i32], grace: std::time::Duration) {
+pub async fn terminate_tree(pids: &[i32], grace: std::time::Duration) {
     // A group leader's whole group (its own children included); anything
     // else by pid.
     let targets: Vec<i32> = pids

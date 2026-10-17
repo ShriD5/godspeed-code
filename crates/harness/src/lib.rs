@@ -350,6 +350,17 @@ pub fn compose_child_path(cmd: &mut process::Command, exe: &std::path::Path) {
     );
 }
 
+/// The worktree environment the host resolved for a run (its ports and
+/// paths), for harnesses that start an agent process per chat.
+pub(crate) fn apply_run_env(
+    cmd: &mut process::Command,
+    env: &std::collections::BTreeMap<String, String>,
+) {
+    for (name, value) in env {
+        cmd.env(name, value);
+    }
+}
+
 fn compose_path<'a>(
     cmd: &mut std::process::Command,
     executable_dir: impl IntoIterator<Item = &'a std::path::Path>,

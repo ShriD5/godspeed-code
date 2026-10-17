@@ -277,6 +277,7 @@ impl ClaudeHarness {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
         cmd.args(Self::launch_args(request));
+        crate::apply_run_env(&mut cmd, &request.env);
         // Newer Claude models emit no readable thinking text unless a
         // summary is asked for (raw reasoning stays provider-private). A CLI
         // without the flag exits on it, so it rides only where supported.
@@ -2102,6 +2103,7 @@ mod tests {
             worktree: None,
             resume: None,
             access: None,
+            env: Default::default(),
         };
         let args = |cmd: &Command| -> Vec<String> {
             cmd.as_std()
