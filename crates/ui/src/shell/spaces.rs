@@ -2238,7 +2238,7 @@ impl SidebarShelf {
 }
 
 /// `<1m`, `4m`, `1h 5m`: a running turn's age beside its Working label.
-pub(super) fn working_duration_label(elapsed: chrono::TimeDelta) -> String {
+pub(crate) fn working_duration_label(elapsed: chrono::TimeDelta) -> String {
     let minutes = elapsed.num_minutes().max(0);
     match (minutes / 60, minutes % 60) {
         (0, 0) => "<1m".to_owned(),
@@ -2249,7 +2249,7 @@ pub(super) fn working_duration_label(elapsed: chrono::TimeDelta) -> String {
 }
 
 /// A settled turn's label while its background work is still running.
-pub(super) fn waiting_on_label(tasks: u32) -> String {
+pub(crate) fn waiting_on_label(tasks: u32) -> String {
     let plural = if tasks == 1 { "" } else { "s" };
     format!("Waiting on {tasks} task{plural}")
 }
