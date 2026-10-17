@@ -21,11 +21,17 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   and teardown commands with `{{worktree}}`, `{{branch}}`, `{{slug}}` and `{{port.web}}` templates,
   and sets a branch-name template. Edit it from the session card's Actions → Environment. See
   [WORKTREES.md](docs/godspeed/WORKTREES.md).
+- **The speedster in your Dock.** The Dock icon is a small speedster that shows what your agents are
+  doing: it jogs while one to three chats work, sprints at four or more, waves when something needs
+  you, celebrates when a chat finishes, trips when one fails, pants when you hit a usage limit and
+  naps after ten quiet minutes. It holds still with Reduce Motion or Low Power Mode on, uses no model
+  tokens, and can be turned off in Settings → Appearance → Animated Dock icon.
 - **Sleep a worktree.** Stops its terminals and dev servers to free memory and ports; opening or
   messaging the chat wakes it and runs the `wake` commands.
 
 ### Fixed
 
+- The UI test suite no longer aborts on macOS 27 (parallel tests built gpui platforms at once).
 - Cursor runs on a Plus plan fill implicit model parameters with the account's defaults, so a bare
   model id no longer resolves to a variant the account can't run.
 

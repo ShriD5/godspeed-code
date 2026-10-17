@@ -167,6 +167,16 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 - [x] Chat width and font size settings apply.
 - [ ] Nothing still says "Zeron" in the UI (report any you see).
 
+## 15b. Speedster Dock icon
+
+- [ ] Nothing running: the Dock icon is the speedster, breathing slowly (one frame every ~2 s).
+- [ ] One chat working: jogs. Four or more: sprints with lightning.
+- [ ] An approval or question: waves. A chat finishes: fist pump for ~2 s. A failed turn: trips for ~2 s.
+- [ ] Chats already finished at launch don't celebrate.
+- [ ] Reduce Motion or Low Power Mode: icon holds still.
+- [ ] Settings → Appearance → Animated Dock icon off: normal app icon returns at once.
+- [ ] Looks good at your Dock size (the art has no icon padding).
+
 ## 16. Robustness
 
 - [ ] Quit mid-run and reopen. Expect: chat recovers, no duplicate messages.
