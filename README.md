@@ -55,6 +55,17 @@ normally. (0.1.0 and 0.2.0 were unsigned; for those, use System Settings → Pri
 There is no auto-update yet. Download new releases from the
 [releases page](https://github.com/ShriD5/godspeed/releases).
 
+## iPhone app
+
+Godspeed for iOS follows and drives your Mac's chats from your phone: transcripts, the composer,
+approvals and voice. Agents keep running on the Mac (or a headless server); the phone is a remote.
+
+- **Status:** in development. A TestFlight beta is next; until then, build it from source.
+- **Needs:** cloud sync. On the Mac, choose **Enable sync** in the account menu and sign in, then
+  sign in with the same account on the phone.
+- **Build it:** see [apps/ios/README.md](apps/ios/README.md) (Xcode 26+, Rust iOS targets). Open
+  `apps/ios/Godspeed.xcodeproj`, pick your iPhone and press Run.
+
 ## Supported agents
 
 Install the agent CLIs you want (Settings → Providers can run the vendor installer for most of
