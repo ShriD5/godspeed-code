@@ -94,6 +94,7 @@ pub(crate) mod project_icon;
 mod pull_request_pane;
 mod session_hover_card;
 mod session_info;
+mod session_lanes;
 mod side_chats;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -1625,11 +1626,11 @@ enum SplashPhase {
 const CHAT_RENAME_REVEAL_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Which list draws a chat's inline title editor: the sidebar's session row,
-/// or the side-chat row in the explorer's Chats footer.
+/// or the side-chat branch in the session card's lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChatRenameSurface {
     Sidebar,
-    Explorer,
+    SessionCard,
 }
 
 /// A chat title edited in place on its row (double-click, or Rename in the
@@ -2473,6 +2474,10 @@ pub struct Shell {
     /// The room the transcript last held free for the docked card, eased
     /// back from as the card hides because the column stopped fitting it.
     session_info_last_reserve: f32,
+    /// The lanes card's folds and pages.
+    session_lanes: session_lanes::LaneState,
+    /// The working-tree diffs behind the card's branch-row totals.
+    session_diffs: session_info::SessionDiffs,
     files_content_tween: Option<WidthTween>,
     /// The last tracked frame: its chat, the window fit, and for each of
     /// `[sidebar, surface host, Files]` the width painted and the width its
@@ -2948,6 +2953,8 @@ impl Shell {
             session_info_pressed_open: None,
             session_info_docked: false,
             session_info_last_reserve: 0.0,
+            session_lanes: session_lanes::LaneState::default(),
+            session_diffs: session_info::SessionDiffs::default(),
             files_content_tween: None,
             painted_columns: None,
             fit_exits: [None; 3],
@@ -4370,14 +4377,6 @@ impl Shell {
                     FilesEvent::CloseReady => {
                         this.on_file_close_ready(RightSurface::File(id), &event_panel_key, cx)
                     }
-                    // Footer rows exist on the explorer only; an editor
-                    // surface never emits them.
-                    FilesEvent::OpenSubagent { .. }
-                    | FilesEvent::OpenChildChat(_)
-                    | FilesEvent::RenameChildChat(_)
-                    | FilesEvent::ChildChatContextMenu { .. }
-                    | FilesEvent::NewChildChat
-                    | FilesEvent::ForkChat => {}
                     FilesEvent::CloseCancelled => {
                         this.cancel_file_close(RightSurface::File(id), cx)
                     }
@@ -6260,7 +6259,7 @@ impl Shell {
     }
 
     /// Start editing `chat_id`'s title in place on its row: the sidebar's
-    /// session row, or — for a side chat — its row under the file tree.
+    /// session row, or — for a side chat — its branch in the session card.
     fn open_rename_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.close_chat_menu(cx);
         if self.chat_rename.is_some() {
@@ -6282,28 +6281,27 @@ impl Shell {
         else {
             return;
         };
-        // The sidebar lists only top-level chats; side chats live in the
-        // explorer's Chats footer. Either way the row must be on screen
-        // first: a field on a hidden row would take keystrokes unseen.
+        // The sidebar lists only top-level chats; side chats ride the
+        // session card's lanes. Either way the row must be on screen first:
+        // a field on a hidden row would take keystrokes unseen.
         let surface = if parent.is_some() {
-            ChatRenameSurface::Explorer
+            ChatRenameSurface::SessionCard
         } else {
             ChatRenameSurface::Sidebar
         };
         let revealed = match surface {
             ChatRenameSurface::Sidebar => self.reveal_sidebar_chat(&chat_id, cx),
-            // The footer lists the open chat's live side chats; it reveals
-            // the row itself once handed the rename.
-            ChatRenameSurface::Explorer => {
+            // The lanes list the open chat's live side chats: show the card
+            // and page its lane to the branch.
+            ChatRenameSurface::SessionCard => {
                 !archived
                     && parent.as_deref() == Some(self.active_chat.as_str())
-                    && self.files_panel_open(cx)
-                    && self.files.contains_key(&self.panel_key(cx))
+                    && self.reveal_session_lane_chat(&chat_id, cx)
             }
         };
         if !revealed {
             // The sidebar explains its own refusals.
-            if surface == ChatRenameSurface::Explorer {
+            if surface == ChatRenameSurface::SessionCard {
                 self.show_notice(crate::toast::ToastKind::Error, "Open this side chat's parent to rename it", cx);
             }
             cx.notify();
@@ -6343,7 +6341,6 @@ impl Shell {
             _events: events,
             _blur: None,
         });
-        self.sync_explorer_chat_rename(cx);
         cx.notify();
     }
 
@@ -6368,7 +6365,6 @@ impl Shell {
         let Some(rename) = self.chat_rename.take() else {
             return;
         };
-        self.sync_explorer_chat_rename(cx);
         let title = rename.input.read(cx).text().trim().to_string();
         let unchanged = self
             .state
@@ -6384,18 +6380,6 @@ impl Shell {
             );
         }
         cx.notify();
-    }
-
-    /// Hand the explorer footers the side-chat rename to draw (or clear it).
-    fn sync_explorer_chat_rename(&mut self, cx: &mut Context<Self>) {
-        let rename = self
-            .chat_rename
-            .as_ref()
-            .filter(|rename| rename.surface == ChatRenameSurface::Explorer)
-            .map(|rename| (rename.chat_id.clone(), rename.input.clone()));
-        for files in self.files.values() {
-            files.update(cx, |files, cx| files.set_chat_rename(rename.clone(), cx));
-        }
     }
 
     /// Scroll the sidebar so the renamed row (painted at `row`) clears the
@@ -11317,13 +11301,8 @@ impl Shell {
             } else {
                 let rename = popover::menu_row(&theme, false, format!("chat-menu-rename-{chat_id}"))
                     .id("chat-menu-rename")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        // A side chat's title is edited on its row under the
-                        // file tree: dock the explorer when the menu came
-                        // from its tab.
-                        if is_side_chat && !this.files_panel_open(cx) {
-                            this.add_files_surface(window, cx);
-                        }
+                    .debug_selector(|| "chat-menu-rename".into())
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_rename_chat(rename_id.clone(), cx)
                     }))
                     .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
