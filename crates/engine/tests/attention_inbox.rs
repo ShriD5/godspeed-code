@@ -216,6 +216,7 @@ impl World {
                         worktree: None,
                         resume: None,
                         access: None,
+                        env: Default::default(),
                     },
                     message_id: format!("m-{chat_id}"),
                 },
