@@ -211,6 +211,13 @@ pub struct ModelOptionChoice {
     pub label: String,
 }
 
+/// A [`RunRequest::model_options`] flag the HOST engine sets for one run:
+/// resume `resume` as a NEW provider session (Claude Code's
+/// `--fork-session`), leaving the original untouched. Set only while a chat
+/// continued on another account still points at its source's session;
+/// never stored in a chat's config.
+pub const FORK_SESSION_OPTION: &str = "godspeedForkSession";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRequest {

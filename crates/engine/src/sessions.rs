@@ -2364,6 +2364,26 @@ async fn drive_run(
             .fork_history_sent
             .store(true, std::sync::atomic::Ordering::Release);
     }
+    // A chat continued on another account (`account_handoff`): while it still
+    // points at its source's provider session, every launch forks that session
+    // instead of appending to it; without a native fork, each fresh provider
+    // session starts from the source's summary.
+    request
+        .model_options
+        .remove(zeron_proto::FORK_SESSION_OPTION);
+    if request.resume.is_some() && request.resume == doc.native_fork_session() {
+        request.model_options.insert(
+            zeron_proto::FORK_SESSION_OPTION.into(),
+            serde_json::Value::Bool(true),
+        );
+    } else if request.resume.is_none()
+        && !resume_state.idle
+        && !carried_history
+        && !native_command(&request.prompt, harness_id)
+        && let Some(brief) = doc.carried_context()
+    {
+        request.prompt = format!("{brief}\n\n{}", request.prompt);
+    }
     // Startup can stop before the SDK saves user text, with no new session
     // ID or receipt. Bridge that unacknowledged tail from our transcript;
     // a fresh session needs all prior user text, not just the latest tail.

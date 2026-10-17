@@ -13834,6 +13834,7 @@ dependencies = [
  "pulldown-cmark",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 
