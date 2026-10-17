@@ -1128,6 +1128,17 @@ public protocol CoreClientProtocol: AnyObject, Sendable {
     func pinSession(chatId: String) throws 
     
     /**
+     * Pin between neighbours (`None` at either end).
+     */
+    func pinSessionAt(chatId: String, after: String?, before: String?) throws 
+    
+    /**
+     * Move a session into a section between its members (`None` at either
+     * end), as a drop into the section does.
+     */
+    func placeSession(chatId: String, sectionId: String?, after: String?, before: String?) throws 
+    
+    /**
      * Warm the most relevant sessions (capped).
      */
     func preloadSessions() 
@@ -1669,6 +1680,36 @@ open func pinSession(chatId: String)throws   {try rustCallWithError(FfiConverter
     uniffi_zeron_mobile_fn_method_coreclient_pin_session(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(chatId),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Pin between neighbours (`None` at either end).
+     */
+open func pinSessionAt(chatId: String, after: String?, before: String?)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_zeron_mobile_fn_method_coreclient_pin_session_at(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(chatId),
+        FfiConverterOptionString.lower(after),
+        FfiConverterOptionString.lower(before),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Move a session into a section between its members (`None` at either
+     * end), as a drop into the section does.
+     */
+open func placeSession(chatId: String, sectionId: String?, after: String?, before: String?)throws   {try rustCallWithError(FfiConverterTypeCoreError_lift) {
+        uniffiCallStatus in
+    uniffi_zeron_mobile_fn_method_coreclient_place_session(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(chatId),
+        FfiConverterOptionString.lower(sectionId),
+        FfiConverterOptionString.lower(after),
+        FfiConverterOptionString.lower(before),uniffiCallStatus
     )
 }
 }
@@ -17052,6 +17093,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_coreclient_pin_session() != 14361) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_zeron_mobile_checksum_method_coreclient_pin_session_at() != 16727) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_zeron_mobile_checksum_method_coreclient_place_session() != 55306) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_coreclient_preload_sessions() != 4026) {

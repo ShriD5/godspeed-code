@@ -1380,6 +1380,35 @@ struct PinnedSessionDragState {
     autoscroll_active: bool,
 }
 
+/// Drag payload for reordering custom sections by their header.
+#[derive(Clone)]
+struct SidebarSectionDrag {
+    section_id: String,
+    profile_key: String,
+    /// The section order the drag started from.
+    ids: std::sync::Arc<Vec<String>>,
+}
+
+/// Live reorder of the custom sections. The lifted section rides under the
+/// pointer while its siblings slide between slots, as pinned rows do.
+struct SidebarSectionDragState {
+    payload: SidebarSectionDrag,
+    from: usize,
+    over: usize,
+    /// Natural slot heights at lift, shared by hit testing and displacement.
+    heights: Vec<f32>,
+    /// The first slot's top in the list's content coordinates.
+    top: f32,
+    /// The slots' left edge within the list, and their width.
+    left: f32,
+    width: f32,
+    /// The pointer's offset below the lifted section's top.
+    grab_y: f32,
+    pointer: Point<Pixels>,
+    siblings: std::collections::HashMap<String, SidebarSessionSlide>,
+    generation: u64,
+}
+
 type SidebarKeyedRow = (String, f32, AnyElement);
 
 struct SidebarSessionRows {
@@ -2346,6 +2375,9 @@ pub struct Shell {
     pinned_session_drag_generation: u64,
     sidebar_session_transfer: Option<SidebarSessionTransfer>,
     sidebar_session_return: Option<SidebarSessionReturn>,
+    sidebar_section_drag: Option<SidebarSectionDragState>,
+    /// Each custom section's painted bounds, measured every frame.
+    sidebar_section_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<Pixels>>>>,
     /// Pending pin intents are scoped to the active profile and engine attachment.
     sidebar_pin_write: Option<sidebar_pins::PendingSidebarPins>,
     sidebar_pin_write_generation: u64,
@@ -2859,6 +2891,8 @@ impl Shell {
             pinned_session_drag_generation: 0,
             sidebar_session_transfer: None,
             sidebar_session_return: None,
+            sidebar_section_drag: None,
+            sidebar_section_bounds: Default::default(),
             sidebar_pin_write: None,
             sidebar_pin_write_generation: 0,
             sidebar_pin_write_notice: None,
@@ -9425,6 +9459,11 @@ impl Shell {
         {
             self.cancel_pinned_session_drag(cx);
         }
+        if self.sidebar_section_drag.is_some()
+            && (!cx.has_active_drag() || !self.sidebar_section_drag_is_valid(cx))
+        {
+            self.cancel_sidebar_section_drag(cx);
+        }
 
         // Keyed rows: (stable key, estimated height, element) — the key + height
         // list drives the §1.6 resort FLIP diff below (attention-bucket
@@ -9436,7 +9475,7 @@ impl Shell {
         let pinned_count = session_rows.pinned_count;
         let custom_count = session_rows.custom_count;
         let regular_start = pinned_count + custom_count;
-        let keyed = session_rows.rows;
+        let mut keyed = session_rows.rows;
         let regular_count = session_rows.regular_count;
         let ungrouped = self.settings.sidebar_organization == SidebarOrganization::InOneList;
         let regular_body_height = spaces::SIDEBAR_DISCLOSURE_BODY_INSET
@@ -9510,6 +9549,7 @@ impl Shell {
         }
         if self.pinned_session_drag.is_none()
             && self.sidebar_session_transfer.is_none()
+            && self.sidebar_section_drag.is_none()
             && self.sidebar_prev_order != order
         {
             let key_order_changed = sidebar_key_order_changed(&self.sidebar_prev_order, &order);
@@ -9551,10 +9591,32 @@ impl Shell {
                     .is_none_or(|drag| drag.preview.as_ref().is_none_or(|gap| gap.pinned))
             })
             .map(|drag| (drag.from, drag.over, drag.prev_over, drag.epoch));
+        // A lifted custom section leaves an empty slot behind and paints in
+        // the list's movement layer; its siblings slide around the gap.
+        let section_offsets = self
+            .sidebar_section_drag_offsets()
+            .filter(|(_, offsets)| offsets.len() == custom_count);
+        let lifted_section = section_offsets.as_ref().and_then(|(from, _)| {
+            let height = self.sidebar_section_drag.as_ref()?.heights[*from];
+            let (_, _, slot) = keyed.get_mut(pinned_count + from)?;
+            let placeholder = div().flex_none().h(px(height)).into_any_element();
+            let section = std::mem::replace(slot, placeholder);
+            self.render_lifted_sidebar_section(section, theme)
+        });
         let list_items: Vec<AnyElement> = keyed
             .into_iter()
             .enumerate()
             .map(|(ix, (key, _, element))| {
+                if let Some((_, offsets)) = &section_offsets
+                    && let Some(offset) =
+                        ix.checked_sub(pinned_count).and_then(|ix| offsets.get(ix))
+                {
+                    return div()
+                        .relative()
+                        .top(px(*offset))
+                        .child(element)
+                        .into_any_element();
+                }
                 if ix < pinned_count
                     && let Some((from, over, prev_over, drag_epoch)) = pinned_drag
                 {
@@ -9632,6 +9694,7 @@ impl Shell {
             let regular_empty = regular_items.is_empty();
             let pinned_group = show_pinned_section
                 .then(|| self.render_pinned_section(pinned_items, pinned_body_height, theme, cx));
+            let section_bounds = self.sidebar_section_bounds.clone();
             div()
                 .id("sidebar-active-sessions")
                 .flex()
@@ -9639,7 +9702,20 @@ impl Shell {
                 .gap(px(SIDEBAR_LIST_GAP))
                 .pb(px(Theme::SPACE_SM))
                 .when_some(pinned_group, |el, group| el.child(group))
-                .children(custom_items)
+                // Each section's painted slot measures the reorder's hit
+                // testing and displacement.
+                .when(!custom_items.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(SIDEBAR_LIST_GAP))
+                            .on_children_prepainted(move |bounds, _, _| {
+                                *section_bounds.borrow_mut() = bounds;
+                            })
+                            .children(custom_items),
+                    )
+                })
                 .when(
                     !regular_items.is_empty() || self.sidebar_session_transfer.is_some(),
                     |el| {
@@ -9800,6 +9876,17 @@ impl Shell {
                             this.cancel_sidebar_session_transfer(cx);
                         },
                     ))
+                    // A section reorder lands wherever it is released in the list.
+                    .on_drag_move::<SidebarSectionDrag>(cx.listener(
+                        |this, event: &gpui::DragMoveEvent<SidebarSectionDrag>, _, cx| {
+                            this.track_sidebar_section_drag(event.event.position, cx);
+                        },
+                    ))
+                    .on_drop::<SidebarSectionDrag>(cx.listener(
+                        |this, payload: &SidebarSectionDrag, _, cx| {
+                            this.finish_sidebar_section_drag(payload, cx);
+                        },
+                    ))
                     .px(px(Theme::SPACE_SM))
                     .flex()
                     .flex_col()
@@ -9808,7 +9895,8 @@ impl Shell {
                     .pt(px(SIDEBAR_LIST_PAD_TOP))
                     .child(active_list)
                     .children(shelves)
-                    .children(moving_row),
+                    .children(moving_row)
+                    .children(lifted_section),
             )),
         )
         .fade_overflow_y(&self.sidebar_scroll);
