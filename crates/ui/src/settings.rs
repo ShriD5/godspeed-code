@@ -616,6 +616,21 @@ pub fn set_animated_dock_icon(enabled: bool, cx: &mut App) {
     });
 }
 
+/// Receipts after finished turns. Polled by transcripts during render like
+/// [`transcript_compact_mode`].
+pub fn show_receipts(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_none_or(|store| store.current.show_receipts)
+}
+
+pub fn set_show_receipts(enabled: bool, cx: &mut App) {
+    if update(SavePolicy::Immediate, cx, |settings| {
+        settings.show_receipts = enabled;
+    }) {
+        cx.refresh_windows();
+    }
+}
+
 pub fn set_transcript_compact_mode(enabled: bool, cx: &mut App) {
     if update(SavePolicy::Immediate, cx, |settings| {
         settings.transcript_compact_mode = enabled;
@@ -1002,6 +1017,9 @@ pub struct UiSettings {
     /// the narration between them) fold into one collapsed accordion, so only
     /// the reply text stays visible.
     pub transcript_compact_mode: bool,
+    /// A finished turn ends with its receipt (a one-line summary that opens
+    /// into the full slip).
+    pub show_receipts: bool,
     /// Destination shared by PR badges and the pull-request board.
     pub pull_request_destination: PullRequestDestination,
     /// Last explicitly selected PR scope, restored when no project is selected.
@@ -1125,6 +1143,7 @@ impl Default for UiSettings {
             transcript_width: TRANSCRIPT_WIDTH_DEFAULT,
             open_web_links_in_zeron: true,
             transcript_compact_mode: false,
+            show_receipts: true,
             pull_request_destination: PullRequestDestination::Native,
             last_pull_request_repository: None,
             last_pull_request_device: None,
@@ -1827,6 +1846,7 @@ impl UiSettings {
             transcript_width,
             open_web_links_in_zeron,
             transcript_compact_mode,
+            show_receipts,
             files_autosave_enabled,
             files_autosave_delay_ms,
             files_word_wrap,
@@ -2905,6 +2925,7 @@ mod tests {
             transcript_width: 960.0,
             open_web_links_in_zeron: false,
             transcript_compact_mode: true,
+            show_receipts: false,
             pull_request_destination: PullRequestDestination::External,
             last_pull_request_repository: Some("acme/godspeed".into()),
             last_pull_request_device: Some("remote-device".into()),

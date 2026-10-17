@@ -94,6 +94,9 @@ alacritty_terminal.workspace = true
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
 usvg = "0.46"
+# Receipt "Copy as image" rasterizer; same version and features gpui already
+# builds, so it adds no crates.
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
 mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
