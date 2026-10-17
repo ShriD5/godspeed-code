@@ -88,14 +88,30 @@ Known flaky only under heavy load (pass alone): `version_probe_bounds_hangs_and_
 - Work was split between a Codex session and Claude; the shared log is
   `/Volumes/Lexar/build/godspeed-coordination/progress.md`.
 
+## Done on 2026-10-17
+
+- Phase 0 of `PLAN.md`: the headless `--print` driver wastes no tokens; any extra limit use is
+  server-side weighting of the `sdk-cli` entrypoint. Don't spoof the entrypoint.
+- Phase 1: Needs-you inbox (attention service, risk ranking, keyboard queue, question timeout,
+  Telegram approval digests). Merged `befc3b90`.
+- Phase 2: worktree environments (`godspeed.json` `env`: copy, ports, setup/teardown, wake, branch
+  template; sleep/wake). Merged `67a664c7`; template values are shell-quoted (`cdd6da2b`).
+  Multi-repo workspaces are not started. Docs: `WORKTREES.md`.
+- Speedster mascot frames (Codex-generated, 18 frames, 8 states) in `crates/ui/assets/speedster/`;
+  plan in `design/speedster/PLAN.md`, export script in `design/speedster/tools/`. Not wired up yet.
+- Always-on agents in the owner's install: Zeron sync (15:00 IST) and T3 watch (17:00 IST, paused
+  during heavy builds); ledgers `UPSTREAM.md` and `T3-WATCH.md`.
+
 ## Next, in order
 
-1. Owner's eyeball pass on the new UI (list below); fix what looks off.
-2. Native PR review and merge (submit review, resolve threads, merge, auto-merge). Codex left a brief
-   at `/Volumes/Lexar/build/godspeed-coordination/pr-actions-brief.md`.
-3. Re-audit parity against T3 now that delegation and lifecycle landed.
-4. Rerun benchmarks on a truly idle machine (a stray `vitest` from ugc-manager was using ~115% of a
-   core during the run).
+1. Release 0.4.0 (inbox + worktree environments), then the owner's eyeball pass (checklist §10, §12b).
+2. Fun, zero-token features: speedster in the Dock (+ lightning crackle on finished rows),
+   tachometer usage gauge, Mission Control map of running agents, agent receipts.
+3. `PLAN.md` phase 3 (close the laptop: Linux artifacts, "Run on a server", reconnect hardening;
+   needs a VPS), phase 4 (usage cockpit, explicit "continue on another account"), phase 5 (PR
+   autopilot; Codex's brief at `/Volumes/Lexar/build/godspeed-coordination/pr-actions-brief.md`).
+4. Known flaky under load: `version_probe_bounds_hangs_and_rejects_nonzero`,
+   `file_changes_fire_one_debounced_run`, two `fs_watch` engine lib tests, `focused_waiter…`.
 
 Eyeball list: approval card; access-mode chip; Snooze submenu and typed-time field; Snoozed/Settled
 shelves; "Working · Nm" and diff counts; Settings → General (auto-settle, worktree branch prefix,
@@ -108,9 +124,9 @@ still push notifications; one imported Claude "chat" is a title-generation run (
 ## Decisions already made
 
 Cut: plan mode, account fallback, mid-thread provider switching (breaks prompt caching).
-Maybe later: checkpoints, rewind, edit-from-here. Deferred: Telegram for always-on agents. Skipped:
-T3 Connect relay and mobile compatibility, SnapShots, cookie import, usage/cost page. Native
-always-on design kept (no open-dots port).
+Maybe later: checkpoints, rewind, edit-from-here. Telegram for always-on agents shipped open-dots
+style in 0.2.0. Skipped:
+T3 Connect relay and mobile compatibility, SnapShots, cookie import, usage/cost page.
 
 Open questions for the owner: Antigravity only unlocks some models when the client claims to be
 Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later".

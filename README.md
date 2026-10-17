@@ -6,7 +6,7 @@
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
-> **Early access.** Godspeed 0.2.0 is an early release. Expect rough edges. See
+> **Early access.** Godspeed 0.4.0 is an early release. Expect rough edges. See
 > [ROADMAP.md](docs/godspeed/ROADMAP.md) for what is done and what is next.
 
 Godspeed runs the coding-agent CLIs you already have (Claude Code, Codex, Cursor and more) in one
@@ -32,6 +32,8 @@ the features listed below on top. If you like this app, go star Zeron.
 | Search | Chat titles | Every message, locally indexed, plus Cmd+F in a chat |
 | Usage limits | Run fails | Resumes on the same account when the limit resets |
 | Chat lifecycle | Archive | Settle, snooze, wake, unread, undo |
+| Attention | Check each chat | One Needs-you inbox for every approval and question, ranked by risk |
+| Worktrees | Setup script | Per-worktree ports, copied `.env` files, setup/teardown, sleep and wake |
 | Upstream bugs | Open | 16 Zeron and 36 T3 Code issues fixed |
 | Account | Zeron's cloud sign-in | Local-only, no account; sync on your own Cloudflare |
 
@@ -107,6 +109,12 @@ Cursor's SDK sign-in is separate from `cursor-agent login`: connect it in Settin
 - **Delegation.** Agents can create, message and wait on other chats through the built-in MCP server
   (`godspeed mcp`), and the parent chat wakes when a delegated child finishes, fails or needs
   approval.
+- **Needs-you inbox.** Every approval, question, finished, failed and limited chat in one queue at
+  the top of the sidebar, ranked by risk, answered from the keyboard (j/k, a, d, Shift+A for all
+  low-risk approvals).
+- **Worktree environments.** `godspeed.json` can copy `.env` files into new worktrees, give each
+  worktree its own ports, run setup and teardown commands, and sleep idle worktrees to free memory.
+  See [WORKTREES.md](docs/godspeed/WORKTREES.md).
 - **Usage limits.** Chats that hit a provider usage limit show as Limited and can resume
   automatically when the limit resets.
 - **Voice dictation.** On-device speech-to-text with NVIDIA Parakeet v3 (the model is an optional

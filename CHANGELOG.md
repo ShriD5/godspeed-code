@@ -2,6 +2,33 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.4.0 (2026-10-17)
+
+### Added
+
+- **Needs-you inbox.** One queue at the top of the sidebar for every chat and always-on agent that
+  needs you: approvals, questions, finished and unseen, failed and limited chats, ordered by risk and
+  age. Approvals show the exact command or diff with a risk colour (network, `git push`, deletes
+  outside the worktree, publishing and secrets are high) and answer in place. Keyboard: j/k to move,
+  a to approve, d to decline or mark seen, Return to open, Shift+A to approve every low-risk item.
+  An optional question timeout (Settings → General, per-chat override in the row menu) answers an
+  agent's question with its default so unattended runs don't stall; approvals never time out.
+- **Telegram approval digests.** More than three agent approvals in a minute arrive as one message
+  with an allow/deny row each, instead of a message per approval.
+- **Worktree environments.** An `env` section in `godspeed.json` copies untracked files such as
+  `.env*` into new worktrees (or symlinks big folders like `node_modules`), reserves a block of ports
+  per worktree (`GODSPEED_PORT`, `PORT_<NAME>` in every terminal, action and agent run), runs setup
+  and teardown commands with `{{worktree}}`, `{{branch}}`, `{{slug}}` and `{{port.web}}` templates,
+  and sets a branch-name template. Edit it from the session card's Actions → Environment. See
+  [WORKTREES.md](docs/godspeed/WORKTREES.md).
+- **Sleep a worktree.** Stops its terminals and dev servers to free memory and ports; opening or
+  messaging the chat wakes it and runs the `wake` commands.
+
+### Fixed
+
+- Cursor runs on a Plus plan fill implicit model parameters with the account's defaults, so a bare
+  model id no longer resolves to a variant the account can't run.
+
 ## 0.3.0 (2026-10-16)
 
 ### Added

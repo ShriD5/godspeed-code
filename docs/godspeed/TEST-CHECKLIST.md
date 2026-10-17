@@ -1,6 +1,6 @@
 # Godspeed manual test checklist
 
-For the release in `/Applications/Godspeed.app` (main `b24dd0bb`). Tick each box; note anything off
+For the release in `/Applications/Godspeed.app` (0.4.0). Tick each box; note anything off
 with the section and item so it can be fixed in one pass. "Expect" says what correct looks like.
 
 ## 1. Launch and basics
@@ -106,6 +106,14 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 - [ ] Delete a chat that owns a worktree: "Also delete its worktree" checkbox works; dirty case
       offers "Delete anyway".
 
+- [ ] Add an `env` section via Actions → Environment… (copy `.env*`, ports count 2, a setup step).
+      Expect: validation messages for bad input; "Import from godspeed.json" works.
+- [ ] New worktree chat with that env. Expect: `.env` copied, session card shows a Ports row
+      (`:41000–41001`), `echo $GODSPEED_PORT` in its terminal prints the first port.
+- [ ] A failing setup step. Expect: worktree kept, "Setup failed at step N" in the session card.
+- [ ] Sleep the worktree from the session card. Expect: its dev server stops, "Sleeping" row and a
+      "sleeping" tag in the branch picker; opening the chat wakes it with a Wake terminal tab.
+
 ## 11. Panels and tools
 
 - [ ] Right panel tabs: files, diff, browser, PR, terminal. Cmd+Shift+T reopens the last closed tab.
@@ -127,6 +135,17 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 - [ ] File-watch trigger fires on a file change in its folder.
 - [ ] Supervised agent asking approval: inbox shows needs-approval and waits (no auto-deny).
 - [ ] Agent memory file (`~/.godspeed/agents/<id>/MEMORY.md`) is updated by the agent.
+
+## 12b. Needs-you inbox
+
+- [ ] Inbox entry at the top of the sidebar with a count when a chat needs approval or has finished
+      unseen.
+- [ ] j/k moves, a approves, d declines, Return opens the chat. Expect: approvals show the exact
+      command/diff with a risk colour (e.g. `git push` is high).
+- [ ] Shift+A approves only the low-risk items; high-risk ones stay.
+- [ ] Question timeout (Settings → General) answers a question after N minutes; an approval never
+      times out.
+- [ ] Telegram: four agent approvals within a minute arrive as one digest message.
 
 ## 13. Usage-limit recovery
 
