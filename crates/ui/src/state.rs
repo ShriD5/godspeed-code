@@ -872,6 +872,8 @@ pub struct AppState {
     /// Device-local agent CLI update lifecycle. Unlike `ListHarnesses`, this
     /// standing stream may be backed by subprocess and network probes.
     pub harness_updates: Vec<zeron_proto::HarnessUpdateStatus>,
+    /// The engine's "Needs you" queue (`WatchAttention`).
+    pub attention: zeron_proto::attention::AttentionSnapshot,
     /// Data directory (`ui-settings.json`, `composer-defaults.json`); set at
     /// bootstrap so child views can persist small preference files.
     pub data_dir: Option<PathBuf>,
@@ -982,6 +984,7 @@ impl AppState {
             review_comment_flushes: HashMap::new(),
             local_device_id: None,
             harness_updates: Vec::new(),
+            attention: Default::default(),
             data_dir: None,
             clock: ClockTransitions::default(),
             engine: None,
@@ -1426,6 +1429,14 @@ impl AppState {
     /// honest badge is "Queued", not a Working spinner.
     pub fn send_queued(&self, chat_id: &str, now: DateTime<Utc>) -> bool {
         self.send_pending(chat_id, now) && self.chat_delivery_degraded(chat_id)
+    }
+
+    pub fn apply_attention(&mut self, snapshot: zeron_proto::attention::AttentionSnapshot) -> bool {
+        if self.attention == snapshot {
+            return false;
+        }
+        self.attention = snapshot;
+        true
     }
 
     pub fn apply_devices(&mut self, devices: Vec<Device>) -> bool {
@@ -2678,6 +2689,12 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_SPACES,
                 AppState::apply_spaces,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_ATTENTION,
+                AppState::apply_attention,
             ),
             // Auth frames parse tolerantly — engine and proto tags differ today.
             spawn_watch(

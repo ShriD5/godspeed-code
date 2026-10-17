@@ -26,6 +26,7 @@ pub mod files;
 pub mod harnesses;
 pub mod import;
 pub mod notifications;
+pub mod question_timeout;
 pub mod shortcuts;
 pub mod telegram;
 pub mod thread_naming;

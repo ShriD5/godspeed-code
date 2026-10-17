@@ -2349,7 +2349,7 @@ pub(super) fn sidebar_header_glyph(theme: &Theme) -> gpui::Hsla {
 
 /// A collapsed section's session count, cut like the sidebar's pull-request
 /// badge (16pt tall, 4pt radius, monospace digits) in a muted tone.
-fn sidebar_count_badge(theme: &Theme, count: usize) -> gpui::Div {
+pub(super) fn sidebar_count_badge(theme: &Theme, count: usize) -> gpui::Div {
     div()
         .flex_none()
         .h(px(16.0))

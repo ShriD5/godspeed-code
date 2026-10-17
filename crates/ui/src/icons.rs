@@ -181,6 +181,7 @@ icon_assets![
     // Hand-drawn bell + speaker in the Solar Linear style (like the terminal/
     // plus/return ports) — the embedded set has neither.
     (BELL, "bell"),
+    (INBOX, "inbox"),
     (VOLUME_LOUD, "volume-loud"),
     // Hand-drawn microphone pair in the Solar Linear style — voice controls.
     (MICROPHONE, "microphone"),
