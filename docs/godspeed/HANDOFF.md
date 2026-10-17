@@ -104,9 +104,10 @@ Known flaky only under heavy load (pass alone): `version_probe_bounds_hangs_and_
 
 ## Next, in order
 
-1. Release 0.4.0 (inbox + worktree environments), then the owner's eyeball pass (checklist §10, §12b).
-2. Fun, zero-token features: speedster in the Dock (+ lightning crackle on finished rows),
-   tachometer usage gauge, Mission Control map of running agents, agent receipts.
+1. Owner's eyeball pass on 0.4.0 (checklist §10, §12b, §15b). Phase 4 usage cockpit + tachometer
+   in progress on `feat/usage-cockpit`.
+2. Fun, zero-token features left: lightning crackle on finished rows, menu-bar speedster, Mission
+   Control map of running agents, agent receipts.
 3. `PLAN.md` phase 3 (close the laptop: Linux artifacts, "Run on a server", reconnect hardening;
    needs a VPS), phase 4 (usage cockpit, explicit "continue on another account"), phase 5 (PR
    autopilot; Codex's brief at `/Volumes/Lexar/build/godspeed-coordination/pr-actions-brief.md`).
@@ -133,6 +134,11 @@ Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later
 
 ## Releases
 
+- `v0.4.0` published 2026-10-17 (tag on `bd7fa2fc`): inbox, worktree environments, speedster Dock
+  icon. Signed + notarized with `~/.local/share/godspeed-ops/release-macos.sh` (reads the ASC key
+  from `~/.config/outbound/keys.env`, never prints it), then upload the dmg, the
+  `Godspeed-macos-arm64.dmg` copy, the app tarball and `SHA256SUMS`. Installing over a running copy:
+  `swap-on-quit.sh` in the same folder, loaded as a one-shot launchd job, swaps it in after quit.
 - `v0.1.0` published 2026-10-16 (tag on `8841f23f`): ad-hoc signed, not notarized, Apple silicon
   DMG plus a copy named `Godspeed-macos-arm64.dmg` so the README's `releases/latest/download` link
   works, the app tarball and `SHA256SUMS`. For the next release: bump `[workspace.package]` version,
