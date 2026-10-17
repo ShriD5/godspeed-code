@@ -15,7 +15,8 @@
 //!   approval or a question gets a card with the exact command, paths or
 //!   diff summary and one button per decision. The answer goes through the
 //!   command ledger (`RespondInput`) like any other client's; nothing is
-//!   ever answered on the user's behalf and nothing times out.
+//!   ever answered on the user's behalf. More than three in a minute from
+//!   agents fold into one digest with a button row per item.
 //! - **One poller.** The token lives in an owner-only file and never leaves
 //!   the engine. A single long-poll loop per engine restarts on token
 //!   changes and backs off on errors.
@@ -25,6 +26,7 @@ mod bot;
 mod callback;
 mod command;
 mod delivery;
+mod digest;
 mod link;
 mod pickers;
 mod poller;
@@ -119,6 +121,8 @@ struct Inner {
     wake_delivery: Notify,
     /// Last typing indicator per Telegram chat.
     typing: Mutex<HashMap<i64, tokio::time::Instant>>,
+    /// When recent cards and digests went out, per Telegram chat.
+    card_sends: Mutex<HashMap<i64, Vec<chrono::DateTime<chrono::Utc>>>>,
     cancel: CancellationToken,
     tasks: TaskTracker,
 }
@@ -181,6 +185,7 @@ impl Telegram {
                 token_changed: Notify::new(),
                 wake_delivery: Notify::new(),
                 typing: Mutex::new(HashMap::new()),
+                card_sends: Mutex::new(HashMap::new()),
                 cancel: CancellationToken::new(),
                 tasks: TaskTracker::new(),
             }),

@@ -2,16 +2,20 @@
 //! its chat; an agent run's go to the chat that scheduled it, or to every
 //! linked chat for agents made in the app. Each request becomes a card per
 //! chat; the first answer anywhere wins, goes out as `RespondInput` through
-//! the command ledger, and the other cards close themselves.
+//! the command ledger, and the other cards close themselves. Bursts from
+//! agents fold into one digest message ([`super::digest`]).
+
+use std::collections::BTreeMap;
 
 use zeron_doc::{MessagePart, SessionCommandPayload};
 use zeron_proto::agents::AgentRunFilter;
 use zeron_proto::{UserInputAnswer, UserInputQuestion};
 
-use super::Inner;
 use super::api::{BotApi, Format, SendOptions};
-use super::render::{self, escape_html};
+use super::digest::{self, Plan};
+use super::render::{self, DigestEntry, escape_html};
 use super::store::{LinkedChat, Prompt, PromptState};
+use super::{Inner, lock};
 
 enum Answered {
     Sent,
@@ -119,6 +123,11 @@ impl Inner {
             .unwrap_or_else(|| "Untitled thread".into())
     }
 
+    /// A card for the user's own Telegram thread: never held for a digest.
+    fn in_own_thread(&self, prompt: &Prompt) -> bool {
+        matches!(self.store.thread_owner(&prompt.chat_id), Ok(Some(owner)) if owner == prompt.tg_chat)
+    }
+
     /// Send new cards, retry unsent ones, and close cards whose request was
     /// answered elsewhere or abandoned.
     pub(super) async fn sync_prompts(&self, api: &BotApi) {
@@ -149,6 +158,7 @@ impl Inner {
                 }
             }
         }
+        let mut waiting: BTreeMap<i64, Vec<Prompt>> = BTreeMap::new();
         for mut prompt in self.store.pending_prompts().unwrap_or_default() {
             if !self.input_open(&prompt.chat_id, &prompt.request_id) {
                 self.close_prompt(
@@ -158,15 +168,191 @@ impl Inner {
                 )
                 .await;
             } else if prompt.message_id.is_none() {
-                self.send_card(api, &mut prompt).await;
+                if self.in_own_thread(&prompt) {
+                    self.send_card(api, &mut prompt).await;
+                } else {
+                    waiting.entry(prompt.tg_chat).or_default().push(prompt);
+                }
+            }
+        }
+        for (tg_chat, prompts) in waiting {
+            self.deliver_waiting(api, tg_chat, prompts, now).await;
+        }
+    }
+
+    /// Cards for one chat, one by one or as a digest (see [`digest::plan`]).
+    async fn deliver_waiting(
+        &self,
+        api: &BotApi,
+        tg_chat: i64,
+        mut prompts: Vec<Prompt>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        let sent = {
+            let mut sends = lock(&self.card_sends);
+            let sent = sends.entry(tg_chat).or_default();
+            digest::prune(sent, now);
+            sent.clone()
+        };
+        let arrived: Vec<_> = prompts.iter().map(|p| p.created_at).collect();
+        match digest::plan(&sent, &arrived, now) {
+            Plan::Hold => {}
+            Plan::Cards => {
+                for prompt in &mut prompts {
+                    if self.send_card(api, prompt).await {
+                        self.note_card_sent(tg_chat, now);
+                    }
+                }
+            }
+            Plan::Digest => {
+                if self.send_digest(api, tg_chat, &mut prompts).await {
+                    self.note_card_sent(tg_chat, now);
+                }
             }
         }
     }
 
-    async fn send_card(&self, api: &BotApi, prompt: &mut Prompt) {
+    fn note_card_sent(&self, tg_chat: i64, at: chrono::DateTime<chrono::Utc>) {
+        lock(&self.card_sends).entry(tg_chat).or_default().push(at);
+    }
+
+    async fn send_digest(&self, api: &BotApi, tg_chat: i64, prompts: &mut [Prompt]) -> bool {
+        let lines: Vec<String> = prompts
+            .iter()
+            .enumerate()
+            .map(|(ix, p)| render::digest_line(ix + 1, &self.chat_title(&p.chat_id), &p.questions))
+            .collect();
+        let entries: Vec<DigestEntry<'_>> = prompts
+            .iter()
+            .enumerate()
+            .map(|(ix, p)| DigestEntry {
+                number: ix + 1,
+                prompt_id: p.id,
+                questions: &p.questions,
+            })
+            .collect();
+        let options = SendOptions {
+            keyboard: Some(render::digest_keyboard(&entries)),
+            html: true,
+            ..Default::default()
+        };
+        let text = render::digest_text(prompts.len(), &lines);
+        let Some(message) = self.send(api, tg_chat, &text, options).await else {
+            return false;
+        };
+        for (prompt, line) in prompts.iter_mut().zip(lines) {
+            prompt.message_id = Some(message.message_id);
+            prompt.card = line;
+            if let Err(err) = self.store.save_prompt(prompt) {
+                tracing::warn!(%err, "telegram: digest item not saved");
+            }
+        }
+        true
+    }
+
+    /// The other cards sharing `prompt`'s message, when it rides a digest.
+    fn digest_of(&self, prompt: &Prompt) -> Option<Vec<Prompt>> {
+        let message_id = prompt.message_id?;
+        self.store
+            .prompts_for_message_all(prompt.tg_chat, message_id)
+            .ok()
+            .filter(|members| members.len() > 1)
+    }
+
+    /// Re-render a digest from its items: waiting ones keep their buttons,
+    /// settled ones show their outcome.
+    async fn refresh_digest(&self, api: &BotApi, members: &[Prompt]) {
+        let Some(first) = members.first() else {
+            return;
+        };
+        let Some(message_id) = first.message_id else {
+            return;
+        };
+        let waiting: Vec<DigestEntry<'_>> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.state == PromptState::Pending)
+            .map(|(ix, p)| DigestEntry {
+                number: ix + 1,
+                prompt_id: p.id,
+                questions: &p.questions,
+            })
+            .collect();
+        let lines: Vec<String> = members.iter().map(|p| p.card.clone()).collect();
+        let text = render::digest_text(waiting.len(), &lines);
+        let keyboard = render::digest_keyboard(&waiting);
+        if let Err(err) = api
+            .edit_message_text(
+                first.tg_chat,
+                message_id,
+                &text,
+                Some(&keyboard),
+                Format::Html,
+            )
+            .await
+        {
+            tracing::warn!(%err, "telegram: digest not updated");
+        }
+    }
+
+    /// Settle `prompt` as `state` with `note` shown: its own card freezes
+    /// without buttons, or its digest line takes the note and the digest
+    /// re-renders.
+    async fn settle(&self, api: &BotApi, prompt: &mut Prompt, state: PromptState, note: &str) {
+        prompt.state = state;
+        match self.digest_of(prompt) {
+            Some(_) => {
+                prompt.card = format!("{}  {note}", prompt.card);
+                if let Err(err) = self.store.save_prompt(prompt) {
+                    tracing::warn!(%err, "telegram: digest item not saved");
+                }
+                if let Some(members) = self.digest_of(prompt) {
+                    self.refresh_digest(api, &members).await;
+                }
+            }
+            None => {
+                if prompt.message_id.is_some() {
+                    prompt.card = self.finish_card(api, prompt, note).await;
+                }
+                if let Err(err) = self.store.save_prompt(prompt) {
+                    tracing::warn!(%err, "telegram: card not saved");
+                }
+            }
+        }
+    }
+
+    /// Pull a digest item out into its own card (questions answer there).
+    pub(super) async fn show_prompt(
+        &self,
+        api: &BotApi,
+        link: &LinkedChat,
+        prompt_id: i64,
+    ) -> Option<String> {
+        let mut prompt = match self.store.prompt(prompt_id) {
+            Ok(Some(prompt)) if prompt.tg_chat == link.chat_id => prompt,
+            _ => return Some("That request is gone.".into()),
+        };
+        if prompt.state != PromptState::Pending {
+            return Some("Already answered.".into());
+        }
+        let digest = self.digest_of(&prompt);
+        prompt.message_id = None;
+        prompt.card.clear();
+        if let Err(err) = self.store.save_prompt(&prompt) {
+            tracing::warn!(%err, "telegram: card not saved");
+        }
+        if let Some(members) = digest {
+            let rest: Vec<Prompt> = members.into_iter().filter(|p| p.id != prompt.id).collect();
+            self.refresh_digest(api, &rest).await;
+        }
+        self.send_card(api, &mut prompt).await;
+        None
+    }
+
+    async fn send_card(&self, api: &BotApi, prompt: &mut Prompt) -> bool {
         let index = prompt.answers.len();
         let Some(question) = prompt.questions.get(index) else {
-            return;
+            return false;
         };
         let card = render::prompt_card(
             &self.chat_title(&prompt.chat_id),
@@ -180,7 +366,7 @@ impl Inner {
             ..Default::default()
         };
         let Some(message) = self.send(api, prompt.tg_chat, &card, options).await else {
-            return;
+            return false;
         };
         prompt.message_id = Some(message.message_id);
         prompt.card = card;
@@ -191,6 +377,7 @@ impl Inner {
         {
             tracing::warn!(%err, "telegram: approval card not saved");
         }
+        true
     }
 
     /// Freeze a card with `note` appended and its buttons removed.
@@ -207,15 +394,8 @@ impl Inner {
     }
 
     async fn close_prompt(&self, api: &BotApi, prompt: &mut Prompt, note: &str) {
-        if prompt.message_id.is_some() {
-            prompt.card = self
-                .finish_card(api, prompt, &format!("<i>{}</i>", escape_html(note)))
-                .await;
-        }
-        prompt.state = PromptState::Closed;
-        if let Err(err) = self.store.save_prompt(prompt) {
-            tracing::warn!(%err, "telegram: approval card not closed");
-        }
+        let note = format!("<i>{}</i>", escape_html(note));
+        self.settle(api, prompt, PromptState::Closed, &note).await;
     }
 
     /// Record `label` for the card's current question; the last answer
@@ -254,11 +434,8 @@ impl Inner {
         if let Err(err) = sent {
             return Answered::Failed(err.to_string());
         }
-        prompt.card = self.finish_card(api, &prompt, &outcome).await;
-        prompt.state = PromptState::Answered;
-        if let Err(err) = self.store.save_prompt(&prompt) {
-            tracing::warn!(%err, "telegram: answer not saved");
-        }
+        self.settle(api, &mut prompt, PromptState::Answered, &outcome)
+            .await;
         self.wake_delivery.notify_one();
         Answered::Sent
     }
@@ -297,6 +474,16 @@ impl Inner {
         let Some(question) = prompt.questions.get(prompt.answers.len()) else {
             return;
         };
+        if self.digest_of(&prompt).is_some() {
+            self.say(
+                api,
+                prompt.tg_chat,
+                "Use the buttons on that digest to answer.",
+                Some(reply_to),
+            )
+            .await;
+            return;
+        }
         let label = match &question.approval {
             None => Some(text.trim().to_string()),
             Some(approval) => approval.decision_for(text).and_then(|decision| {
