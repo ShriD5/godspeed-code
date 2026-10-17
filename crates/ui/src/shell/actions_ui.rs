@@ -10,10 +10,10 @@ use crate::project_actions::{
 };
 
 #[derive(Clone)]
-struct ProjectActionContext {
-    key: ProjectActionsKey,
-    chat_id: String,
-    target_device_id: Option<String>,
+pub(super) struct ProjectActionContext {
+    pub(super) key: ProjectActionsKey,
+    pub(super) chat_id: String,
+    pub(super) target_device_id: Option<String>,
 }
 
 
@@ -33,9 +33,21 @@ impl Shell {
             cx.notify();
             return;
         };
-
-        let panel = self.terminal_panel(cx);
         let title = format!("{} (setup)", run.action_name);
+        self.attach_host_terminal(chat_id, title, run, target_device_id, cx);
+    }
+
+    /// Show a terminal the host already started for `chat_id` (setup, wake)
+    /// as a tab of the chat's terminal panel, opened if the chat is showing.
+    pub(super) fn attach_host_terminal(
+        &mut self,
+        chat_id: String,
+        title: String,
+        run: ProjectActionRun,
+        target_device_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = self.terminal_panel(cx);
         let tab = panel.update(cx, |panel, cx| {
             panel.reserve_tab_for_chat(chat_id.clone(), title, cx)
         });
@@ -43,7 +55,7 @@ impl Shell {
             panel.attach_reserved_session(&chat_id, tab, run.terminal, target_device_id, cx)
         });
         if !attached {
-            self.show_notice(crate::toast::ToastKind::Error, "Setup action started, but its terminal could not be attached", cx);
+            self.show_notice(crate::toast::ToastKind::Error, format!("{} started, but its terminal could not be attached", run.action_name), cx);
         }
 
         let selected = self.active_chat == chat_id;
@@ -58,7 +70,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn project_action_context(&self, cx: &App) -> Option<ProjectActionContext> {
+    pub(super) fn project_action_context(&self, cx: &App) -> Option<ProjectActionContext> {
         let state = self.state.read(cx);
         let chat = state.selected_chat_row()?;
         let space_id = chat.space_id.clone()?;
@@ -715,7 +727,7 @@ impl Shell {
     }
 }
 
-fn project_action_params(
+pub(super) fn project_action_params(
     mut params: serde_json::Value,
     target_device_id: &Option<String>,
 ) -> serde_json::Value {

@@ -56,6 +56,7 @@ pub mod overscroll;
 pub mod pickers;
 pub mod popover;
 pub mod project_actions;
+pub mod worktree_env;
 pub mod pull_request_detail;
 mod pull_request_media;
 mod pull_request_skeleton;
