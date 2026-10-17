@@ -36,6 +36,7 @@ tokio-util = { workspace = true, features = ["rt"] }
 sha2.workspace = true
 reqwest.workspace = true
 ignore.workspace = true
+globset = "0.4"
 fff-search.workspace = true
 # Always-on agents: 5-field cron evaluated in IANA time zones (DST-aware).
 croner = "4"

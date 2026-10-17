@@ -38,9 +38,8 @@ use zeron_proto::{ConversationSourceContext, HarnessId, UserInputAnswer, UserInp
 use zeron_sync::DocsStore;
 
 use crate::http_error::describe_http_error;
-use crate::project_actions::{
-    ProjectActionSetupHandoff, ProjectActionsStore, launch_project_setup_action,
-};
+use crate::project_actions::{ProjectActionSetupHandoff, ProjectActionsStore};
+use crate::worktree_env::{ProjectScope, WorktreeEnvironments};
 use crate::sessions::{SessionsEngine, SteerOutcome};
 use crate::workspace_host::WorkspaceHost;
 use crate::{EngineError, Terminals, new_id, now_ms};
@@ -6007,9 +6006,22 @@ impl DocHost {
         sessions: &SessionsEngine,
         chat_id: &str,
         harness: HarnessId,
-        request: zeron_proto::RunRequest,
+        mut request: zeron_proto::RunRequest,
         message_id: Option<String>,
     ) -> Result<String, EngineError> {
+        if let Some(environments) = self.worktree_environments()
+            && !request.cwd.is_empty()
+        {
+            let cwd = std::path::Path::new(&request.cwd);
+            if environments.is_sleeping(cwd)
+                && let Err(err) = environments.wake(cwd, 120, 32)
+            {
+                tracing::warn!(chat = %chat_id, error = %err, "waking the chat's worktree failed");
+            }
+            for (name, value) in environments.environment_for(cwd) {
+                request.env.entry(name).or_insert(value);
+            }
+        }
         if let Some(workspace) = self.workspace()
             && let Some(context) = self.capture_source_context(&request.cwd).await
             && let Err(err) = workspace.set_chat_source_context(chat_id, &context)
@@ -6041,9 +6053,19 @@ impl DocHost {
             .repos
             .get()
             .ok_or_else(|| EngineError::Other("repos engine not wired".into()))?;
-        let worktree = repos
-            .create_worktree(std::path::Path::new(&spec.repo_path), &spec.base)
-            .await?;
+        let repo_path = std::path::Path::new(&spec.repo_path);
+        let worktree = match self.worktree_environments() {
+            Some(environments) => {
+                let scope = spec
+                    .space_id
+                    .as_deref()
+                    .and_then(|space_id| self.project_scope(space_id, &spec.repo_path).ok());
+                environments
+                    .create_worktree(repo_path, &spec.base, scope.as_ref())
+                    .await?
+            }
+            None => repos.create_worktree(repo_path, &spec.base).await?,
+        };
         tracing::info!(
             chat = %chat_id,
             path = %worktree.path,
@@ -6060,18 +6082,12 @@ impl DocHost {
         spec: &zeron_proto::WorktreeSpec,
         fresh_worktree: Option<&zeron_proto::Worktree>,
     ) {
-        let Some((project_actions, terminals)) = self.inner.project_action_runtime.get() else {
+        let Some((project_actions, _)) = self.inner.project_action_runtime.get() else {
             return;
         };
         let outcome = match (spec.space_id.as_deref(), fresh_worktree) {
             (Some(space_id), Some(worktree)) => self
-                .resolve_and_launch_worktree_setup(
-                    project_actions,
-                    terminals,
-                    space_id,
-                    spec,
-                    worktree,
-                )
+                .resolve_and_launch_worktree_setup(space_id, spec, worktree)
                 .unwrap_or_else(|err| ProjectActionSetupHandoff {
                     setup_action: None,
                     setup_error: Some(err.to_string()),
@@ -6086,12 +6102,36 @@ impl DocHost {
 
     fn resolve_and_launch_worktree_setup(
         &self,
-        project_actions: &ProjectActionsStore,
-        terminals: &Terminals,
         space_id: &str,
         spec: &zeron_proto::WorktreeSpec,
         worktree: &zeron_proto::Worktree,
     ) -> Result<ProjectActionSetupHandoff, EngineError> {
+        let scope = self.project_scope(space_id, &spec.repo_path)?;
+        let environments = self
+            .worktree_environments()
+            .ok_or_else(|| EngineError::Other("project actions not wired".into()))?;
+        let setup_action = environments.launch_setup(&scope, worktree, 120, 32)?;
+        Ok(ProjectActionSetupHandoff {
+            setup_action,
+            setup_error: None,
+        })
+    }
+
+    fn worktree_environments(&self) -> Option<WorktreeEnvironments> {
+        let repos = self.inner.repos.get()?;
+        let (project_actions, terminals) = self.inner.project_action_runtime.get()?;
+        Some(WorktreeEnvironments::new(
+            repos.clone(),
+            terminals.clone(),
+            project_actions.clone(),
+        ))
+    }
+
+    /// The local project `space_id`, checked to be the repository at
+    /// `repo_path`. The store keys configuration by the original Space path,
+    /// which may be a symlink; the canonical root is for validation and
+    /// execution only.
+    fn project_scope(&self, space_id: &str, repo_path: &str) -> Result<ProjectScope, EngineError> {
         let workspace = self
             .workspace()
             .ok_or_else(|| EngineError::Other("workspace host not wired".into()))?;
@@ -6103,31 +6143,16 @@ impl DocHost {
                 "Project belongs to another device".into(),
             ));
         }
-        let project_root = std::fs::canonicalize(&space.path)?;
-        let requested_root = std::fs::canonicalize(&spec.repo_path)?;
-        if project_root != requested_root {
+        let root = std::fs::canonicalize(&space.path)?;
+        if root != std::fs::canonicalize(repo_path)? {
             return Err(EngineError::Other(
                 "Project path does not match worktree repository".into(),
             ));
         }
-        // The store keys configuration by the original Space path, which may
-        // be a symlink. Keep canonical paths for validation and execution only.
-        let setup_action = project_actions
-            .setup_action(space_id, std::path::Path::new(&space.path))?
-            .map(|action| {
-                launch_project_setup_action(
-                    terminals,
-                    &action,
-                    &project_root,
-                    std::path::Path::new(&worktree.path),
-                    120,
-                    32,
-                )
-            })
-            .transpose()?;
-        Ok(ProjectActionSetupHandoff {
-            setup_action,
-            setup_error: None,
+        Ok(ProjectScope {
+            space_id: space.id,
+            space_path: space.path.into(),
+            root,
         })
     }
 
@@ -6171,6 +6196,7 @@ impl DocHost {
             resume: None,
             worktree: None,
             access: None,
+            env: Default::default(),
         };
         if let Some(mode) = access {
             request.set_access_mode(mode);

@@ -57,6 +57,7 @@ pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
 pub mod workspace_search;
+pub mod worktree_env;
 mod worktree_settings;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
@@ -91,6 +92,7 @@ pub use text_generation::TextGenerator;
 pub use titles::TitleGenerator;
 pub use uploads::{AttachmentChunk, Uploads};
 pub use workspace_files::WorkspaceFiles;
+pub use worktree_env::{ProjectScope, WorktreeEnvironments};
 pub use workspace_host::{
     DEFAULT_ORG_ID, DEFAULT_USER_ID, WORKSPACE_DOC_ID, WorkspaceHost, WorkspaceHostConfig,
 };
