@@ -413,6 +413,41 @@ impl SessionDoc {
         Ok(())
     }
 
+    /// A chat continued on another account through the provider's own fork:
+    /// the SOURCE's session id, which its first run forks rather than resumes
+    /// (only while the chat still points at it).
+    pub fn native_fork_session(&self) -> Option<String> {
+        self.meta_string("nativeForkSession")
+    }
+
+    pub fn set_native_fork_session(&self, session_id: &str) -> Result<(), DocError> {
+        self.doc
+            .get_map("meta")
+            .insert("nativeForkSession", session_id)?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// A chat continued on another account without a native fork: the
+    /// compact summary of its source that leads every fresh provider
+    /// session's first prompt.
+    pub fn carried_context(&self) -> Option<String> {
+        self.meta_string("carriedContext")
+    }
+
+    pub fn set_carried_context(&self, brief: &str) -> Result<(), DocError> {
+        self.doc.get_map("meta").insert("carriedContext", brief)?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    fn meta_string(&self, key: &str) -> Option<String> {
+        match self.doc.get_map("meta").get(key) {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+
     pub fn chat_id(&self) -> Option<String> {
         match self.doc.get_map("meta").get("chatId") {
             Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),

@@ -1,6 +1,7 @@
 //! Usage-limit recovery RPCs (`crate::limit_recovery`): the banner's
-//! choices and the device default. Forwarded on `targetDeviceId` to the
-//! engine that hosts the chat, whose timer acts on them.
+//! choices and the device default, plus continuing a chat on another
+//! account (`crate::account_handoff`). Forwarded on `targetDeviceId` to the
+//! engine that hosts the chat, whose timer and agent logins act on them.
 
 use super::*;
 use zeron_proto::{LimitRecoveryAction, LimitRecoverySettings};
@@ -11,6 +12,7 @@ pub(super) fn handles(method: &str) -> bool {
         methods::GET_LIMIT_RECOVERY_SETTINGS
             | methods::SET_LIMIT_RECOVERY_SETTINGS
             | methods::SET_CHAT_LIMIT_RECOVERY
+            | methods::CONTINUE_CHAT_ON_ACCOUNT
     )
 }
 
@@ -29,6 +31,22 @@ impl EngineRpc {
         method: &str,
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
+        if method == methods::CONTINUE_CHAT_ON_ACCOUNT {
+            let request: zeron_proto::ContinueOnAccountRequest = parse_params(params)?;
+            let handoff = crate::account_handoff::continue_on_account(
+                &self.workspace,
+                &self.doc_host,
+                &self.agent_accounts,
+                request,
+            )
+            .await
+            .map_err(|e| RpcError::Failed(e.to_string()))?;
+            // Same as ActivateAgentAccount: live voice calls hold the old login.
+            if handoff.switched {
+                self.voice.retire();
+            }
+            return RpcReply::value(&handoff.reply);
+        }
         let recovery = self
             .limit_recovery
             .as_ref()

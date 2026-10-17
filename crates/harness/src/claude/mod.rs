@@ -286,6 +286,11 @@ impl ClaudeHarness {
         }
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
+            // A chat continued on another account branches off its source's
+            // session instead of appending to it.
+            if option_is_on(&request.model_options, zeron_proto::FORK_SESSION_OPTION) {
+                cmd.arg("--fork-session");
+            }
         }
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
@@ -2118,6 +2123,23 @@ mod tests {
         let with = args(&harness.build_command(&new, &request, true));
         let at = with.iter().position(|a| a == "--thinking-display").unwrap();
         assert_eq!(with[at + 1], "summarized");
+        assert!(!with.contains(&"--fork-session".to_owned()));
+
+        // The fork flag only means something beside a session to resume.
+        let mut forking = request.clone();
+        forking
+            .model_options
+            .insert(zeron_proto::FORK_SESSION_OPTION.into(), json!(true));
+        assert!(!args(&harness.build_command(&new, &forking, true)).contains(&"--fork-session".to_owned()));
+        forking.resume = Some("source-session".into());
+        let forked = args(&harness.build_command(&new, &forking, true));
+        let at = forked.iter().position(|a| a == "--resume=source-session").unwrap();
+        assert_eq!(forked[at + 1], "--fork-session");
+        // ...and never changes which runtime the run is.
+        assert_eq!(
+            ClaudeHarness::launch_args(&forking),
+            ClaudeHarness::launch_args(&request)
+        );
     }
 
     /// pingdotgg/t3code#14237: an option's `preview` (the draft the user is

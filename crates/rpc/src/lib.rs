@@ -345,6 +345,10 @@ pub mod methods {
     pub const SET_LIMIT_RECOVERY_SETTINGS: &str = "SetLimitRecoverySettings";
     /// `{chatId, action: LimitRecoveryAction, resetAt?}` → `{limit: ChatLimit | null}`.
     pub const SET_CHAT_LIMIT_RECOVERY: &str = "SetChatLimitRecovery";
+    /// `ContinueOnAccountRequest` → `ContinueOnAccountReply`. Forks the chat
+    /// into a new one on another account or provider, on the chat's host
+    /// (whose agent logins it switches).
+    pub const CONTINUE_CHAT_ON_ACCOUNT: &str = "ContinueChatOnAccount";
 
     // Thread lifecycle (`zeron_proto::ChatLifecycle`). Relay-forwardable: the
     // host device runs the snooze and auto-settle timer for its chats.

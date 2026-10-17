@@ -57,6 +57,7 @@ icon_assets![
     // filled twin marks fast mode on.
     (FAST_TIER, "fast-tier"),
     (FAST_TIER_BOLD, "fast-tier-bold"),
+    (SPEEDOMETER, "speedometer"),
     // Solar Icons (Linear), CC BY 4.0 — 480 Design.
     (MONITOR, "monitor"),
     (SUN, "sun"),
@@ -373,6 +374,7 @@ mod tests {
             GIT_BRANCH,
             CLOSE_CIRCLE,
             FOLDER_TREE,
+            SPEEDOMETER,
         ] {
             let bytes = Assets.load(path).unwrap().unwrap();
             let image = renderer.render_single_frame(&bytes, 1.0).unwrap();

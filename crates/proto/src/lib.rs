@@ -4,6 +4,7 @@
 //! Context occupancy is replicated per chat; billing `Usage` remains a harness passthrough.
 
 pub mod access;
+pub mod account_usage;
 pub mod agent;
 pub mod agents;
 pub mod approval_risk;
@@ -29,6 +30,7 @@ pub mod workspace;
 pub mod worktree_env;
 
 pub use access::*;
+pub use account_usage::*;
 pub use agent::*;
 pub use approval_risk::{ApprovalRisk, approval_risk};
 pub use entities::*;

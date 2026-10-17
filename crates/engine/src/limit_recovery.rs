@@ -30,7 +30,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
-use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -102,16 +101,8 @@ impl ActiveLogins for AgentAccounts {
     }
 }
 
-/// An opaque digest of a set of account ids, safe to sync on the chat row.
-pub fn login_fingerprint<'a>(ids: impl Iterator<Item = &'a str>) -> Option<String> {
-    let mut ids: Vec<&str> = ids.collect();
-    if ids.is_empty() {
-        return None;
-    }
-    ids.sort_unstable();
-    let digest = Sha256::digest(ids.join("\n").as_bytes());
-    Some(digest[..12].iter().map(|b| format!("{b:02x}")).collect())
-}
+/// Shared with clients, which map a limit back to its account with it.
+pub use zeron_proto::login_fingerprint;
 
 /// The queue row id of the continuation that resumes `limit`: one per limit.
 pub fn resume_row_id(limit: &ChatLimit) -> String {
