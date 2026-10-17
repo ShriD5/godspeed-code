@@ -92,6 +92,7 @@ use panel_layout::{AuxiliaryPanel, FitInputs, HorizontalPanelFit, panel_content_
 mod panel_interaction_tests;
 pub(crate) mod project_icon;
 mod pull_request_pane;
+mod session_hover_card;
 mod session_info;
 mod side_chats;
 mod sidebar_pins;
@@ -2368,6 +2369,8 @@ pub struct Shell {
     /// under a still pointer would otherwise never show its archive pill;
     /// while set, rows adopt the hover from a paint-time hit test instead.
     chat_hover_resync: bool,
+    /// The sidebar row whose hover card shows (or waits out its dwell).
+    session_hover_card: session_hover_card::SessionHoverCard,
     /// Scroll position of the sidebar lists region (drives its edge fades).
     sidebar_scroll: gpui::ScrollHandle,
     /// In-flight reorder for the pinned section only.
@@ -2886,6 +2889,7 @@ impl Shell {
             project_icons: Default::default(),
             chat_status_hover: None,
             chat_hover_resync: false,
+            session_hover_card: Default::default(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             pinned_session_drag: None,
             pinned_session_drag_generation: 0,
@@ -3565,6 +3569,7 @@ impl Shell {
         }
         let from = self.sidebar_now();
         let before = self.painted_panels(cx);
+        self.session_hover_card.dismiss();
         self.sidebar_edge_bounce = None;
         self.sidebar_resize_edge = None;
         self.pane_resize_active = None;
@@ -8516,6 +8521,11 @@ impl Shell {
             .find(|chat| chat.id == id)
             .map(|chat| chat.device_id.clone());
         let compact = search_query.is_none() && self.settings.sidebar_compact;
+        let pr_surface = if search_query.is_some() {
+            crate::change_requests::ChangeRequestBadgeSurface::Sidebar
+        } else {
+            crate::change_requests::ChangeRequestBadgeSurface::SessionRow
+        };
         let show_label = search_query.is_some() || self.settings.sidebar_show_project_label;
         let remote = self
             .state
@@ -8820,18 +8830,24 @@ impl Shell {
                 .items_center()
                 .when(!preview, |el| el.cursor_pointer())
                 .when(corner_hovered, |el| {
-                    el.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                    el.on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.dismiss_session_card(cx);
                             cx.stop_propagation();
-                            this.chat_hover_resync = true;
-                            this.set_chat_archived(archive_id.clone(), !archived, cx);
-                        }))
-                        // Above the pill: below it the chip would cover the next row.
-                        .tooltip(crate::settings::widgets::text_tooltip_above(if archived {
-                            "Unarchive session"
-                        } else {
-                            ShortcutId::ArchiveSession.label()
-                        }))
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.chat_hover_resync = true;
+                        this.set_chat_archived(archive_id.clone(), !archived, cx);
+                    }))
+                    // Above the pill: below it the chip would cover the next row.
+                    .tooltip(crate::settings::widgets::text_tooltip_above(if archived {
+                        "Unarchive session"
+                    } else {
+                        ShortcutId::ArchiveSession.label()
+                    }))
                 })
                 .child(corner_body)
                 .into_any_element()
@@ -8850,6 +8866,21 @@ impl Shell {
         let rename_input = (search_query_none && !preview)
             .then(|| self.rename_input_for(&id, ChatRenameSurface::Sidebar))
             .flatten();
+        // Sidebar rows only: the palette's copy already spells out its row,
+        // and a row being renamed keeps the pointer's attention on the field.
+        let hover_card = (search_query_none
+            && !preview
+            && rename_input.is_none()
+            && self.session_hover_card.shown() == Some(id.as_str()))
+        .then(|| {
+            self.render_session_hover_card(
+                &id,
+                time_ago.clone(),
+                cx,
+            )
+        })
+        .flatten();
+        let card_id = id.clone();
         // Hover fades over transition-colors (godspeed session-row.tsx) — both
         // the wash and the title brighten ride the same 150ms blend.
         let fade_key = format!("{row_id}-hover");
@@ -8907,6 +8938,9 @@ impl Shell {
                     cx.listener(move |this, hovered: &bool, window, cx| {
                         fade_hover(hovered, window, cx);
                         this.chat_hover_resync = false;
+                        if search_query_none {
+                            this.hover_session_card(&card_id, *hovered, cx);
+                        }
                         if *hovered {
                             if this.chat_status_hover.as_deref() != Some(hover_id.as_str()) {
                                 this.chat_status_hover = Some(hover_id.clone());
@@ -8919,6 +8953,13 @@ impl Shell {
                     })
                 })
                 .cursor_pointer()
+                // Pressing, scrolling or opening the menu puts the hover card
+                // away: the row has the pointer's intent now.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.dismiss_session_card(cx)),
+                )
+                .on_scroll_wheel(cx.listener(|this, _, _, cx| this.dismiss_session_card(cx)))
                 .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
                     // The palette's copy of the row only opens; the sidebar's
                     // double-click edits the title in place.
@@ -8931,6 +8972,7 @@ impl Shell {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.dismiss_session_card(cx);
                         this.chat_menu.open(ChatMenuState {
                             tab: None,
                             chat_id: menu_id.clone(),
@@ -9004,6 +9046,41 @@ impl Shell {
                     .inset_0(),
                 )
             })
+            // Check both shown and pending cards after layout/occlusion
+            // changes under a stationary pointer. Unmounted rows are handled
+            // by the container's reconciliation.
+            .when(
+                !preview
+                    && search_query_none
+                    && rename_input.is_none()
+                    && self.session_hover_card.target() == Some(id.as_str()),
+                |el| {
+                    let shell = cx.weak_entity();
+                    let chat_id = id.clone();
+                    el.child(
+                        gpui::canvas(
+                            |bounds, window, _| {
+                                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                            },
+                            move |_, hitbox, window, cx| {
+                                if hitbox.is_hovered(window) {
+                                    return;
+                                }
+                                window.defer(cx, move |_, cx| {
+                                    shell
+                                        .update(cx, |this, cx| {
+                                            this.hover_session_card(&chat_id, false, cx)
+                                        })
+                                        .ok();
+                                });
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                },
+            )
+            .children(hover_card)
             // Line 1: "project @ device", status word / time-ago right.
             .when(!compact && show_label, |el| {
                 el.child(
@@ -9118,14 +9195,14 @@ impl Shell {
                                 crate::change_requests::pull_request_badge_preview(
                                     format!("{row_id}-compact-pr").into(),
                                     summary,
-                                    crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
+                                    pr_surface,
                                     theme,
                                 )
                             } else {
                                 crate::change_requests::pull_request_badge(
                                     format!("{row_id}-compact-pr").into(),
                                     summary,
-                                    crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
+                                    pr_surface,
                                     pr_device.clone(),
                                     theme,
                                 )
@@ -9157,9 +9234,13 @@ impl Shell {
                                 })
                                 .when(show_archive, |el| {
                                     el.cursor_pointer()
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation()
-                                        })
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _, _, cx| {
+                                                this.dismiss_session_card(cx);
+                                                cx.stop_propagation();
+                                            }),
+                                        )
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();
                                             this.chat_hover_resync = true;
@@ -9259,14 +9340,14 @@ impl Shell {
                                 crate::change_requests::pull_request_badge_preview(
                                     format!("{row_id}-pr").into(),
                                     summary,
-                                    crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
+                                    pr_surface,
                                     theme,
                                 )
                             } else {
                                 crate::change_requests::pull_request_badge_with_query(
                                     format!("{row_id}-pr").into(),
                                     summary,
-                                    crate::change_requests::ChangeRequestBadgeSurface::Sidebar,
+                                    pr_surface,
                                     search_query,
                                     pr_device.clone(),
                                     theme,
@@ -9447,6 +9528,7 @@ impl Shell {
     }
 
     fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        self.reconcile_session_hover_card(cx);
         if self.sidebar_session_transfer.as_ref().is_some_and(|drag| {
             !cx.has_active_drag() || !self.sidebar_session_transfer_is_valid(&drag.payload, cx)
         }) {
@@ -13891,6 +13973,14 @@ impl Render for Shell {
         self.reduced_motion = motion::reduced_motion(cx);
         self.motion_active.set(false);
         self.track_horizontal_fit(cx);
+        // The sidebar's render reconciles the card against its rows.
+        if !matches!(gate, GatePhase::Ready)
+            || restart_required
+            || matches!(self.route, Route::Settings(_))
+            || self.sidebar_target() <= 0.0
+        {
+            self.dismiss_session_card(cx);
+        }
         self.suspend_hidden_right_images(cx);
         // After the fit tracking, which starts a fit exit this frame.
         let browser_active = matches!(gate, GatePhase::Ready)
