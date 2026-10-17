@@ -93,8 +93,10 @@ pub(crate) struct Prompt {
     /// Answers so far, one per question already answered (in order).
     pub answers: Vec<UserInputAnswer>,
     pub state: PromptState,
-    /// The card's text as sent, for appending outcomes.
+    /// The card's text as sent, for appending outcomes (its line, when
+    /// it rides a digest).
     pub card: String,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +114,7 @@ pub(crate) struct TelegramStore {
 
 const LINK_COLUMNS: &str = "chat_id, label, linked_at, timezone, defaults, thread_id";
 const PROMPT_COLUMNS: &str =
-    "id, tg_chat, message_id, chat_id, request_id, questions, answers, state, card";
+    "id, tg_chat, message_id, chat_id, request_id, questions, answers, state, card, created_at";
 const SCHEDULE_COLUMNS: &str = "id, agent_id, tg_chat, label, created_at";
 
 fn link_from_row(row: &Row<'_>) -> rusqlite::Result<LinkedChat> {
@@ -141,6 +143,7 @@ fn prompt_from_row(row: &Row<'_>) -> rusqlite::Result<Prompt> {
         answers: serde_json::from_str(&answers).unwrap_or_default(),
         state: PromptState::parse(&state),
         card: row.get(8)?,
+        created_at: from_ms(row.get(9)?),
     })
 }
 
@@ -533,6 +536,26 @@ impl TelegramStore {
             )
             .optional()
             .map_err(store_err)
+    }
+
+    /// Every card sharing one message: more than one is a digest.
+    pub fn prompts_for_message_all(
+        &self,
+        tg_chat: i64,
+        message_id: i64,
+    ) -> Result<Vec<Prompt>, EngineError> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {PROMPT_COLUMNS} FROM prompts WHERE tg_chat = ?1 AND message_id = ?2 ORDER BY id"
+            ))
+            .map_err(store_err)?;
+        let rows = stmt
+            .query_map(params![tg_chat, message_id], prompt_from_row)
+            .map_err(store_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(store_err)?;
+        Ok(rows)
     }
 
     pub fn pending_prompts(&self) -> Result<Vec<Prompt>, EngineError> {

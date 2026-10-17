@@ -52,6 +52,7 @@
 //! whose checkout always lives on the routed target device.
 
 mod agents;
+mod attention;
 mod chat_lifecycle;
 mod limit_recovery;
 mod git_actions;
@@ -748,6 +749,7 @@ pub struct EngineRpc {
     message_index: Option<crate::MessageIndex>,
     agents: Option<crate::agents::Agents>,
     telegram: Option<crate::telegram::Telegram>,
+    attention: Option<crate::attention::AttentionService>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
     engine_info: EngineInfo,
@@ -802,6 +804,7 @@ impl EngineRpc {
             message_index: None,
             agents: None,
             telegram: None,
+            attention: None,
             limit_recovery: None,
             chat_lifecycle: None,
             engine_info,
@@ -887,6 +890,12 @@ impl EngineRpc {
     /// Attach the Telegram bot (its settings RPCs).
     pub fn with_telegram(mut self, telegram: crate::telegram::Telegram) -> Self {
         self.telegram = Some(telegram);
+        self
+    }
+
+    /// Attach the "Needs you" inbox.
+    pub fn with_attention(mut self, attention: crate::attention::AttentionService) -> Self {
+        self.attention = Some(attention);
         self
     }
 
@@ -1715,6 +1724,7 @@ fn forwardable(method: &str) -> bool {
     if voice_remote::handles(method)
         || agents::handles(method)
         || telegram::handles(method)
+        || attention::handles(method)
         || limit_recovery::handles(method)
     {
         return true;
@@ -1846,6 +1856,7 @@ fn is_stream_method(method: &str) -> bool {
             | methods::WATCH_QUEUE
             | methods::WATCH_AGENTS
             | methods::WATCH_TELEGRAM
+            | methods::WATCH_ATTENTION
             | methods::SUBSCRIBE_TERMINAL
             | methods::WATCH_CHECKOUT_DIFFS
             | methods::WATCH_WORKSPACE_GIT_STATUS
@@ -2139,6 +2150,9 @@ impl RpcService for EngineRpc {
         }
         if telegram::handles(method) {
             return self.telegram_rpc(method, params).await;
+        }
+        if attention::handles(method) {
+            return self.attention_rpc(method, params);
         }
         if message_search::handles(method) {
             return self.message_search_rpc(params).await;

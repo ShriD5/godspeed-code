@@ -6,7 +6,9 @@
 pub mod access;
 pub mod agent;
 pub mod agents;
+pub mod approval_risk;
 pub mod attachment_mentions;
+pub mod attention;
 pub mod chat_mentions;
 pub mod change_request_assessment;
 pub mod chat_import;
@@ -27,6 +29,7 @@ pub mod workspace;
 
 pub use access::*;
 pub use agent::*;
+pub use approval_risk::{ApprovalRisk, approval_risk};
 pub use entities::*;
 pub use git_actions::*;
 pub use message_search::*;

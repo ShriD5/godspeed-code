@@ -50,6 +50,10 @@ pub(crate) enum Callback {
         question: usize,
         option: usize,
     },
+    /// Send a digest item as its own card.
+    Show {
+        prompt: i64,
+    },
 }
 
 fn wire<T: serde::Serialize>(value: T) -> String {
@@ -79,6 +83,7 @@ impl Callback {
                 question,
                 option,
             } => format!("a:{prompt}:{question}:{option}"),
+            Self::Show { prompt } => format!("v:{prompt}"),
         }
     }
 
@@ -107,6 +112,9 @@ impl Callback {
                     option: parts.next()?.parse().ok()?,
                 }
             }
+            "v" => Self::Show {
+                prompt: rest.parse().ok()?,
+            },
             _ => return None,
         })
     }
@@ -135,6 +143,7 @@ mod tests {
                 question: 1,
                 option: 2,
             },
+            Callback::Show { prompt: 9_000_000 },
         ];
         for callback in all {
             let data = callback.encode();
@@ -149,7 +158,7 @@ mod tests {
 
     #[test]
     fn garbage_is_ignored() {
-        for data in ["", "zz", "h:nope", "s:1:q", "a:1:2", "m:x", "p:"] {
+        for data in ["", "zz", "h:nope", "s:1:q", "a:1:2", "m:x", "p:", "v:x"] {
             assert_eq!(Callback::decode(data), None, "{data}");
         }
     }

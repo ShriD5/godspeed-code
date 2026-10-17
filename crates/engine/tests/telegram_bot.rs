@@ -866,6 +866,107 @@ async fn approvals_show_the_exact_command_and_buttons_answer_through_the_ledger(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn bursts_of_agent_approvals_fold_into_one_digest_answered_in_place() {
+    let w = linked_world().await;
+    let mut runs = Vec::new();
+    for n in 1..=6 {
+        let agent = w
+            .core
+            .agents
+            .create(AgentDraft {
+                name: format!("Cleaner {n}"),
+                harness: HarnessId::ClaudeCode,
+                model: None,
+                reasoning: None,
+                space_id: SPACE.into(),
+                instructions: "APPROVE the nightly cleanup".into(),
+                enabled: true,
+                sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+                auto_approve: false,
+                access_mode: None,
+                triggers: vec![],
+            })
+            .unwrap();
+        runs.push(w.core.agents.run_now(&agent.id).await.unwrap());
+    }
+    let is_card = |b: &Value| {
+        b["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("Approval needed"))
+    };
+    let is_digest = |b: &Value| b["text"].as_str().is_some_and(|t| t.contains("need you"));
+    let lines = |b: &Value| {
+        b["text"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("Run command"))
+            .count()
+    };
+    eventually(
+        || {
+            let sent = w.mock.calls_to("sendMessage");
+            let cards = sent.iter().filter(|b| is_card(b)).count();
+            let digested: usize = sent.iter().filter(|b| is_digest(b)).map(lines).sum();
+            cards + digested == 6
+        },
+        "every approval as a card or a digest line",
+    )
+    .await;
+    let sent = w.mock.calls_to("sendMessage");
+    assert!(
+        sent.iter().filter(|b| is_card(b)).count() <= 3,
+        "no more than three cards in a minute"
+    );
+    let digest = sent
+        .iter()
+        .find(|b| is_digest(b) && lines(b) >= 2)
+        .cloned()
+        .expect("a digest of the burst");
+    let text = digest["text"].as_str().unwrap();
+    assert!(
+        text.contains("<code>rm -rf build/ &amp;&amp; make &lt;all&gt;</code>"),
+        "{text}"
+    );
+    let labels: Vec<String> = buttons(&digest).into_iter().map(|(t, _)| t).collect();
+    assert!(labels.contains(&"✅ 1".to_string()), "{labels:?}");
+    assert!(labels.contains(&"❌ 1".to_string()), "{labels:?}");
+
+    // Allowing one item answers it through the ledger and re-renders the
+    // digest with its outcome; the rest keep their buttons.
+    let digest_id = digest["__message_id"].as_i64().unwrap();
+    let waiting_before = lines(&digest);
+    w.mock.tap(USER, digest_id, &button(&digest, "✅ 1"));
+    let edited = w
+        .mock
+        .wait_for("editMessageText", |b| {
+            b["message_id"] == json!(digest_id)
+                && b["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("✅ Allow once"))
+        })
+        .await;
+    let edited_labels: Vec<String> = buttons(&edited).into_iter().map(|(t, _)| t).collect();
+    assert!(
+        !edited_labels.contains(&"✅ 1".to_string()),
+        "{edited_labels:?}"
+    );
+    assert_eq!(edited_labels.len(), (waiting_before - 1) * 2);
+    eventually(
+        || {
+            w.core
+                .agents
+                .list_runs(&Default::default())
+                .unwrap()
+                .iter()
+                .any(|r| r.summary.as_deref() == Some("Decision: approve."))
+        },
+        "the approved run to finish",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn messages_queue_behind_a_running_turn_and_stop_interrupts_it() {
     let w = linked_world().await;
 

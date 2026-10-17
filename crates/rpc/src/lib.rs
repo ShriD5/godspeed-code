@@ -305,6 +305,26 @@ pub mod methods {
     /// linked from now on.
     pub const SET_TELEGRAM_DEFAULTS: &str = "SetTelegramDefaults";
 
+    // "Needs you" inbox (`zeron_proto::attention`). Device-scoped like the
+    // chats and agent runs it folds together, so relay-forwardable.
+    /// `{}` → `AttentionSnapshot`.
+    pub const GET_ATTENTION: &str = "GetAttention";
+    /// Stream of `AttentionSnapshot`: current first, then one per change.
+    pub const WATCH_ATTENTION: &str = "WatchAttention";
+    /// `AttentionResponse {itemId, decision}` → `{}`. Approvals only.
+    pub const RESPOND_ATTENTION: &str = "RespondAttention";
+    /// `{itemIds}` → `BatchApproval`. Approves only items that are low-risk
+    /// approvals when the call lands; everything else is skipped.
+    pub const APPROVE_LOW_RISK: &str = "ApproveLowRisk";
+    /// `{itemId}` → `{dismissed}`: mark a finished, failed or timed-out item seen.
+    pub const DISMISS_ATTENTION: &str = "DismissAttention";
+    /// `{}` → `QuestionTimeoutSettings`.
+    pub const GET_QUESTION_TIMEOUT_SETTINGS: &str = "GetQuestionTimeoutSettings";
+    /// `QuestionTimeoutSettings` → `QuestionTimeoutSettings`.
+    pub const SET_QUESTION_TIMEOUT_SETTINGS: &str = "SetQuestionTimeoutSettings";
+    /// `{chatId, timeout: ChatQuestionTimeout | null}` → `QuestionTimeoutSettings`.
+    pub const SET_CHAT_QUESTION_TIMEOUT: &str = "SetChatQuestionTimeout";
+
     // Usage-limit recovery (`zeron_proto::ChatLimit`). Relay-forwardable: the
     // chat's host device owns the recovery timer and its default.
     /// `{}` → `LimitRecoverySettings`.

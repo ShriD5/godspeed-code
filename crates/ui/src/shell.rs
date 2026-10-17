@@ -79,7 +79,9 @@ mod file_mutations;
 mod find_bar;
 mod files_panel;
 mod git_actions_ui;
-mod harness_updates;
+pub(crate) mod harness_updates;
+mod inbox_entry;
+mod question_timeout_menu;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
@@ -216,6 +218,7 @@ enum ChatMenuPage {
     Root,
     Copy,
     Snooze,
+    QuestionTimeout,
 }
 
 impl ChatMenuPage {
@@ -224,6 +227,7 @@ impl ChatMenuPage {
         match key {
             CHAT_MENU_ROW_COPY => Self::Copy,
             CHAT_MENU_ROW_SNOOZE => Self::Snooze,
+            CHAT_MENU_ROW_QUESTION_TIMEOUT => Self::QuestionTimeout,
             _ => Self::Root,
         }
     }
@@ -233,6 +237,7 @@ impl ChatMenuPage {
             Self::Root => None,
             Self::Copy => Some(CHAT_MENU_ROW_COPY),
             Self::Snooze => Some(CHAT_MENU_ROW_SNOOZE),
+            Self::QuestionTimeout => Some(CHAT_MENU_ROW_QUESTION_TIMEOUT),
         }
     }
 }
@@ -248,6 +253,7 @@ const CHAT_MENU_ROW_SETTLE: u8 = 9;
 const CHAT_MENU_ROW_SNOOZE: u8 = 10;
 const CHAT_MENU_ROW_WAKE: u8 = 11;
 const CHAT_MENU_ROW_UNREAD: u8 = 12;
+const CHAT_MENU_ROW_QUESTION_TIMEOUT: u8 = 13;
 
 #[derive(Clone, Copy)]
 enum TabCloseAction {
@@ -332,7 +338,9 @@ fn composer_target_width(panel_width: f32, content_width: f32, docked: bool) -> 
 }
 
 fn titlebar_new_session_alpha(route: &Route, has_selected_chat: bool) -> f32 {
-    if matches!(route, Route::PullRequests) || (matches!(route, Route::Chat) && has_selected_chat) {
+    if matches!(route, Route::PullRequests | Route::Inbox)
+        || (matches!(route, Route::Chat) && has_selected_chat)
+    {
         1.0
     } else {
         0.0
@@ -805,6 +813,8 @@ fn settings_open_route(route: &str, remembered: SettingsSection) -> Option<Setti
 pub enum Route {
     Chat,
     PullRequests,
+    /// The "Needs you" queue.
+    Inbox,
     Settings(SettingsSection),
 }
 
@@ -961,6 +971,7 @@ pub enum NavEntry {
     /// A chat route; the id of the selected chat ("" = the new-chat canvas).
     Chat(String),
     PullRequests,
+    Inbox,
     /// One pull request's detail view over the board, and the device whose
     /// `gh` reads it (`None` = this device).
     PullRequest {
@@ -2223,6 +2234,12 @@ pub struct Shell {
     /// Route history behind the titlebar back/forward buttons (§ nav history).
     nav: NavHistory,
     pull_requests_page: Option<Entity<PullRequestsPage>>,
+    inbox_page: Option<Entity<crate::inbox::InboxPage>>,
+    inbox_page_sub: Option<Subscription>,
+    /// Focus the inbox on its next render (entering the route).
+    inbox_focus_pending: bool,
+    /// The local engine's question timeouts, for the chat menu (loaded on use).
+    question_timeouts: Option<zeron_proto::attention::QuestionTimeoutSettings>,
     /// Opened pull requests, as tabs in a pane beside the board.
     pull_request_pane: pull_request_pane::PullRequestPane,
     /// A detail view a history step landed on, opened by the next render
@@ -2623,6 +2640,7 @@ impl Shell {
         let open_route = std::env::var("GODSPEED_OPEN_ROUTE").ok();
         let route = match open_route.as_deref() {
             Some("pull-requests") => Route::PullRequests,
+            Some("inbox") => Route::Inbox,
             Some(route) if route == "settings" || route.starts_with("settings/") => {
                 match settings_open_route(route, settings.settings_section) {
                     Some(section) => {
@@ -2665,6 +2683,7 @@ impl Shell {
         let nav = NavHistory::new(match route {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::PullRequests => NavEntry::PullRequests,
+            Route::Inbox => NavEntry::Inbox,
             Route::Settings(section) => NavEntry::Settings(section),
         });
         // Parent notifications carry presentation changes (session status,
@@ -2760,6 +2779,10 @@ impl Shell {
             settings_return_route: Route::Chat,
             nav,
             pull_requests_page: None,
+            inbox_page: None,
+            inbox_page_sub: None,
+            inbox_focus_pending: false,
+            question_timeouts: None,
             pull_request_pane: Default::default(),
             pending_pull_request: None,
             pull_request_cache: Default::default(),
@@ -5461,6 +5484,9 @@ impl Shell {
         if open {
             let submenu = match page {
                 ChatMenuPage::Snooze => self.render_snooze_submenu(chat_id, theme, cx),
+                ChatMenuPage::QuestionTimeout => {
+                    self.render_question_timeout_submenu(chat_id, theme, cx)
+                }
                 _ => self.render_chat_copy_submenu(chat_id, theme, cx),
             };
             row = row.child(popover::nested_menu(
@@ -5820,6 +5846,7 @@ impl Shell {
                 self.enter_pull_requests_route(cx);
                 self.dismiss_pull_request_detail(cx);
             }
+            NavEntry::Inbox => self.enter_inbox_route(cx),
             NavEntry::PullRequest { url, device } => {
                 self.enter_pull_requests_route(cx);
                 // The detail view needs the window; the next render opens it.
@@ -9750,6 +9777,7 @@ impl Shell {
             .flex_col()
             // (No titlebar strip: the unified window titlebar spans the whole
             // window above this column.)
+            .child(self.render_inbox_entry(theme, cx))
             .child(filter_row)
             .child(sidebar_lists)
             // Global connection pill (durable-by-design UI truth): appears
@@ -11114,6 +11142,7 @@ impl Shell {
                     );
                     let menu = menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_PIN, pin, cx));
                     let menu = self.render_lifecycle_menu_rows(menu, &chat_id, &theme, cx);
+                    let menu = self.render_question_timeout_row(menu, &chat_id, &theme, cx);
                     menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_ARCHIVE, archive, cx))
                         .child(self.chat_menu_hover_row(CHAT_MENU_ROW_COPY, copy, cx))
                 };
@@ -11388,6 +11417,9 @@ impl Shell {
         let theme = &theme_owned;
         let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
 
+        if matches!(self.route, Route::Inbox) {
+            return self.render_inbox_outlet(window, cx);
+        }
         if matches!(self.route, Route::PullRequests) {
             if self.pull_requests_page.is_none() {
                 self.pull_requests_page =
@@ -19133,6 +19165,45 @@ mod settings_modal_regressions {
                 shell.close_settings(cx);
                 assert_eq!(shell.route, Route::PullRequests);
                 assert_eq!(shell.nav.current(), &NavEntry::PullRequests);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn the_inbox_is_a_route_with_history_and_opening_an_item_lands_in_its_chat(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        init_settings_test(settings::UiSettings::default(), dir.path(), cx);
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        window
+            .update(cx, |shell, _, cx| {
+                shell.open_inbox(cx);
+                assert_eq!(shell.route, Route::Inbox);
+                assert_eq!(shell.nav.current(), &NavEntry::Inbox);
+                assert!(shell.inbox_focus_pending);
+                shell.open_chat("chat-1".into(), cx);
+                assert_eq!(shell.route, Route::Chat);
+                shell.navigate_back(cx);
+                assert_eq!(shell.route, Route::Inbox);
+                shell.open_settings(SettingsSection::General, cx);
+                shell.close_settings(cx);
+                assert_eq!(shell.route, Route::Inbox);
             })
             .unwrap();
     }

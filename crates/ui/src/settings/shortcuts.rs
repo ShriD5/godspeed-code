@@ -88,6 +88,8 @@ pub struct ShortcutsPage {
     usage_limits: Entity<crate::settings::usage_limits::UsageLimitsCard>,
     /// Settings → General's opt-in auto-settle of inactive threads.
     thread_lifecycle: Entity<crate::settings::thread_lifecycle::ThreadLifecycleCard>,
+    /// Settings → General's opt-in question timeout default.
+    question_timeout: Entity<crate::settings::question_timeout::QuestionTimeoutCard>,
     worktrees: Entity<super::worktrees::WorktreeSettingsCard>,
     _state: Entity<AppState>,
 }
@@ -140,6 +142,10 @@ impl ShortcutsPage {
             thread_lifecycle: {
                 let state = state.clone();
                 cx.new(|cx| crate::settings::thread_lifecycle::ThreadLifecycleCard::new(state, cx))
+            },
+            question_timeout: {
+                let state = state.clone();
+                cx.new(|cx| crate::settings::question_timeout::QuestionTimeoutCard::new(state, cx))
             },
             worktrees: cx.new(|cx| super::worktrees::WorktreeSettingsCard::new(state.clone(), cx)),
             _state: state,
@@ -978,6 +984,7 @@ impl Render for ShortcutsPage {
                                     .child(self.thread_naming.clone())
                                     .child(self.usage_limits.clone())
                                     .child(self.thread_lifecycle.clone())
+                                    .child(self.question_timeout.clone())
                                     .child(self.worktrees.clone()),
                             ),
                     )

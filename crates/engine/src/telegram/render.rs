@@ -266,6 +266,111 @@ pub(crate) fn prompt_keyboard(
     }
 }
 
+/// One item's line in a digest: what it is waiting on, in one line.
+pub(crate) fn digest_line(
+    number: usize,
+    chat_title: &str,
+    questions: &[UserInputQuestion],
+) -> String {
+    let what = match questions {
+        [question] => match &question.approval {
+            Some(approval) => {
+                let detail = approval.command.as_deref().unwrap_or(&approval.title);
+                format!(
+                    "{}: <code>{}</code>",
+                    escape_html(approval.kind.label()),
+                    escape_html(&truncated(detail.lines().next().unwrap_or_default(), 120))
+                )
+            }
+            None => format!("❓ {}", escape_html(&truncated(&question.question, 120))),
+        },
+        [first, rest @ ..] => format!(
+            "❓ {} (+{} more)",
+            escape_html(&truncated(&first.question, 100)),
+            rest.len()
+        ),
+        [] => "❓".into(),
+    };
+    format!(
+        "{number}. <b>{}</b> · {what}",
+        escape_html(&truncated(chat_title, 60))
+    )
+}
+
+/// A digest message: a header counting what still waits, then every
+/// item's line (answered ones carry their outcome).
+pub(crate) fn digest_text(waiting: usize, lines: &[String]) -> String {
+    let header = match waiting {
+        0 => "🗂 <b>All handled</b>".to_string(),
+        1 => "🗂 <b>1 needs you</b>".to_string(),
+        n => format!("🗂 <b>{n} need you</b>"),
+    };
+    format!("{header}\n\n{}", lines.join("\n"))
+}
+
+/// A digest item still waiting, for its button row.
+pub(crate) struct DigestEntry<'a> {
+    pub number: usize,
+    pub prompt_id: i64,
+    pub questions: &'a [UserInputQuestion],
+}
+
+/// One row per waiting item: a single approval answers in place (allow /
+/// deny); anything else opens its own card.
+pub(crate) fn digest_keyboard(entries: &[DigestEntry<'_>]) -> Keyboard {
+    entries
+        .iter()
+        .map(|entry| {
+            let approval = match entry.questions {
+                [question] => question.approval.as_ref(),
+                _ => None,
+            };
+            let answer = |option: usize, label: String| {
+                Button::new(
+                    &label,
+                    Callback::Answer {
+                        prompt: entry.prompt_id,
+                        question: 0,
+                        option,
+                    }
+                    .encode(),
+                )
+            };
+            match approval {
+                Some(approval) => {
+                    let allow = approval
+                        .decisions
+                        .iter()
+                        .position(|o| o.decision == ApprovalDecision::Approve)
+                        .or_else(|| {
+                            approval
+                                .decisions
+                                .iter()
+                                .position(|o| o.decision.approves())
+                        });
+                    let decline = approval.decline();
+                    let deny = approval
+                        .decisions
+                        .iter()
+                        .position(|o| o.decision == decline);
+                    allow
+                        .map(|ix| answer(ix, format!("✅ {}", entry.number)))
+                        .into_iter()
+                        .chain(deny.map(|ix| answer(ix, format!("❌ {}", entry.number))))
+                        .collect()
+                }
+                None => vec![Button::new(
+                    &format!("💬 Answer {}", entry.number),
+                    Callback::Show {
+                        prompt: entry.prompt_id,
+                    }
+                    .encode(),
+                )],
+            }
+        })
+        .collect()
+}
+
 /// The answer label button `option` stands for.
 pub(crate) fn option_label(question: &UserInputQuestion, option: usize) -> Option<String> {
     match &question.approval {
@@ -277,6 +382,67 @@ pub(crate) fn option_label(question: &UserInputQuestion, option: usize) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digests_list_every_item_and_answer_approvals_in_place() {
+        let mut approval = ApprovalRequest::new(ApprovalKind::Command, "Run it");
+        approval.command = Some("git push <origin>".into());
+        let approval = vec![approval.into_question("q1")];
+        let question = vec![UserInputQuestion {
+            id: "q".into(),
+            header: "Pick".into(),
+            question: "Which database?".into(),
+            options: vec![],
+            multi_select: false,
+            prefill: None,
+            multiline: false,
+            approval: None,
+        }];
+        let lines = vec![
+            digest_line(1, "Fix auth", &approval),
+            digest_line(2, "Docs", &question),
+        ];
+        assert_eq!(
+            lines[0],
+            "1. <b>Fix auth</b> · Run command: <code>git push &lt;origin&gt;</code>"
+        );
+        assert_eq!(lines[1], "2. <b>Docs</b> · ❓ Which database?");
+        assert_eq!(
+            digest_text(2, &lines),
+            format!("🗂 <b>2 need you</b>\n\n{}\n{}", lines[0], lines[1])
+        );
+        assert!(digest_text(0, &lines).starts_with("🗂 <b>All handled</b>"));
+        let keyboard = digest_keyboard(&[
+            DigestEntry {
+                number: 1,
+                prompt_id: 40,
+                questions: &approval,
+            },
+            DigestEntry {
+                number: 2,
+                prompt_id: 41,
+                questions: &question,
+            },
+        ]);
+        let rows: Vec<Vec<(String, String)>> = keyboard
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|b| (b.text.clone(), b.callback_data.clone()))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                vec![
+                    ("✅ 1".to_string(), "a:40:0:0".to_string()),
+                    ("❌ 1".to_string(), "a:40:0:2".to_string())
+                ],
+                vec![("💬 Answer 2".to_string(), "v:41".to_string())],
+            ]
+        );
+    }
 
     #[test]
     fn short_text_is_one_chunk_and_empty_is_none() {

@@ -269,6 +269,7 @@ impl Inner {
                 self.answer_button(api, &link, prompt, question, option)
                     .await
             }
+            Callback::Show { prompt } => self.show_prompt(api, &link, prompt).await,
         };
         let _ = api.answer_callback_query(&query.id, toast.as_deref()).await;
     }
