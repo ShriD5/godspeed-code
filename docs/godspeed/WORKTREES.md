@@ -73,7 +73,9 @@ Commands can use these templates, filled in when they run:
 | `{{port}}` | The first port of the block |
 | `{{port.web}}`, `{{port.1}}` | A named port, or the port at an offset |
 
-Values are inserted as they are; quote paths that may contain spaces. Saving an environment
+Values with spaces or shell characters (a path like `/code/my app`, a branch with `$`) are quoted
+for you, so don't wrap templates in quotes yourself; plain values such as slugs and ports are
+inserted as they are, so `app_{{slug}}` stays one word. Saving an environment
 checks every template (an unknown name, or a port outside the block, is refused).
 
 The branch template can use `{{prefix}}` (the branch prefix setting), `{{slug}}` (required, so

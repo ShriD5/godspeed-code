@@ -37,10 +37,18 @@ impl WorktreeContext {
         zeron_proto::worktree_env::render_template(template, |name| self.lookup(name))
     }
 
+    /// Render shell commands. Values that aren't plain words (paths with
+    /// spaces, branch names with `$` or `;`) are quoted so they stay one
+    /// argument and never run as code; slugs and ports stay bare, so
+    /// `app_{{slug}}` still reads as one word.
     pub fn render_all(&self, templates: &[String]) -> Result<Vec<String>, String> {
         templates
             .iter()
-            .map(|template| self.render(template))
+            .map(|template| {
+                zeron_proto::worktree_env::render_template(template, |name| {
+                    self.lookup(name).map(|value| shell_word(&value))
+                })
+            })
             .collect()
     }
 
@@ -60,6 +68,21 @@ impl WorktreeContext {
             environment.extend(port_environment(ports));
         }
         environment
+    }
+}
+
+fn shell_word(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./:@%+=,".contains(c));
+    if plain {
+        return value.to_string();
+    }
+    if cfg!(windows) {
+        format!("\"{}\"", value.replace('"', ""))
+    } else {
+        super::scripts::sh_quote(value)
     }
 }
 
@@ -118,6 +141,15 @@ mod tests {
             "createdb app_swift-otter -p 41012 # godspeed/swift-otter 41011"
         );
         assert!(context.render("{{port.nope}}").is_err());
+        let mut hostile = context.clone();
+        hostile.branch = "x$(touch pwned);y".into();
+        hostile.root = "/code/my app".into();
+        assert_eq!(
+            hostile
+                .render_all(&["git log {{branch}} && cd {{root}} && createdb app_{{slug}}".into()])
+                .unwrap(),
+            vec!["git log 'x$(touch pwned);y' && cd '/code/my app' && createdb app_swift-otter"]
+        );
         let environment = context.environment();
         assert_eq!(environment["GODSPEED_PORT"], "41010");
         assert_eq!(environment["GODSPEED_PORT_1"], "41011");
