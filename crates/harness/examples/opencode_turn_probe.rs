@@ -131,6 +131,7 @@ async fn main() {
             Ok(AgentEvent::Usage {
                 input_tokens,
                 output_tokens,
+                ..
             }) => {
                 eprintln!("USAGE {input_tokens}/{output_tokens}");
             }

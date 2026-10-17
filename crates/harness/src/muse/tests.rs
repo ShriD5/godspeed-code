@@ -325,7 +325,9 @@ fn usage_notifications_map_to_billing_and_context_occupancy() {
         usage,
         [AgentEvent::Usage {
             input_tokens: 130,
-            output_tokens: 12
+            output_tokens: 12,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }]
     );
     let context = norm.map(

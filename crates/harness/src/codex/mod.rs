@@ -1327,6 +1327,9 @@ async fn run_session(session: Session) {
     let mut reasoning_streams: HashMap<String, ReasoningStream> = HashMap::new();
     // Token usage is held until the turn ends, emitted just before Done.
     let mut pending_usage: Option<AgentEvent> = None;
+    // The thread's running token total just before the current turn's first
+    // response — what `usage_event` subtracts. Cleared at turn boundaries.
+    let mut turn_usage_base: Option<normalize::TokenCounts> = None;
     // Latest `account/rateLimits/updated` snapshot: where a usage-limited
     // turn's reset comes from.
     let mut rate_limits: Option<Value> = None;
@@ -1553,7 +1556,7 @@ async fn run_session(session: Session) {
                     "thread/tokenUsage/updated" => {
                         if let Some(usage) = normalize::context_usage_event(&params)
                             && !send(&event_tx, usage).await { break 'main; }
-                        if let Some(usage) = usage_event(&params) {
+                        if let Some(usage) = usage_event(&params, &mut turn_usage_base) {
                             pending_usage = Some(usage);
                         }
                     }
@@ -1593,6 +1596,7 @@ async fn run_session(session: Session) {
                         // Item ids never span turns; without this the set grew
                         // one entry per message for a persistent session's life.
                         streamed_text.clear();
+                        turn_usage_base = None;
                         if let Some(usage) = pending_usage.take()
                             && !send(&event_tx, usage).await
                         {
@@ -1683,6 +1687,7 @@ async fn run_session(session: Session) {
                         router.note_completed(&id);
                         stop_when_announced = false;
                         accepted_steers.clear();
+                        turn_usage_base = None;
                         if let Some(usage) = pending_usage.take()
                             && !send(&event_tx, usage).await
                         {

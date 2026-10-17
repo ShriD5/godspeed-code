@@ -346,7 +346,9 @@ async fn happy_path_maps_shim_frames_and_tags_subagents() {
 
     assert!(events.contains(&AgentEvent::Usage {
         input_tokens: 11,
-        output_tokens: 5
+        output_tokens: 5,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
     }));
     assert!(matches!(
         events.last(),

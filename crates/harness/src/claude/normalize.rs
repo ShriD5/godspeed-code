@@ -948,9 +948,12 @@ impl Normalizer {
                 if let Some(id) = &f.session_id {
                     self.session_id = Some(id.clone());
                 }
+                // The result's usage sums every API call of the turn.
                 let usage = AgentEvent::Usage {
                     input_tokens: f.usage.input_tokens,
                     output_tokens: f.usage.output_tokens,
+                    cache_read_tokens: f.usage.cache_read_input_tokens,
+                    cache_write_tokens: f.usage.cache_creation_input_tokens,
                 };
                 let error_shown = std::mem::take(&mut self.turn_error_shown);
                 let limited = std::mem::take(&mut self.turn_limited);
