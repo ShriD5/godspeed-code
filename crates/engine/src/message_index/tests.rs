@@ -20,6 +20,7 @@ fn entry(id: &str, role: MessageRole, text: &str, created_at: i64) -> SessionMes
         status: Some(MessageStatus::Complete),
         continuation_of: None,
         duration_ms: None,
+        turn_stats: None,
     }
 }
 

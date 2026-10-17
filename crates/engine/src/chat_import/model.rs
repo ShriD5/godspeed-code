@@ -237,6 +237,7 @@ pub(crate) fn message_entries(
             status: Some(MessageStatus::Complete),
             continuation_of: (index > 0).then(|| root.clone()),
             duration_ms: None,
+            turn_stats: None,
         })
         .collect()
 }

@@ -1744,6 +1744,7 @@ pub fn rows_for_entry(
                 let work_entry = SessionMessageEntry {
                     parts: work_parts,
                     duration_ms: None,
+                    turn_stats: None,
                     continuation_of: None,
                     ..entry.clone()
                 };
@@ -11835,6 +11836,7 @@ mod tests {
             status: Some(status),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         }
     }
 
@@ -15949,6 +15951,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         };
         let rows = rows_for_entry(&user, true, false, &mut parse);
         assert_eq!(rows.len(), 1);

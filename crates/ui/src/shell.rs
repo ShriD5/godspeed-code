@@ -3114,6 +3114,7 @@ impl Shell {
                     status: None,
                     continuation_of: None,
                     duration_ms: None,
+                    turn_stats: None,
                 };
                 state.update(cx, |s, cx| {
                     s.push_echo(&chat_id, echo);

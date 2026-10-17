@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::{SessionCommandEntry, SessionCommandStatus};
 use crate::constants::{SESSION_SCHEMA_VERSION, TAIL_MESSAGE_COUNT};
-use crate::parts::{MessagePart, MessageStatus, SubagentStatus};
+use crate::parts::{MessagePart, MessageStatus, SubagentStatus, ToolDiffStat};
+use crate::turn_stats::TurnStats;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DocError {
@@ -59,6 +60,11 @@ pub struct SessionMessageEntry {
     /// the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
+    /// What the turn cost and touched ([`TurnStats`]), stamped by the host
+    /// on the turn's last assistant entry once it ends. Additive: absent on
+    /// older docs, user rows, and segments a turn continued past.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_stats: Option<TurnStats>,
 }
 
 /// The doc-resident flat part map (`DocMessagePart` in TS). Distinct from the app-layer
@@ -672,6 +678,56 @@ impl SessionDoc {
         Ok(false)
     }
 
+    /// Stamp a finished turn's [`TurnStats`] on its entry. Returns `false`
+    /// when no entry with that id exists.
+    pub fn set_turn_stats(&self, message_id: &str, stats: &TurnStats) -> Result<bool, DocError> {
+        let Some(map) = self.message_map(message_id) else {
+            return Ok(false);
+        };
+        map.insert("turnStats", serde_json::to_string(stats)?)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Add the turn's changed files to its stamped stats (the checkout diff
+    /// lands after the rest; see [`TurnStats::files`]). Returns `false` when
+    /// no entry with that id exists.
+    pub fn set_turn_files(
+        &self,
+        message_id: &str,
+        files: Vec<ToolDiffStat>,
+    ) -> Result<bool, DocError> {
+        let Some(map) = self.message_map(message_id) else {
+            return Ok(false);
+        };
+        let mut stats = match map.get("turnStats") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(raw))) => {
+                TurnStats::parse(&raw).unwrap_or_default()
+            }
+            _ => TurnStats::default(),
+        };
+        stats.files = Some(files);
+        map.insert("turnStats", serde_json::to_string(&stats)?)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    fn message_map(&self, message_id: &str) -> Option<LoroMap> {
+        let messages = self.doc.get_list("messages");
+        // Newest first: stats land on the turn that just ended.
+        (0..messages.len()).rev().find_map(|i| match messages.get(i) {
+            Some(loro::ValueOrContainer::Container(loro::Container::Map(map)))
+                if matches!(
+                    map.get("id"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == message_id
+                ) =>
+            {
+                Some(map)
+            }
+            _ => None,
+        })
+    }
+
     /// Append an error part to an existing entry (crash recovery: the aborted
     /// entry must SAY why it ended — "Run interrupted by engine restart…" —
     /// not just truncate silently). Returns `false` when no entry matches.
@@ -868,6 +924,9 @@ fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Resu
     if let Some(duration_ms) = entry.duration_ms {
         map.insert("durationMs", duration_ms)?;
     }
+    if let Some(stats) = &entry.turn_stats {
+        map.insert("turnStats", serde_json::to_string(stats)?)?;
+    }
     Ok(())
 }
 
@@ -981,6 +1040,9 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
         continuation_of: Option<String>,
         #[serde(default)]
         duration_ms: Option<i64>,
+        /// Atomic JSON string ([`TurnStats`]); read leniently.
+        #[serde(default)]
+        turn_stats: Option<serde_json::Value>,
     }
     match serde_json::from_value::<RawEntry>(v.clone()) {
         Ok(raw) => Ok(SessionMessageEntry {
@@ -992,6 +1054,7 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
             status: raw.status,
             continuation_of: raw.continuation_of,
             duration_ms: raw.duration_ms,
+            turn_stats: raw.turn_stats.as_ref().and_then(parse_turn_stats),
         }),
         // 2026-08-10 incident rule: a missing field must cost AT MOST what
         // the field carried — never the entry, never the transcript. Rooms
@@ -1057,7 +1120,14 @@ fn salvage_entry(
             .and_then(|s| serde_json::from_value(s.clone()).ok()),
         continuation_of: str_field("continuationOf"),
         duration_ms: obj.get("durationMs").and_then(|x| x.as_i64()),
+        turn_stats: obj.get("turnStats").and_then(parse_turn_stats),
     })
+}
+
+/// `turnStats` is written as a JSON string; anything else (or a string that
+/// doesn't parse) reads as no stats — never as a failed entry.
+fn parse_turn_stats(value: &serde_json::Value) -> Option<TurnStats> {
+    value.as_str().and_then(TurnStats::parse)
 }
 
 /// Salvage one part whose strict `DocPartJson` parse failed: infer the kind
@@ -1145,6 +1215,9 @@ pub fn join_continuation_entries(entries: Vec<SessionMessageEntry>) -> Vec<Sessi
                     if entry.duration_ms.is_some() {
                         out[at].duration_ms = entry.duration_ms;
                     }
+                    if entry.turn_stats.is_some() {
+                        out[at].turn_stats = entry.turn_stats;
+                    }
                 } else {
                     // Orphan continuation — surface as its own entry rather than dropping.
                     out.push(entry);
@@ -1201,6 +1274,7 @@ impl<'a> SegmentWriter<'a> {
                 status: Some(MessageStatus::Streaming),
                 continuation_of: None,
                 duration_ms: None,
+                turn_stats: None,
             },
         )?;
         map.insert_container("parts", LoroList::new())?;
@@ -1475,6 +1549,7 @@ mod tests {
         };
         doc.push_message(&SessionMessageEntry {
             duration_ms: None,
+            turn_stats: None,
             id: "fork:side".into(),
             role: MessageRole::System,
             parts: vec![seam.clone()],
@@ -1509,6 +1584,7 @@ mod tests {
                 status: Some(MessageStatus::Complete),
                 continuation_of: (segment > 0).then(|| "segment-0".into()),
                 duration_ms: None,
+                turn_stats: None,
             })
             .unwrap();
         }
@@ -1529,6 +1605,49 @@ mod tests {
             doc.export_snapshot().unwrap(),
             "preview never mutates storage"
         );
+    }
+
+    #[test]
+    fn turn_stats_stamp_merge_files_and_survive_sync() {
+        let doc = SessionDoc::init("receipts").unwrap();
+        let parts = vec![MessagePart::Text {
+            id: "t0".into(),
+            text: "done".into(),
+        }];
+        let writer = SegmentWriter::begin(&doc, "a", "owner", 1).unwrap();
+        writer.finish(&parts, MessageStatus::Complete).unwrap();
+        let stats = TurnStats {
+            model: Some("claude-opus-5-5".into()),
+            wait_ms: Some(2_000),
+            ..Default::default()
+        };
+        assert!(doc.set_turn_stats("a", &stats).unwrap());
+        assert!(!doc.set_turn_stats("missing", &stats).unwrap());
+        let files = vec![ToolDiffStat {
+            path: "src/main.rs".into(),
+            additions: 3,
+            deletions: 1,
+        }];
+        // The diff lands later and keeps what was stamped first.
+        assert!(doc.set_turn_files("a", files.clone()).unwrap());
+        let expected = TurnStats {
+            files: Some(files),
+            ..stats
+        };
+        assert_eq!(
+            doc.read_entries().unwrap()[0].turn_stats.as_ref(),
+            Some(&expected)
+        );
+        let imported = LoroDoc::new();
+        imported.import(&doc.export_snapshot().unwrap()).unwrap();
+        let loaded = SessionDoc::from_doc(imported);
+        assert_eq!(loaded.read_entries().unwrap()[0].turn_stats, Some(expected));
+        // A garbage stamp costs only the stats, never the entry.
+        let map = doc.message_map("a").unwrap();
+        map.insert("turnStats", "{not json").unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries[0].turn_stats, None);
+        assert_eq!(entries[0].parts, parts);
     }
 
     #[test]
@@ -1620,6 +1739,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         }
     }
 
@@ -1847,6 +1967,7 @@ mod tests {
             status: Some(MessageStatus::Aborted),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         })
         .unwrap();
         assert!(!doc.resolve_input("nope").unwrap());
@@ -2115,6 +2236,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         })
         .unwrap();
         let entries = doc.read_entries().unwrap();

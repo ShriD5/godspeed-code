@@ -392,6 +392,11 @@ impl EngineCore {
         sessions.set_limit_listener(Arc::new(move |chat_id, signal| {
             limited.note_limited(chat_id, signal);
         }));
+        // Turn ends stamp the "Latest turn" diff onto the turn's receipt.
+        let turn_files = diff_sync.clone();
+        sessions.set_turn_files_listener(Arc::new(move |chat_id| {
+            turn_files.turn_file_stats(chat_id)
+        }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         let agents = Agents::open(
             data_dir,

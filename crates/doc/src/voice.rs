@@ -60,6 +60,7 @@ pub fn commit_voice_transcript(
         status: Some(MessageStatus::Complete),
         continuation_of: None,
         duration_ms: None,
+        turn_stats: None,
     })?;
     Ok(Some(id))
 }

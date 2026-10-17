@@ -88,6 +88,7 @@ pub(crate) fn entry(
         status: Some(MessageStatus::Complete),
         continuation_of: None,
         duration_ms: (role == MessageRole::Assistant).then_some(48_000),
+        turn_stats: None,
     }
 }
 

@@ -513,6 +513,7 @@ pub(crate) fn debug_input(entries: Vec<DebugEntry>, working: bool) -> Transcript
                     status: Some(if e.streaming { MessageStatus::Streaming } else { MessageStatus::Complete }),
                     continuation_of: None,
                     duration_ms: None,
+                    turn_stats: None,
                 })
             })
             .collect(),

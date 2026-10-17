@@ -1377,6 +1377,7 @@ mod tests {
     fn entry(parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
             duration_ms: None,
+            turn_stats: None,
             id: "e1".into(),
             role: MessageRole::Assistant,
             parts,
