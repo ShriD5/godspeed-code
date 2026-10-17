@@ -1,7 +1,9 @@
 //! The usage-limit banner attached above the composer of a Limited chat:
 //! when the window resets and what happens then, with the recovery choices
 //! (resume at reset, snooze until reset, dismiss). The chat's host engine
-//! owns the timer; choices go to it through `SetChatLimitRecovery`.
+//! owns the timer; choices go to it through `SetChatLimitRecovery`. The
+//! banner also offers "Continue on another account…"
+//! ([`super::continue_menu`]), which forks the chat instead.
 use chrono::{DateTime, Local, TimeDelta, Utc};
 use zeron_proto::{ChatLimit, LimitRecovery, LimitRecoveryAction};
 
@@ -122,8 +124,7 @@ impl Composer {
         let limit = self.state.read(cx).selected_chat_row()?.limit.clone()?;
         let model = banner_model(&limit, Utc::now());
         let tone = theme.limited;
-        let buttons = model.actions.iter().map(|action| {
-            let action = *action;
+        let button = |action: BannerAction, cx: &mut Context<Self>| {
             let button_tone = match action {
                 BannerAction::ResumeAtReset | BannerAction::ResumeNow => ActionTone::Outlined,
                 _ => ActionTone::Quiet,
@@ -136,7 +137,15 @@ impl Composer {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.choose_limit_recovery(action, cx);
                 }))
-        });
+        };
+        // Dismiss stays last, after the fork.
+        let (dismiss, choices): (Vec<BannerAction>, Vec<BannerAction>) = model
+            .actions
+            .iter()
+            .copied()
+            .partition(|action| *action == BannerAction::Dismiss);
+        let choices: Vec<_> = choices.into_iter().map(|a| button(a, cx)).collect();
+        let dismiss: Vec<_> = dismiss.into_iter().map(|a| button(a, cx)).collect();
         Some(
             crate::motion::fade_in(
                 "composer-limit-banner",
@@ -181,7 +190,9 @@ impl Composer {
                             .flex_row()
                             .flex_wrap()
                             .gap(px(4.0))
-                            .children(buttons),
+                            .children(choices)
+                            .child(self.continue_menu.clone())
+                            .children(dismiss),
                     ),
             )
             .into_any_element(),

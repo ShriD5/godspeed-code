@@ -669,17 +669,20 @@ pub enum SettingsSection {
     AlwaysOn,
     /// Chats brought over from T3 Code, Claude Code, Codex and Cursor.
     Import,
+    /// The usage cockpit: every account's plan limits in one place.
+    Usage,
 }
 
 impl SettingsSection {
     /// Sections shown in Settings. `Agents` is a legacy Accounts route alias.
-    pub const ALL: [SettingsSection; 12] = [
+    pub const ALL: [SettingsSection; 13] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Notifications,
         SettingsSection::Voice,
         SettingsSection::Shortcuts,
         SettingsSection::Harnesses,
+        SettingsSection::Usage,
         SettingsSection::Devices,
         SettingsSection::Files,
         SettingsSection::AlwaysOn,
@@ -730,6 +733,7 @@ impl SettingsSection {
             SettingsSection::Archived => "archived",
             SettingsSection::AlwaysOn => "always-on",
             SettingsSection::Import => "import",
+            SettingsSection::Usage => "usage",
         }
     }
 
@@ -749,6 +753,7 @@ impl SettingsSection {
             "archived" => SettingsSection::Archived,
             "always-on" => SettingsSection::AlwaysOn,
             "import" => SettingsSection::Import,
+            "usage" => SettingsSection::Usage,
             _ => return None,
         })
     }
@@ -776,6 +781,7 @@ impl SettingsSection {
             SettingsSection::Archived => "Archived sessions",
             SettingsSection::AlwaysOn => "Agents",
             SettingsSection::Import => "Import",
+            SettingsSection::Usage => "Usage",
         }
     }
 }
@@ -2252,6 +2258,8 @@ pub struct Shell {
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
     import_page: Option<Entity<ImportPage>>,
+    usage_page: Option<Entity<crate::usage_cockpit::UsagePage>>,
+    usage_page_sub: Option<Subscription>,
     agents_page: Option<Entity<AgentsPage>>,
     agents_page_sub: Option<Subscription>,
     appearance_page: Option<Entity<AppearancePage>>,
@@ -2792,6 +2800,8 @@ impl Shell {
             devices_page: None,
             archived_page: None,
             import_page: None,
+            usage_page: None,
+            usage_page_sub: None,
             agents_page: None,
             agents_page_sub: None,
             appearance_page: None,
@@ -5692,6 +5702,11 @@ impl Shell {
         if section == SettingsSection::Harnesses {
             self.harnesses_page = None;
         }
+        // Each visit is a fresh look: the page forces one usage probe.
+        if section == SettingsSection::Usage {
+            self.usage_page = None;
+            self.usage_page_sub = None;
+        }
         if !matches!(self.route, Route::Settings(_)) {
             self.settings_focus_pending = true;
             self.settings_return_route = self.route;
@@ -6131,6 +6146,27 @@ impl Shell {
                     self.import_page = Some(cx.new(|cx| ImportPage::new(state, cx)));
                 }
                 match &self.import_page {
+                    Some(page) => page.clone().into_any_element(),
+                    None => Empty.into_any_element(),
+                }
+            }
+            SettingsSection::Usage => {
+                if self.usage_page.is_none() {
+                    let state = self.state.clone();
+                    let page = cx.new(|cx| crate::usage_cockpit::UsagePage::new(state, cx));
+                    self.usage_page_sub = Some(cx.subscribe(
+                        &page,
+                        |this: &mut Shell, _, event: &crate::usage_cockpit::UsagePageEvent, cx| {
+                            match event {
+                                crate::usage_cockpit::UsagePageEvent::OpenChat(chat_id) => {
+                                    this.open_chat(chat_id.clone(), cx);
+                                }
+                            }
+                        },
+                    ));
+                    self.usage_page = Some(page);
+                }
+                match &self.usage_page {
                     Some(page) => page.clone().into_any_element(),
                     None => Empty.into_any_element(),
                 }
@@ -8281,6 +8317,7 @@ impl Shell {
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
             SettingsSection::AlwaysOn => icons::CLOCK_CIRCLE,
             SettingsSection::Import => icons::ARCHIVE_UP_MINIMALISTIC,
+            SettingsSection::Usage => icons::SPEEDOMETER,
         };
         settings::widgets::scroll_faded(
             "settings-nav-scroll",
@@ -14048,6 +14085,31 @@ impl Render for Shell {
                     });
                 },
             ))
+            .on_action(
+                cx.listener(|this, _: &crate::usage_cockpit::OpenUsageCockpit, _, cx| {
+                    this.open_settings(SettingsSection::Usage, cx);
+                }),
+            )
+            .on_action(cx.listener(
+                |this, action: &crate::usage_cockpit::OpenContinuedChat, _, cx| {
+                    this.open_chat(action.chat_id.clone(), cx);
+                    // Stage once the composer has swapped to the chat's draft
+                    // (the selection's state observation runs first).
+                    let composer = this.composer.clone();
+                    let prompt = action.prompt.clone();
+                    cx.defer(move |cx| {
+                        composer.update(cx, |composer, cx| {
+                            composer.input.update(cx, |input, cx| {
+                                if input.text().trim().is_empty() {
+                                    input.set_text(prompt, cx);
+                                }
+                            });
+                            composer.focus_pending = true;
+                            cx.notify();
+                        });
+                    });
+                },
+            ))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
             .on_action(cx.listener(|this, _: &NewSession, _, cx| this.open_new_session(None, cx)))
@@ -19303,6 +19365,7 @@ mod settings_modal_regressions {
             ("settings/archived", SettingsSection::Archived),
             ("settings/always-on", SettingsSection::AlwaysOn),
             ("settings/import", SettingsSection::Import),
+            ("settings/usage", SettingsSection::Usage),
         ] {
             assert_eq!(
                 settings_open_route(route, remembered),

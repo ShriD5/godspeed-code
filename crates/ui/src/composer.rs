@@ -42,6 +42,7 @@ use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
 mod chip;
+pub(crate) mod continue_menu;
 pub(crate) mod limit_banner;
 pub use chip::ChipKind;
 use chip::*;
@@ -6225,9 +6226,11 @@ pub struct Composer {
     route_snap_until: Option<Instant>,
     _observe: Subscription,
     _pickers_observe: Subscription,
-    /// The footer's rings: plan usage of the session harness's live
-    /// account, and context occupancy — each opening a popover.
+    /// The footer's gauges: the session harness's live account on the
+    /// tachometer (opens the usage cockpit), and context occupancy.
     account_usage: Entity<crate::account_usage::AccountUsage>,
+    /// The Limited banner's "Continue on another account…" picker.
+    continue_menu: Entity<continue_menu::ContinueMenu>,
     /// A side chat's composer: its footer keeps only the context ring.
     side_chat: bool,
     _picker_focus: Subscription,
@@ -6314,6 +6317,7 @@ impl Composer {
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
         let account_usage = cx.new(|cx| crate::account_usage::AccountUsage::new(state.clone(), cx));
+        let continue_menu = cx.new(|cx| continue_menu::ContinueMenu::new(state.clone(), cx));
         // The footer toolbar (checkout kind + ref picker) is rendered INLINE
         // by the composer from picker state — a pickers-side notify (refs
         // loaded, popover toggled, pick made) must repaint the composer too.
@@ -6489,6 +6493,7 @@ impl Composer {
             _observe: observe,
             _pickers_observe: pickers_observe,
             account_usage,
+            continue_menu,
             side_chat: false,
             _picker_focus: picker_focus,
             _input_events: input_events,
