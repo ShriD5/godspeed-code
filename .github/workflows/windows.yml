@@ -56,7 +56,9 @@ jobs:
   ui-tests:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
-    timeout-minutes: 45
+    # A cold cache (first run, or any branch other than main, which alone saves it) needs ~45-60
+    # minutes of release build before the tests start.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/windows-ci-setup
@@ -77,7 +79,9 @@ jobs:
   harness-app-tests:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
-    timeout-minutes: 45
+    # A cold cache (first run, or any branch other than main, which alone saves it) needs ~45-60
+    # minutes of release build before the tests start.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/windows-ci-setup
@@ -91,7 +95,9 @@ jobs:
   engine-tests:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
-    timeout-minutes: 45
+    # A cold cache (first run, or any branch other than main, which alone saves it) needs ~45-60
+    # minutes of release build before the tests start.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/windows-ci-setup
@@ -110,7 +116,9 @@ jobs:
   app:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
-    timeout-minutes: 45
+    # A cold cache (first run, or any branch other than main, which alone saves it) needs ~45-60
+    # minutes of release build before the tests start.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/windows-ci-setup
