@@ -325,22 +325,28 @@ impl InboxPage {
             .unwrap_or_default();
         let actions = self.render_actions(item, ix, selected, theme, cx);
         let id = item.id.clone();
-        widgets::card_row(theme, first)
+        // The highlight spans the whole card width: `card_row` insets with a
+        // margin, so filling the row itself left a box inside the card.
+        div()
             .id(("inbox-row", ix))
-            .flex_col()
-            .items_start()
-            .gap(px(8.0))
+            .w_full()
             .cursor_pointer()
-            .when(selected, |el| el.bg(theme.wash(0.06)).rounded(px(8.0)))
+            .when(selected, |el| el.bg(theme.wash(0.06)))
             .on_click(cx.listener(move |page, _, window, cx| {
                 page.selected = Some(id.clone());
                 window.focus(&page.focus, cx);
                 cx.notify();
             }))
-            .child(heading)
-            .children(summary)
-            .child(div().w_full().min_w_0().flex().flex_col().children(details))
-            .child(actions)
+            .child(
+                widgets::card_row(theme, first)
+                    .flex_col()
+                    .items_start()
+                    .gap(px(8.0))
+                    .child(heading)
+                    .children(summary)
+                    .child(div().w_full().min_w_0().flex().flex_col().children(details))
+                    .child(actions),
+            )
             .into_any_element()
     }
 
