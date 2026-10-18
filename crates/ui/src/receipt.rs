@@ -1350,12 +1350,12 @@ mod tests {
             assert!(line.chars().count() <= WIDTH, "too wide: {line:?}");
             assert_eq!(line, line.trim_end(), "trailing space: {line:?}");
         }
-        assert_eq!(receipt.number, "8D01-E97E");
+        assert_eq!(receipt.number, "79DC-4DF4");
         let expected = [
             "       //// G O D S P E E D ////",
             "             AGENT RECEIPT",
             "----------------------------------------",
-            "No. 8D01-E97E       Oct 17 2026  2:32 PM",
+            "No. 79DC-4DF4       Oct 17 2026  2:32 PM",
             "----------------------------------------",
             "Agent                        Claude Code",
             "Model                    claude-opus-5-5",
