@@ -22,6 +22,17 @@ use tokio::sync::{mpsc, oneshot};
 use crate::HarnessError;
 use crate::process::{ChildStdin, ChildStdout};
 
+const EXITED_BEFORE_RESPONDING: &str = "app-server exited before responding";
+const STDIN_CLOSED: &str = "app-server stdin closed";
+
+/// Whether a request failed because the transport went away, as opposed to
+/// the peer answering it with an error response (which may arrive just
+/// before the peer exits and still has to be reported).
+pub(crate) fn is_transport_failure(error: &HarnessError) -> bool {
+    matches!(error, HarnessError::Protocol(message)
+        if message.ends_with(EXITED_BEFORE_RESPONDING) || message.ends_with(STDIN_CLOSED))
+}
+
 /// Ceiling on one newline-delimited message. A line is buffered whole and
 /// then parsed into a tree several times its size; without a bound a single
 /// runaway notification (Codex events carrying ~49 MB diff strings have been
@@ -221,9 +232,7 @@ impl RpcClient {
             // reader exit must either be rejected here or cleared by it.
             if self.is_closed() {
                 return Box::pin(async move {
-                    Err(HarnessError::Protocol(format!(
-                        "{method}: app-server exited before responding"
-                    )))
+                    Err(HarnessError::Protocol(format!("{method}: {EXITED_BEFORE_RESPONDING}")))
                 });
             }
             pending.insert(id, tx);
@@ -232,9 +241,7 @@ impl RpcClient {
         if self.writer.send(line.to_string()).is_err() {
             self.pending.lock().expect("pending lock").remove(&id);
             return Box::pin(async move {
-                Err(HarnessError::Protocol(format!(
-                    "{method}: app-server stdin closed"
-                )))
+                Err(HarnessError::Protocol(format!("{method}: {STDIN_CLOSED}")))
             });
         }
         Box::pin(async move {
@@ -243,7 +250,7 @@ impl RpcClient {
                 Ok(Err(message)) => Err(HarnessError::Protocol(format!("{method}: {message}"))),
                 // Sender dropped: the reader hit EOF and failed all pending.
                 Err(_) => Err(HarnessError::Protocol(format!(
-                    "{method}: app-server exited before responding"
+                    "{method}: {EXITED_BEFORE_RESPONDING}"
                 ))),
             }
         })
