@@ -89,6 +89,7 @@ pub mod transcript;
 mod transcript_find;
 pub mod typography;
 pub mod usage_cockpit;
+pub mod usage_history;
 pub mod visuals;
 pub mod voice;
 mod workspace_links;

@@ -7,6 +7,9 @@
 //! ([`AccountsSnapshotCache`]): opening the page forces one probe (throttled
 //! like the composer's), the composer's background poll keeps it current,
 //! and nothing here ever spends model tokens.
+//!
+//! Below the meters, the history ([`crate::usage_history`]): tokens and
+//! estimated API cost per day, by model, provider, project and chat.
 
 use std::time::{Duration, Instant};
 
@@ -26,6 +29,7 @@ use crate::settings::accounts::{
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
+use crate::usage_history::{UsageHistoryEvent, UsageHistoryView};
 
 /// Open Settings → Usage (the composer's tachometer).
 #[derive(Clone, PartialEq, Action)]
@@ -271,9 +275,11 @@ pub struct UsagePage {
     /// The account a switch is waiting on.
     switching: Option<String>,
     error: Option<SharedString>,
+    history: Entity<UsageHistoryView>,
     _tick: Task<()>,
     _cache: Subscription,
     _state: Subscription,
+    _history: Subscription,
 }
 
 impl EventEmitter<UsagePageEvent> for UsagePage {}
@@ -295,6 +301,10 @@ impl UsagePage {
             }
             cx.notify();
         });
+        let history = cx.new(|cx| UsageHistoryView::new(state.clone(), cx));
+        let history_sub = cx.subscribe(&history, |_, _, event: &UsageHistoryEvent, cx| match event {
+            UsageHistoryEvent::OpenChat(id) => cx.emit(UsagePageEvent::OpenChat(id.clone())),
+        });
         let mut page = Self {
             state,
             scroll: widgets::PageScroll::default(),
@@ -303,9 +313,11 @@ impl UsagePage {
             switch_task: None,
             switching: None,
             error: None,
+            history,
             _tick: tick,
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
             _state: state_sub,
+            _history: history_sub,
         };
         page.load(true, cx);
         page
@@ -666,6 +678,7 @@ impl Render for UsagePage {
             .when(!refreshing, |el| {
                 el.on_click(cx.listener(|page, _, _, cx| {
                     page.load(true, cx);
+                    page.history.update(cx, |history, cx| history.load(cx));
                     cx.notify();
                 }))
             })
@@ -707,14 +720,15 @@ impl Render for UsagePage {
                                                 .child(widgets::page_subtitle(
                                                     &theme,
                                                     "Plan limits for every signed-in account on this \
-                                                     device, and the chats waiting on them. Meters \
-                                                     refresh as the usage probes run; nothing here \
+                                                     device, the chats waiting on them, and what \
+                                                     your agents used over time. Nothing here \
                                                      spends tokens.",
                                                 )),
                                         )
                                         .child(refresh),
                                 )
-                                .children(body),
+                                .children(body)
+                                .child(self.history.clone()),
                         ),
                 )
                 .fade_overflow_y(&self.scroll.scroll),

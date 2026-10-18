@@ -351,7 +351,7 @@ impl VisualFrame {
 /// that sit farthest from it, so no two series read alike whatever the
 /// accent. Solid, deeper on light and brighter on dark, so they hold on
 /// glass and opaque surfaces alike.
-fn chart_series(theme: &Theme) -> [Hsla; 6] {
+pub(crate) fn chart_series(theme: &Theme) -> [Hsla; 6] {
     // (hue in turns, light tone, dark tone): teal, amber, rose, violet, lime, sky.
     const FIXED: [(f32, u32, u32); 6] = [
         (0.486, 0x0d9488, 0x2dd4bf),
