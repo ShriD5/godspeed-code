@@ -3415,6 +3415,8 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                         *pending_usage = Some(AgentEvent::Usage {
                             input_tokens: input,
                             output_tokens: output,
+                            cache_read_tokens: None,
+                            cache_write_tokens: None,
                         });
                     }
                 }

@@ -275,6 +275,12 @@ pub(crate) struct UsageBody {
     pub input_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+    /// Prompt-cache traffic, reported apart from `input_tokens` (absent on
+    /// older CLIs).
+    #[serde(default)]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 /// A CLI→client control request (`can_use_tool` is the one we act on).

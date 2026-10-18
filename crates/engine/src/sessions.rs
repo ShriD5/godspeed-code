@@ -241,6 +241,9 @@ struct Inner {
     /// Fired when a turn ends on a usage limit — usage-limit recovery marks
     /// the chat Limited. Absent in bare tests.
     limit_listener: OnceLock<LimitListener>,
+    /// Asked for the "Latest turn" file stats when a turn ends, for its
+    /// receipt ([`zeron_doc::TurnStats::files`]). Absent in bare tests.
+    turn_files: OnceLock<TurnFilesListener>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -248,6 +251,15 @@ pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// Usage-limit hook: called with the chat and what the provider said.
 pub type LimitListener = Arc<dyn Fn(&str, crate::limit_recovery::LimitSignal) + Send + Sync>;
+
+/// Turn-end hook: called with the chat whose turn just ended; returns the
+/// capture of that turn's changed files, or `None` when no turn base exists
+/// (not a checkout, or no turn recorded since boot).
+pub type TurnFilesListener = Arc<
+    dyn Fn(&str) -> Option<futures::future::BoxFuture<'static, Option<Vec<zeron_doc::ToolDiffStat>>>>
+        + Send
+        + Sync,
+>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -286,6 +298,7 @@ impl SessionsEngine {
                 scratch_root: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 limit_listener: OnceLock::new(),
+                turn_files: OnceLock::new(),
             }),
         }
     }
@@ -360,6 +373,11 @@ impl SessionsEngine {
     /// Wire the usage-limit listener (called once at engine assembly).
     pub fn set_limit_listener(&self, listener: LimitListener) {
         let _ = self.inner.limit_listener.set(listener);
+    }
+
+    /// Wire the turn-end file-stats capture (called once at engine assembly).
+    pub fn set_turn_files_listener(&self, listener: TurnFilesListener) {
+        let _ = self.inner.turn_files.set(listener);
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -2086,6 +2104,7 @@ impl SubagentSink {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         };
         if let Err(err) = self.doc.push_message(&entry) {
             tracing::warn!(doc = %self.doc_id, error = %err, "subagent steer write failed");
@@ -2187,6 +2206,155 @@ fn folded_text(parts: &[MessagePart]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Time a turn spends blocked on the user: from the first open question or
+/// approval until the last one resolves. Overlapping requests count once.
+#[derive(Default)]
+struct TurnWait {
+    open: usize,
+    since: Option<std::time::Instant>,
+    total: std::time::Duration,
+}
+
+impl TurnWait {
+    fn open(&mut self) {
+        if self.open == 0 {
+            self.since = Some(std::time::Instant::now());
+        }
+        self.open += 1;
+    }
+
+    fn close(&mut self) {
+        self.open = self.open.saturating_sub(1);
+        if self.open == 0
+            && let Some(since) = self.since.take()
+        {
+            self.total += since.elapsed();
+        }
+    }
+
+    /// The turn's total wait, closing anything still open (a turn ending
+    /// with a question pending waited until it ended). `None` for no wait.
+    fn finish(&mut self) -> Option<i64> {
+        if let Some(since) = self.since.take() {
+            self.total += since.elapsed();
+        }
+        self.open = 0;
+        let ms = std::mem::take(&mut self.total).as_millis() as i64;
+        (ms > 0).then_some(ms)
+    }
+}
+
+/// Drivers whose [`AgentEvent::Usage`] covers the WHOLE turn: Claude's
+/// result sums every API call, Codex's is the thread-total delta, and ACP's
+/// rides the settled `session/prompt` response. The rest report one model
+/// response at a time (Pi, OpenCode) or an unclear scope (Cursor, Muse);
+/// their receipts say "not reported" rather than undercount.
+fn usage_covers_turn(harness: HarnessId) -> bool {
+    matches!(
+        harness,
+        HarnessId::ClaudeCode
+            | HarnessId::Codex
+            | HarnessId::Devin
+            | HarnessId::Grok
+            | HarnessId::Hermes
+            | HarnessId::Antigravity
+            | HarnessId::Mock
+    )
+}
+
+/// What the run loop knows about a turn as it ends.
+struct TurnFacts<'a> {
+    harness: HarnessId,
+    session_model: Option<&'a str>,
+    request_model: Option<&'a str>,
+    request_effort: Option<zeron_proto::ReasoningLevel>,
+    usage: Option<zeron_doc::TurnUsage>,
+    wait_ms: Option<i64>,
+}
+
+/// The receipt's model: a concrete id the chat picked (`claude-opus-5-5`)
+/// beats everything; a picker alias (`opus`, `default`) or no pick defers to
+/// what the harness reported running; the run request is the last resort.
+fn receipt_model(
+    picked: Option<&str>,
+    session: Option<&str>,
+    requested: Option<&str>,
+) -> Option<String> {
+    let concrete = |m: &&str| m.contains('-');
+    picked
+        .filter(concrete)
+        .or(session)
+        .or(picked)
+        .or(requested)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
+}
+
+/// Kebab-case wire spelling of a serde enum (`claude-code`, `xhigh`).
+fn wire_name<T: serde::Serialize>(value: &T) -> Option<String> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+}
+
+/// Stamp the receipt numbers of the turn that just ended on its last entry,
+/// then let the checkout's "Latest turn" diff follow (it runs git, so it
+/// never holds the run loop). Best effort throughout: a receipt is never
+/// worth failing a turn over.
+fn stamp_turn_stats(
+    inner: &Arc<Inner>,
+    doc: &SessionDoc,
+    chat_id: &str,
+    entry_id: &str,
+    facts: TurnFacts<'_>,
+) {
+    let config = inner
+        .workspace()
+        .and_then(|ws| ws.chat(chat_id).ok().flatten())
+        .and_then(|chat| chat.config);
+    let picked = config.as_ref().and_then(|c| c.model.as_deref());
+    let effort = config
+        .as_ref()
+        .and_then(|c| c.reasoning)
+        .or(facts.request_effort);
+    let stats = zeron_doc::TurnStats {
+        harness: wire_name(&facts.harness),
+        model: receipt_model(picked, facts.session_model, facts.request_model),
+        effort: effort.as_ref().and_then(wire_name),
+        usage: facts.usage,
+        wait_ms: facts.wait_ms,
+        files: None,
+    };
+    if let Err(err) = doc.set_turn_stats(entry_id, &stats) {
+        tracing::warn!(chat = %chat_id, error = %err, "turn stats stamp failed");
+    }
+    let Some(capture) = inner.turn_files.get().and_then(|listener| listener(chat_id)) else {
+        return;
+    };
+    let inner = inner.clone();
+    let chat_id = chat_id.to_owned();
+    let entry_id = entry_id.to_owned();
+    tokio::spawn(async move {
+        let Some(files) = capture.await else {
+            return;
+        };
+        let Some(host) = inner.doc_host() else {
+            return;
+        };
+        match host.open(&chat_id) {
+            Ok(handle) => {
+                if let Err(err) = handle.writer().set_turn_files(&entry_id, files) {
+                    tracing::warn!(chat = %chat_id, error = %err, "turn files stamp failed");
+                }
+            }
+            Err(err) => {
+                tracing::debug!(chat = %chat_id, error = %err, "turn files: doc open failed");
+            }
+        }
+    });
 }
 
 fn sync_segment<'a>(
@@ -2326,6 +2494,10 @@ async fn drive_run(
     let harness_id = harness.id();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
+    // What the run asked for — the receipt's fallback when the chat config
+    // and the harness say nothing.
+    let request_model = request.model.clone();
+    let request_effort = request.reasoning;
     if request.resume.is_none() {
         let _ = doc.clear_context_usage();
     }
@@ -2525,6 +2697,12 @@ async fn drive_run(
     let mut turn_limit: Option<(Option<chrono::DateTime<chrono::Utc>>, Option<String>)> = None;
     let mut turn_error: Option<String> = None;
     let mut saw_session_started = false;
+    // Receipt bookkeeping for the turn in flight, stamped on its entry when
+    // it ends ([`stamp_turn_stats`]). The harness-reported model outlives
+    // turns: a parked session doesn't announce itself again.
+    let mut turn_usage: Option<zeron_doc::TurnUsage> = None;
+    let mut turn_wait = TurnWait::default();
+    let mut session_model: Option<String> = None;
     // Liveness heartbeat: this loop RUNNING is proof the harness stream is
     // open, so freshness must not depend on events arriving. Silent stretches
     // are normal and UNBOUNDED — a long tool call, redacted thinking, an
@@ -2874,7 +3052,23 @@ async fn drive_run(
                             tracing::warn!(chat = %chat_id, error = %err, "quiesce segment finish failed");
                         }
                         inner.note_message(&chat_id, &folded_text(&folded));
+                        stamp_turn_stats(
+                            &inner,
+                            doc_ref,
+                            &chat_id,
+                            &entry_id,
+                            TurnFacts {
+                                harness: harness_id,
+                                session_model: session_model.as_deref(),
+                                request_model: request_model.as_deref(),
+                                request_effort,
+                                usage: turn_usage.take(),
+                                wait_ms: turn_wait.finish(),
+                            },
+                        );
                     }
+                    turn_usage = None;
+                    turn_wait = TurnWait::default();
                     folded.clear();
                     dirty = false;
                     entry_id = new_id();
@@ -3359,9 +3553,15 @@ async fn drive_run(
 
         match &event {
             AgentEvent::SessionStarted {
-                session_id, cwd, ..
+                session_id,
+                cwd,
+                model,
+                ..
             } => {
                 saw_session_started = true;
+                if !model.trim().is_empty() {
+                    session_model = Some(model.trim().to_owned());
+                }
                 // The event's own cwd (where the harness actually created the
                 // session) scopes the stored id, not the request's.
                 inner.remember_harness_session(&chat_id, session_id, cwd);
@@ -3379,9 +3579,14 @@ async fn drive_run(
                 // before the parked gate.
                 let approval = questions.iter().any(UserInputQuestion::is_approval);
                 inner.set_awaiting_input(&chat_id, approval);
+                turn_wait.open();
             }
             AgentEvent::InputResolved { .. } => {
                 inner.set_status(&chat_id, SessionStatus::Working, false);
+                turn_wait.close();
+            }
+            AgentEvent::Usage { .. } if usage_covers_turn(harness_id) => {
+                turn_usage = zeron_doc::TurnUsage::from_event(&event);
             }
             _ => {}
         }
@@ -3447,7 +3652,23 @@ async fn drive_run(
                     tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
                 }
                 inner.note_message(&chat_id, &folded_text(&folded));
+                stamp_turn_stats(
+                    &inner,
+                    doc_ref,
+                    &chat_id,
+                    &entry_id,
+                    TurnFacts {
+                        harness: harness_id,
+                        session_model: session_model.as_deref(),
+                        request_model: request_model.as_deref(),
+                        request_effort,
+                        usage: turn_usage.take(),
+                        wait_ms: turn_wait.finish(),
+                    },
+                );
             }
+            turn_usage = None;
+            turn_wait = TurnWait::default();
             if *status == DoneStatus::Completed {
                 // A cleanly completed turn resets the auto-resume revival
                 // budget: only consecutive crash-revive-crash cycles spend it.
@@ -3682,6 +3903,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         })
         .unwrap();
         let current = format!("Current {skill}\nKeep **Markdown**");
@@ -3723,6 +3945,7 @@ mod tests {
                 status: None,
                 continuation_of: None,
                 duration_ms: None,
+                turn_stats: None,
             })
             .unwrap();
         }
@@ -4308,6 +4531,130 @@ mod tests {
                 .expect("FeedHarness serves one run per test");
             Ok(futures::stream::poll_fn(move |cx| feed.poll_recv(cx).map(|e| e.map(Ok))).boxed())
         }
+    }
+
+    #[test]
+    fn turn_wait_counts_overlapping_requests_once() {
+        let mut wait = super::TurnWait::default();
+        assert_eq!(wait.finish(), None, "no question, no wait");
+        wait.open();
+        wait.open();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        wait.close();
+        // Still one open: the clock keeps running until the last closes.
+        assert!(wait.since.is_some());
+        wait.close();
+        let first = wait.total;
+        assert!(first >= std::time::Duration::from_millis(15));
+        // A request still open at turn end waited until the end.
+        wait.open();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let ms = wait.finish().unwrap();
+        assert!(ms as u128 >= first.as_millis() + 5, "{ms}");
+        assert_eq!(wait.finish(), None, "finish resets");
+    }
+
+    #[test]
+    fn receipt_model_prefers_a_concrete_pick_then_the_harness_report() {
+        use super::receipt_model;
+        assert_eq!(
+            receipt_model(Some("claude-opus-5-5"), Some("claude-opus-4-8"), None).as_deref(),
+            Some("claude-opus-5-5")
+        );
+        // An alias pick defers to what actually ran.
+        assert_eq!(
+            receipt_model(Some("opus"), Some("claude-opus-5-5"), None).as_deref(),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(
+            receipt_model(None, None, Some("gpt-5.5")).as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(receipt_model(Some("opus"), None, None).as_deref(), Some("opus"));
+        assert_eq!(receipt_model(None, Some("  "), None), None);
+        assert!(super::usage_covers_turn(HarnessId::ClaudeCode));
+        assert!(super::usage_covers_turn(HarnessId::Codex));
+        assert!(!super::usage_covers_turn(HarnessId::Pi));
+        assert!(!super::usage_covers_turn(HarnessId::Opencode));
+    }
+
+    // A finished turn stamps its receipt numbers on its entry: the model the
+    // harness reported, the run's effort, the turn's usage and its wait.
+    #[tokio::test]
+    async fn finished_turn_stamps_its_stats_on_the_entry() {
+        use super::*;
+        let (feed, rx) = mpsc::unbounded_channel();
+        let registry = HarnessRegistry::new();
+        registry.register(Arc::new(FeedHarness {
+            feed: Mutex::new(Some(rx)),
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let core =
+            crate::EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None)
+                .unwrap();
+        let chat = "chat-turn-stats";
+        core.sessions
+            .dispatch(chat, HarnessId::Mock, request(), None)
+            .await
+            .unwrap();
+        for event in [
+            AgentEvent::SessionStarted {
+                harness: HarnessId::Mock,
+                model: "mock-1".into(),
+                tools: vec![],
+                cwd: "/tmp".into(),
+                session_id: "hs-1".into(),
+                assistant_message_id: "a1".into(),
+            },
+            AgentEvent::TextDelta {
+                text: "done".into(),
+            },
+            AgentEvent::Usage {
+                input_tokens: 12,
+                output_tokens: 34,
+                cache_read_tokens: Some(5_000),
+                cache_write_tokens: None,
+            },
+            AgentEvent::Done {
+                status: DoneStatus::Completed,
+                result: None,
+                error: None,
+                session_id: None,
+            },
+        ] {
+            feed.send(event).unwrap();
+        }
+        let handle = core.doc_host.open(chat).unwrap();
+        let mut stats = None;
+        for _ in 0..100 {
+            stats = handle
+                .doc()
+                .read_entries()
+                .unwrap()
+                .into_iter()
+                .find_map(|entry| entry.turn_stats);
+            if stats.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let stats = stats.expect("turn stats stamped");
+        assert_eq!(stats.harness.as_deref(), Some("mock"));
+        // No chat config row here: what the harness reported running beats
+        // the bare request.
+        assert_eq!(stats.model.as_deref(), Some("mock-1"));
+        assert_eq!(stats.effort.as_deref(), Some("high"));
+        assert_eq!(
+            stats.usage,
+            Some(zeron_doc::TurnUsage {
+                input_tokens: 12,
+                output_tokens: 34,
+                cache_read_tokens: Some(5_000),
+                cache_write_tokens: None,
+            })
+        );
+        assert_eq!(stats.wait_ms, None);
+        core.sessions.shutdown().await;
     }
 
     // A tagged subagent event that folds to NO parts used to leave its sink

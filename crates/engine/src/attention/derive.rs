@@ -728,6 +728,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         };
         let open = open_inputs(&[entry]);
         assert_eq!(open.len(), 1);

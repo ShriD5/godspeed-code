@@ -91,6 +91,8 @@ impl Normalizer {
                     events.push(AgentEvent::Usage {
                         input_tokens: input,
                         output_tokens: n("output"),
+                        cache_read_tokens: None,
+                        cache_write_tokens: None,
                     });
                     events.push(AgentEvent::ContextUsage {
                         tokens: Some(input + n("output")),

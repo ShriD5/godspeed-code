@@ -689,11 +689,22 @@ pub enum AgentEvent {
         tokens: Option<u64>,
         window: Option<u64>,
     },
-    /// Kept as a harness passthrough (rate-limit probes); never persisted to docs.
+    /// Token usage of the turn in flight, latest snapshot wins. The engine
+    /// stamps the last one onto the turn's entry for its receipt (only for
+    /// drivers whose figure covers the whole turn).
+    ///
+    /// `input_tokens` counts prompt tokens billed at the base input rate:
+    /// when the provider reports cache traffic separately, it is NOT part of
+    /// `input_tokens` but rides the two cache fields (additive; `None` from
+    /// drivers and older senders that don't report it).
     #[serde(rename_all = "camelCase")]
     Usage {
         input_tokens: u64,
         output_tokens: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_read_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_write_tokens: Option<u64>,
     },
     /// The agent advertised (or changed) its slash-command set — ACP
     /// `available_commands_update`. The engine caches the latest list per

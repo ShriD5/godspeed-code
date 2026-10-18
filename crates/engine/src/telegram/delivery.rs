@@ -343,6 +343,7 @@ mod tests {
             status,
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         }
     }
 

@@ -374,7 +374,9 @@ async fn happy_path_maps_deltas_items_usage_and_done() {
                 e,
                 AgentEvent::Usage {
                     input_tokens: 42,
-                    output_tokens: 7
+                    output_tokens: 7,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
                 }
             )
         })

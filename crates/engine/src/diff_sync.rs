@@ -66,6 +66,9 @@ mod turn_snapshot;
 
 pub use turn_snapshot::{TreeSnapshot, snapshot_tree};
 
+/// Files kept in a turn receipt's stamped diff ([`CheckoutDiffSync::turn_file_stats`]).
+pub const TURN_FILES_MAX: usize = 200;
+
 /// Hard cap on the unified patch (plus untracked hunks) — "Partial snapshot".
 pub const MAX_PATCH_BYTES: usize = 3 * 1024 * 1024;
 pub const MAX_DIFF_SOURCE_BYTES: usize = 2 * 1024 * 1024;
@@ -491,6 +494,37 @@ impl CheckoutDiffSync {
     /// since boot.
     pub fn turn_snapshot(&self, chat_id: &str) -> Option<TurnSnapshot> {
         lock(&self.inner.turn_trees).get(chat_id).cloned()
+    }
+
+    /// Per-file line counts of the chat's latest turn — the Changes pane's
+    /// "Latest turn" scope, captured as a turn ends for its receipt. The
+    /// snapshot is taken now, so a turn starting meanwhile can't swap the
+    /// base under the capture. Biggest changes first, at most
+    /// [`TURN_FILES_MAX`] (the receipt lists a handful; the doc stays small).
+    pub fn turn_file_stats(
+        &self,
+        chat_id: &str,
+    ) -> Option<futures::future::BoxFuture<'static, Option<Vec<zeron_doc::ToolDiffStat>>>> {
+        let snapshot = self.turn_snapshot(chat_id)?;
+        let repos = self.inner.repos.clone();
+        Some(Box::pin(async move {
+            let diff = capture_turn_diff(&repos, &snapshot.root, &snapshot.tree)
+                .await
+                .map_err(|err| tracing::debug!(error = %err, "diff-sync: turn stats capture failed"))
+                .ok()?;
+            let mut files: Vec<zeron_doc::ToolDiffStat> = diff
+                .files
+                .into_iter()
+                .map(|file| zeron_doc::ToolDiffStat {
+                    path: file.path,
+                    additions: u64::from(file.additions),
+                    deletions: u64::from(file.deletions),
+                })
+                .collect();
+            files.sort_by_key(|f| std::cmp::Reverse(f.additions + f.deletions));
+            files.truncate(TURN_FILES_MAX);
+            Some(files)
+        }))
     }
 
     /// Discard the complete uncommitted state of a checkout after verifying

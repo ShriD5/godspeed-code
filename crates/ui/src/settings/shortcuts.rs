@@ -762,6 +762,7 @@ impl Render for ShortcutsPage {
         let escape_stops_active_agent = self.escape_stops_active_agent;
         let send_behavior = self.composer_send_behavior;
         let compact_mode = crate::settings::transcript_compact_mode(cx);
+        let show_receipts = crate::settings::show_receipts(cx);
         let customized = self.keymap != KeymapConfig::default()
             || escape_stops_active_agent
             || send_behavior != ComposerSendBehavior::default();
@@ -829,6 +830,39 @@ impl Render for ShortcutsPage {
                     .cursor_pointer()
                     .on_click(cx.listener(move |_, _, _, cx| {
                         crate::settings::set_transcript_compact_mode(!compact_mode, cx);
+                        cx.notify();
+                    })),
+            );
+        let receipts_row = widgets::card_row(&theme, false)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(widgets::row_title(&theme, "Show receipts after turns"))
+                    .child(widgets::meta_line(
+                        &theme,
+                        vec![
+                            div()
+                                .child("Time, tools, files and tokens for each finished turn.")
+                                .into_any_element(),
+                        ],
+                    )),
+            )
+            .child(
+                widgets::toggle_switch(&theme, show_receipts, "transcript-show-receipts")
+                    .id("transcript-show-receipts-toggle")
+                    .tab_index(0)
+                    .role(gpui::Role::Switch)
+                    .aria_label("Show receipts after turns")
+                    .aria_toggled(if show_receipts {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::settings::set_show_receipts(!show_receipts, cx);
                         cx.notify();
                     })),
             );
@@ -972,6 +1006,7 @@ impl Render for ShortcutsPage {
                                         widgets::section_card(&theme)
                                             .child(send_behavior_row)
                                             .child(compact_mode_row)
+                                            .child(receipts_row)
                                             .child(compact_model_picker_row)
                                             .child(escape_behavior_row),
                                     )

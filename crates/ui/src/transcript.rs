@@ -1089,6 +1089,11 @@ pub enum RowKind {
         source_chat_id: SharedString,
         source_title: SharedString,
     },
+    /// A finished turn's receipt ([`crate::receipt`]): a one-line summary
+    /// that opens into the slip. Synthesized per turn, not per entry.
+    Receipt {
+        receipt: Arc<crate::receipt::Receipt>,
+    },
 }
 
 fn generated_image_devices(owner: &str, fallback: &[String]) -> Vec<String> {
@@ -1744,6 +1749,7 @@ pub fn rows_for_entry(
                 let work_entry = SessionMessageEntry {
                     parts: work_parts,
                     duration_ms: None,
+                    turn_stats: None,
                     continuation_of: None,
                     ..entry.clone()
                 };
@@ -3358,6 +3364,18 @@ pub struct Transcript {
     /// Entry whose hover action is showing transient copied-check feedback.
     copied_message: Option<SharedString>,
     copied_message_clear: Option<Task<()>>,
+    /// "Show receipts after turns" as last applied to the row set; render
+    /// polls the setting and a flip rebuilds the rows.
+    show_receipts: bool,
+    /// Assembled receipts by anchor entry id, keyed by the turn's cheap
+    /// fingerprint ([`crate::receipt::turn_fingerprint`]).
+    receipt_cache: HashMap<String, (u64, Arc<crate::receipt::Receipt>)>,
+    /// Receipts opened into the full slip, with when they opened (the print
+    /// animation plays only right after a click).
+    receipts_open: HashMap<SharedString, Instant>,
+    /// Receipt whose copy action is showing its check: (row, as image).
+    receipt_copied: Option<(SharedString, bool)>,
+    receipt_copy_task: Option<Task<()>>,
     /// Transcript attachment being viewed full-size (click a user thumbnail).
     attachment_preview: Option<crate::attachments::PreviewImage>,
     /// Focused while the lightbox is open so Escape reaches it.
@@ -3673,6 +3691,11 @@ impl Transcript {
             code_fences: HashMap::new(),
             copied_message: None,
             copied_message_clear: None,
+            show_receipts: crate::settings::show_receipts(cx),
+            receipt_cache: HashMap::new(),
+            receipts_open: HashMap::new(),
+            receipt_copied: None,
+            receipt_copy_task: None,
             attachment_preview: None,
             attachment_preview_focus: cx.focus_handle(),
             attachment_preview_return_focus: None,
@@ -4785,6 +4808,10 @@ impl Transcript {
             self.highlights.entries.clear();
             self.copied_message = None;
             self.copied_message_clear = None;
+            self.receipt_cache.clear();
+            self.receipts_open.clear();
+            self.receipt_copied = None;
+            self.receipt_copy_task = None;
             self.list.reset(0);
             self.pending_viewport = None;
             self.viewport_generation = self.viewport_generation.wrapping_add(1);
@@ -4842,7 +4869,28 @@ impl Transcript {
                 .chat_id
                 .as_ref()
                 .and_then(|id| state.prepared_transcripts.get(id));
-            for entry in entries {
+            // Receipts close each finished turn of the chat itself (side
+            // panels showing a subagent's doc don't get them).
+            let receipts = (self.show_receipts && self.doc_override.is_none()).then(|| {
+                let config = self
+                    .chat_id
+                    .as_deref()
+                    .and_then(|id| state.chats.iter().find(|c| c.id == id))
+                    .and_then(|chat| chat.config.as_ref());
+                crate::receipt::Fallback {
+                    harness: config.map(|c| c.harness),
+                    model: config.and_then(|c| c.model.clone()),
+                    effort: config
+                        .and_then(|c| c.reasoning)
+                        .and_then(|r| serde_json::to_value(r).ok())
+                        .and_then(|v| v.as_str().map(str::to_owned)),
+                }
+            });
+            let mut turn_start = 0usize;
+            for (ix, entry) in entries.iter().enumerate() {
+                if entry.role == MessageRole::User {
+                    turn_start = ix;
+                }
                 if !self.compact_mode
                     && let Some(rows) = prepared.and_then(|p| p.rows.get(&entry.id))
                 {
@@ -4850,6 +4898,18 @@ impl Transcript {
                 } else {
                     new_rows.extend(self.rows_for(entry, false));
                 }
+                if let Some(fallback) = &receipts
+                    && entry.role != MessageRole::User
+                    && entries
+                        .get(ix + 1)
+                        .is_none_or(|next| next.role == MessageRole::User)
+                    && let Some(row) = self.receipt_row(&entries[turn_start..=ix], fallback)
+                {
+                    new_rows.push(row);
+                }
+            }
+            if receipts.is_none() {
+                self.receipt_cache.clear();
             }
             if self.doc_override.is_none() {
                 for echo in state.pending_echoes() {
@@ -7571,6 +7631,7 @@ impl Transcript {
             }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
+            RowKind::Receipt { receipt } => self.render_receipt(&row.id, receipt, &theme, cx),
         };
         // Diagram fences this row just requested start rendering after layout.
         self.ensure_diagram_worker(cx);
@@ -7771,6 +7832,271 @@ impl Transcript {
                 .absolute()
                 .inset_0(),
             )
+            .into_any_element()
+    }
+
+    /// Follow "Show receipts after turns": a flip rebuilds the row set.
+    fn apply_receipt_setting(&mut self, cx: &mut Context<Self>) {
+        let show_receipts = crate::settings::show_receipts(cx);
+        if self.show_receipts != show_receipts {
+            self.show_receipts = show_receipts;
+            self.last_source = None;
+            self.sync(cx);
+        }
+    }
+
+    /// The receipt row closing one turn (`turn` = its entries, prompt
+    /// first), or `None` while it still streams. Cached per anchor entry.
+    fn receipt_row(
+        &mut self,
+        turn: &[SessionMessageEntry],
+        fallback: &crate::receipt::Fallback,
+    ) -> Option<Row> {
+        let anchor = turn.last()?;
+        let fingerprint = crate::receipt::turn_fingerprint(turn)
+            ^ fnv1a(
+                format!(
+                    "{:?}\0{:?}\0{:?}",
+                    fallback.harness, fallback.model, fallback.effort
+                )
+                .as_bytes(),
+            );
+        let receipt = match self.receipt_cache.get(&anchor.id) {
+            Some((cached, receipt)) if *cached == fingerprint => receipt.clone(),
+            _ => {
+                let receipt = Arc::new(crate::receipt::assemble(turn, fallback)?);
+                self.receipt_cache
+                    .insert(anchor.id.clone(), (fingerprint, receipt.clone()));
+                receipt
+            }
+        };
+        Some(Row {
+            id: format!("{}#receipt", anchor.id).into(),
+            version: fingerprint,
+            turn_start: false,
+            kind: RowKind::Receipt { receipt },
+            entry_id: anchor.id.clone().into(),
+            timestamp: None,
+            copy_text: None,
+            compact_fold: None,
+        })
+    }
+
+    /// Who paid for a receipt's turn: the harness's signed-in account on the
+    /// chat's host, as the accounts views last loaded it. Unknown (never
+    /// loaded, or a harness without accounts) prints nothing and no cost.
+    fn receipt_extras(
+        &self,
+        receipt: &crate::receipt::Receipt,
+        cx: &gpui::App,
+    ) -> crate::receipt::Extras {
+        let state = self.state.read(cx);
+        let target = self
+            .chat_id
+            .as_deref()
+            .and_then(|id| state.chats.iter().find(|c| c.id == id))
+            .map(|chat| chat.device_id.clone())
+            .filter(|device| state.local_device_id.as_ref() != Some(device));
+        let account = receipt.harness.and_then(|harness| {
+            let snapshot = cx
+                .try_global::<crate::settings::accounts::AccountsSnapshotCache>()?
+                .0
+                .get(&target)?;
+            crate::account_usage::active_account(snapshot, harness).cloned()
+        });
+        crate::receipt::Extras {
+            account: account.as_ref().and_then(|a| {
+                a.email
+                    .clone()
+                    .or_else(|| a.display_name.clone())
+                    .filter(|name| !name.trim().is_empty())
+            }),
+            api_billed: account
+                .as_ref()
+                .is_some_and(|a| a.auth_kind == Some(zeron_proto::AgentAuthKind::ApiKey)),
+            when: receipt.finished_at.and_then(|ms| {
+                chrono::DateTime::from_timestamp_millis(ms).map(|utc| {
+                    utc.with_timezone(&chrono::Local)
+                        .format("%b %-d %Y  %-I:%M %p")
+                        .to_string()
+                })
+            }),
+        }
+    }
+
+    fn toggle_receipt(&mut self, row_id: SharedString, cx: &mut Context<Self>) {
+        if self.receipts_open.remove(&row_id).is_none() {
+            self.receipts_open.insert(row_id.clone(), Instant::now());
+        }
+        if let Some(ix) = self.rows.iter().position(|row| row.id == row_id) {
+            self.list.remeasure_items(ix..ix + 1);
+        }
+        if self.pinned {
+            self.wake_spring();
+        }
+        cx.notify();
+    }
+
+    fn copy_receipt(
+        &mut self,
+        row_id: SharedString,
+        receipt: Arc<crate::receipt::Receipt>,
+        as_image: bool,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        let lines = crate::receipt::lines(&receipt, &self.receipt_extras(&receipt, cx));
+        let flash = move |this: &mut Self, cx: &mut Context<Self>| {
+            this.receipt_copied = Some((row_id.clone(), as_image));
+            this.receipt_copy_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1200))
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.receipt_copied = None;
+                    this.receipt_copy_task = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+            cx.notify();
+        };
+        if !as_image {
+            cx.write_to_clipboard(ClipboardItem::new_string(crate::receipt::plain_text(&lines)));
+            flash(self, cx);
+            return;
+        }
+        // Rasterizing loads fonts on first use: keep it off the UI thread.
+        let svg = crate::receipt::svg(&lines, &crate::receipt::paper(Theme::of(cx)));
+        self.receipt_copy_task = Some(cx.spawn(async move |this, cx| {
+            let png = cx
+                .background_executor()
+                .spawn(async move { crate::receipt::png(&svg, 2.0) })
+                .await;
+            match png {
+                Ok(bytes) => {
+                    this.update(cx, |this, cx| {
+                        let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes);
+                        cx.write_to_clipboard(ClipboardItem::new_image(&image));
+                        flash(this, cx);
+                    })
+                    .ok();
+                }
+                Err(err) => tracing::warn!(error = %err, "receipt image render failed"),
+            }
+        }));
+    }
+
+    fn render_receipt(
+        &mut self,
+        row_id: &SharedString,
+        receipt: &Arc<crate::receipt::Receipt>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let opened_at = self.receipts_open.get(row_id).copied();
+        let toggle_id = row_id.clone();
+        let hover_key = format!("receipt-hover-{row_id}");
+        let summary = div()
+            .id(SharedString::from(format!("receipt-toggle-{row_id}")))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .h(px(22.0))
+            .cursor_pointer()
+            .font_family(theme.font_mono.clone())
+            .text_size(crate::typography::ui_rems(11.5))
+            .text_color(motion::hover_blend(
+                &hover_key,
+                theme.text_muted.opacity(0.7),
+                theme.text,
+            ))
+            .on_hover(motion::hover_listener(hover_key))
+            .role(gpui::Role::Button)
+            .aria_label(if opened_at.is_some() {
+                "Hide receipt"
+            } else {
+                "Show receipt"
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_receipt(toggle_id.clone(), cx);
+            }))
+            .child(
+                crate::icons::icon(crate::icons::GODSPEED_LOGO)
+                    .size(px(11.0))
+                    .text_color(theme.text_muted.opacity(0.7)),
+            )
+            .child(SharedString::from(crate::receipt::summary(receipt)));
+        let Some(opened_at) = opened_at else {
+            return summary.into_any_element();
+        };
+        let paper = crate::receipt::paper(theme);
+        let action = |icon: &'static str, done: bool, label: &'static str, key: String| {
+            let fade_key = format!("{key}-hover");
+            div()
+                .id(SharedString::from(key))
+                .size(px(22.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(Theme::CONTROL_RADIUS))
+                .cursor_pointer()
+                .bg(motion::hover_blend(
+                    &fade_key,
+                    gpui::transparent_black(),
+                    paper.ink.opacity(0.08),
+                ))
+                .on_hover(motion::hover_listener(fade_key))
+                .tooltip(crate::settings::widgets::text_tooltip(label))
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .child(
+                    crate::icons::icon(if done { crate::icons::CHECK } else { icon })
+                        .size(px(13.0))
+                        .text_color(paper.muted),
+                )
+        };
+        let copied = self
+            .receipt_copied
+            .as_ref()
+            .filter(|(id, _)| id == row_id)
+            .map(|(_, image)| *image);
+        let (text_row, text_receipt) = (row_id.clone(), receipt.clone());
+        let (image_row, image_receipt) = (row_id.clone(), receipt.clone());
+        let actions = div()
+            .flex()
+            .gap(px(2.0))
+            .child(
+                action(
+                    crate::icons::COPY,
+                    copied == Some(false),
+                    "Copy receipt",
+                    format!("receipt-copy-{row_id}"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_receipt(text_row.clone(), text_receipt.clone(), false, cx)
+                })),
+            )
+            .child(
+                action(
+                    crate::icons::GALLERY,
+                    copied == Some(true),
+                    "Copy as image",
+                    format!("receipt-copy-image-{row_id}"),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_receipt(image_row.clone(), image_receipt.clone(), true, cx)
+                })),
+            )
+            .into_any_element();
+        let lines = crate::receipt::lines(receipt, &self.receipt_extras(receipt, cx));
+        let animate = !motion::reduced_motion(cx) && opened_at.elapsed() < Duration::from_secs(2);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(Theme::SPACE_SM))
+            .child(summary)
+            .child(crate::receipt::card(row_id, &lines, theme, animate, actions))
             .into_any_element()
     }
 
@@ -10161,6 +10487,7 @@ impl Render for Transcript {
             .borrow_mut()
             .retain_rows(&self.rendered_rows);
         self.rendered_rows.clear();
+        self.apply_receipt_setting(cx);
         let compact_mode = crate::settings::transcript_compact_mode(cx);
         if self.compact_mode != compact_mode {
             self.compact_mode = compact_mode;
@@ -10531,6 +10858,82 @@ mod tests {
             );
             assert!(reveal.header_started_at.is_none());
             assert!(reveal.starts.iter().all(Option::is_none));
+        });
+    }
+
+    fn receipt_rows(transcript: &Transcript) -> Vec<(usize, SharedString)> {
+        transcript
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row.kind, RowKind::Receipt { .. }))
+            .map(|(ix, row)| (ix, row.id.clone()))
+            .collect()
+    }
+
+    #[gpui::test]
+    fn receipts_close_finished_turns_and_the_setting_hides_them(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+            let mut first_prompt = assistant("u1", MessageStatus::Complete, vec![text_part("t", "go")]);
+            first_prompt.role = MessageRole::User;
+            let mut first = assistant(
+                "a1",
+                MessageStatus::Complete,
+                vec![tool_part("c1", "cargo test"), text_part("r", "Done.")],
+            );
+            first.duration_ms = Some(90_000);
+            let mut second_prompt = first_prompt.clone();
+            second_prompt.id = "u2".into();
+            let live = assistant("a2", MessageStatus::Streaming, vec![text_part("r", "Working")]);
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat".into());
+                state.transcript_replayed = true;
+                state.transcript = vec![first_prompt, first, second_prompt, live];
+                state.transcript_revision += 1;
+            });
+            transcript.update(cx, |this, cx| {
+                this.sync(cx);
+                // Only the finished turn has one, right after its reply and
+                // before the next prompt; the streaming turn has none yet.
+                let receipts = receipt_rows(this);
+                assert_eq!(receipts.len(), 1, "{receipts:?}");
+                let (ix, id) = &receipts[0];
+                assert_eq!(id.as_ref(), "a1#receipt");
+                assert_eq!(this.rows[ix - 1].entry_id.as_ref(), "a1");
+                assert_eq!(this.rows[ix + 1].entry_id.as_ref(), "u2");
+                let RowKind::Receipt { receipt } = &this.rows[*ix].kind else {
+                    unreachable!()
+                };
+                assert_eq!(receipt.tools.commands, 1);
+                assert_eq!(crate::receipt::summary(receipt), "Receipt · 1m 30s · 1 tool");
+
+                // Collapsed renders the one-liner; a click opens the slip.
+                let receipt = receipt.clone();
+                let _ = this.render_receipt(id, &receipt, &Theme::dark(), cx);
+                this.toggle_receipt(id.clone(), cx);
+                assert!(this.receipts_open.contains_key(id));
+                let _ = this.render_receipt(id, &receipt, &Theme::light(), cx);
+                this.toggle_receipt(id.clone(), cx);
+                assert!(!this.receipts_open.contains_key(id));
+            });
+
+            crate::settings::set_show_receipts(false, cx);
+            transcript.update(cx, |this, cx| {
+                this.apply_receipt_setting(cx);
+                assert!(receipt_rows(this).is_empty(), "setting off hides receipts");
+                assert!(this.receipt_cache.is_empty());
+            });
+            crate::settings::set_show_receipts(true, cx);
+            transcript.update(cx, |this, cx| {
+                this.apply_receipt_setting(cx);
+                assert_eq!(receipt_rows(this).len(), 1);
+            });
         });
     }
 
@@ -11835,6 +12238,7 @@ mod tests {
             status: Some(status),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         }
     }
 
@@ -15949,6 +16353,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         };
         let rows = rows_for_entry(&user, true, false, &mut parse);
         assert_eq!(rows.len(), 1);

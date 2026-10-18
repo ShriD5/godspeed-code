@@ -85,6 +85,8 @@ impl Normalizer {
             "session/tokenUsage" => vec![AgentEvent::Usage {
                 input_tokens: params["promptTokens"].as_u64().unwrap_or(0),
                 output_tokens: params["usage"]["outputTokens"].as_u64().unwrap_or(0),
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             }],
             "session/contextUsage" => vec![AgentEvent::ContextUsage {
                 tokens: params["usedTokens"].as_u64(),

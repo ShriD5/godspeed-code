@@ -203,18 +203,62 @@ pub(crate) fn turn_limit_event(
     Some(crate::limits::event(reset, None))
 }
 
-/// `thread/tokenUsage/updated` → a [`AgentEvent::Usage`] snapshot of the LAST
-/// turn's tokens (held by the session loop, emitted before `Done`).
-pub(crate) fn usage_event(params: &Value) -> Option<AgentEvent> {
-    let last = field(params, &["tokenUsage", "token_usage"])?.get("last")?;
-    let count = |keys: &[&str]| {
-        field(last, keys)
-            .and_then(Value::as_u64)
-            .unwrap_or_default()
+/// Cumulative token counts off one `tokenUsage` breakdown. OpenAI counts
+/// cached prompt tokens INSIDE `input`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TokenCounts {
+    input: u64,
+    cached: Option<u64>,
+    output: u64,
+}
+
+impl TokenCounts {
+    fn read(breakdown: &Value) -> Self {
+        let count = |keys: &[&str]| field(breakdown, keys).and_then(Value::as_u64);
+        Self {
+            input: count(&["inputTokens", "input_tokens"]).unwrap_or_default(),
+            cached: count(&["cachedInputTokens", "cached_input_tokens"]),
+            output: count(&["outputTokens", "output_tokens"]).unwrap_or_default(),
+        }
+    }
+
+    fn minus(self, base: Self) -> Self {
+        Self {
+            input: self.input.saturating_sub(base.input),
+            cached: self
+                .cached
+                .map(|c| c.saturating_sub(base.cached.unwrap_or_default())),
+            output: self.output.saturating_sub(base.output),
+        }
+    }
+}
+
+/// `thread/tokenUsage/updated` → a [`AgentEvent::Usage`] snapshot of the turn
+/// in flight (held by the session loop, emitted before `Done`).
+///
+/// `last` is only the latest model response; a turn with tool calls makes
+/// many. The thread's running `total` minus its value just before this
+/// turn's first response (`turn_base`, set from the first update as
+/// `total - last` and cleared by the loop at each turn boundary) covers them
+/// all, and survives a duplicated notification. Without `total`, `last` is
+/// the best there is.
+pub(crate) fn usage_event(params: &Value, turn_base: &mut Option<TokenCounts>) -> Option<AgentEvent> {
+    let usage = field(params, &["tokenUsage", "token_usage"])?;
+    let last = usage.get("last").map(TokenCounts::read);
+    let turn = match (usage.get("total").map(TokenCounts::read), last) {
+        (Some(total), last) => {
+            let base = *turn_base.get_or_insert_with(|| total.minus(last.unwrap_or_default()));
+            total.minus(base)
+        }
+        (None, Some(last)) => last,
+        (None, None) => return None,
     };
+    let cached = turn.cached.map(|c| c.min(turn.input));
     Some(AgentEvent::Usage {
-        input_tokens: count(&["inputTokens", "input_tokens"]),
-        output_tokens: count(&["outputTokens", "output_tokens"]),
+        input_tokens: turn.input - cached.unwrap_or_default(),
+        output_tokens: turn.output,
+        cache_read_tokens: cached,
+        cache_write_tokens: None,
     })
 }
 
@@ -991,20 +1035,75 @@ mod tests {
     #[test]
     fn usage_reads_last_snapshot_under_both_spellings() {
         assert_eq!(
-            usage_event(&json!({"tokenUsage": {"last": {"inputTokens": 42, "outputTokens": 7}}})),
+            usage_event(
+                &json!({"tokenUsage": {"last": {"inputTokens": 42, "outputTokens": 7}}}),
+                &mut None
+            ),
             Some(AgentEvent::Usage {
                 input_tokens: 42,
-                output_tokens: 7
+                output_tokens: 7,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             })
         );
         assert_eq!(
-            usage_event(&json!({"token_usage": {"last": {"input_tokens": 1, "output_tokens": 2}}})),
+            usage_event(
+                &json!({"token_usage": {"last": {"input_tokens": 1, "output_tokens": 2}}}),
+                &mut None
+            ),
             Some(AgentEvent::Usage {
                 input_tokens: 1,
-                output_tokens: 2
+                output_tokens: 2,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             })
         );
-        assert_eq!(usage_event(&json!({})), None);
+        assert_eq!(usage_event(&json!({}), &mut None), None);
+    }
+
+    #[test]
+    fn usage_sums_every_response_of_the_turn_from_the_running_total() {
+        // A resumed thread: 1000 in / 100 out before this turn. Two model
+        // responses this turn (a tool call between them), the second update
+        // delivered twice.
+        let update = |total: (u64, u64, u64), last: (u64, u64, u64)| {
+            json!({"tokenUsage": {
+                "total": {"inputTokens": total.0, "cachedInputTokens": total.1, "outputTokens": total.2},
+                "last": {"inputTokens": last.0, "cachedInputTokens": last.1, "outputTokens": last.2},
+            }})
+        };
+        let mut base = None;
+        let first = usage_event(&update((1300, 200, 140), (300, 200, 40)), &mut base);
+        assert_eq!(
+            first,
+            Some(AgentEvent::Usage {
+                input_tokens: 100,
+                output_tokens: 40,
+                cache_read_tokens: Some(200),
+                cache_write_tokens: None,
+            })
+        );
+        let second = update((1800, 600, 200), (500, 400, 60));
+        let expected = Some(AgentEvent::Usage {
+            input_tokens: 200,
+            output_tokens: 100,
+            cache_read_tokens: Some(600),
+            cache_write_tokens: None,
+        });
+        assert_eq!(usage_event(&second, &mut base), expected);
+        assert_eq!(usage_event(&second, &mut base), expected);
+        // The loop clears the base at the turn boundary: the next turn
+        // starts from its own first response.
+        base = None;
+        assert_eq!(
+            usage_event(&update((1900, 600, 210), (100, 0, 10)), &mut base),
+            Some(AgentEvent::Usage {
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_read_tokens: Some(0),
+                cache_write_tokens: None,
+            })
+        );
     }
 
     #[test]

@@ -54,6 +54,7 @@ impl Harness for Capture {
 fn message(id: &str, role: MessageRole, text: &str, status: MessageStatus) -> SessionMessageEntry {
     SessionMessageEntry {
         duration_ms: None,
+        turn_stats: None,
         id: id.into(),
         role,
         parts: vec![MessagePart::Text {

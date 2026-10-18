@@ -257,6 +257,8 @@ mod tests {
             AgentEvent::Usage {
                 input_tokens: 42,
                 output_tokens: 10,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             },
             AgentEvent::AvailableCommands {
                 commands: Vec::new(),

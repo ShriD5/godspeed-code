@@ -1236,6 +1236,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         })
         .unwrap();
         let mut writer = SegmentWriter::begin(&doc, "m-assist", device_id, 2).unwrap();
@@ -1338,6 +1339,7 @@ async fn recover_stale_journal_settles_chips_in_completed_local_entries() {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         })
         .unwrap();
     }
@@ -1406,6 +1408,7 @@ async fn subagent_done_without_a_live_sink_updates_a_persisted_chip() {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            turn_stats: None,
         })
         .unwrap();
     core.sessions

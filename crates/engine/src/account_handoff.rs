@@ -250,6 +250,7 @@ fn seam(chat_id: &str, source: &Chat, device_id: &str) -> SessionMessageEntry {
     let id = format!("fork:{chat_id}");
     SessionMessageEntry {
         duration_ms: None,
+        turn_stats: None,
         id: id.clone(),
         role: MessageRole::System,
         parts: vec![MessagePart::Fork {
@@ -503,6 +504,7 @@ mod tests {
     fn text(id: &str, role: MessageRole, body: &str) -> SessionMessageEntry {
         SessionMessageEntry {
             duration_ms: None,
+            turn_stats: None,
             id: id.into(),
             role,
             parts: vec![MessagePart::Text {
