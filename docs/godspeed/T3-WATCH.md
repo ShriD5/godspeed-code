@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-18 | Step reasoning effort from the keyboard (`2993dfc069`) | PR #TBD |
+| 2026-10-18 | Step reasoning effort from the keyboard (`2993dfc069`) | PR #6 |
 | 2026-10-18 | Model picker search lists newest models first (`ede3f2d6ba`) | queued |
 | 2026-10-18 | Steering no longer ends running subagents (`0b68a4a9c3`) | queued (check Claude steer while a background subagent runs) |
 | 2026-10-18 | Follow-ups sent while a thread compacts are queued (`a54a44c669`) | queued |
