@@ -6,7 +6,7 @@
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
-> **Early access.** Godspeed 0.5.0 is an early release. Expect rough edges. See
+> **Early access.** Godspeed 0.5 is an early release. Expect rough edges. See
 > [ROADMAP.md](docs/godspeed/ROADMAP.md) for what is done and what is next.
 
 Godspeed runs the coding-agent CLIs you already have (Claude Code, Codex, Cursor and more) in one
@@ -38,11 +38,11 @@ the features listed below on top. If you like this app, go star Zeron.
 | Usage | Account ring | Usage cockpit, tachometer, continue on another account |
 | Worktrees | Setup script | Per-worktree ports, copied `.env` files, setup/teardown, sleep and wake |
 | Upstream bugs | Open | 16 Zeron and 36 T3 Code issues fixed |
-| Account | Zeron's cloud sign-in | Local-only, no account; sync on your own Cloudflare |
+| Account | Zeron's cloud sign-in | Local by default, no account needed; optional sync, hosted or on your own Cloudflare |
 
 All of that at the same speed: cold start is 65 ms for both, and memory after a 400-chat workload is
-within 1 MiB ([benchmark](docs/godspeed/BENCHMARKS-ZERON.md)). Zeron is still ahead on hosted sync,
-the iPhone app and Windows/Linux builds. Full comparison and issue list:
+within 1 MiB ([benchmark](docs/godspeed/BENCHMARKS-ZERON.md)). Zeron is still ahead on Windows and
+Linux builds and a shipped iPhone app (Godspeed's is in development). Full comparison and issue list:
 [VS-ZERON.md](docs/godspeed/VS-ZERON.md).
 
 ## Download
@@ -118,13 +118,22 @@ Cursor's SDK sign-in is separate from `cursor-agent login`: connect it in Settin
 - **Worktree environments.** `godspeed.json` can copy `.env` files into new worktrees, give each
   worktree its own ports, run setup and teardown commands, and sleep idle worktrees to free memory.
   See [WORKTREES.md](docs/godspeed/WORKTREES.md).
+- **Mission Control.** Cmd+Shift+K opens a board of every agent on every device: status, elapsed
+  time, latest activity, branch and diff counts, with keyboard navigation and inline approvals.
+- **Receipts.** Each finished turn ends with a receipt: time, tool calls by kind, files changed,
+  tokens and, on API-billed accounts, an estimated cost. Copy it as text or an image.
+- **Usage.** A tachometer in the composer, and Settings → Usage with live 5-hour and weekly limits
+  per account, history charts of tokens and cost at API prices (including your earlier Claude Code
+  and Codex sessions), and breakdowns by model, provider, project and chat.
 - **Usage limits.** Chats that hit a provider usage limit show as Limited and can resume
-  automatically when the limit resets.
+  automatically when the limit resets, or continue on another account you choose.
+- **The speedster.** The Dock icon animates to show what your agents are doing: jogging, sprinting,
+  waving when something needs you, celebrating when a chat finishes. Settings → Appearance turns
+  it off.
 - **Voice dictation.** On-device speech-to-text with NVIDIA Parakeet v3 (the model is an optional
   download, never bundled).
 
-Everything is local by default. Multi-device sync needs your own deployment of `edge/` (Cloudflare
-Worker + Durable Objects); see [Sync](#sync).
+Everything is local by default; sync is opt-in. See [Sync](#sync).
 
 ## Benchmarks
 
@@ -159,8 +168,12 @@ The packaging script needs `dmgbuild` (it installs it with `pip --user` if missi
 
 ## Sync
 
-Local-only by default. Multi-device sync needs your own deployment of `edge/`: set
-`GODSPEED_EDGE_URL` and `GODSPEED_WORKOS_CLIENT_ID`.
+Local-only by default: chats live on your Mac and no account is needed. Choose **Enable sync** in
+the account menu to sign in and follow your chats from other devices (and the iPhone app).
+
+To run your own sync server instead, deploy `edge/` (a Cloudflare Worker with Durable Objects and
+R2, see [edge/DEPLOY.md](edge/DEPLOY.md)) and set `GODSPEED_EDGE_URL` and
+`GODSPEED_WORKOS_CLIENT_ID`. An empty `GODSPEED_WORKOS_CLIENT_ID` turns sign-in off entirely.
 
 ## Docs
 

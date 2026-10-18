@@ -1,71 +1,37 @@
 # Godspeed roadmap
 
-Godspeed is a fork of [zeron](https://github.com/zeronsh/zeron) (MIT). The goal is one native app for
-everything AI: the fastest and best-looking coding-agent client, with T3 Code-level depth and
-always-on agents built in.
+Godspeed is a fork of [Zeron](https://github.com/zeronsh/zeron) (MIT): one native app for every AI
+coding agent, with T3 Code-level depth, always-on agents and a calm way to run many agents at once.
+What shipped in each release is in the [changelog](../../CHANGELOG.md).
 
-Reference sources (read-only, never run): T3 Code (`pingdotgg/t3code`, MIT), open-dots
-(`Anil-matcha/open-dots`, MIT), Muse Code SDK (`@muse-code/sdk`, MIT). Zed's `editor`, `terminal`,
-`markdown` and `agent_*` crates are GPL: never copy from them. waku is GPL: ideas only.
+## Shipped
 
-## Fork hygiene (do first)
+- **0.1:** rebrand and local-only fork; approvals and four access modes; git write actions with
+  generated text; Muse Code driver; always-on agents (cron, interval, webhook, file triggers,
+  memory, inbox); chat import from T3 Code, Claude Code, Codex and Cursor; message search; resume
+  at usage-limit reset; thread lifecycle (settle, snooze, undo); delegation that wakes the parent;
+  about 50 Zeron and T3 Code issues fixed.
+- **0.2:** Telegram bot for always-on agents (open-dots style).
+- **0.3:** opt-in cloud sync with WorkOS sign-in; signed and notarized macOS builds; iPhone app (in
+  development).
+- **0.4:** Needs-you inbox; worktree environments (ports, copied `.env` files, setup/teardown,
+  sleep); the animated speedster Dock icon.
+- **0.5:** Mission Control; turn receipts; usage cockpit, tachometer and usage history with cost at
+  API prices; continue a limited chat on another account; new icon.
 
-- [ ] Updater: stop reading `edge.zeron.sh/releases`; point at Godspeed releases, off until we publish.
-- [ ] Sync edge: default `DEFAULT_EDGE_URL` / `PRODUCTION_EDGE_URL` to none; local-only profile.
-- [ ] User-facing rebrand: binary, `.app`, bundle id, data dir, `ZERON_*` env vars, UI strings, icon,
-      README, install scripts. Internal `zeron_*` crate names stay for now so upstream merges stay cheap.
-- [ ] README credits zeron prominently.
+## Next
 
-## v0.1 — launch cut
-
-Providers
-- [ ] **Muse Code**: native driver over MSP (`muse serve`), modeled on the Pi driver
-      (`crates/harness/src/pi`). Types from `@muse-code/sdk` `msp.d.ts`. Modes: ask-me / unrestricted.
-      Steering yes, rollback/fork no.
-- [x] Claude, Codex (native), Cursor, Grok, OpenCode, Pi, Antigravity, Devin (inherited).
-- [ ] Gemini CLI via ACP registry (`gemini --acp`).
-
-T3 depth zeron lacks (audited in PARITY-T3.md)
-- [ ] **Access modes + approvals** (supervised / auto-accept edits / auto / full): today every agent runs without asking. Highest priority.
-- [ ] **Git write actions**: commit, push, pull, sync, create PR with generated text (none exist today).
-- [ ] Fork thread from a response, merge back to source.
-- [ ] Queue: reorder, edit, promote-to-steer.
-- [ ] Text generation on a cheap model: titles, commit messages, PR bodies, branch names.
-- [ ] Command palette (`mod+k`) with actions/projects/threads; keybindings file with `when` clauses.
-- [ ] Access modes: supervised / auto-accept edits / auto / full access.
-
-Always-on agents (open-dots, done properly)
-- [ ] Agents: name, provider/model, workspace, memory file injected each run.
-- [ ] Triggers: cron (misfire grace 15 min, skip if still running, auto-pause after 3 failures),
-      webhooks (signed URL, payload templated into prompt), file watch, GitHub events.
-- [ ] Inbox of results: unread/archived, links to the thread and diff, needs-approval items.
-- [ ] Approvals showing the exact command/path; rules (bucket → connector → tool) with a revoke page;
-      unanswered approvals queue in the inbox instead of auto-denying.
-- [ ] Channels: native notifications. Telegram deferred (decided 2026-10-15: keep the native design, no open-dots port).
-- [ ] Runs on the headless engine so a VPS keeps agents alive when the laptop sleeps.
-
-Design pass
-- [ ] Animate panels at 120fps (T3 ships panel animation at 0ms because DOM layout is expensive).
-- [ ] Show raw tool output (T3 hides command stdout).
-- [ ] Local thread search index (T3 needs a server round trip and 2+ chars).
-
-## Cut or deferred (decided 2026-10-15)
-
-- Plan mode: cut.
-- Account fallback and mid-thread provider switching: cut. Switching providers throws away the
-  prompt cache, so every following turn is slower and costs more.
-- Checkpoints, rewind, edit-from-here: maybe later.
-
-## v0.2
-
-GitHub PRs and git actions (commit / push / create PR with generated text), usage and cost page,
-file editor, project content search, MCP server for outside agents, scheduled-task webhooks UI,
-Sparkle auto-update + notarized DMG.
-
-## v0.3
-
-Web and phone client against the headless engine, other git hosts, agent-driven preview browser.
+1. **Close the laptop, the work keeps going.** Linux builds, a "Run on a server" setup that installs
+   the headless engine over SSH, and reconnect hardening so the phone, desktop and Telegram hand a
+   chat back and forth without hiccups.
+2. **PR autopilot.** Review, reply, resolve and merge from the PR pane; per-PR autopilot that feeds
+   failing checks and review comments back to the chat and merges when green.
+3. **iPhone app on TestFlight**, with push notifications for approvals.
+4. **Windows and Linux builds** of the desktop app.
+5. **Multi-repo workspaces** for worktree environments.
 
 ## Not planned
 
-SnapShots, browser cookie import, T3 Connect relay and T3 mobile app wire compatibility.
+- Plan mode, automatic account fallback and switching providers in the middle of a chat (they break
+  prompt caching; continuing on another account is an explicit choice instead).
+- Maybe later: checkpoints, rewind and edit-from-here.
