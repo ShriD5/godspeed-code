@@ -477,6 +477,7 @@ pub(crate) fn seed(
             });
         }
     }
+    seed_states(doc, now)?;
     doc.reconcile_sidebar_pins(true)?;
     let mut after: Option<String> = None;
     for id in ["chat-veil", "chat-picker"] {
@@ -513,4 +514,412 @@ pub(crate) fn seed(
         }
     }
     Ok(Seeded { change_requests })
+}
+
+// ── limits, shelves, inbox, usage ────────────────────────────────────────
+
+/// Extra demo chats for the newer states: one stopped on a usage limit, one
+/// snoozed and one settled (the shelves). Old enough to sit below the live
+/// rows the flows tap.
+pub(crate) fn seed_states(doc: &mut RegistryDoc, now: i64) -> Result<(), zeron_doc::DocError> {
+    use zeron_proto::{ChatLifecycle, ChatLimit, LifecycleState, LimitRecovery, LimitResetSource};
+    let chat = |id: &str, space: &str, device: &str, title: &str, preview: &str, ago: i64| Chat {
+        id: id.into(),
+        device_id: device.into(),
+        title: Some(title.into()),
+        archived: false,
+        cwd: None,
+        branch: Some("main".into()),
+        checkout_id: None,
+        source_context: None,
+        config: Some(ChatConfig {
+            harness: HarnessId::ClaudeCode,
+            model: Some("claude-fable-5".into()),
+            reasoning: Some(ReasoningLevel::High),
+            model_options: Default::default(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+            access_mode: None,
+        }),
+        last_message_preview: Some(preview.into()),
+        last_message_at: Some(ms(now - ago)),
+        created_at: ms(now - ago - HOUR),
+        harness_session_id: None,
+        harness_session_cwd: None,
+        space_id: Some(space.into()),
+        last_seen_at: Some(ms(now - ago)),
+        room_gen: Some(2),
+        parent_chat_id: None,
+        limit: None,
+        lifecycle: Default::default(),
+    };
+    doc.upsert_chat(&chat(
+        "chat-limited",
+        "space-godspeed-vps",
+        VPS,
+        "Backfill usage index",
+        "You've hit your 5-hour limit.",
+        // Older than the rows the flows tap (below them in Recent).
+        DAY + 2 * HOUR,
+    ))?;
+    doc.set_chat_limit(
+        "chat-limited",
+        Some(&ChatLimit {
+            limited_at: ms(now - DAY - 2 * HOUR),
+            reset_at: Some(ms(now + 47 * MIN)),
+            reset_source: Some(LimitResetSource::Provider),
+            window: Some("5-hour".into()),
+            recovery: LimitRecovery::Ask,
+            login: None,
+        }),
+    )?;
+    doc.upsert_chat(&chat(
+        "chat-snoozed",
+        "space-godspeed",
+        MAC,
+        "Bump wgpu after the 29.1 release",
+        "Waiting on upstream.",
+        2 * DAY,
+    ))?;
+    doc.set_chat_lifecycle(
+        "chat-snoozed",
+        &ChatLifecycle::new(
+            LifecycleState::Snoozed {
+                until: ms(now + DAY),
+            },
+            ms(now - DAY),
+        ),
+    )?;
+    doc.upsert_chat(&chat(
+        "chat-settled",
+        "space-edge",
+        VPS,
+        "Rotate the R2 access keys",
+        "Rotated and verified.",
+        3 * DAY,
+    ))?;
+    doc.set_chat_lifecycle(
+        "chat-settled",
+        &ChatLifecycle::new(LifecycleState::Settled, ms(now - 2 * DAY)),
+    )?;
+    Ok(())
+}
+
+/// The demo hosts' "Needs you" queues (STUDIO is offline: none).
+pub(crate) fn attention(
+    now: i64,
+) -> Vec<(&'static str, zeron_proto::attention::AttentionSnapshot)> {
+    use zeron_proto::attention::{
+        AttentionAction as A, AttentionItem, AttentionKind, AttentionSnapshot,
+    };
+    use zeron_proto::{ApprovalKind, ApprovalRequest, ApprovalRisk};
+    let item =
+        |chat: &str, kind: AttentionKind, title: &str, project: &str, ago: i64, summary: &str| {
+            AttentionItem {
+                id: format!("chat:{chat}"),
+                kind,
+                chat_id: Some(chat.into()),
+                title: title.into(),
+                space_id: None,
+                project: Some(project.into()),
+                harness: Some(HarnessId::ClaudeCode),
+                created_at: ms(now - ago),
+                risk: None,
+                summary: summary.into(),
+                actions: vec![A::Open],
+                request_id: None,
+                approval: None,
+                agent_run: None,
+            }
+        };
+    let approval = |chat: &str,
+                    request: &str,
+                    title: &str,
+                    project: &str,
+                    ago: i64,
+                    risk: ApprovalRisk,
+                    approval: ApprovalRequest| AttentionItem {
+        id: format!("approval:{chat}:{request}"),
+        kind: AttentionKind::Approval,
+        risk: Some(risk),
+        summary: approval.title.clone(),
+        actions: vec![A::Approve, A::Decline, A::Open],
+        request_id: Some(request.into()),
+        approval: Some(approval),
+        ..item(chat, AttentionKind::Approval, title, project, ago, "")
+    };
+    let command = |title: &str, command: &str, cwd: &str| {
+        let mut r = ApprovalRequest::new(ApprovalKind::Command, title);
+        r.command = Some(command.into());
+        r.cwd = Some(cwd.into());
+        r
+    };
+    let mut edit = ApprovalRequest::new(ApprovalKind::FileChange, "Edit TranscriptListView.swift");
+    edit.paths = vec!["apps/ios/Godspeed/Transcript/TranscriptListView.swift".into()];
+    edit.diff = Some(
+        "@@ -212,7 +212,9 @@\n     func clampOffset() {\n-        let maxY = contentHeight - bounds.height\n+        let inset = adjustedContentInset\n+        let maxY = max(-inset.top, contentHeight - bounds.height + inset.bottom)\n         offset.y = min(offset.y, maxY)\n     }"
+            .into(),
+    );
+    edit.reason =
+        Some("Clamp against the adjusted inset so the keyboard never strands the last row.".into());
+    let mac = vec![
+        approval(
+            "chat-veil",
+            "r1",
+            "Streaming veil on transcript rows",
+            "godspeed",
+            40_000,
+            ApprovalRisk::High,
+            command(
+                "Force-push the branch",
+                "git push --force-with-lease origin veil-fade",
+                "/Users/dev/godspeed",
+            ),
+        ),
+        AttentionItem {
+            actions: vec![A::Open],
+            ..item(
+                "chat-picker",
+                AttentionKind::Question,
+                "Model picker catalog sync",
+                "godspeed",
+                2 * MIN,
+                "Before I wire the RPC, two decisions:",
+            )
+        },
+        approval(
+            "chat-ios-scroll",
+            "r2",
+            "Transcript scroll pinning",
+            "Godspeed iOS",
+            6 * MIN,
+            ApprovalRisk::Medium,
+            edit,
+        ),
+        approval(
+            "chat-tabs",
+            "r3",
+            "Tool group header colors",
+            "godspeed",
+            9 * MIN,
+            ApprovalRisk::Low,
+            command(
+                "Run the client tests",
+                "cargo test -p zeron-client --lib",
+                "/Users/dev/godspeed",
+            ),
+        ),
+        approval(
+            "chat-home",
+            "r4",
+            "Clean up ~/Downloads",
+            "Home",
+            12 * MIN,
+            ApprovalRisk::Low,
+            command(
+                "List old downloads",
+                "ls -la ~/Downloads | head -40",
+                "/Users/dev",
+            ),
+        ),
+    ];
+    let vps = vec![
+        AttentionItem {
+            actions: vec![A::Open, A::Dismiss],
+            ..item(
+                "chat-errored",
+                AttentionKind::Failed,
+                "Durable Object hibernation flush",
+                "edge",
+                33 * MIN,
+                "Harness exited with status 1: rate limited",
+            )
+        },
+        item(
+            "chat-limited",
+            AttentionKind::Limited,
+            "Backfill usage index",
+            "godspeed",
+            DAY + 2 * HOUR,
+            "Stopped on the 5-hour limit until it resets",
+        ),
+    ];
+    vec![
+        (
+            MAC,
+            AttentionSnapshot {
+                device_id: MAC.into(),
+                items: mac,
+            },
+        ),
+        (
+            VPS,
+            AttentionSnapshot {
+                device_id: VPS.into(),
+                items: vps,
+            },
+        ),
+    ]
+}
+
+/// The demo Mac's agent logins and their plan windows.
+pub(crate) fn agent_accounts(now: i64) -> zeron_proto::AgentAccountsSnapshot {
+    use zeron_proto::{AgentAccount, AgentAccountsSnapshot, AgentAuthKind, AgentUsageWindow};
+    let window = |label: &str, used: f32, reset_in: i64| AgentUsageWindow {
+        label: label.into(),
+        used_fraction: used,
+        resets_at: Some(ms(now + reset_in)),
+    };
+    let account = |id: &str, harness: HarnessId, email: &str, plan: &str, active: bool, windows| {
+        AgentAccount {
+            id: id.into(),
+            harness,
+            email: Some(email.into()),
+            plan_label: Some(plan.into()),
+            active,
+            usage_windows: windows,
+            usage_fetched_at: Some(now - 2 * MIN),
+            usage_error: None,
+            display_name: None,
+            organization: None,
+            auth_kind: Some(AgentAuthKind::Oauth),
+            switchable: true,
+            saved_at: Some(now - DAY),
+            provider: None,
+        }
+    };
+    AgentAccountsSnapshot {
+        accounts: vec![
+            account(
+                "claude-1",
+                HarnessId::ClaudeCode,
+                "dev@example.com",
+                "Max 20x",
+                true,
+                vec![
+                    window("Session", 0.64, 2 * HOUR + 14 * MIN),
+                    window("Week", 0.38, 3 * DAY + 4 * HOUR),
+                ],
+            ),
+            account(
+                "claude-2",
+                HarnessId::ClaudeCode,
+                "side@example.com",
+                "Pro",
+                false,
+                vec![window("Session", 0.97, 41 * MIN), window("Week", 0.88, DAY)],
+            ),
+            account(
+                "codex-1",
+                HarnessId::Codex,
+                "dev@example.com",
+                "Pro",
+                true,
+                vec![
+                    window("5h", 0.22, 3 * HOUR),
+                    window("Week", 0.81, DAY + 6 * HOUR),
+                ],
+            ),
+        ],
+        warnings: Vec::new(),
+    }
+}
+
+/// A plausible usage history for `range` (deterministic).
+pub(crate) fn usage_history(range: zeron_proto::UsageRange, now: i64) -> zeron_proto::UsageHistory {
+    use zeron_proto::{
+        UsageAmount, UsageBucket, UsageBucketSize, UsageHistory, UsagePoint, UsageRange,
+        UsageSlice, UsageSources, UsageTokens,
+    };
+    let (count, step, bucket) = match range {
+        UsageRange::Today => (24, HOUR, UsageBucketSize::Hour),
+        UsageRange::Week => (7, DAY, UsageBucketSize::Day),
+        UsageRange::Month => (30, DAY, UsageBucketSize::Day),
+        UsageRange::Quarter => (90, DAY, UsageBucketSize::Day),
+        UsageRange::All => (20, 7 * DAY, UsageBucketSize::Week),
+    };
+    let start = now - (count as i64 - 1) * step;
+    let amount = |seed: u64, scale: f64| {
+        let wave = ((seed * 2_654_435_761) % 1000) as f64 / 1000.0;
+        let output = ((40_000.0 + 160_000.0 * wave) * scale) as u64;
+        let input = output / 3;
+        let cache_read = output * 9;
+        let cost = output as f64 * 25e-6 + input as f64 * 5e-6 + cache_read as f64 * 0.5e-6;
+        UsageAmount {
+            tokens: UsageTokens {
+                input,
+                output,
+                cache_read,
+                cache_write: output / 4,
+            },
+            cost_usd: (cost * 100.0).round() / 100.0,
+            unpriced_tokens: 0,
+            cache_savings_usd: cache_read as f64 * 4.5e-6,
+            turns: 3 + seed % 9,
+            calls: 0,
+        }
+    };
+    let mut total = UsageAmount::default();
+    let mut claude = UsageAmount::default();
+    let mut codex = UsageAmount::default();
+    let buckets: Vec<UsageBucket> = (0..count)
+        .map(|i| {
+            let at = ms(start + i as i64 * step);
+            let a = amount(i as u64 + 1, 1.0);
+            let b = amount(i as u64 + 101, 0.4);
+            total.add(&a);
+            total.add(&b);
+            claude.add(&a);
+            codex.add(&b);
+            UsageBucket {
+                start: at,
+                day: at.date_naive(),
+                hour: matches!(bucket, UsageBucketSize::Hour).then(|| (i % 24) as u8),
+                points: vec![
+                    UsagePoint {
+                        provider: "claude-code".into(),
+                        model: "claude-fable-5".into(),
+                        amount: a,
+                    },
+                    UsagePoint {
+                        provider: "codex".into(),
+                        model: "gpt-6-astra".into(),
+                        amount: b,
+                    },
+                ],
+            }
+        })
+        .collect();
+    let slice = |key: &str, label: &str, amount: UsageAmount| UsageSlice {
+        key: key.into(),
+        label: label.into(),
+        amount,
+    };
+    UsageHistory {
+        range,
+        bucket,
+        time_zone: "UTC".into(),
+        start: Some(ms(start)),
+        end: Some(ms(now)),
+        buckets,
+        total,
+        sessions: 14,
+        by_model: vec![
+            slice("claude-fable-5", "Claude Fable 5", claude),
+            slice("gpt-6-astra", "GPT-6 Astra", codex),
+        ],
+        by_provider: vec![
+            slice("claude-code", "Claude Code", claude),
+            slice("codex", "Codex", codex),
+        ],
+        by_project: Vec::new(),
+        top_chats: Vec::new(),
+        sources: UsageSources {
+            godspeed_turns: 412,
+            claude_files: 88,
+            codex_files: 31,
+            deduplicated: 0,
+            indexing: false,
+        },
+        prices_checked: "2026-10-18".into(),
+    }
 }

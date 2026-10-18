@@ -11,8 +11,10 @@
 //! through [`CoreClient::session_handle`] → [`zeron_client::SessionHandle`]
 //! (`snapshot()` / `subscribe()`), never over FFI.
 
+mod attention;
 mod session;
 mod voice;
+pub use attention::*;
 pub use voice::*;
 mod types;
 
@@ -356,6 +358,105 @@ impl CoreClient {
             .into_iter()
             .map(Into::into)
             .collect()
+    }
+
+    // ── needs-you inbox ───────────────────────────────────────────────────
+
+    /// The merged "Needs you" queue across every host, in risk order. Pull
+    /// it after `AttentionChanged` and `WorkspaceChanged`.
+    pub fn attention(&self) -> AttentionView {
+        (&self.client.attention()).into()
+    }
+
+    /// One-tap approve / decline (the provider's plain option). The item
+    /// hides at once; an error brings it back.
+    pub async fn respond_attention(
+        &self,
+        device_id: String,
+        item_id: String,
+        approve: bool,
+    ) -> CoreResult<()> {
+        let client = self.client.clone();
+        on_runtime(async move {
+            client
+                .respond_attention(&device_id, &item_id, approve)
+                .await
+        })
+        .await
+    }
+
+    /// Mark a finished / failed / timed-out item seen.
+    pub async fn dismiss_attention(&self, device_id: String, item_id: String) -> CoreResult<()> {
+        let client = self.client.clone();
+        on_runtime(async move { client.dismiss_attention(&device_id, &item_id).await }).await
+    }
+
+    /// Approve every low-risk approval on every host.
+    pub async fn approve_low_risk(&self) -> BatchResult {
+        let client = self.client.clone();
+        on_runtime(async move { Ok(client.approve_low_risk().await) })
+            .await
+            .map(Into::into)
+            .unwrap_or(BatchResult {
+                approved: 0,
+                skipped: 0,
+                failed_devices: Vec::new(),
+            })
+    }
+
+    // ── thread lifecycle / usage limits ───────────────────────────────────
+
+    /// Settle, snooze (until `until_ms`) or wake a chat.
+    pub fn set_lifecycle(&self, chat_id: String, lifecycle: Lifecycle) -> CoreResult<()> {
+        Ok(self.client.set_lifecycle(&chat_id, lifecycle.into())?)
+    }
+
+    /// A Limited chat's recovery choice, sent to its host.
+    pub async fn set_limit_recovery(
+        &self,
+        chat_id: String,
+        action: LimitAction,
+        reset_at_ms: Option<i64>,
+    ) -> CoreResult<()> {
+        let client = self.client.clone();
+        on_runtime(async move {
+            client
+                .set_limit_recovery(&chat_id, action.into(), reset_at_ms)
+                .await
+        })
+        .await
+    }
+
+    // ── usage ─────────────────────────────────────────────────────────────
+
+    /// A host's agent logins with their plan windows (5-hour, weekly…).
+    /// `force` re-probes the providers (rate-limited by the host).
+    pub async fn agent_accounts(
+        &self,
+        device_id: String,
+        force: bool,
+    ) -> CoreResult<Vec<AgentAccountView>> {
+        let client = self.client.clone();
+        let snapshot =
+            on_runtime(async move { client.agent_accounts(&device_id, force).await }).await?;
+        Ok(snapshot.accounts.iter().map(Into::into).collect())
+    }
+
+    /// Tokens and estimated API cost from a host's usage index (0.5.1+).
+    pub async fn usage_history(
+        &self,
+        device_id: String,
+        range: UsageRange,
+        time_zone: Option<String>,
+    ) -> CoreResult<UsageHistoryView> {
+        let client = self.client.clone();
+        let history = on_runtime(async move {
+            client
+                .usage_history(&device_id, range.into(), time_zone)
+                .await
+        })
+        .await?;
+        Ok((&history).into())
     }
 
     /// Ask for session notifications on this device (APNs token as hex,

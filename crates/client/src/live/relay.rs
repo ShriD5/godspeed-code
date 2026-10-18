@@ -123,6 +123,11 @@ impl Relay {
         }
     }
 
+    /// The shared link cache (streams outside this module: attention).
+    pub(crate) fn links(&self) -> Arc<LinkCache> {
+        self.links.clone()
+    }
+
     /// Presence says `device_id` is alive again: dial immediately next time.
     pub(crate) fn peer_alive(&self, device_id: &str) {
         self.links.reset_cooldown(device_id);

@@ -41,6 +41,18 @@ final class AppModel {
     private(set) var client: CoreClient?
     private(set) var frontPage = FrontPage()
     private(set) var archived: [SessionRowVM] = []
+    /// The desktop's shelves: snoozed (soonest wake first) and settled.
+    private(set) var snoozed: [SessionRowVM] = []
+    private(set) var settled: [SessionRowVM] = []
+    /// Every visible top-level row (active and shelved), for Mission Control.
+    private(set) var boardRows: [SessionRow] = []
+    private(set) var rawDevices: [DeviceView] = []
+    /// The cross-device "Needs you" queue (`AppModel+NeedsYou`).
+    var inbox = InboxModel(items: [])
+    /// Rows answered on this phone, hidden until the host drops them.
+    var inboxHidden: Set<String> = []
+    var attentionRefreshScheduled = false
+    @MainActor lazy var usage = UsageFeed(app: self)
     private(set) var connectivity: Connectivity?
     /// Front-page sessions that are working / waiting on the user.
     private(set) var live = LiveCounts()
@@ -175,7 +187,12 @@ final class AppModel {
             backfillProfile()
             clock?.invalidate()
             // Relative times ("4m") and 45s staleness age without events.
-            clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refreshWorkspace() }
+            clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                self?.refreshWorkspace()
+                // The widgets' usage reading (throttled inside).
+                Task { @MainActor in await self?.usage.refreshWidget() }
+            }
+            Task { @MainActor in await self.usage.refreshWidget() }
             return true
         } catch {
             NSLog("core start failed: \(error)")
@@ -242,6 +259,14 @@ final class AppModel {
         // Nothing of the account stays in memory.
         frontPage = FrontPage()
         archived = []
+        snoozed = []
+        settled = []
+        boardRows = []
+        rawDevices = []
+        inbox = InboxModel(items: [])
+        inboxHidden = []
+        updateAppBadge(0)
+        UsageWidgetStore.save(nil)
         rows = [:]
         rawProjects = []
         lastHosts = []
@@ -287,6 +312,7 @@ final class AppModel {
         endDeliveryBackgroundTask()
         client?.onForeground()
         refreshWorkspace()
+        Task { @MainActor in await self.usage.refreshWidget() }
     }
 
     /// Pull to refresh: redial the registry and rooms and re-probe health (the
@@ -338,12 +364,19 @@ final class AppModel {
         deinit { cancel() }
     }
 
+    /// Fan a change out to every screen (extensions in other files).
+    func notifyObservers() {
+        observers.values.forEach { $0() }
+    }
+
     fileprivate func handle(_ event: ClientEvent) {
         switch event {
         case .workspaceChanged:
             scheduleRefresh()
         case let .sessionChanged(chatId, _), let .composerChanged(chatId, _):
             sessionObservers[chatId]?.values.forEach { $0() }
+        case .attentionChanged:
+            scheduleAttentionRefresh()
         case let .connectivityChanged(c):
             connectivity = c
             observers.values.forEach { $0() }
@@ -392,21 +425,41 @@ final class AppModel {
             for r in p.sessions where all[r.id] == nil { all[r.id] = r }
         }
         let archivedVMs = ws.archived.map(vm)
+        // Snoozed rows read when they wake instead of their age.
+        let snoozedVMs = ws.snoozed.map { r -> SessionRowVM in
+            var v = vm(r)
+            if case let .snoozed(until) = r.lifecycle { v.timeLabel = UsageFormat.moment(ms: until, now: Date()) }
+            return v
+        }
+        let settledVMs = ws.settled.map(vm)
+        var visible: [SessionRow] = []
+        var visibleIds = Set<String>()
+        for r in ws.front.pinned + ws.front.sections.flatMap(\.sessions) + ws.front.recent + ws.projectless + ws.snoozed + ws.settled where visibleIds.insert(r.id).inserted {
+            visible.append(r)
+        }
+        for p in ws.projects { for r in p.sessions where visibleIds.insert(r.id).inserted { visible.append(r) } }
         var counts = LiveCounts()
         var seen = Set<String>()
         for row in page.sessions + page.sectionSessions.values.flatMap({ $0 }) where seen.insert(row.id).inserted {
             if row.status == .working { counts.working += 1 }
-            if row.status == .awaiting { counts.awaiting += 1 }
+            if row.needsInput { counts.awaiting += 1 }
         }
         rows = all
         // Devices coming and going (Settings, host pickers) count as changes.
         let hosts = hostOptions
         let changed = page != frontPage || archivedVMs != archived || counts != live || hosts != lastHosts
+            || snoozedVMs != snoozed || settledVMs != settled || visible != boardRows || ws.devices != rawDevices
         lastHosts = hosts
         live = counts
         frontPage = page
         archived = archivedVMs
-        if changed { observers.values.forEach { $0() } }
+        snoozed = snoozedVMs
+        settled = settledVMs
+        boardRows = visible
+        rawDevices = ws.devices
+        // Registry-derived inbox rows follow the workspace.
+        let inboxChanged = refreshAttention(notify: false)
+        if changed || inboxChanged { observers.values.forEach { $0() } }
     }
 
     /// Like the desktop's project grouping: checkouts of one repository
@@ -441,7 +494,9 @@ final class AppModel {
         switch i {
         case .working: .working
         case .awaitingInput: .awaiting
+        case .awaitingApproval: .approval
         case .errored: .errored
+        case .limited: .limited
         case .completed: .completed
         case .idle: .idle
         }
@@ -469,7 +524,11 @@ final class AppModel {
             timeLabel: r.timeLabel,
             unseen: r.unseen,
             pinned: r.pinned,
-            sendFailed: r.sendState == .failed
+            sendFailed: r.sendState == .failed,
+            limitResetMs: r.limit?.resetAtMs,
+            limitRecovery: r.limit?.recovery,
+            lifecycle: r.lifecycle,
+            subagents: r.runningSubagents
         )
     }
 
@@ -562,6 +621,8 @@ final class AppModel {
             self?.observers.values.forEach { $0() }
         }
     }
+
+    var projectViews: [ProjectView] { rawProjects }
 
     var projectOptions: [ProjectOption] {
         rawProjects.map { ProjectOption(id: $0.id, name: $0.name, path: $0.path, device: $0.deviceId, deviceName: $0.deviceName ?? deviceName($0.deviceId), online: $0.deviceOnline, git: $0.gitDetected, groupKey: $0.groupKey, groupName: $0.groupName, colorIndex: Int($0.colorIndex)) }

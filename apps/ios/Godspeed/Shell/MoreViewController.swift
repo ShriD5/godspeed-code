@@ -188,6 +188,8 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
         ])
         s.appendSections(["Devices"])
         s.appendItems(app.hostOptions.map { Row(id: "device:\($0.id)", title: $0.name, subtitle: $0.online ? "Online" : "Offline", symbol: "desktopcomputer", accessory: .dot($0.online)) })
+        s.appendSections(["Usage"])
+        s.appendItems([Row(id: "usage", title: "Usage", subtitle: "Plan limits, resets and cost at API prices", symbol: "gauge.with.dots.needle.67percent")])
         if app.voice.available {
             s.appendSections(["Voice"])
             s.appendItems([Row(id: "voice", title: "Voice", subtitle: app.voice.selectedStyle.map { "Codex voice · \($0.capitalized)" } ?? "Codex voice device and style", symbol: "waveform")])
@@ -224,6 +226,7 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
         guard let row = dataSource.itemIdentifier(for: path) else { return }
         switch row.id {
         case "voice": navigationController?.pushViewController(VoiceViewController(app: app), animated: true)
+        case "usage": navigationController?.pushViewController(UsageViewController(app: app), animated: true)
         case let id where id.hasPrefix("appearance:"):
             let style = Int(id.dropFirst(11)) ?? 0
             UserDefaults.standard.set(style, forKey: "appearance")

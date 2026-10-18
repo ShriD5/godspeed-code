@@ -66,10 +66,19 @@ fn front_page_mirrors_the_desktop_sidebar() {
             "chat-cjk",
             "chat-home",
             "chat-deploy",
+            "chat-limited",
             "chat-blog"
         ]
     );
     assert_eq!(ids(&ws.archived), ["chat-oklch", "chat-presence"]);
+    // Settled and snoozed chats leave the active lists for their shelves.
+    assert_eq!(ids(&ws.snoozed), ["chat-snoozed"]);
+    assert_eq!(ids(&ws.settled), ["chat-settled"]);
+    let limited = ws.session("chat-limited").unwrap();
+    assert_eq!(limited.indicator, ChatIndicator::Limited);
+    let limit = limited.limit.as_ref().unwrap();
+    assert_eq!(limit.window.as_deref(), Some("5-hour"));
+    assert!(limit.reset_at_ms.is_some());
     assert_eq!(ids(ws.children("chat-veil")), ["chat-side"]);
 
     let veil = ws.session("chat-veil").unwrap();
@@ -109,8 +118,14 @@ fn front_page_mirrors_the_desktop_sidebar() {
     assert_eq!(clone.group_name, "godspeed");
     assert_eq!(clone.color_index, godspeed.color_index);
     let cjk = ws.session("chat-cjk").unwrap();
-    assert_eq!(cjk.project.as_ref().unwrap().color_index, godspeed.color_index);
-    assert_ne!(ws.project("space-edge").unwrap().group_key, godspeed.group_key);
+    assert_eq!(
+        cjk.project.as_ref().unwrap().color_index,
+        godspeed.color_index
+    );
+    assert_ne!(
+        ws.project("space-edge").unwrap().group_key,
+        godspeed.group_key
+    );
     assert_eq!(ids(&ws.projectless), ["chat-visuals", "chat-home"]);
     assert!(ws.devices.iter().any(|d| d.is_self && d.id == "ios-test"));
     assert!(!ws.device("dev-studio").unwrap().online);
@@ -555,4 +570,74 @@ fn sends_to_an_offline_host_park_as_queued_not_working() {
     let row = client.workspace().session("chat-blog").unwrap().clone();
     assert_eq!(row.send_state, Some(zeron_client::SendState::Queued));
     assert_eq!(row.host_indicator, ChatIndicator::Idle);
+}
+
+#[test]
+fn inbox_merges_hosts_in_risk_order_and_answers_hide_items() {
+    let (client, _dir) = demo(fast());
+    let view = client.attention();
+    let order: Vec<&str> = view.items.iter().map(|e| e.item.id.as_str()).collect();
+    assert_eq!(
+        order,
+        [
+            "approval:chat-veil:r1",
+            "chat:chat-picker",
+            "approval:chat-ios-scroll:r2",
+            // Same band: oldest first.
+            "approval:chat-home:r4",
+            "approval:chat-tabs:r3",
+            "chat:chat-errored",
+            "chat:chat-limited",
+        ]
+    );
+    assert_eq!(view.low_risk_count(), 2);
+    let rt = zeron_client::runtime::shared();
+    rt.block_on(client.respond_attention("dev-mac", "approval:chat-veil:r1", true))
+        .unwrap();
+    assert!(
+        !client
+            .attention()
+            .items
+            .iter()
+            .any(|e| e.item.id == "approval:chat-veil:r1")
+    );
+    let batch = rt.block_on(client.approve_low_risk());
+    assert_eq!(batch.approved, 2);
+    assert_eq!(client.attention().low_risk_count(), 0);
+    rt.block_on(client.dismiss_attention("dev-vps", "chat:chat-errored"))
+        .unwrap();
+    assert_eq!(client.attention().items.len(), 3);
+}
+
+#[test]
+fn lifecycle_moves_chats_between_the_active_list_and_the_shelves() {
+    let (client, _dir) = demo(fast());
+    client
+        .set_lifecycle("chat-deploy", zeron_client::Lifecycle::Settled)
+        .unwrap();
+    let ws = client.workspace();
+    assert!(!ids(&ws.front.recent).contains(&"chat-deploy"));
+    assert!(ids(&ws.settled).contains(&"chat-deploy"));
+    client
+        .set_lifecycle("chat-snoozed", zeron_client::Lifecycle::Active)
+        .unwrap();
+    assert!(ids(&client.workspace().front.recent).contains(&"chat-snoozed"));
+    let rt = zeron_client::runtime::shared();
+    rt.block_on(client.set_limit_recovery(
+        "chat-limited",
+        zeron_proto::LimitRecoveryAction::Resume,
+        None,
+    ))
+    .unwrap();
+    let limit = client
+        .workspace()
+        .session("chat-limited")
+        .unwrap()
+        .limit
+        .clone()
+        .unwrap();
+    assert_eq!(
+        limit.recovery,
+        zeron_client::LimitRecoveryMode::ResumeAtReset
+    );
 }

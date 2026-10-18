@@ -24,6 +24,12 @@ final class MainTabController: UITabBarController, UITabBarControllerDelegate, A
         let sessions = UITab(title: "Sessions", image: UIImage(named: "tab-chat"), identifier: "sessions") { [app] _ in
             Self.nav(SessionsViewController(app: app))
         }
+        let inbox = UITab(title: "Needs You", image: UIImage(systemName: "tray.full"), identifier: "inbox") { [app] _ in
+            Self.nav(InboxViewController(app: app))
+        }
+        let board = UITab(title: "Board", image: UIImage(systemName: "square.grid.2x2"), identifier: "board") { [app] _ in
+            Self.nav(BoardViewController(app: app))
+        }
         let more = UITab(title: "Settings", image: UIImage(named: "tab-settings"), identifier: "more") { [app] _ in
             Self.nav(MoreViewController(app: app))
         }
@@ -31,14 +37,16 @@ final class MainTabController: UITabBarController, UITabBarControllerDelegate, A
             Self.nav(SearchViewController(app: app))
         }
         search.automaticallyActivatesSearch = true
-        tabs = [sessions, more, search]
+        tabs = [sessions, inbox, board, more, search]
         selectedTab = sessions
+        updateInboxBadge()
 
         bottomAccessory = accessory
         delegate = self
         accessoryContent.update(app.live)
         liveToken = app.observe { [weak self] in
             guard let self else { return }
+            self.updateInboxBadge()
             self.accessoryContent.update(self.app.live)
             // Hosts come and go with the workspace (online, capabilities).
             self.accessoryContent.updateVoice(self.app.voice)
@@ -149,6 +157,36 @@ final class MainTabController: UITabBarController, UITabBarControllerDelegate, A
 
     func showSettings() {
         selectedTab = tabs.first { $0.identifier == "more" }
+    }
+
+    /// The Needs You tab's badge: everything waiting, on every device.
+    private func updateInboxBadge() {
+        guard let tab = tabs.first(where: { $0.identifier == "inbox" }) else { return }
+        let text = InboxModel.badgeText(app.inbox.badgeCount)
+        if tab.badgeValue != text { tab.badgeValue = text }
+    }
+
+    func showInbox() {
+        guard let tab = tabs.first(where: { $0.identifier == "inbox" }) else { return }
+        if presentedViewController != nil { dismiss(animated: true) }
+        selectedTab = tab
+        (tab.viewController as? UINavigationController)?.popToRootViewController(animated: false)
+    }
+
+    func showBoard() {
+        guard let tab = tabs.first(where: { $0.identifier == "board" }) else { return }
+        if presentedViewController != nil { dismiss(animated: true) }
+        selectedTab = tab
+        (tab.viewController as? UINavigationController)?.popToRootViewController(animated: false)
+    }
+
+    func showUsage() {
+        guard let tab = tabs.first(where: { $0.identifier == "more" }) else { return }
+        if presentedViewController != nil { dismiss(animated: true) }
+        selectedTab = tab
+        guard let nav = tab.viewController as? UINavigationController else { return }
+        nav.popToRootViewController(animated: false)
+        nav.pushViewController(UsageViewController(app: app), animated: false)
     }
 
     func showSearch() {

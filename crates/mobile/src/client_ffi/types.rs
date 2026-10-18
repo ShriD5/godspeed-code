@@ -340,6 +340,11 @@ pub enum ClientEvent {
         chat_id: String,
         revision: u64,
     },
+    /// The cross-device inbox (`attention()`) may have changed. It also
+    /// follows the workspace, so pull it on `WorkspaceChanged` too.
+    AttentionChanged {
+        revision: u64,
+    },
     ConnectivityChanged {
         connectivity: Connectivity,
     },
@@ -365,6 +370,9 @@ impl From<zc::ClientEvent> for ClientEvent {
             zc::ClientEvent::ComposerChanged { chat_id, revision } => {
                 ClientEvent::ComposerChanged { chat_id, revision }
             }
+            zc::ClientEvent::AttentionChanged { revision } => {
+                ClientEvent::AttentionChanged { revision }
+            }
             zc::ClientEvent::ConnectivityChanged(c) => ClientEvent::ConnectivityChanged {
                 connectivity: c.into(),
             },
@@ -382,7 +390,12 @@ impl From<zc::ClientEvent> for ClientEvent {
 pub enum ChatIndicator {
     Working,
     AwaitingInput,
+    /// Waiting on a permission approval (answerable from the inbox, or the
+    /// question sheet in the chat).
+    AwaitingApproval,
     Errored,
+    /// Stopped on a usage limit until its window resets (`SessionRow::limit`).
+    Limited,
     /// Finished but not seen yet on any device.
     Completed,
     Idle,
@@ -392,14 +405,10 @@ impl From<zc::ChatIndicator> for ChatIndicator {
     fn from(i: zc::ChatIndicator) -> Self {
         match i {
             zc::ChatIndicator::Working => ChatIndicator::Working,
-            // The phone answers an approval through its question sheet (the
-            // decision labels are the options) until it grows its own state.
-            zc::ChatIndicator::AwaitingInput | zc::ChatIndicator::AwaitingApproval => {
-                ChatIndicator::AwaitingInput
-            }
-            // A usage-limited turn reads as stopped on the phone until the
-            // app grows its own Limited state; the desktop owns recovery.
-            zc::ChatIndicator::Errored | zc::ChatIndicator::Limited => ChatIndicator::Errored,
+            zc::ChatIndicator::AwaitingInput => ChatIndicator::AwaitingInput,
+            zc::ChatIndicator::AwaitingApproval => ChatIndicator::AwaitingApproval,
+            zc::ChatIndicator::Errored => ChatIndicator::Errored,
+            zc::ChatIndicator::Limited => ChatIndicator::Limited,
             zc::ChatIndicator::Completed => ChatIndicator::Completed,
             zc::ChatIndicator::Idle => ChatIndicator::Idle,
         }
@@ -513,6 +522,102 @@ pub struct SessionRow {
     pub parent_chat_id: Option<String>,
     /// 2 = chat2; 1 = legacy (not dialable).
     pub room_gen: u32,
+    /// Subagents streaming under this chat right now.
+    pub running_subagents: u32,
+    /// Background work it still waits on ("Waiting on N tasks").
+    pub background_work: u32,
+    /// Set while the last turn is stopped on a usage limit.
+    pub limit: Option<LimitInfo>,
+    /// Active, or on the Settled / Snoozed shelf.
+    pub lifecycle: Lifecycle,
+}
+
+/// Where a chat sits: the active list or a shelf (desktop thread lifecycle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Lifecycle {
+    Active,
+    Settled,
+    Snoozed { until_ms: i64 },
+}
+
+impl From<zc::Lifecycle> for Lifecycle {
+    fn from(l: zc::Lifecycle) -> Self {
+        match l {
+            zc::Lifecycle::Active => Lifecycle::Active,
+            zc::Lifecycle::Settled => Lifecycle::Settled,
+            zc::Lifecycle::Snoozed { until_ms } => Lifecycle::Snoozed { until_ms },
+        }
+    }
+}
+
+impl From<Lifecycle> for zc::Lifecycle {
+    fn from(l: Lifecycle) -> Self {
+        match l {
+            Lifecycle::Active => zc::Lifecycle::Active,
+            Lifecycle::Settled => zc::Lifecycle::Settled,
+            Lifecycle::Snoozed { until_ms } => zc::Lifecycle::Snoozed { until_ms },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LimitRecoveryMode {
+    /// Nothing scheduled: the banner asks.
+    Ask,
+    /// The host continues the same session at the reset.
+    ResumeAtReset,
+    /// Out of the way until the reset.
+    Snoozed,
+}
+
+/// A usage-limited chat.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct LimitInfo {
+    pub limited_at_ms: i64,
+    /// When the window reopens; `None` when nothing said.
+    pub reset_at_ms: Option<i64>,
+    /// "5-hour", when the provider named the window.
+    pub window: Option<String>,
+    pub recovery: LimitRecoveryMode,
+}
+
+impl From<&zc::LimitInfo> for LimitInfo {
+    fn from(l: &zc::LimitInfo) -> Self {
+        Self {
+            limited_at_ms: l.limited_at_ms,
+            reset_at_ms: l.reset_at_ms,
+            window: l.window.clone(),
+            recovery: match l.recovery {
+                zc::LimitRecoveryMode::Ask => LimitRecoveryMode::Ask,
+                zc::LimitRecoveryMode::ResumeAtReset => LimitRecoveryMode::ResumeAtReset,
+                zc::LimitRecoveryMode::Snoozed => LimitRecoveryMode::Snoozed,
+            },
+        }
+    }
+}
+
+/// A Limited chat's recovery choice (`SetChatLimitRecovery`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LimitAction {
+    /// Continue at the reset (or the given time when none is known).
+    Resume,
+    /// Out of the way until the reset.
+    Snooze,
+    /// Cancel a scheduled resume or snooze.
+    Ask,
+    /// Drop the Limited state now.
+    Dismiss,
+}
+
+impl From<LimitAction> for zeron_proto::LimitRecoveryAction {
+    fn from(a: LimitAction) -> Self {
+        match a {
+            LimitAction::Resume => Self::Resume,
+            LimitAction::Snooze => Self::Snooze,
+            LimitAction::Ask => Self::Ask,
+            LimitAction::Dismiss => Self::Dismiss,
+        }
+    }
 }
 
 impl From<&zc::SessionRow> for SessionRow {
@@ -552,6 +657,10 @@ impl From<&zc::SessionRow> for SessionRow {
             send_state: r.send_state.map(Into::into),
             parent_chat_id: r.parent_chat_id.clone(),
             room_gen: r.room_gen,
+            running_subagents: r.running_subagents,
+            background_work: r.background_work,
+            limit: r.limit.as_ref().map(LimitInfo::from),
+            lifecycle: r.lifecycle.into(),
         }
     }
 }
@@ -707,6 +816,10 @@ pub struct WorkspaceSnapshot {
     pub projectless: Vec<SessionRow>,
     pub pull_requests: PullRequestGroups,
     pub archived: Vec<SessionRow>,
+    /// The Snoozed shelf, soonest wake first.
+    pub snoozed: Vec<SessionRow>,
+    /// The Settled shelf, by recency.
+    pub settled: Vec<SessionRow>,
     pub devices: Vec<DeviceView>,
 }
 
@@ -722,6 +835,8 @@ impl From<&zc::WorkspaceSnapshot> for WorkspaceSnapshot {
             projectless: rows(&w.projectless),
             pull_requests: (&w.pull_requests).into(),
             archived: rows(&w.archived),
+            snoozed: rows(&w.snoozed),
+            settled: rows(&w.settled),
             devices: w.devices.iter().map(Into::into).collect(),
         }
     }

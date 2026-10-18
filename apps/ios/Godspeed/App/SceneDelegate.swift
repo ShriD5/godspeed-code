@@ -61,6 +61,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         }
         #endif
+        // Cold launch from a widget (godspeed://usage) or another link.
+        if !connectionOptions.urlContexts.isEmpty {
+            let contexts = connectionOptions.urlContexts
+            DispatchQueue.main.async { [weak self] in self?.scene(scene, openURLContexts: contexts) }
+        }
         if let router = window.rootViewController as? AppRouter, let i = args.firstIndex(of: "-route"), i + 1 < args.count {
             let route = args[i + 1]
             DispatchQueue.main.async {
@@ -68,6 +73,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 if route == "new" { router.presentNewSession(prompt: nil) }
                 if route == "more" { router.showSettings() }
                 if route == "search" { router.showSearch() }
+                if route == "inbox" { router.showInbox() }
+                if route == "board" { router.showBoard() }
+                if route == "usage" { router.showUsage() }
             }
         }
     }
@@ -101,11 +109,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// `godspeed://voice` (the call's Live Activity) returns to the stage.
+    /// `godspeed://voice` (the call's Live Activity) returns to the stage;
+    /// `godspeed://usage` (the usage widgets), `godspeed://inbox` and
+    /// `godspeed://board` open those screens.
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
-        guard URLContexts.contains(where: { $0.url.scheme == "godspeed" && $0.url.host == "voice" }),
-              app.voice.live, let root = window?.rootViewController
-        else { return }
+        let hosts = URLContexts.filter { $0.url.scheme == "godspeed" }.compactMap { $0.url.host }
+        if let router = window?.rootViewController as? AppRouter, app.isSignedIn {
+            if hosts.contains("usage") { return router.showUsage() }
+            if hosts.contains("inbox") { return router.showInbox() }
+            if hosts.contains("board") { return router.showBoard() }
+        }
+        guard hosts.contains("voice"), app.voice.live, let root = window?.rootViewController else { return }
         root.presentVoiceStage(app: app, source: nil)
     }
 
