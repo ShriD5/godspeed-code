@@ -2,6 +2,19 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.5.3 (2026-10-19)
+
+### Added
+
+- Step the reasoning effort up or down from the keyboard (ported from T3 Code).
+
+### Fixed
+
+- Pi's Godspeed delegation tools are recognised again instead of showing as unknown tools.
+- A quota or context error that arrives just before an ACP agent exits is reported as that error,
+  not as "exited unexpectedly".
+- The curl installer and Windows packaging no longer reference Zeron.
+
 ## 0.5.2 (2026-10-18)
 
 ### Changed
