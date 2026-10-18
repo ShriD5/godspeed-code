@@ -1172,6 +1172,12 @@ impl DocHost {
         self.inner.message_index.get()
     }
 
+    /// The snapshot store under the docs (tests reach it to build indexes).
+    #[cfg(test)]
+    pub(crate) fn store(&self) -> Arc<DocsStore> {
+        self.inner.store.clone()
+    }
+
     /// Wire the peer-link cache (engine assembly, edge runtimes only) — the
     /// transport for queued attachment transfers to a remote host.
     pub fn set_links(&self, links: Arc<zeron_rpc::LinkCache>) {

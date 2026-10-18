@@ -55,6 +55,7 @@ pub mod text_generation;
 pub mod titles;
 mod transcript_history;
 pub mod uploads;
+pub mod usage_history;
 pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
@@ -94,6 +95,7 @@ pub use terminals::Terminals;
 pub use text_generation::TextGenerator;
 pub use titles::TitleGenerator;
 pub use uploads::{AttachmentChunk, Uploads};
+pub use usage_history::{UsageDeps, UsageIndex, UsageLogRoots};
 pub use workspace_files::WorkspaceFiles;
 pub use worktree_env::{ProjectScope, WorktreeEnvironments};
 pub use workspace_host::{
@@ -186,6 +188,8 @@ pub struct EngineCore {
     pub chat_import: chat_import::ChatImporter,
     /// Local full-text index over this profile's transcripts.
     pub message_index: MessageIndex,
+    /// Tokens and estimated cost over time (Settings → Usage history).
+    pub usage_history: UsageIndex,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -397,6 +401,18 @@ impl EngineCore {
         sessions.set_turn_files_listener(Arc::new(move |chat_id| {
             turn_files.turn_file_stats(chat_id)
         }));
+        // Stamped turns feed the usage history; agent logs are read on demand.
+        let usage_history = UsageIndex::open(
+            data_dir,
+            UsageLogRoots::detect(),
+            Some(UsageDeps {
+                store: store_for_import.clone(),
+                workspace: workspace.clone(),
+                doc_host: doc_host.clone(),
+            }),
+        );
+        let stamped = usage_history.clone();
+        sessions.set_turn_stats_listener(Arc::new(move |chat_id| stamped.note_turn(chat_id)));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
         let agents = Agents::open(
             data_dir,
@@ -469,6 +485,7 @@ impl EngineCore {
             local_import,
             chat_import,
             message_index,
+            usage_history,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -608,7 +625,8 @@ impl EngineCore {
         .with_limit_recovery(self.limit_recovery.clone())
         .with_chat_lifecycle(self.chat_lifecycle.clone())
         .with_chat_import(self.chat_import.clone())
-        .with_message_index(self.message_index.clone());
+        .with_message_index(self.message_index.clone())
+        .with_usage_history(self.usage_history.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }

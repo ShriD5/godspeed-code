@@ -35,6 +35,11 @@ pub struct TurnStats {
     /// git); `None` outside a checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<ToolDiffStat>>,
+    /// The harness-native session the turn ran in (Claude Code's session
+    /// id, Codex's thread id): the usage history matches it against the
+    /// agent's own logs so a turn is never counted twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Token counts of one turn. `input_tokens` excludes cache traffic, which
@@ -113,6 +118,7 @@ mod tests {
                 additions: 10,
                 deletions: 2,
             }]),
+            session_id: Some("5b1c-session".into()),
         };
         let json = serde_json::to_string(&stats).unwrap();
         assert_eq!(TurnStats::parse(&json), Some(stats));
