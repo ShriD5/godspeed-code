@@ -16,7 +16,7 @@ if (-not $Setup) {
 }
 if (-not $Setup) { throw 'No godspeed-*-setup.exe under target/package' }
 $Setup = (Resolve-Path -LiteralPath $Setup).Path
-$match = [regex]::Match((Split-Path $Setup -Leaf), '\Azeron-(\d+\.\d+\.\d+)-windows-[a-z0-9_]+-setup\.exe\z')
+$match = [regex]::Match((Split-Path $Setup -Leaf), '\Agodspeed-(\d+\.\d+\.\d+)-windows-[a-z0-9_]+-setup\.exe\z')
 if (-not $match.Success) { throw "Unexpected installer name: $Setup" }
 $version = $match.Groups[1].Value
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{AD5DEC34-E254-467B-8F24-8127EBAF4DA6}_is1'
