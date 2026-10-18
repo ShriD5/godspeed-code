@@ -57,6 +57,7 @@ jobs:
   changes:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       pull-requests: read
     outputs:
@@ -93,8 +94,9 @@ jobs:
   macos-native:
     if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: macos-latest
-    # A cold cache (first run, eviction, toolchain bump) takes about 32 minutes; warm is about 10.
-    timeout-minutes: 45
+    # A cold cache (first run, eviction, toolchain bump, or any branch but main) took 38 minutes on
+    # this fork's first run; warm is about 10.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Rust toolchain
