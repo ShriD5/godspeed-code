@@ -57,6 +57,7 @@ mod chat_lifecycle;
 mod limit_recovery;
 mod git_actions;
 mod message_search;
+mod usage_history;
 mod telegram;
 mod voice_chat;
 mod voice_remote;
@@ -748,6 +749,7 @@ pub struct EngineRpc {
     local_import: Option<crate::local_import::LocalImporter>,
     chat_import: Option<crate::chat_import::ChatImporter>,
     message_index: Option<crate::MessageIndex>,
+    usage_history: Option<crate::UsageIndex>,
     agents: Option<crate::agents::Agents>,
     telegram: Option<crate::telegram::Telegram>,
     attention: Option<crate::attention::AttentionService>,
@@ -803,6 +805,7 @@ impl EngineRpc {
             local_import: None,
             chat_import: None,
             message_index: None,
+            usage_history: None,
             agents: None,
             telegram: None,
             attention: None,
@@ -857,6 +860,12 @@ impl EngineRpc {
     /// Attach the chat importer (T3 Code / Claude Code / Codex history).
     pub fn with_chat_import(mut self, importer: crate::chat_import::ChatImporter) -> Self {
         self.chat_import = Some(importer);
+        self
+    }
+
+    /// Attach the usage history index (`GetUsageHistory`).
+    pub fn with_usage_history(mut self, index: crate::UsageIndex) -> Self {
+        self.usage_history = Some(index);
         self
     }
 
@@ -2162,6 +2171,9 @@ impl RpcService for EngineRpc {
         }
         if message_search::handles(method) {
             return self.message_search_rpc(params).await;
+        }
+        if usage_history::handles(method) {
+            return self.usage_history_rpc(params).await;
         }
         if limit_recovery::handles(method) {
             return self.limit_recovery_rpc(method, params).await;
