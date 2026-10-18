@@ -70,7 +70,7 @@ runs:
         prefix-key: ci-linux-v1
         shared-key: ${{ inputs.rust-cache }}
         add-job-id-key: false
-        save-if: ${{ inputs.save-rust-cache == 'true' && (github.ref == 'refs/heads/main' || github.head_ref == 'chore/ci') }} # TEMP: revert before merge
+        save-if: ${{ inputs.save-rust-cache == 'true' && github.ref == 'refs/heads/main' }}
         cache-on-failure: true
 
     # After the cache restore, so the checksum-verified binary is the one that
