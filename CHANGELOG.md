@@ -2,6 +2,12 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.5.2 (2026-10-18)
+
+### Changed
+
+- New app icon: a gold marble Hermes, the Greek god of speed.
+
 ## 0.5.1 (2026-10-18)
 
 ### Added
