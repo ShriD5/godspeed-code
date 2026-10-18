@@ -21,6 +21,7 @@ pub mod invocation;
 pub mod message_search;
 pub mod motion;
 pub mod preview;
+pub mod pricing;
 pub mod projectless;
 pub mod sidebar_pins;
 pub mod telegram;
