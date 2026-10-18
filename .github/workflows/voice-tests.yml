@@ -75,7 +75,12 @@ jobs:
     timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: 2
+      # Each `cargo test` below links its own set of large test binaries; with full debug info
+      # they filled the runner's disk (ld died with SIGBUS). Same setting as the other Linux jobs.
+      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
+      - name: Free runner disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
