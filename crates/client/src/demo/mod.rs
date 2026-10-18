@@ -9,7 +9,7 @@
 //! id), streaming replies through `SegmentWriter`, flipping session status
 //! rows, draining the queue, and answering relay RPCs.
 
-mod fixtures;
+pub(crate) mod fixtures;
 mod png;
 mod transcripts;
 mod visuals;
@@ -122,7 +122,90 @@ impl DemoHost {
         for status in seeded.change_requests {
             client.workspace.put_change_request(status);
         }
+        if self.options.fixture == crate::config::DemoFixture::Standard {
+            for (device, snapshot) in fixtures::attention(now_ms()) {
+                client.attention.put(device, snapshot);
+            }
+        }
         self.beat_presence(client);
+        Ok(())
+    }
+
+    /// The demo host answers an approval: the item leaves its queue.
+    pub(crate) fn answer_attention(
+        &self,
+        client: &Arc<ClientInner>,
+        device_id: &str,
+        item: &zeron_proto::attention::AttentionItem,
+        _approve: bool,
+    ) {
+        if let Some(revision) = client
+            .attention
+            .edit(device_id, |s| s.items.retain(|i| i.id != item.id))
+        {
+            client.events.attention(revision);
+        }
+    }
+
+    pub(crate) fn approve_low_risk(
+        &self,
+        client: &Arc<ClientInner>,
+        device_id: &str,
+        ids: &[String],
+    ) -> zeron_proto::attention::BatchApproval {
+        let mut batch = zeron_proto::attention::BatchApproval::default();
+        if let Some(revision) = client.attention.edit(device_id, |s| {
+            s.items.retain(|i| {
+                let take = ids.contains(&i.id) && i.batch_approvable();
+                if take {
+                    batch.approved.push(i.id.clone());
+                }
+                !take
+            });
+        }) {
+            client.events.attention(revision);
+        }
+        batch.skipped = ids
+            .iter()
+            .filter(|id| !batch.approved.contains(id))
+            .cloned()
+            .collect();
+        batch
+    }
+
+    /// The limit banner's choices, played by the host: recorded on the row
+    /// (Dismiss clears the Limited state and its inbox item).
+    pub(crate) fn set_limit_recovery(
+        &self,
+        client: &Arc<ClientInner>,
+        chat: &zeron_proto::Chat,
+        action: zeron_proto::LimitRecoveryAction,
+        reset_at_ms: Option<i64>,
+    ) -> Result<()> {
+        use zeron_proto::{LimitRecovery, LimitRecoveryAction};
+        let Some(mut limit) = chat.limit.clone() else {
+            return Err(ClientError::HostError("this session isn't limited".into()));
+        };
+        if limit.reset_at.is_none() {
+            limit.reset_at = reset_at_ms
+                .and_then(|ms| chrono::TimeZone::timestamp_millis_opt(&Utc, ms).single());
+        }
+        let next = match action {
+            LimitRecoveryAction::Resume => Some(LimitRecovery::ResumeAtReset),
+            LimitRecoveryAction::Snooze => Some(LimitRecovery::Snoozed),
+            LimitRecoveryAction::Ask => Some(LimitRecovery::Ask),
+            LimitRecoveryAction::Dismiss => None,
+        };
+        let value = next.map(|recovery| zeron_proto::ChatLimit { recovery, ..limit });
+        client.registry_write(|doc| doc.set_chat_limit(&chat.id, value.as_ref()))?;
+        if value.is_none()
+            && let Some(revision) = client.attention.edit(&chat.device_id, |s| {
+                s.items
+                    .retain(|i| i.chat_id.as_deref() != Some(chat.id.as_str()))
+            })
+        {
+            client.events.attention(revision);
+        }
         Ok(())
     }
 
@@ -708,6 +791,46 @@ impl DemoHost {
         let final_parts = parts.clone();
         let _ = core
             .write(|doc| SegmentWriter::resume(doc, index, written).finish(&final_parts, status));
+        if !awaiting {
+            // The host's receipt stamp (`TurnStats`), as an engine writes it
+            // when a turn ends.
+            let config = client.workspace.chat(chat_id).and_then(|c| c.config);
+            let tools = parts
+                .iter()
+                .filter(|p| matches!(p, MessagePart::Tool { .. }))
+                .count() as u64;
+            let chars: usize = parts
+                .iter()
+                .map(|p| match p {
+                    MessagePart::Text { text, .. } | MessagePart::Reasoning { text, .. } => {
+                        text.len()
+                    }
+                    _ => 0,
+                })
+                .sum();
+            let stats = zeron_doc::TurnStats {
+                harness: config
+                    .as_ref()
+                    .and_then(|c| serde_json::to_value(c.harness).ok())
+                    .and_then(|v| v.as_str().map(str::to_owned)),
+                model: config.as_ref().and_then(|c| c.model.clone()),
+                effort: config
+                    .as_ref()
+                    .and_then(|c| c.reasoning)
+                    .and_then(|r| serde_json::to_value(r).ok())
+                    .and_then(|v| v.as_str().map(str::to_owned)),
+                usage: Some(zeron_doc::TurnUsage {
+                    input_tokens: 2_400 + 300 * tools,
+                    output_tokens: (chars as u64 / 4).max(1),
+                    cache_read_tokens: Some(38_000),
+                    cache_write_tokens: Some(1_200),
+                }),
+                wait_ms: None,
+                files: None,
+                session_id: None,
+            };
+            let _ = core.write(|doc| doc.set_turn_stats(&entry_id, &stats));
+        }
         let preview = parts
             .iter()
             .rev()
@@ -1060,7 +1183,10 @@ impl DemoHost {
                 progress(step as f64 / 4.0);
             }
         }
-        let path = format!("/Users/dev/.godspeed/uploads/{}-{name}", &crate::new_id()[..8]);
+        let path = format!(
+            "/Users/dev/.godspeed/uploads/{}-{name}",
+            &crate::new_id()[..8]
+        );
         let bytes = Arc::new(data);
         lock(&self.uploads).insert(path.clone(), bytes.clone());
         client.attachment_cache.put(device_id, &path, bytes);

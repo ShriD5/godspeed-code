@@ -344,6 +344,8 @@ final class AppModel {
             scheduleRefresh()
         case let .sessionChanged(chatId, _), let .composerChanged(chatId, _):
             sessionObservers[chatId]?.values.forEach { $0() }
+        case .attentionChanged:
+            break
         case let .connectivityChanged(c):
             connectivity = c
             observers.values.forEach { $0() }
@@ -440,8 +442,8 @@ final class AppModel {
     static func status(_ i: ChatIndicator) -> SessionRowVM.Status {
         switch i {
         case .working: .working
-        case .awaitingInput: .awaiting
-        case .errored: .errored
+        case .awaitingInput, .awaitingApproval: .awaiting
+        case .errored, .limited: .errored
         case .completed: .completed
         case .idle: .idle
         }

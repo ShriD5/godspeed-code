@@ -164,6 +164,7 @@ final class RowView: UIView {
         case .image: "row-image"
         case .working: "row-working"
         case .visual: "row-visual"
+        case .receipt: "row-receipt"
         }
         element.accessibilityTraits = .staticText
         element.accessibilityFrameInContainerSpace = bounds

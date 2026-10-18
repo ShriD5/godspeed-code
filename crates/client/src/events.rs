@@ -28,6 +28,10 @@ pub enum ClientEvent {
     SessionChanged { chat_id: String, revision: u64 },
     /// A session's [`crate::ComposerState`] advanced.
     ComposerChanged { chat_id: String, revision: u64 },
+    /// The cross-device "Needs you" queue ([`crate::AttentionView`]) may
+    /// have changed: pull `Client::attention()`. Workspace changes can move
+    /// it too (registry-derived items), so pull on those as well.
+    AttentionChanged { revision: u64 },
     /// Graced connectivity posture changed.
     ConnectivityChanged(Connectivity),
     /// The WorkOS pair rotated — persist it (Keychain) now; the old refresh
@@ -53,6 +57,7 @@ impl ClientListener for NullListener {
 struct Pending {
     ordered: Vec<ClientEvent>,
     workspace: Option<u64>,
+    attention: Option<u64>,
     sessions: BTreeMap<String, u64>,
     composers: BTreeMap<String, u64>,
 }
@@ -61,6 +66,7 @@ impl Pending {
     fn is_empty(&self) -> bool {
         self.ordered.is_empty()
             && self.workspace.is_none()
+            && self.attention.is_none()
             && self.sessions.is_empty()
             && self.composers.is_empty()
     }
@@ -69,6 +75,9 @@ impl Pending {
         let mut out = std::mem::take(&mut self.ordered);
         if let Some(revision) = self.workspace.take() {
             out.push(ClientEvent::WorkspaceChanged { revision });
+        }
+        if let Some(revision) = self.attention.take() {
+            out.push(ClientEvent::AttentionChanged { revision });
         }
         for (chat_id, revision) in std::mem::take(&mut self.sessions) {
             out.push(ClientEvent::SessionChanged { chat_id, revision });
@@ -123,6 +132,14 @@ impl EventPump {
         {
             let mut pending = lock(&self.pending);
             pending.workspace = Some(pending.workspace.map_or(revision, |r| r.max(revision)));
+        }
+        self.notify.notify_one();
+    }
+
+    pub(crate) fn attention(&self, revision: u64) {
+        {
+            let mut pending = lock(&self.pending);
+            pending.attention = Some(pending.attention.map_or(revision, |r| r.max(revision)));
         }
         self.notify.notify_one();
     }
