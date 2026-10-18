@@ -117,8 +117,9 @@ shelves; "Working · Nm" and diff counts; Settings → General (auto-settle, wor
 unused worktrees); delete-chat worktree checkbox; Cmd+F find bar; palette message search; the usage
 limit banner; Settings → Agents and Import.
 
-Known small gaps: the phone client shows no shelves and shows Limited as Failed; snoozed chats can
-still push notifications; one imported Claude "chat" is a title-generation run (archive it).
+Known small gaps: snoozed chats can still push notifications; one imported Claude "chat" is a
+title-generation run (archive it). (The phone now has the shelves, Limited, the inbox, Mission
+Control, Usage + widgets and receipts: branch `feat/ios-next`, see `apps/ios/README.md`.)
 
 ## Decisions already made
 
