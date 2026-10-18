@@ -2,6 +2,33 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.5.0 (2026-10-18)
+
+### Added
+
+- **Mission Control** (Cmd+Shift+K, the palette, or the sidebar row under Inbox). A full-window board
+  of every agent on every device, grouped by device and project: status, elapsed time, latest
+  activity, branch, diff counts and subagents per card, with totals and the speedster up top.
+  Working cards carry a moving electric edge and cards that need you pulse. Arrow keys or hjkl move,
+  Return opens, `a` approves a low-risk request, `/` filters.
+- **Receipts.** Every finished turn ends with a one-line receipt (time, tools, +/− lines) that opens
+  into a printer-style slip: agent, model and effort, wall time, time spent waiting on you, tool
+  calls by kind, files changed, tokens in/out/cached when the agent reports them, and an estimated
+  cost on API-billed accounts. Copy it as text or as an image. Settings → General → Show receipts
+  after turns.
+- **Usage cockpit** (Settings → Usage): 5-hour, weekly and other usage windows for every signed-in
+  account with reset countdowns, plans, and which chats are limited on each. Switching accounts
+  moved here.
+- **Tachometer.** The composer's usage ring is now a small gauge with a needle, a red zone from 90%
+  and a kick when a turn starts. Hover for every window; click for the cockpit.
+- **Continue on another account.** A limited chat's banner offers to continue on another signed-in
+  account or provider. It opens a new linked chat with the context (Claude forks its own session;
+  other agents get a summary built locally, no model call) and never touches the original.
+
+### Changed
+
+- Codex turns report token usage for the whole turn, and Claude reports cache reads and writes.
+
 ## 0.4.0 (2026-10-17)
 
 ### Added

@@ -6,7 +6,7 @@
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
-> **Early access.** Godspeed 0.4.0 is an early release. Expect rough edges. See
+> **Early access.** Godspeed 0.5.0 is an early release. Expect rough edges. See
 > [ROADMAP.md](docs/godspeed/ROADMAP.md) for what is done and what is next.
 
 Godspeed runs the coding-agent CLIs you already have (Claude Code, Codex, Cursor and more) in one
@@ -33,6 +33,9 @@ the features listed below on top. If you like this app, go star Zeron.
 | Usage limits | Run fails | Resumes on the same account when the limit resets |
 | Chat lifecycle | Archive | Settle, snooze, wake, unread, undo |
 | Attention | Check each chat | One Needs-you inbox for every approval and question, ranked by risk |
+| Overview | Sidebar | Mission Control: every agent on every device on one board |
+| Receipts | None | A receipt per turn: time, tools, files, tokens, cost |
+| Usage | Account ring | Usage cockpit, tachometer, continue on another account |
 | Worktrees | Setup script | Per-worktree ports, copied `.env` files, setup/teardown, sleep and wake |
 | Upstream bugs | Open | 16 Zeron and 36 T3 Code issues fixed |
 | Account | Zeron's cloud sign-in | Local-only, no account; sync on your own Cloudflare |

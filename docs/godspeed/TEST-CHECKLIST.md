@@ -1,6 +1,6 @@
 # Godspeed manual test checklist
 
-For the release in `/Applications/Godspeed.app` (0.4.0). Tick each box; note anything off
+For the release in `/Applications/Godspeed.app` (0.5.0). Tick each box; note anything off
 with the section and item so it can be fixed in one pass. "Expect" says what correct looks like.
 
 ## 1. Launch and basics
@@ -176,6 +176,20 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 - [ ] Reduce Motion or Low Power Mode: icon holds still.
 - [ ] Settings → Appearance → Animated Dock icon off: normal app icon returns at once.
 - [ ] Looks good at your Dock size (the art has no icon padding).
+
+## 15c. Mission Control, receipts, usage (0.5.0)
+
+- [ ] Cmd+Shift+K opens Mission Control over a frosted backdrop; Esc closes. Header clears the
+      traffic lights; the speedster and four totals show.
+- [ ] Cards: working ones have a moving edge, needs-you ones pulse, a chat finishing while open
+      fades green. hjkl/arrows move, Return opens, `/` filters, `a` approves only low-risk.
+- [ ] A finished turn ends with "Receipt · …"; clicking opens the slip (light and dark paper, torn
+      edge, lines print in). Copy and Copy as image paste correctly. Settings → General toggle hides it.
+- [ ] Composer tachometer: needle readable, red zone from 90%, kicks when a turn starts; hover shows
+      windows; click opens Settings → Usage.
+- [ ] Settings → Usage lists every account with bars, reset countdowns and Switch.
+- [ ] A Limited chat: "Continue on another account…" opens a new "(continued)" chat with the prompt
+      typed in; the original is untouched.
 
 ## 16. Robustness
 
