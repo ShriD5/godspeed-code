@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@3b2f7802 (2026-10-16)
+Synced through: zeronsh/zeron@c02739da (2026-10-18)
 
 A Godspeed always-on agent ("Zeron sync") runs daily, ports anything newer than the line above on a
 branch, runs the test suites, merges to main when everything passes, and otherwise leaves a pull
