@@ -66,7 +66,9 @@ as `.log.old`); the headless engine writes `godspeed-headless.log` in the same f
 
 ## Tests
 
-CI is not enabled on this repository yet, so the local test run is the gate. Say in the PR what you
+GitHub Actions runs the Linux suites on every pull request. While the repository is private, the
+macOS and Windows jobs only run when the PR has the `full-ci` label (or on a manual dispatch), so
+for platform-specific changes add the label or run the local tests below. Say in the PR what you
 ran.
 
 ```sh

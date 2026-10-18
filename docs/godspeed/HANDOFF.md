@@ -10,8 +10,9 @@ Godspeed is one native app for every AI coding agent: Rust + GPUI, forked from
 wants it to be the fastest and best-looking option, and eventually open source.
 
 - Repo: `~/Developer/godspeed`, private at github.com/ShriD5/godspeed (`origin`). `upstream` is
-  zeronsh/zeron, for cherry-picking fixes only. GitHub Actions is **disabled** on the repo on
-  purpose (Zeron's macOS/Windows workflows would burn private-repo minutes).
+  zeronsh/zeron, for cherry-picking fixes only. GitHub Actions is on (since 2026-10-18): Linux
+  jobs run on every PR and push to main; macOS and Windows jobs only on manual dispatch or PRs
+  labelled `full-ci` while the repo is private (see "Going public").
 - `main` is at `3c65438c` and pushed. Parity with T3 was 54% at the last audit (before delegation, lifecycle and the leftovers landed).
 - Installed build: `/Applications/Godspeed.app` is the release of `d752f8cd` (everything except the
   benchmarks doc), ad-hoc signed; `godspeed` CLI symlinked in `~/.local/bin`.
@@ -187,8 +188,27 @@ rebrand (checksum mismatch at launch) and were regenerated on this branch.
 ## Before going public
 
 - Rename the theme family still called after Zeron; replace the in-app Zeron logo SVG.
-- Sign and notarize (needs the owner's Developer ID), set up a release feed (auto-update is off),
-  decide on CI.
+- Sign and notarize (needs the owner's Developer ID), set up a release feed (auto-update is off).
+
+## Going public
+
+CI minutes are billed against the free private quota until the repo is public (macOS 10x,
+Windows 2x), so the inherited workflows are trimmed. Once the repo is public (minutes are free),
+restore the normal triggers:
+
+1. `macos.yml` and `windows.yml`: uncomment the `push:` block, remove the
+   `types: [opened, synchronize, reopened, labeled]` line under `pull_request:`, and delete every
+   `if:` line ending in `# full-ci gate`. The `-other-label` suffix in `concurrency.group` can stay
+   or go.
+2. `voice-tests.yml`: remove the `types:` line, replace each `os:` expression with the list in the
+   `# launch:` comment above it, and delete every `if:` line ending in `# full-ci gate`.
+3. `release-profile-tests.yml`: uncomment the daily `schedule:`.
+4. Optional, `cursor-sdk-update.yml`: it opens PRs with `GITHUB_TOKEN`, so first turn on
+   Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests",
+   then uncomment its `schedule:`.
+5. Delete the `full-ci` label if nothing uses it any more, and drop the "minutes policy" comments.
+
+`grep -rn 'full-ci gate\|# launch:\|# schedule\|# push:' .github/workflows` lists every spot.
 
 ## Owner to-dos
 
