@@ -2,6 +2,21 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.5.1 (2026-10-18)
+
+### Added
+
+- **Usage history and cost** on Settings → Usage: Today (hourly), 7, 30, 90 days or All; a stacked
+  chart of tokens or estimated cost per day by provider or model; totals for input, output, cache
+  read and write tokens and turns; breakdowns by model, provider and project; and your most
+  expensive chats. Costs are estimates at list API prices (also shown for subscription accounts).
+  History includes your earlier Claude Code and Codex sessions, read from their own local logs,
+  without double counting chats run in Godspeed.
+
+### Fixed
+
+- A selected inbox row fills its card instead of drawing a box inside it.
+
 ## 0.5.0 (2026-10-18)
 
 ### Added

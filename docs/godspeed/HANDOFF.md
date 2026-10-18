@@ -125,7 +125,7 @@ still push notifications; one imported Claude "chat" is a title-generation run (
 Cut: plan mode, account fallback, mid-thread provider switching (breaks prompt caching).
 Maybe later: checkpoints, rewind, edit-from-here. Telegram for always-on agents shipped open-dots
 style in 0.2.0. Skipped:
-T3 Connect relay and mobile compatibility, SnapShots, cookie import, usage/cost page.
+T3 Connect relay and mobile compatibility, SnapShots, cookie import. (The usage/cost page shipped in 0.5.1.)
 
 Open questions for the owner: Antigravity only unlocks some models when the client claims to be
 Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later".
