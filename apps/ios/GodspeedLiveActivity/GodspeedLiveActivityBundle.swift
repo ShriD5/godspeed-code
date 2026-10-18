@@ -5,5 +5,6 @@ import WidgetKit
 struct GodspeedLiveActivityBundle: WidgetBundle {
     var body: some Widget {
         VoiceLiveActivity()
+        UsageWidget()
     }
 }

@@ -17,6 +17,7 @@
 		A400000000000000000000E1 /* Exceptions for "GodspeedLiveActivity" folder in "GodspeedLiveActivity" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				GodspeedLiveActivity.entitlements,
 				Info.plist,
 			);
 			target = A4000000000000000000T001 /* GodspeedLiveActivity */;
@@ -595,6 +596,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = GodspeedLiveActivity/GodspeedLiveActivity.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = QPUV967B5U;
@@ -622,6 +624,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = GodspeedLiveActivity/GodspeedLiveActivity.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = QPUV967B5U;

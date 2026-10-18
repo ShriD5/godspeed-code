@@ -13,6 +13,8 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
     private let questions = QuestionPanel()
     private let queue = QueuePanel()
     private let pill = StatusPill()
+    private let limitBanner = LimitBanner()
+    private var limitToken: AnyObject?
     private let bottom = UIStackView()
     private let jump = Glass.circleButton(symbol: "arrow.down", size: 40, pointSize: 15)
     private let titleView = SessionTitleView()
@@ -122,7 +124,19 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         bottom.translatesAutoresizingMaskIntoConstraints = false
         let pillRow = UIStackView(arrangedSubviews: [pill, UIView()])
         pillRow.axis = .horizontal
-        for v in [pillRow, queue, questions, composer] { bottom.addArrangedSubview(v) }
+        for v in [pillRow, limitBanner, queue, questions, composer] { bottom.addArrangedSubview(v) }
+        limitBanner.isHidden = true
+        limitBanner.onAction = { [weak self] action in
+            guard let self else { return }
+            UISelectionFeedbackGenerator().selectionChanged()
+            Task { @MainActor in
+                if let error = await self.app.limitAction(self.chatId, action) {
+                    Toast.show(error, in: self.view.window)
+                }
+            }
+        }
+        limitToken = app.observe { [weak self] in self?.syncLimit() }
+        syncLimit()
         questions.isHidden = true
         queue.isHidden = true
         // Hidden panels start dematerialized so their first appearance grows in.
@@ -520,6 +534,22 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         }
     }
 
+    /// The usage-limit banner follows the chat's registry row.
+    private func syncLimit() {
+        let row = app.row(chatId)
+        let state = row?.limit.map { LimitBanner.State(resetAtMs: $0.resetAtMs, window: $0.window, recovery: $0.recovery) }
+        let show = state != nil && row?.indicator == .limited
+        if let state, show, state != limitBanner.state || limitBanner.isHidden { limitBanner.update(state) }
+        guard limitBanner.isHidden == show else { return }
+        let apply = {
+            self.limitBanner.isHidden = !show
+            self.view.layoutIfNeeded()
+        }
+        if view.window == nil || UIAccessibility.isReduceMotionEnabled { apply() } else {
+            UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, options: [.beginFromCurrentState, .allowUserInteraction], animations: apply)
+        }
+    }
+
     private func sessionMenu() -> UIMenu {
         UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
             guard let self else { return done([]) }
@@ -527,6 +557,7 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
             let pinned = vm?.pinned ?? false
             done([
                 UIAction(title: pinned ? "Unpin" : "Pin", image: UIImage(systemName: pinned ? "pin.slash" : "pin")) { _ in self.app.setPinned(self.chatId, !pinned) },
+                self.app.lifecycleMenu(for: self.chatId),
                 UIAction(title: "Copy Transcript", image: UIImage(systemName: "doc.on.doc")) { _ in
                     UIPasteboard.general.string = self.engine.frame().plainText()
                 },
