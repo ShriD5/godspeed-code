@@ -212,7 +212,7 @@ directly comparable; the movers are listed below.
 | Palette: threads, recent files, files, in-file content, commands | ✅ | `shell/command_palette.rs`, tabs All / Threads / Commands / Files |
 | Palette actions | 🟡 | new chat/project, settings, theme, archive, git commit/push/pull/PR; no find, link PR, restart session, copy link, usage |
 | Projects / environments / directories groups, `>` actions prefix | ❌ | tabs instead |
-| Core shortcuts: sidebar, terminal, new, jump 1-9, model, access mode | ✅ | `ShortcutId` in `settings.rs` |
+| Core shortcuts: sidebar, terminal, new, jump 1-9, model, access mode, effort up/down | ✅ | `ShortcutId` in `settings.rs` |
 | Rebindable commands | 🟡 | 16 plus 9 jump slots, vs ~60 T3 commands |
 | Keybinding recorder with conflict handling | ✅ | refuses conflicts outright |
 | Keybindings file with `when` clauses | ❌ | settings JSON only, no `when` |

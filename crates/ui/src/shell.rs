@@ -135,6 +135,8 @@ actions!(
         FindInThread,
         OpenModelPicker,
         CycleAccessMode,
+        IncreaseEffort,
+        DecreaseEffort,
         NewSession,
         OpenSettings,
         NextSession,
@@ -562,6 +564,8 @@ pub fn apply_keymap(
             None,
         ),
     ]);
+    bind_unless_taken(cx, keymap, ShortcutId::IncreaseEffort, IncreaseEffort);
+    bind_unless_taken(cx, keymap, ShortcutId::DecreaseEffort, DecreaseEffort);
     bind_unless_taken(cx, keymap, ShortcutId::SettleSession, SettleSession);
     bind_unless_taken(cx, keymap, ShortcutId::NavigateBack, NavigateBack);
     bind_unless_taken(cx, keymap, ShortcutId::NavigateForward, NavigateForward);
@@ -6640,6 +6644,14 @@ impl Shell {
         };
         // Same path a click on that row takes.
         self.open_chat(chat_id, cx);
+    }
+
+    /// The effort shortcuts: one stop along the composer model's effort.
+    fn step_effort(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if matches!(self.route, Route::Chat) && !self.overlay_owns_keyboard(cx) {
+            let pickers = self.composer.read(cx).pickers().clone();
+            pickers.update(cx, |pickers, cx| pickers.step_effort(delta, cx));
+        }
     }
 
     /// Whether an overlay that owns the keyboard is up — the add-space
@@ -14233,6 +14245,12 @@ impl Render for Shell {
                     let pickers = this.composer.read(cx).pickers().clone();
                     pickers.update(cx, |pickers, cx| pickers.cycle_access_mode(cx));
                 }
+            }))
+            .on_action(cx.listener(|this, _: &IncreaseEffort, _, cx| {
+                this.step_effort(1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &DecreaseEffort, _, cx| {
+                this.step_effort(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &AddSpacePalette, _, cx| {
                 if matches!(this.route, Route::Settings(_)) {
