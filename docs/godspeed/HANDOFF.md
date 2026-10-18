@@ -104,12 +104,10 @@ Known flaky only under heavy load (pass alone): `version_probe_bounds_hangs_and_
 
 ## Next, in order
 
-1. Owner's eyeball pass on 0.4.0 (checklist §10, §12b, §15b). Phase 4 usage cockpit + tachometer
-   in progress on `feat/usage-cockpit`.
-2. Fun, zero-token features left: lightning crackle on finished rows, menu-bar speedster, Mission
-   Control map of running agents, agent receipts.
+1. Owner's eyeball pass on 0.5.0 (checklist §10, §12b, §15b, §15c).
+2. Fun, zero-token features left: lightning crackle on finished rows, menu-bar speedster.
 3. `PLAN.md` phase 3 (close the laptop: Linux artifacts, "Run on a server", reconnect hardening;
-   needs a VPS), phase 4 (usage cockpit, explicit "continue on another account"), phase 5 (PR
+   needs a VPS), phase 5 (PR
    autopilot; Codex's brief at `/Volumes/Lexar/build/godspeed-coordination/pr-actions-brief.md`).
 4. Known flaky under load: `version_probe_bounds_hangs_and_rejects_nonzero`,
    `file_changes_fire_one_debounced_run`, two `fs_watch` engine lib tests, `focused_waiter…`.
@@ -134,6 +132,9 @@ Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later
 
 ## Releases
 
+- `v0.5.0` published 2026-10-18 (tag on `4d5bbfb8`): Mission Control, receipts, usage cockpit,
+  tachometer, continue on another account. Never swap the bundle under a running app: it cost the
+  running copy its removable-volume (Lexar) access. Always stage + swap-on-quit.
 - `v0.4.0` published 2026-10-17 (tag on `bd7fa2fc`): inbox, worktree environments, speedster Dock
   icon. Signed + notarized with `~/.local/share/godspeed-ops/release-macos.sh` (reads the ASC key
   from `~/.config/outbound/keys.env`, never prints it), then upload the dmg, the
