@@ -692,6 +692,17 @@ impl Pickers {
         crate::haptics::selection_step();
     }
 
+    /// Move the effort `delta` stops along its ladder, holding at either end
+    /// (the effort shortcuts).
+    pub fn step_effort(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(effort) = self.compact_effort(cx) else {
+            return;
+        };
+        let last = effort.labels.len().saturating_sub(1);
+        let next = effort.selected.saturating_add_signed(delta).min(last);
+        self.pick_compact_effort(effort, next, cx);
+    }
+
     pub(super) fn render_compact_menu(
         &mut self,
         window: &mut Window,

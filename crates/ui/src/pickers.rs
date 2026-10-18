@@ -9253,6 +9253,74 @@ mod tests {
     }
 
     #[gpui::test]
+    fn effort_shortcuts_step_the_ladder_and_hold_at_its_ends(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let handle = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Pickers::new(state, cx)
+        });
+        handle
+            .update(cx, |picker, _, cx| {
+                let mut model = bare_model("model", "Model");
+                model.reasoning_levels = vec![
+                    ReasoningLevel::Low,
+                    ReasoningLevel::Medium,
+                    ReasoningLevel::High,
+                ];
+                let mut opus = bare_model("claude-opus-5", "Claude Opus 5");
+                opus.options = vec![ModelOption {
+                    id: "effort".into(),
+                    label: "Effort".into(),
+                    default_choice: "medium".into(),
+                    choices: [("low", "Low"), ("medium", "Medium"), ("high", "High")]
+                        .iter()
+                        .map(|(id, label)| ModelOptionChoice {
+                            id: (*id).into(),
+                            label: (*label).into(),
+                        })
+                        .collect(),
+                }];
+                picker.config.harness = Some(HarnessId::Codex);
+                picker.harnesses = Loadable::Ready(vec![
+                    descriptor(HarnessId::Codex, "Codex"),
+                    descriptor(HarnessId::Cursor, "Cursor"),
+                ]);
+                picker
+                    .models
+                    .insert(HarnessId::Codex, Loadable::Ready(vec![model]));
+                picker
+                    .models
+                    .insert(HarnessId::Cursor, Loadable::Ready(vec![opus]));
+
+                picker.pick_reasoning(ReasoningLevel::Low, cx);
+                picker.step_effort(1, cx);
+                assert_eq!(picker.effective_reasoning(cx), Some(ReasoningLevel::Medium));
+                picker.step_effort(1, cx);
+                picker.step_effort(1, cx);
+                assert_eq!(picker.effective_reasoning(cx), Some(ReasoningLevel::High));
+                picker.step_effort(-1, cx);
+                picker.step_effort(-1, cx);
+                picker.step_effort(-1, cx);
+                assert_eq!(picker.effective_reasoning(cx), Some(ReasoningLevel::Low));
+
+                // Cursor carries its effort as a model option.
+                picker.config.harness = Some(HarnessId::Cursor);
+                picker.pick_model("claude-opus-5".into(), cx);
+                picker.step_effort(1, cx);
+                assert_eq!(picker.resolved(cx).model_options["effort"], "high");
+                picker.step_effort(1, cx);
+                assert_eq!(picker.resolved(cx).model_options["effort"], "high");
+                picker.step_effort(-1, cx);
+                assert!(!picker.explicit_options(cx).contains_key("effort"));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn switching_provider_restores_its_last_model_and_effort(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {

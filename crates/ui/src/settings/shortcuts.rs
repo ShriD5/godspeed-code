@@ -730,6 +730,8 @@ fn group(id: ShortcutId) -> &'static str {
         ShortcutId::ToggleDictation => "Voice",
         ShortcutId::OpenModelPicker
         | ShortcutId::CycleAccessMode
+        | ShortcutId::IncreaseEffort
+        | ShortcutId::DecreaseEffort
         | ShortcutId::NewSession
         | ShortcutId::NextSession
         | ShortcutId::PrevSession
