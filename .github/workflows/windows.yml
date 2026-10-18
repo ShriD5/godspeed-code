@@ -1,7 +1,14 @@
 name: Windows tests
 
+# MINUTES POLICY (private repo): Windows runners bill at 2x and these jobs are long release
+# builds, so until the repo is public this workflow runs only on manual dispatch and on pull
+# requests labelled `full-ci`. Every job carries the `# full-ci gate` `if:` below (native-gui is
+# dispatch-only anyway). To restore the normal triggers at launch: uncomment the `push:` block,
+# drop `types:` from `pull_request:`, and delete each `if:` line marked `# full-ci gate`
+# (see "Going public" in docs/godspeed/HANDOFF.md).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -12,18 +19,18 @@ on:
       - 'scripts/test-windows-*.ps1'
       - 'scripts/package-windows.ps1'
       - '.github/workflows/windows.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'apps/godspeed/**'
-      - 'dist/windows/**'
-      - 'crates/**'
-      - 'scripts/test-windows-*.ps1'
-      - 'scripts/package-windows.ps1'
-      - '.github/workflows/windows.yml'
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'Cargo.toml'
+  #     - 'Cargo.lock'
+  #     - 'rust-toolchain.toml'
+  #     - 'apps/godspeed/**'
+  #     - 'dist/windows/**'
+  #     - 'crates/**'
+  #     - 'scripts/test-windows-*.ps1'
+  #     - 'scripts/package-windows.ps1'
+  #     - '.github/workflows/windows.yml'
   workflow_dispatch:
     inputs:
       native_gui:
@@ -35,7 +42,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-tests-${{ github.ref }}
+  # Adding an unrelated label must not cancel a running full-ci run.
+  group: windows-tests-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && '-other-label' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -46,6 +54,7 @@ jobs:
   # The original single serial job is split into three independent jobs so they
   # run in parallel. Together they run exactly the commands the single job ran.
   ui-tests:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -66,6 +75,7 @@ jobs:
   # The crate suites compile different package sets, so the two jobs below each
   # build what they need in parallel instead of one job building them in turn.
   harness-app-tests:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -79,6 +89,7 @@ jobs:
         run: cargo test --release --locked -p godspeed -p zeron-update
 
   engine-tests:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -97,6 +108,7 @@ jobs:
         run: cargo test --release --locked -p zeron-engine --test auth
 
   app:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: windows-2022
     timeout-minutes: 45
     steps:

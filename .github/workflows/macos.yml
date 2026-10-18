@@ -1,7 +1,14 @@
 name: macOS tests
 
+# MINUTES POLICY (private repo): macOS runners bill at 10x, so until the repo is public this
+# workflow runs only on manual dispatch and on pull requests labelled `full-ci`. Every job that
+# starts a runner carries the `# full-ci gate` `if:` below; the iOS jobs follow through `needs`.
+# To restore the normal triggers at launch: uncomment the `push:` block, drop
+# `types:` from `pull_request:`, and delete each `if:` line marked `# full-ci gate`
+# (see "Going public" in docs/godspeed/HANDOFF.md).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -14,27 +21,28 @@ on:
       - 'dist/macos/Info.plist'
       - 'apps/ios/**'
       - '.github/workflows/macos.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - 'crates/**'
-      - 'edge/**'
-      - 'scripts/run-macos-browser-fixture.sh'
-      - 'scripts/test-browser-storage.py'
-      - 'scripts/ci/run-macos-fixture.sh'
-      - 'dist/macos/Info.plist'
-      - 'apps/ios/**'
-      - '.github/workflows/macos.yml'
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'Cargo.toml'
+  #     - 'Cargo.lock'
+  #     - 'rust-toolchain.toml'
+  #     - 'crates/**'
+  #     - 'edge/**'
+  #     - 'scripts/run-macos-browser-fixture.sh'
+  #     - 'scripts/test-browser-storage.py'
+  #     - 'scripts/ci/run-macos-fixture.sh'
+  #     - 'dist/macos/Info.plist'
+  #     - 'apps/ios/**'
+  #     - '.github/workflows/macos.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: macos-${{ github.ref }}
+  # Adding an unrelated label must not cancel a running full-ci run.
+  group: macos-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && '-other-label' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -47,6 +55,7 @@ env:
 # on an older image would otherwise miss the cache that `main` seeded.
 jobs:
   changes:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: ubuntu-24.04
     permissions:
       pull-requests: read
@@ -82,6 +91,7 @@ jobs:
   # Updater and preview tests, native UI regressions and the two native WebKit fixtures. Everything is
   # compiled once (one cargo invocation, so dependencies are built once) and then run.
   macos-native:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: macos-latest
     # A cold cache (first run, eviction, toolchain bump) takes about 32 minutes; warm is about 10.
     timeout-minutes: 45
@@ -165,6 +175,7 @@ jobs:
 
   # gpui_macos lives in the pinned GPUI checkout, a separate workspace with its own cache.
   macos-frame-source:
+    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
