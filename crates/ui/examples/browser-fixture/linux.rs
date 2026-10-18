@@ -238,12 +238,20 @@ pub async fn exercise(
         }),
         cx,
     )?;
-    pause(cx, 150).await;
+    // WebKit answers the copy in its helper process and publishes the X11/Wayland selection
+    // asynchronously; on a loaded 2-vCPU runner (llvmpipe plus the screen recorder) that takes
+    // longer than a fixed pause, so poll for up to ~3 s.
+    let mut copied = None;
+    for _ in 0..40 {
+        pause(cx, 75).await;
+        copied = cx.update(|cx| cx.read_from_clipboard().and_then(|v| v.text()));
+        if copied.as_deref() == Some("hello linux — café 日本語") {
+            break;
+        }
+    }
     anyhow::ensure!(
-        cx.update(|cx| cx.read_from_clipboard().and_then(|v| v.text()))
-            .as_deref()
-            == Some("hello linux — café 日本語"),
-        "browser copy did not reach app clipboard"
+        copied.as_deref() == Some("hello linux — café 日本語"),
+        "browser copy did not reach app clipboard: {copied:?}"
     );
     eval(&page,"(()=>{let e=document.getElementById('browser-input');e.setSelectionRange(e.value.length,e.value.length);return true})()",cx).await?;
     window.update(cx, |_, w, cx| {
