@@ -148,7 +148,12 @@ mod tests {
             hostile
                 .render_all(&["git log {{branch}} && cd {{root}} && createdb app_{{slug}}".into()])
                 .unwrap(),
-            vec!["git log 'x$(touch pwned);y' && cd '/code/my app' && createdb app_swift-otter"]
+            // cmd.exe runs these on Windows, so values are double-quoted there.
+            vec![if cfg!(windows) {
+                "git log \"x$(touch pwned);y\" && cd \"/code/my app\" && createdb app_swift-otter"
+            } else {
+                "git log 'x$(touch pwned);y' && cd '/code/my app' && createdb app_swift-otter"
+            }]
         );
         let environment = context.environment();
         assert_eq!(environment["GODSPEED_PORT"], "41010");

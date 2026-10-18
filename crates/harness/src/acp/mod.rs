@@ -4341,7 +4341,12 @@ async fn run_session(session: Session) {
 
             res = async { turn.as_mut().expect("guarded by if").await }, if turn.is_some() => {
                 turn = None;
-                if res.is_err() && client.is_closed() {
+                // Only a prompt the agent never answered ends the loop here.
+                // An error response (a quota or context error) can land just
+                // before the agent exits and must still end the turn with it.
+                if res.as_ref().is_err_and(crate::jsonrpc::is_transport_failure)
+                    && client.is_closed()
+                {
                     break 'main;
                 }
                 prompt_settled_at = Some(tokio::time::Instant::now());

@@ -2,8 +2,8 @@ version: 2
 updates:
   # One grouped PR per week with every minor and patch bump in the Cargo
   # workspace. Major bumps are left for manual upgrades because they usually
-  # need code changes. CI is off on this repo, so build and test the PR
-  # locally before merging (see CONTRIBUTING.md).
+  # need code changes. Linux CI runs on the PR; add the `full-ci` label to
+  # also run the macOS and Windows jobs before merging.
   - package-ecosystem: cargo
     directory: /
     schedule:

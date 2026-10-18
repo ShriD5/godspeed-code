@@ -14144,6 +14144,7 @@ mod tests {
                             status: zeron_proto::SessionStatus::Working,
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
+                            awaiting_approval: false,
                         })
                     });
                     this.on_own_send("chat".into(), "prompt".into(), cx);

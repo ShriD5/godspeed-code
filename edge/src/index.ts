@@ -123,7 +123,7 @@ export default {
     // ── public install surface: the `curl | sh` installer and the release
     //    artifacts it downloads. Served only when a RELEASES bucket is bound.
     //    Godspeed's deployment binds none (releases live on GitHub, and
-    //    install.sh still installs Zeron from zeron.sh), so both 404 there. ──
+    //    install.sh's base URL is still a placeholder), so both 404 there. ──
     if (
       env.RELEASES &&
       url.pathname === "/install.sh" &&

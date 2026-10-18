@@ -12,7 +12,8 @@ Status as of 2026-10-18. The repo is private until the owner says otherwise.
 - [x] README, roadmap and Zeron comparison current for 0.5.
 - [x] Last user-visible Zeron branding removed (old logo svg, spinner word). Internal `zeron-*`
       crate names stay on purpose so upstream ports stay cheap.
-- [ ] CI green on the fork (in progress on `chore/ci`).
+- [x] CI green on the fork: Linux on every PR and push to main; macOS and Windows on manual
+      dispatch or PRs labelled `full-ci` until the repo is public.
 
 ## Owner decisions (blockers)
 

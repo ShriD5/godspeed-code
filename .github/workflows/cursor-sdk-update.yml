@@ -1,7 +1,11 @@
 name: Cursor SDK updates
+# Manual-only on this fork. The job opens its PR with GITHUB_TOKEN, which needs the repo setting
+# "Allow GitHub Actions to create and approve pull requests" (off here), so a scheduled run would
+# fail whenever a new SDK ships. No secrets are involved. To restore: turn that setting on
+# (Settings > Actions > General > Workflow permissions) and uncomment the schedule.
 on:
-  schedule:
-    - cron: '17 9 * * *'
+  # schedule:
+  #   - cron: '17 9 * * *'
   workflow_dispatch:
 permissions:
   contents: write

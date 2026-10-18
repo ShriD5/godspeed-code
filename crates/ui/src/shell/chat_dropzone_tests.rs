@@ -398,7 +398,10 @@ fn external_file_drops_stage_files_and_reference_folders_and_oversize_files(
         crate::attachments::path_reference(&files.path().join("huge.bin")),
     );
     // A folder reads as one: its path ends in a separator.
-    assert!(references.contains("folder/` `"), "{references}");
+    assert!(
+        references.contains(&format!("folder{}` `", std::path::MAIN_SEPARATOR)),
+        "{references}"
+    );
     let targets = [None, Some(2), Some(1)];
     let composer = |shell: &Shell, target: Option<u64>| match target {
         None => shell.composer.clone(),

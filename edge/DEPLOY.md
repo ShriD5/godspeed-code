@@ -66,9 +66,10 @@ in `crates/client/src/auth.rs`), the iOS app uses `Endpoints` in
   `zeron.sh/releases/*` and the `comet.zeron.sh` legacy hosts): they live on
   Zeron's zone and would fail to deploy on this account. workers.dev instead.
 - **`RELEASES` bucket** (`/releases/*`, `/install.sh`): Godspeed ships
-  releases on GitHub, and `src/install.sh` still downloads Zeron from zeron.sh.
-  The binding is now optional and both routes answer 404 without it. To bring
-  the curl installer back, rewrite `install.sh` for Godspeed, create a
+  releases on GitHub. `src/install.sh` is rebranded for Godspeed but its
+  default `GODSPEED_BASE_URL` is a `godspeed.invalid` placeholder. The binding
+  is now optional and both routes answer 404 without it. To bring the curl
+  installer back, set the real base URL in `install.sh`, create a
   `godspeed-releases` bucket and add the binding.
 - **Zeron's WorkOS client id**: it would make this edge accept any Zeron
   account. Replaced by the `unset` placeholder (fails closed).

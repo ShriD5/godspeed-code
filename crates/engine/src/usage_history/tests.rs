@@ -207,7 +207,14 @@ fn rescans_read_only_what_was_appended_and_restart_rewritten_files() {
         ),
     )
     .unwrap();
-    let rollout = codex.join("sessions/2026/10/17/rollout-a.jsonl");
+    // Built per component: the file mark is keyed by the scanned path, which
+    // uses `\` on Windows.
+    let rollout = codex
+        .join("sessions")
+        .join("2026")
+        .join("10")
+        .join("17")
+        .join("rollout-a.jsonl");
     std::fs::write(
         &rollout,
         format!(
