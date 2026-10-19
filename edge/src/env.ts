@@ -23,6 +23,11 @@ export interface Env {
    * routes (code exchange, refresh, orgs). Unset ⇒ those routes answer 501,
    * matching the old apps/server dev-mode behavior. */
   WORKOS_API_KEY?: string;
+  /** Invite list (wrangler secret): comma-separated emails and `@domain`
+   * entries, case-insensitive. Unset/empty ⇒ open (see allowlist.ts). */
+  ALLOWED_EMAILS?: string;
+  /** Workers rate limiting binding for /auth/* (per IP). Unbound ⇒ no limit. */
+  AUTH_RATE_LIMITER?: RateLimiter;
   /** APNs auth key (contents of AuthKey_XXXX.p8, wrangler secret) and its
    * key id. Unset ⇒ session notifications are decided and logged, not sent. */
   APNS_KEY_P8?: string;
@@ -30,6 +35,11 @@ export interface Env {
   /** Apple team id and the app's bundle id (defaults: the Godspeed iOS app). */
   APNS_TEAM_ID?: string;
   APNS_TOPIC?: string;
+}
+
+/** The slice of the Workers rate limiting binding the edge uses. */
+export interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 /** APNs settings, when push is set up for this deployment. */

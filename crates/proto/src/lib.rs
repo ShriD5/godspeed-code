@@ -17,6 +17,7 @@ pub mod device_paths;
 pub mod entities;
 pub mod file_mentions;
 pub mod git_actions;
+pub mod invite_only;
 pub mod invocation;
 pub mod message_search;
 pub mod motion;

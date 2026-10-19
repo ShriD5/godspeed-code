@@ -699,9 +699,13 @@ impl Auth {
                 ))
             })?;
         if !res.status().is_success() {
+            let status = res.status().as_u16();
+            let body = res.text().await.unwrap_or_default();
+            if let Some(message) = zeron_proto::invite_only::invite_only_message(status, &body) {
+                return Err(EngineError::Other(message));
+            }
             return Err(EngineError::Other(format!(
-                "sign-in failed during token exchange ({}) — the code may have expired; start again",
-                res.status().as_u16()
+                "sign-in failed during token exchange ({status}) — the code may have expired; start again"
             )));
         }
         let body: Exchange = res.json().await.map_err(|e| {
@@ -898,6 +902,7 @@ impl Auth {
         let status = res.status().as_u16();
         if (400..500).contains(&status) && !matches!(status, 408 | 429) && organization_id.is_none()
         {
+            let body = res.text().await.unwrap_or_default();
             let mut sign_in = lock(&self.inner.sign_in);
             if sign_in.generation != generation
                 || lock(&self.inner.stored)
@@ -911,10 +916,15 @@ impl Auth {
             // deleted user) — it can NEVER succeed again. Degrade to SignedOut so every
             // downstream retry loop quiets down. (Org-switch refreshes are exempt: a 4xx
             // there means "not a member", not a dead session.)
-            tracing::warn!(
-                status,
-                "auth: refresh rejected — session revoked; signing out"
-            );
+            match zeron_proto::invite_only::invite_only_message(status, &body) {
+                Some(message) => {
+                    tracing::warn!(%message, "auth: refresh refused (invite-only); signing out")
+                }
+                None => tracing::warn!(
+                    status,
+                    "auth: refresh rejected — session revoked; signing out"
+                ),
+            }
             self.clear_session(&mut sign_in);
             return Ok(None);
         }
@@ -1012,9 +1022,13 @@ impl Auth {
             ))
         })?;
         if !res.status().is_success() {
+            let status = res.status().as_u16();
+            let body = res.text().await.unwrap_or_default();
+            if let Some(message) = zeron_proto::invite_only::invite_only_message(status, &body) {
+                return Err(EngineError::Other(message));
+            }
             return Err(EngineError::Other(format!(
-                "workspace request failed ({})",
-                res.status().as_u16()
+                "workspace request failed ({status})"
             )));
         }
         res.json::<T>().await.map_err(|e| {
@@ -1156,6 +1170,15 @@ async fn handle_loopback_conn(
                             )
                         }
                     },
+                    // exchange_code passes the edge's invite-only message through.
+                    Err(EngineError::Other(message)) if message.contains("invite-only") => {
+                        tracing::warn!(%message, "auth: sign-in refused (invite-only)");
+                        let location = format!(
+                            "{}/auth/invite-only",
+                            auth.inner.config.edge_url.trim_end_matches('/')
+                        );
+                        return redirect(&mut stream, &location, &message).await;
+                    }
                     Err(err) => {
                         tracing::warn!(error = %err, "auth: loopback code exchange failed");
                         (
@@ -1175,6 +1198,28 @@ async fn handle_loopback_conn(
     );
     stream.write_all(response.as_bytes()).await?;
     stream.shutdown().await
+}
+
+/// Send the browser to the edge's invite-only page; the body carries the
+/// message for anything that does not follow redirects.
+async fn redirect(
+    stream: &mut tokio::net::TcpStream,
+    location: &str,
+    message: &str,
+) -> Result<(), std::io::Error> {
+    let body = page(&html_escape(message));
+    let response = format!(
+        "HTTP/1.1 303 See Other\r\nlocation: {location}\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn page(message: &str) -> String {

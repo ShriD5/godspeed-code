@@ -69,7 +69,12 @@ struct StubState {
     token_ttl: AtomicUsize,
     /// org_id claim for exchange-minted tokens ("" = none).
     exchange_org: Mutex<String>,
+    /// Answer exchange/refresh like an invite-only edge refusing the user.
+    invite_only: AtomicBool,
 }
+
+const INVITE_ONLY_BODY: &str =
+    r#"{"error":"invite_only","message":"Godspeed Code cloud sync is invite-only for now."}"#;
 
 struct StubEdge {
     port: u16,
@@ -175,6 +180,10 @@ async fn handle(mut stream: tokio::net::TcpStream, state: Arc<StubState>) {
                 return;
             }
             let n = state.exchanges.fetch_add(1, Ordering::SeqCst) + 1;
+            if state.invite_only.load(Ordering::SeqCst) {
+                respond(&mut stream, "403 Forbidden", INVITE_ONLY_BODY).await;
+                return;
+            }
             if state.block_exchange.load(Ordering::SeqCst) {
                 state.exchange_started.notify_one();
                 state.release_exchange.notified().await;
@@ -212,6 +221,10 @@ async fn handle(mut stream: tokio::net::TcpStream, state: Arc<StubState>) {
             if status != 0 {
                 state.refreshes.fetch_add(1, Ordering::SeqCst);
                 respond(&mut stream, &format!("{status} Unavailable"), "{}").await;
+                return;
+            }
+            if state.invite_only.load(Ordering::SeqCst) {
+                respond(&mut stream, "403 Forbidden", INVITE_ONLY_BODY).await;
                 return;
             }
             if refresh_token == "dead" {
@@ -739,6 +752,65 @@ async fn an_old_refresh_cannot_report_signed_out_after_a_new_sign_in() {
                 .unwrap();
         assert_eq!(stored["refreshToken"], "refresh-1");
     }
+}
+
+#[tokio::test]
+async fn invite_only_refusal_reaches_headless_sign_in() {
+    let edge = StubEdge::start().await;
+    edge.state.invite_only.store(true, Ordering::SeqCst);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = Auth::new(workos_config(&edge.url(), dir.path()));
+    let url = auth.start_headless_sign_in();
+    let state = query_param(&url, "state").expect("state param");
+    let err = auth
+        .complete_sign_in(&format!("{state}.code123"))
+        .await
+        .expect_err("refused");
+    assert_eq!(
+        err.to_string(),
+        "Godspeed Code cloud sync is invite-only for now."
+    );
+    assert_eq!(auth.state(), AuthState::SignedOut);
+    assert!(!dir.path().join("session.json").exists());
+}
+
+#[tokio::test]
+async fn invite_only_refusal_sends_the_browser_to_the_edge_page() {
+    let edge = StubEdge::start().await;
+    edge.state.invite_only.store(true, Ordering::SeqCst);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = Auth::new(workos_config(&edge.url(), dir.path()));
+    let url = auth.start_sign_in().await.expect("authorize url");
+    let redirect = query_param(&url, "redirect_uri").expect("redirect");
+    let state = query_param(&url, "state").expect("state");
+    let callback: String = redirect.replace("%3A", ":").replace("%2F", "/");
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let res = client
+        .get(format!("{callback}?code=abc&state={state}"))
+        .send()
+        .await
+        .expect("cb");
+    assert_eq!(res.status().as_u16(), 303);
+    assert_eq!(
+        res.headers().get("location").and_then(|v| v.to_str().ok()),
+        Some(format!("{}/auth/invite-only", edge.url()).as_str())
+    );
+    assert_eq!(auth.state(), AuthState::SignedOut);
+}
+
+#[tokio::test]
+async fn invite_only_refresh_signs_out() {
+    let edge = StubEdge::start().await;
+    edge.state.invite_only.store(true, Ordering::SeqCst);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = persisted_auth(&edge, dir.path());
+    assert!(auth.state().is_signed_in());
+    assert_eq!(auth.access_token().await, Err(TokenError::SignedOut));
+    assert_eq!(auth.state(), AuthState::SignedOut);
+    assert!(!dir.path().join("session.json").exists());
 }
 
 #[tokio::test]

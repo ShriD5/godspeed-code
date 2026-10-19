@@ -72,6 +72,10 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
         status.textColor = Palette.danger
         status.numberOfLines = 0
         status.textAlignment = .center
+        if let notice = app.signInNotice {
+            status.text = notice
+            app.signInNotice = nil
+        }
 
         let top = UIStackView(arrangedSubviews: [mark, title, tagline])
         top.axis = .vertical
@@ -110,7 +114,7 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
                 do {
                     try await self.app.signIn(code: code) { orgs in await self.pickOrg(orgs) }
                 } catch {
-                    self.status.text = error.localizedDescription
+                    self.status.text = AppModel.signInErrorText(error)
                 }
                 self.signIn.configuration?.showsActivityIndicator = false
             }

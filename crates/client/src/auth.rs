@@ -165,6 +165,16 @@ async fn check(response: reqwest::Response) -> Result<reqwest::Response> {
         return Ok(response);
     }
     let body = response.text().await.unwrap_or_default();
+    Err(rejection(status, &body))
+}
+
+/// The error for a failed edge auth reply.
+fn rejection(status: reqwest::StatusCode, body: &str) -> ClientError {
+    // Invite-only edge: the plain message, so the sign-in screen can show it
+    // as is (still an Auth error: the account cannot use this edge).
+    if let Some(message) = zeron_proto::invite_only::invite_only_message(status.as_u16(), body) {
+        return ClientError::Auth(message);
+    }
     // Timeouts and rate limits are transient, not a rejected credential
     // (an Auth error signs the user out).
     let transient = matches!(
@@ -172,9 +182,9 @@ async fn check(response: reqwest::Response) -> Result<reqwest::Response> {
         reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::TOO_MANY_REQUESTS
     );
     if status.is_client_error() && !transient {
-        Err(ClientError::Auth(format!("{status}: {body}")))
+        ClientError::Auth(format!("{status}: {body}"))
     } else {
-        Err(ClientError::Network(format!("{status}: {body}")))
+        ClientError::Network(format!("{status}: {body}"))
     }
 }
 
@@ -442,6 +452,26 @@ async fn refresh_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invite_only_refusal_carries_the_edge_message() {
+        let body = r#"{"error":"invite_only","message":"Cloud sync is invite-only for now."}"#;
+        assert_eq!(
+            rejection(reqwest::StatusCode::FORBIDDEN, body),
+            ClientError::Auth("Cloud sync is invite-only for now.".into())
+        );
+        assert!(matches!(
+            rejection(reqwest::StatusCode::FORBIDDEN, r#"{"error":"forbidden"}"#),
+            ClientError::Auth(m) if m.starts_with("403")
+        ));
+        assert!(matches!(
+            rejection(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                r#"{"error":"rate_limited"}"#
+            ),
+            ClientError::Network(_)
+        ));
+    }
 
     #[test]
     fn percent_decode_handles_edges() {

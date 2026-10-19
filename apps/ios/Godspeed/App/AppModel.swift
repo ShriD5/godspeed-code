@@ -69,6 +69,22 @@ final class AppModel {
 
     var onSignedIn: (() -> Void)?
     var onSignOut: (() -> Void)?
+    /// Shown once on the next sign-in screen (why the session ended).
+    var signInNotice: String?
+
+    /// The edge's invite-only refusal (403 `invite_only`, edge/src/allowlist.ts):
+    /// the core passes its message through as the auth error / expiry reason.
+    static func inviteOnlyMessage(_ message: String) -> String? {
+        message.localizedCaseInsensitiveContains("invite-only") ? message : nil
+    }
+
+    /// Sign-in failure text: the invite-only notice verbatim, else the error.
+    static func signInErrorText(_ error: Error) -> String {
+        if case let .Auth(message)? = error as? CoreError, let notice = inviteOnlyMessage(message) {
+            return notice
+        }
+        return error.localizedDescription
+    }
     /// The new-session page's options (project, host, branch, model,
     /// effort), kept across launches.
     var lastDraft: NewSessionDraft = {
@@ -382,7 +398,8 @@ final class AppModel {
             observers.values.forEach { $0() }
         case let .authRefreshed(tokens):
             Credentials.updateTokens(tokens)
-        case .authExpired:
+        case let .authExpired(reason):
+            signInNotice = Self.inviteOnlyMessage(reason)
             onSignOut?()
         }
     }
