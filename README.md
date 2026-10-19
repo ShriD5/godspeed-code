@@ -2,7 +2,7 @@
   <img src="dist/godspeed.png" alt="Godspeed app icon" width="160">
 </p>
 
-<h1 align="center">Godspeed</h1>
+<h1 align="center">Godspeed Code</h1>
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
@@ -16,7 +16,7 @@
 > **Early access.** Godspeed 0.5 is an early release. Expect rough edges. See
 > [ROADMAP.md](docs/godspeed/ROADMAP.md) for what is done and what is next.
 
-Godspeed runs the coding-agent CLIs you already have (Claude Code, Codex, Cursor and more) in one
+Godspeed Code (Godspeed for short) runs the coding-agent CLIs you already have (Claude Code, Codex, Cursor and more) in one
 GPU-rendered desktop app. It drives each agent over its own protocol, keeps every chat in a local
 store, and can keep agents running on a schedule or trigger. It never resells model access: you sign
 in to each agent with its own CLI.

@@ -17,10 +17,12 @@ The repo went public on 2026-10-19 as ShriD5/godspeed-code.
 
 ## Owner decisions (blockers)
 
-1. **Name.** "Godspeed – To Do List" (Otto Labs, LLC, godspeedapp.com) is an existing Mac/iOS
+1. **Name.** DECIDED 2026-10-19: public name **Godspeed Code** (repo `godspeed-code`); the app label stays "Godspeed"; use "Godspeed Code" as the App Store name.
+   Background: "Godspeed – To Do List" (Otto Labs, LLC, godspeedapp.com) is an existing Mac/iOS
    productivity app. The App Store will not accept the same name for the iPhone app, and it is a
    trademark risk in the same category. Options: a variant ("Godspeed Code"), or rename before launch.
-2. **Apple signing identity.** Releases are signed as Devakumar N M (team QPUV967B5U). Agree on
+2. **Apple signing identity.** DECIDED 2026-10-19: stays under Devakumar N M's team.
+   Background: Releases are signed as Devakumar N M (team QPUV967B5U). Agree on
    public use, or move signing to the owner's own developer account.
 3. **Cloud sync on the owner's infrastructure.** Public users who choose Enable sync sign in through
    the WorkOS staging environment and use the owner's Cloudflare account. Before launch: WorkOS
