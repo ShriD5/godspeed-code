@@ -21,9 +21,11 @@ pub mod invocation;
 pub mod message_search;
 pub mod motion;
 pub mod preview;
+pub mod pricing;
 pub mod projectless;
 pub mod sidebar_pins;
 pub mod telegram;
+pub mod usage_history;
 pub mod view;
 pub mod voice;
 pub mod workspace;
@@ -38,6 +40,7 @@ pub use git_actions::*;
 pub use message_search::*;
 pub use preview::*;
 pub use sidebar_pins::*;
+pub use usage_history::*;
 pub use workspace::*;
 pub use worktree_env::{
     WakeWorktreeOutcome, WorktreeCopyRule, WorktreeEnvironment, WorktreeEnvironmentSnapshot,

@@ -11,6 +11,7 @@
 pub mod display;
 mod markdown;
 mod file_icons;
+mod receipt;
 mod rows;
 pub(crate) mod style;
 mod tools;
@@ -673,6 +674,7 @@ impl Worker {
             .is_some_and(|r| match &r.core.content {
                 rows::Content::Tools(t) => t.expanded,
                 rows::Content::User(u) => u.expanded,
+                rows::Content::Receipt(r) => r.expanded,
                 _ => false,
             })
     }

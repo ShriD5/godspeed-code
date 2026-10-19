@@ -82,16 +82,24 @@ Godspeed/
                canvas
   Composer/    ComposerBar (glass capsule ⇄ card with inline context chips;
                send/queue/steer/stop), question and queue panels, attachments
-  Threads/     Sessions (foldable sidebar sections)/folder/search lists,
-               cells, new-project folder browser
-  Shell/       Tab bar (Sessions, Settings, search; "New session" accessory
-               with live summary), sign-in
+  Threads/     Sessions (foldable sidebar sections, Snoozed / Settled
+               shelves)/folder/search lists, cells, new-project folder browser
+  Inbox/       Needs You: every host's attention queue in risk order, swipe
+               to approve / decline, "Approve all low-risk", tab + icon badge
+  Board/       Mission Control: every agent by device and project
+  Usage/       Settings → Usage (plan windows, history, cost at API prices)
+               and the feed that writes the widgets' App Group snapshot
+  Shell/       Tab bar (Sessions, Needs You, Board, Settings, search; "New
+               session" accessory with live summary), sign-in
   Debug/       Transcript lab + hitch meter
 GodspeedLiveActivity/  Widget extension: the voice call's Live Activity (Dynamic
                Island + Lock Screen), with the orb's states exported from
-               zeron-orb as vector assets
+               zeron-orb as vector assets, and the usage widgets (small,
+               medium, Lock Screen circular / rectangular / inline)
 GodspeedShared/  Compiled into the app and the extension: the activity's
-               attributes and its mute/end App Intents
+               attributes and its mute/end App Intents; usage formatting, the
+               widget snapshot (App Group `group.site.shrithan.godspeed.ios`)
+               and its timeline
 ```
 
 ### Transcript pipeline
@@ -123,7 +131,7 @@ GodspeedShared/  Compiled into the app and the extension: the activity's
 | `-demo` | Offline demo workspace (Rust `DemoHost`: registry, docs, streaming replies) |
 | `-fast` / `-longreply` | Demo stream speed / reply length |
 | `-big` / `-huge` | Demo transcripts with 120 / 600 turns |
-| `-route chat:<id>` / `new` / `more` / `search` | Open a screen at launch |
+| `-route chat:<id>` / `new` / `more` / `search` / `inbox` / `board` / `usage` | Open a screen at launch (also `godspeed://inbox`, `godspeed://board`, `godspeed://usage`) |
 | `-signedout` | Clear stored credentials |
 | `-dev <userId> <orgId> [-edge <url>]` | Dev bearer against an `AUTH_MODE=dev` edge (e.g. `wrangler dev`); not persisted |
 | `-harness <id>` | Default harness for new sessions (`mock` for live-stack tests) |
@@ -156,6 +164,29 @@ TEST_RUNNER_GODSPEED_LIVE_EDGE=http://localhost:27650 xcodebuild … -only-testi
 The test launches the app with `-harness mock`: a chat's configured harness
 wins over the engine's `GODSPEED_HARNESS` default, so without it a real agent
 would run.
+
+## Needs You, Mission Control, Usage
+
+The phone reaches each Mac's engine over the device-room relay (the same
+path as `ListHarnesses`): the core keeps one `WatchAttention` stream per
+execution host while foregrounded (`crates/client/src/attention.rs`), merges
+them in the desktop's order, and answers with `RespondAttention` /
+`ApproveLowRisk` / `DismissAttention` on the item's host. A host whose engine
+predates the inbox (before 0.4) or whose stream is down contributes items
+derived from its registry rows instead (open-only). Mission Control is built
+from the synced registry rows plus the inbox. Usage reads `ListAgentAccounts`
+(plan windows) and `GetUsageHistory` (0.5.1+) from the chosen host; the
+widgets read the snapshot the app writes to the App Group. Thread lifecycle
+(settle / snooze / wake) writes the chat's registry row; Limited choices go to
+the chat's host with `SetChatLimitRecovery`. Turn receipts are built in the
+layout engine from the doc's `turnStats` stamps
+(`crates/mobile/src/layout/receipt.rs`, a port of the desktop's).
+
+Push for the inbox is not wired yet. It needs the APNs key on the edge (see
+below), an `approval` kind in `edge/src/push-notify.ts` that carries
+`deviceId` + `itemId`, and a notification category with Approve / Decline
+actions that call `respondAttention`; a tap routes through
+`AppRouter.showInbox()` (`godspeed://inbox`).
 
 ## Session notifications
 

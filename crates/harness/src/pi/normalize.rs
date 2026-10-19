@@ -204,9 +204,11 @@ fn tool(name: &str, args: &Value) -> ToolCall {
         "find" => ToolCall::Glob {
             pattern: string(args, "pattern").into(),
         },
-        name if name.starts_with("zeron_") => ToolCall::Mcp {
+        // The engine names the Pi MCP server "godspeed", so mcp.mjs registers
+        // its tools as `godspeed_<tool>`.
+        name if name.starts_with("godspeed_") => ToolCall::Mcp {
             server: "godspeed".into(),
-            tool: name[6..].into(),
+            tool: name["godspeed_".len()..].into(),
             input: Some(args.clone()),
         },
         _ => ToolCall::Unknown {
@@ -219,6 +221,16 @@ fn tool(name: &str, args: &Value) -> ToolCall {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn godspeed_delegation_tools_map_to_mcp_calls() {
+        match tool("godspeed_create_chat", &json!({"prompt":"hi"})) {
+            ToolCall::Mcp { server, tool, .. } => {
+                assert_eq!(server, "godspeed");
+                assert_eq!(tool, "create_chat");
+            }
+            other => panic!("expected an MCP call, got {other:?}"),
+        }
+    }
     #[test]
     fn final_message_reconciles_without_duplicate_text_and_retry_clears_error() {
         let mut n = Normalizer::default();

@@ -101,10 +101,10 @@ async fn native_launch_matches_tokio_argv_environment_cwd_and_path() {
             .args(arguments)
             .current_dir(dir.path())
             .env("PATH", dir.path())
-            .env("zeron_launch_marker", "old")
+            .env("godspeed_launch_marker", "old")
             .env("GODSPEED_LAUNCH_MARKER", "new 日本語")
             .env("GODSPEED_LAUNCH_REMOVED", "old")
-            .env_remove("zeron_launch_removed")
+            .env_remove("godspeed_launch_removed")
             .env("GODSPEED_ä_KEY", "unicode value")
             .stdin(Stdio::null());
         baseline
@@ -112,10 +112,10 @@ async fn native_launch_matches_tokio_argv_environment_cwd_and_path() {
             .args(arguments)
             .current_dir(dir.path())
             .env("PATH", dir.path())
-            .env("zeron_launch_marker", "old")
+            .env("godspeed_launch_marker", "old")
             .env("GODSPEED_LAUNCH_MARKER", "new 日本語")
             .env("GODSPEED_LAUNCH_REMOVED", "old")
-            .env_remove("zeron_launch_removed")
+            .env_remove("godspeed_launch_removed")
             .env("GODSPEED_ä_KEY", "unicode value")
             .stdin(std::process::Stdio::null())
             .creation_flags(0x08000000)
@@ -215,6 +215,7 @@ fn request(cwd: &Path, prompt: &str, resume: Option<&str>) -> RunRequest {
         attachments: Vec::new(),
         worktree: None,
         resume: resume.map(str::to_owned),
+        access: None,
         env: Default::default(),
     }
 }

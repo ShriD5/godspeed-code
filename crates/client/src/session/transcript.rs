@@ -271,6 +271,11 @@ impl Tracker {
                                 if part.duration_ms.is_some() {
                                     message.duration_ms = part.duration_ms;
                                 }
+                                // The turn's receipt stamp may land on a
+                                // continuation (as the doc's own join keeps it).
+                                if part.turn_stats.is_some() {
+                                    message.turn_stats = part.turn_stats.clone();
+                                }
                             }
                         }
                         Arc::new(message)

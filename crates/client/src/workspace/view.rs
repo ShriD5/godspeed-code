@@ -15,10 +15,13 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use zeron_doc::WorkspaceState;
-use zeron_proto::view::{attention_rank, display_status, project_key, representative_space};
+use zeron_proto::view::{
+    attention_rank, background_work, display_status, project_key, representative_space,
+    running_subagents,
+};
 use zeron_proto::{
     ChangeRequestState, ChangeRequestSummary, Chat, ChatIndicator, CheckoutChangeRequestStatus,
-    Device, Session, SidebarPreferences, Space,
+    Device, LifecycleState, LimitRecovery, Session, SidebarPreferences, Space,
 };
 
 use crate::catalog;
@@ -47,6 +50,69 @@ pub fn relative_time_label(at_ms: i64, now_ms: i64) -> String {
         60..3_600 => format!("{}m", secs / 60),
         3_600..86_400 => format!("{}h", secs / 3_600),
         _ => format!("{}d", secs / 86_400),
+    }
+}
+
+/// Where a chat sits in the user's attention (`Chat::lifecycle` as of derive
+/// time: a snooze that ran out reads Active).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Lifecycle {
+    #[default]
+    Active,
+    /// Done for now: on the Settled shelf until new activity or a wake.
+    Settled,
+    /// On the Snoozed shelf until `until_ms` (or new activity).
+    Snoozed { until_ms: i64 },
+}
+
+impl Lifecycle {
+    fn from_chat(chat: &Chat, now: DateTime<Utc>) -> Self {
+        match chat.lifecycle.at(now) {
+            LifecycleState::Active => Self::Active,
+            LifecycleState::Settled => Self::Settled,
+            LifecycleState::Snoozed { until } => Self::Snoozed {
+                until_ms: until.timestamp_millis(),
+            },
+        }
+    }
+}
+
+/// What a Limited chat does when its window resets (`zeron_proto::LimitRecovery`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum LimitRecoveryMode {
+    /// Nothing scheduled: the banner asks.
+    #[default]
+    Ask,
+    /// The host continues the same session once the reset passes.
+    ResumeAtReset,
+    /// Out of the way until the reset.
+    Snoozed,
+}
+
+/// A chat stopped on a usage limit (`Chat::limit`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LimitInfo {
+    pub limited_at_ms: i64,
+    /// When the window reopens; `None` when nothing said.
+    pub reset_at_ms: Option<i64>,
+    /// The window that ran out ("5-hour"), when the provider named it.
+    pub window: Option<String>,
+    pub recovery: LimitRecoveryMode,
+}
+
+impl LimitInfo {
+    fn from_chat(chat: &Chat) -> Option<Self> {
+        let limit = chat.limit.as_ref()?;
+        Some(Self {
+            limited_at_ms: limit.limited_at.timestamp_millis(),
+            reset_at_ms: limit.reset_at.map(|t| t.timestamp_millis()),
+            window: limit.window.clone().filter(|w| !w.trim().is_empty()),
+            recovery: match limit.recovery {
+                LimitRecovery::Ask => LimitRecoveryMode::Ask,
+                LimitRecovery::ResumeAtReset => LimitRecoveryMode::ResumeAtReset,
+                LimitRecovery::Snoozed => LimitRecoveryMode::Snoozed,
+            },
+        })
     }
 }
 
@@ -101,6 +167,15 @@ pub struct SessionRow {
     pub parent_chat_id: Option<String>,
     /// Sync room generation (2 = chat2; 1 = legacy, not dialable).
     pub room_gen: u32,
+    /// Subagents streaming under this chat right now (staleness-gated).
+    pub running_subagents: u32,
+    /// Background work the chat is still waiting on — its subagents or the
+    /// driver's background tasks, whichever is larger ("Waiting on N tasks").
+    pub background_work: u32,
+    /// Set while the last turn is stopped on a usage limit.
+    pub limit: Option<LimitInfo>,
+    /// Active, Settled or Snoozed (Settled/Snoozed rows sit on the shelves).
+    pub lifecycle: Lifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +277,10 @@ pub struct WorkspaceSnapshot {
     pub projectless: Vec<Arc<SessionRow>>,
     pub pull_requests: PullRequestGroups,
     pub archived: Vec<Arc<SessionRow>>,
+    /// Snoozed top-level chats, soonest wake first (the desktop's shelf).
+    pub snoozed: Vec<Arc<SessionRow>>,
+    /// Settled top-level chats, by recency.
+    pub settled: Vec<Arc<SessionRow>>,
     pub devices: Vec<DeviceView>,
     /// Every chat row (archived and children included), by id.
     pub sessions: HashMap<String, Arc<SessionRow>>,
@@ -413,6 +492,10 @@ fn hash_row(row: &SessionRow) -> u64 {
     row.send_state.hash(&mut h);
     row.parent_chat_id.hash(&mut h);
     row.room_gen.hash(&mut h);
+    row.running_subagents.hash(&mut h);
+    row.background_work.hash(&mut h);
+    row.limit.hash(&mut h);
+    row.lifecycle.hash(&mut h);
     h.finish()
 }
 
@@ -432,9 +515,11 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
     let host_indicator = display_status(chat, session, cx.now);
     let indicator = host_indicator;
     let working_since_ms = match indicator {
-        ChatIndicator::Working | ChatIndicator::AwaitingInput => session
-            .and_then(|s| s.started_at)
-            .map(|t| t.timestamp_millis()),
+        ChatIndicator::Working | ChatIndicator::AwaitingInput | ChatIndicator::AwaitingApproval => {
+            session
+                .and_then(|s| s.started_at)
+                .map(|t| t.timestamp_millis())
+        }
         _ => None,
     };
     let project = chat
@@ -508,6 +593,10 @@ fn build_row(chat: &Chat, rc: &RowContext<'_>, cx: &DeriveContext<'_>) -> Arc<Se
         send_state,
         parent_chat_id: chat.parent_chat_id.clone(),
         room_gen: chat.room_gen.unwrap_or(1),
+        running_subagents: running_subagents(session, cx.now),
+        background_work: background_work(session, cx.now),
+        limit: LimitInfo::from_chat(chat),
+        lifecycle: Lifecycle::from_chat(chat, cx.now),
     };
     row.revision = hash_row(&row);
     // Unchanged rows keep their Arc across snapshots (pointer-equal diffing).
@@ -554,8 +643,10 @@ pub(crate) fn derive(
         .map(|chat| (chat.id.clone(), build_row(chat, &rc, cx)))
         .collect();
 
-    // Active = not archived, top-level, project alive (or projectless).
-    let mut active: Vec<&Chat> = state
+    // Visible = not archived, top-level, project alive (or projectless).
+    // Active = visible and neither settled nor snoozed (those sit on the
+    // shelves, as on the desktop sidebar).
+    let mut visible: Vec<&Chat> = state
         .chats
         .iter()
         .filter(|c| !c.archived && c.is_top_level())
@@ -565,7 +656,11 @@ pub(crate) fn derive(
                 .is_none_or(|id| rc.spaces.contains_key(id))
         })
         .collect();
-    sort_recency(&mut active);
+    sort_recency(&mut visible);
+    // `partition` keeps the recency order on both sides.
+    let (active, shelved): (Vec<&Chat>, Vec<&Chat>) = visible
+        .into_iter()
+        .partition(|c| rows[&c.id].lifecycle == Lifecycle::Active);
     let row = |chat: &Chat| rows[&chat.id].clone();
 
     // Front page.
@@ -673,6 +768,22 @@ pub(crate) fn derive(
     sort_recency(&mut archived_chats);
     let archived: Vec<Arc<SessionRow>> = archived_chats.iter().map(|c| row(c)).collect();
 
+    let settled: Vec<Arc<SessionRow>> = shelved
+        .iter()
+        .map(|c| row(c))
+        .filter(|r| r.lifecycle == Lifecycle::Settled)
+        .collect();
+    let mut snoozed: Vec<Arc<SessionRow>> = shelved
+        .iter()
+        .map(|c| row(c))
+        .filter(|r| matches!(r.lifecycle, Lifecycle::Snoozed { .. }))
+        .collect();
+    let wake_at = |r: &Arc<SessionRow>| match r.lifecycle {
+        Lifecycle::Snoozed { until_ms } => until_ms,
+        _ => i64::MAX,
+    };
+    snoozed.sort_by(|a, b| wake_at(a).cmp(&wake_at(b)).then_with(|| a.id.cmp(&b.id)));
+
     let mut children: HashMap<String, Vec<Arc<SessionRow>>> = HashMap::new();
     let mut child_chats: Vec<&Chat> = state
         .chats
@@ -727,6 +838,8 @@ pub(crate) fn derive(
         projectless,
         pull_requests,
         archived,
+        snoozed,
+        settled,
         devices,
         sessions: rows,
         children,
@@ -768,6 +881,8 @@ fn snapshot_hash(s: &WorkspaceSnapshot) -> u64 {
     }
     ids(&mut h, &s.projectless);
     ids(&mut h, &s.archived);
+    ids(&mut h, &s.snoozed);
+    ids(&mut h, &s.settled);
     for device in &s.devices {
         device.hash(&mut h);
     }

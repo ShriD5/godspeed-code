@@ -7,6 +7,12 @@ protocol AppRouter: AnyObject {
     func presentNewSession(prompt: String?)
     func showSettings()
     func showSearch()
+    /// The "Needs you" inbox (also where a future push lands).
+    func showInbox()
+    /// Mission Control.
+    func showBoard()
+    /// Settings → Usage (the usage widgets open it).
+    func showUsage()
 }
 
 /// iPad shell: Godspeed mobile with a sidebar. The sidebar is the phone's
@@ -138,6 +144,31 @@ final class SplitRootController: UISplitViewController, UISplitViewControllerDel
         sidebar.focusSearch()
     }
 
+    func showInbox() {
+        guard !isCollapsed else { return tabs.showInbox() }
+        if presentedViewController != nil { dismiss(animated: true) }
+        if displayMode == .secondaryOnly { show(.primary) }
+        sidebar.push(InboxViewController(app: app))
+    }
+
+    func showBoard() {
+        guard !isCollapsed else { return tabs.showBoard() }
+        if presentedViewController != nil { dismiss(animated: true) }
+        if displayMode == .secondaryOnly { show(.primary) }
+        sidebar.push(BoardViewController(app: app))
+    }
+
+    func showUsage() {
+        guard !isCollapsed else { return tabs.showUsage() }
+        let nav = MainTabController.nav(MoreViewController(app: app))
+        nav.pushViewController(UsageViewController(app: app), animated: false)
+        nav.modalPresentationStyle = .formSheet
+        nav.viewControllers.first?.navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak nav] _ in
+            nav?.dismiss(animated: true)
+        })
+        present(nav, animated: true)
+    }
+
     /// A session came on screen in either shell (sidebar, tabs, search):
     /// it's the one to keep across a width change.
     func sessionDidAppear(_ chatId: String) {
@@ -243,6 +274,16 @@ final class SidebarViewController: UIViewController, UISearchResultsUpdating {
         settings.accessibilityIdentifier = "sidebar-settings"
         let options = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: list.optionsMenu())
         options.accessibilityLabel = "Options"
+        let inbox = UIBarButtonItem(image: UIImage(systemName: "tray.full"), primaryAction: UIAction { [weak self] _ in
+            self?.router?.showInbox()
+        })
+        inbox.accessibilityLabel = "Needs You"
+        inbox.accessibilityIdentifier = "sidebar-inbox"
+        let board = UIBarButtonItem(image: UIImage(systemName: "square.grid.2x2"), primaryAction: UIAction { [weak self] _ in
+            self?.router?.showBoard()
+        })
+        board.accessibilityLabel = "Mission Control"
+        board.accessibilityIdentifier = "sidebar-board"
         let compose = UIBarButtonItem(image: UIImage(systemName: "plus"), primaryAction: UIAction { [weak self] _ in
             self?.router?.presentNewSession(prompt: nil)
         })
@@ -251,14 +292,15 @@ final class SidebarViewController: UIViewController, UISearchResultsUpdating {
         compose.accessibilityLabel = "New session"
         compose.accessibilityIdentifier = "new-session"
         list.navigationItem.rightBarButtonItem = nil
-        list.toolbarItems = [settings, options, .flexibleSpace(), compose]
+        list.toolbarItems = [settings, options, inbox, board, .flexibleSpace(), compose]
         nav.isToolbarHidden = false
         // Voice beside compose, once a host can run it.
         let voiceBar = VoiceBarItem(app: app, host: self)
         self.voiceBar = voiceBar
         let syncVoice = { [weak self, weak voiceBar] in
             guard let self, let voiceBar else { return }
-            let items = voiceBar.visible ? [settings, options, .flexibleSpace(), voiceBar.item, compose] : [settings, options, .flexibleSpace(), compose]
+            inbox.badge = InboxModel.badgeText(self.app.inbox.badgeCount).map { .string($0) }
+            let items = voiceBar.visible ? [settings, options, inbox, board, .flexibleSpace(), voiceBar.item, compose] : [settings, options, inbox, board, .flexibleSpace(), compose]
             if self.list.toolbarItems?.count != items.count {
                 self.list.setToolbarItems(items, animated: self.view.window != nil)
             }
@@ -287,6 +329,13 @@ final class SidebarViewController: UIViewController, UISearchResultsUpdating {
     func focusSearch() {
         nav.popToRootViewController(animated: false)
         search.searchBar.becomeFirstResponder()
+    }
+
+    /// Inbox / Mission Control open in the sidebar's own stack.
+    func push(_ controller: UIViewController) {
+        search.isActive = false
+        nav.popToRootViewController(animated: false)
+        nav.pushViewController(controller, animated: true)
     }
 
     func showSessions() {

@@ -23,9 +23,9 @@ if (process.argv[2] === 'server') {
     try {
       await handlers.session_start();
       for (const name of ['create_chat','create_chats','read_chat','send_message','wait_for_turn']) {
-        assert.equal((await tools[`zeron_${name}`].execute('delegation',{})).content[0].text, chat);
+        assert.equal((await tools[`godspeed_${name}`].execute('delegation',{})).content[0].text, chat);
       }
-      const tool = tools.zeron_whoami;
+      const tool = tools.godspeed_whoami;
       assert.equal(tool.parameters.type,'object');
       const result = await tool.execute('call',{});
       assert.equal(result.content[0].text,chat);
@@ -38,8 +38,8 @@ if (process.argv[2] === 'server') {
       assert.equal(handlers.message_end, undefined, "native RPC reports provider failures directly");
       // Restarting the session must not let an old child's exit fail new RPCs.
       await handlers.session_start();
-      assert.equal((await tools.zeron_whoami.execute('call',{})).content[0].text,chat);
+      assert.equal((await tools.godspeed_whoami.execute('call',{})).content[0].text,chat);
     } finally { handlers.session_shutdown(); }
-    await assert.rejects(tools.zeron_whoami.execute('call',{}),/not connected/);
+    await assert.rejects(tools.godspeed_whoami.execute('call',{}),/not connected/);
   }
 }

@@ -7,7 +7,11 @@ struct SessionRowVM: Hashable {
         case completed
         case working
         case awaiting
+        /// Waiting on a permission approval.
+        case approval
         case errored
+        /// Stopped on a usage limit until its window resets.
+        case limited
     }
 
     enum PR: Hashable {
@@ -29,6 +33,14 @@ struct SessionRowVM: Hashable {
     var unseen: Bool
     var pinned: Bool
     var sendFailed: Bool
+    /// Limited: when the window reopens, and what happens then.
+    var limitResetMs: Int64? = nil
+    var limitRecovery: LimitRecoveryMode? = nil
+    var lifecycle: Lifecycle = .active
+    var subagents: UInt32 = 0
+
+    /// Waiting on the user in any way (approval or answer).
+    var needsInput: Bool { status == .awaiting || status == .approval }
 }
 
 /// Folder row ("Pinned 2 ›", "P0 3 ›").
@@ -97,10 +109,20 @@ final class SessionCell: UICollectionViewListCell {
         switch vm.status {
         case .working: return ("Working", StatusTone.working, .spinner)
         case .awaiting: return ("Input", StatusTone.input, .dot(StatusTone.input))
+        case .approval: return ("Approve", StatusTone.input, .dot(StatusTone.input))
         case .errored: return ("Failed", StatusTone.failed, .dot(StatusTone.failed))
+        case .limited: return (limitedWord(vm), StatusTone.limited, .dot(StatusTone.limited))
         case .completed: return vm.unseen ? ("Done", StatusTone.done, .check(StatusTone.done)) : nil
         case .idle: return nil
         }
+    }
+
+    /// "Limited", or when it comes back: "Resumes 3:40 PM" (scheduled
+    /// resume) / "Back 3:40 PM".
+    static func limitedWord(_ vm: SessionRowVM, now: Date = Date()) -> String {
+        guard let reset = vm.limitResetMs, Double(reset) / 1000 > now.timeIntervalSince1970 else { return "Limited" }
+        let at = UsageFormat.moment(ms: reset, now: now)
+        return vm.limitRecovery == .resumeAtReset ? "Resumes \(at)" : "Limited · \(at)"
     }
 
     func configure(_ vm: SessionRowVM) {

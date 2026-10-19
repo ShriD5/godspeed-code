@@ -110,8 +110,8 @@ not captured). The machine was not fully idle during the run. Method, raw data a
 
 ## Where Zeron is ahead
 
-- **Hosted sync and the iPhone app.** Zeron runs a cloud with sign-in out of the box. Godspeed's
-  sync and iOS app need your own Cloudflare deployment and are still being set up.
+- **The iPhone app.** Zeron ships one. Godspeed's (sync, transcripts, approvals, voice) works but
+  is not on TestFlight yet; build it from source. Sync itself is opt-in on both.
 - **Platforms.** Zeron publishes Windows and Linux builds. Godspeed only ships a macOS (Apple
   silicon) build so far; the code still builds elsewhere but is untested there.
 - **Release cadence and community.** Zeron ships almost daily with a larger contributor base.

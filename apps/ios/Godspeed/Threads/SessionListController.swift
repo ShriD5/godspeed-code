@@ -142,7 +142,7 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
                         title: header,
                         count: s.sessions.count,
                         collapsed: collapsed.contains(s.id),
-                        live: s.sessions.contains { $0.status == .working } ? .spinner : s.sessions.contains { $0.status == .awaiting } ? .dot(StatusTone.input) : nil
+                        live: s.sessions.contains { $0.status == .working } ? .spinner : s.sessions.contains { $0.needsInput } ? .dot(StatusTone.input) : nil
                     )
                     if let old = headerStates[s.id], old != state { changed.append(.header(s.id)) }
                     headerStates[s.id] = state
@@ -199,6 +199,17 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
         return true
     }
 
+    /// Sections that start folded until the user opens them once (the
+    /// shelves).
+    func collapseByDefault(_ ids: [String]) {
+        let seen = Set(UserDefaults.standard.stringArray(forKey: "foldDefaultsApplied") ?? [])
+        let fresh = ids.filter { !seen.contains($0) }
+        guard !fresh.isEmpty else { return }
+        collapsed.formUnion(fresh)
+        UserDefaults.standard.set(Array(collapsed), forKey: "collapsedSections")
+        UserDefaults.standard.set(Array(seen.union(fresh)), forKey: "foldDefaultsApplied")
+    }
+
     func toggleSection(_ id: String) {
         if collapsed.remove(id) == nil { collapsed.insert(id) }
         UserDefaults.standard.set(Array(collapsed), forKey: "collapsedSections")
@@ -240,13 +251,29 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
 
     private func leadingSwipe(_ path: IndexPath) -> UISwipeActionsConfiguration? {
         guard !archivedRows, let id = sessionId(path), let vm = sessions[id] else { return nil }
+        if vm.lifecycle != .active {
+            let wake = UIContextualAction(style: .normal, title: "Wake") { [weak self] _, _, done in
+                self?.app.wake(id)
+                done(true)
+            }
+            wake.image = UIImage(systemName: "sunrise.fill")
+            wake.backgroundColor = Palette.accent
+            return UISwipeActionsConfiguration(actions: [wake])
+        }
         let pin = UIContextualAction(style: .normal, title: vm.pinned ? "Unpin" : "Pin") { [weak self] _, _, done in
             self?.app.setPinned(id, !vm.pinned)
             done(true)
         }
         pin.image = UIImage(systemName: vm.pinned ? "pin.slash.fill" : "pin.fill")
         pin.backgroundColor = Palette.accent
-        return UISwipeActionsConfiguration(actions: [pin])
+        // Done for now: onto the Settled shelf (desktop thread lifecycle).
+        let settle = UIContextualAction(style: .normal, title: "Settle") { [weak self] _, _, done in
+            self?.app.settle(id)
+            done(true)
+        }
+        settle.image = UIImage(systemName: "checkmark.circle.fill")
+        settle.backgroundColor = Palette.success
+        return UISwipeActionsConfiguration(actions: [pin, settle])
     }
 
     private func trailingSwipe(_ path: IndexPath) -> UISwipeActionsConfiguration? {
@@ -290,6 +317,7 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
             }
             return UIMenu(children: [
                 UIAction(title: vm.pinned ? "Unpin" : "Pin", image: UIImage(systemName: vm.pinned ? "pin.slash" : "pin")) { _ in self.app.setPinned(id, !vm.pinned) },
+                self.app.lifecycleMenu(for: id),
                 self.moveMenu(id),
                 UIAction(title: "Rename…", image: UIImage(systemName: "pencil")) { _ in self.rename(id) },
                 UIAction(title: "Archive", image: UIImage(systemName: "archivebox"), attributes: .destructive) { _ in self.app.archive(id) },
@@ -467,6 +495,7 @@ class SessionsViewController: SessionListController {
     override func viewDidLoad() {
         collapsible = true
         movesAcrossSections = true
+        collapseByDefault(["snoozed", "settled"])
         super.viewDidLoad()
         let backdrop = UIView()
         backdrop.addSubview(wallpaper)
@@ -488,9 +517,12 @@ class SessionsViewController: SessionListController {
             for g in app.frontPage.projectGroups {
                 out.append((g.id, g.name, [], g.sessions))
             }
-            return out
+        } else {
+            out.append(("recent", out.isEmpty ? nil : "Recent", [], app.frontPage.sessions))
         }
-        out.append(("recent", out.isEmpty ? nil : "Recent", [], app.frontPage.sessions))
+        // The desktop's shelves, folded until opened.
+        if !app.snoozed.isEmpty { out.append(("snoozed", "Snoozed", [], app.snoozed)) }
+        if !app.settled.isEmpty { out.append(("settled", "Settled", [], app.settled)) }
         return out
     }
 
@@ -516,7 +548,7 @@ class SessionsViewController: SessionListController {
     }
 
     override func headerMenu(_ id: String) -> UIMenu? {
-        if id == "recent" { return nil }
+        if id == "recent" || id == "snoozed" || id == "settled" { return nil }
         guard let folder = app.frontPage.folders.first(where: { $0.id == id }) else { return nil }
         let open = UIAction(title: "Open", image: UIImage(systemName: "arrow.up.right")) { [weak self] _ in self?.openFolder(id) }
         if id == "pinned" {

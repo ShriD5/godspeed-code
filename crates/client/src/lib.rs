@@ -25,6 +25,7 @@
 //! against an in-process simulated host, so it exercises the real pipeline.
 
 pub mod attachments;
+pub mod attention;
 pub mod auth;
 pub mod catalog;
 mod client;
@@ -39,6 +40,7 @@ pub mod runtime;
 pub mod session;
 pub mod workspace;
 
+pub use attention::{AttentionEntry, AttentionView, BatchResult};
 pub use client::{Client, NewSession, PRELOAD_CAP, PushPrefs, SessionTarget, WARM_SESSION_CAP};
 pub use config::{
     AuthTokens, ClientConfig, Credentials, DemoFixture, DemoOptions, StreamSpeed, TranscriptScale,
@@ -53,8 +55,9 @@ pub use session::{
     SendRequest, SessionHandle, SessionSnapshot, SnapshotDelta, SnapshotWatch,
 };
 pub use workspace::{
-    DeviceView, FrontPage, ProjectRef, ProjectView, PullRequestGroups, SearchField, SearchHit,
-    SectionView, SessionRow, WorkspaceSnapshot, project_color_index, relative_time_label,
+    DeviceView, FrontPage, Lifecycle, LimitInfo, LimitRecoveryMode, ProjectRef, ProjectView,
+    PullRequestGroups, SearchField, SearchHit, SectionView, SessionRow, WorkspaceSnapshot,
+    project_color_index, relative_time_label,
 };
 
 /// Re-exported so consumers (the layout engine) name the exact doc types the

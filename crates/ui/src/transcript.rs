@@ -2299,7 +2299,7 @@ fn format_kb(bytes: u64) -> String {
 
 /// Rotating flavour vocabulary (21 words / 7s, seeded per chat).
 pub const FLAVOUR_WORDS: [&str; 21] = [
-    "Zeroning",
+    "Speeding",
     "Thinking",
     "Pondering",
     "Scheming",
@@ -14195,6 +14195,7 @@ mod tests {
                             status: zeron_proto::SessionStatus::Working,
                             started_at: Some(chrono::Utc::now()),
                             updated_at: chrono::Utc::now(),
+                            awaiting_approval: false,
                         })
                     });
                     this.on_own_send("chat".into(), "prompt".into(), cx);

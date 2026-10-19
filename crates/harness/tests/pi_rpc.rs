@@ -25,6 +25,7 @@ fn request(cwd: &std::path::Path, prompt: &str) -> RunRequest {
         attachments: vec![],
         worktree: None,
         mcp: None,
+        access: None,
         env: Default::default(),
     }
 }

@@ -1398,6 +1398,8 @@ pub enum ShortcutId {
     NewProject,
     OpenModelPicker,
     CycleAccessMode,
+    IncreaseEffort,
+    DecreaseEffort,
     NextSession,
     PrevSession,
     ArchiveSession,
@@ -1411,7 +1413,7 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 22 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 24 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
@@ -1425,6 +1427,8 @@ impl ShortcutId {
         ShortcutId::NewProject,
         ShortcutId::OpenModelPicker,
         ShortcutId::CycleAccessMode,
+        ShortcutId::IncreaseEffort,
+        ShortcutId::DecreaseEffort,
         ShortcutId::NextSession,
         ShortcutId::PrevSession,
         ShortcutId::ArchiveSession,
@@ -1465,6 +1469,8 @@ impl ShortcutId {
             ShortcutId::NewProject => "New project",
             ShortcutId::OpenModelPicker => "Open model picker",
             ShortcutId::CycleAccessMode => "Cycle access mode",
+            ShortcutId::IncreaseEffort => "Increase effort",
+            ShortcutId::DecreaseEffort => "Decrease effort",
             ShortcutId::NextSession => "Next session or right pane tab",
             ShortcutId::PrevSession => "Previous session or right pane tab",
             ShortcutId::ArchiveSession => "Archive session",
@@ -1503,6 +1509,9 @@ impl ShortcutId {
             // M for mode. Shift+Tab (Claude Code's own cycle key) moves
             // focus backwards in Godspeed's menus and forms.
             ShortcutId::CycleAccessMode => "mod-shift-m",
+            // The > and < keys.
+            ShortcutId::IncreaseEffort => "mod-shift-.",
+            ShortcutId::DecreaseEffort => "mod-shift-,",
             // Ctrl+Tab on every platform — but spelled the way THAT platform's
             // recorder spells ctrl (see `combo_from_keystroke`). Off macOS
             // ctrl IS the primary and stores as "mod"; on macOS it is its own
@@ -1559,6 +1568,8 @@ pub struct KeymapConfig {
     pub new_project: String,
     pub open_model_picker: String,
     pub cycle_access_mode: String,
+    pub increase_effort: String,
+    pub decrease_effort: String,
     pub next_session: String,
     pub prev_session: String,
     pub archive_session: String,
@@ -1632,6 +1643,8 @@ impl Default for KeymapConfig {
             new_project: ShortcutId::NewProject.default_combo().into(),
             open_model_picker: ShortcutId::OpenModelPicker.default_combo().into(),
             cycle_access_mode: ShortcutId::CycleAccessMode.default_combo().into(),
+            increase_effort: ShortcutId::IncreaseEffort.default_combo().into(),
+            decrease_effort: ShortcutId::DecreaseEffort.default_combo().into(),
             next_session: ShortcutId::NextSession.default_combo().into(),
             prev_session: ShortcutId::PrevSession.default_combo().into(),
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
@@ -1662,6 +1675,8 @@ impl KeymapConfig {
             ShortcutId::NewProject => &self.new_project,
             ShortcutId::OpenModelPicker => &self.open_model_picker,
             ShortcutId::CycleAccessMode => &self.cycle_access_mode,
+            ShortcutId::IncreaseEffort => &self.increase_effort,
+            ShortcutId::DecreaseEffort => &self.decrease_effort,
             ShortcutId::NextSession => &self.next_session,
             ShortcutId::PrevSession => &self.prev_session,
             ShortcutId::ArchiveSession => &self.archive_session,
@@ -1694,6 +1709,8 @@ impl KeymapConfig {
             ShortcutId::NewProject => self.new_project = combo,
             ShortcutId::OpenModelPicker => self.open_model_picker = combo,
             ShortcutId::CycleAccessMode => self.cycle_access_mode = combo,
+            ShortcutId::IncreaseEffort => self.increase_effort = combo,
+            ShortcutId::DecreaseEffort => self.decrease_effort = combo,
             ShortcutId::NextSession => self.next_session = combo,
             ShortcutId::PrevSession => self.prev_session = combo,
             ShortcutId::ArchiveSession => self.archive_session = combo,

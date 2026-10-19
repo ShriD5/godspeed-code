@@ -8,9 +8,13 @@ use std::time::Duration;
 use chrono::{TimeZone, Utc};
 use tokio_util::sync::CancellationToken;
 use zeron_doc::RegistryDoc;
-use zeron_proto::{Chat, ChatConfig, SidebarPinChange, SidebarSectionChange};
+use zeron_proto::{
+    AgentAccountsSnapshot, Chat, ChatConfig, ChatLifecycle, LifecycleState, LimitRecoveryAction,
+    SidebarPinChange, SidebarSectionChange, UsageHistory, UsageHistoryRequest, UsageRange,
+};
 
 use crate::attachments::{self, AttachmentCache};
+use crate::attention::{AttentionView, BatchResult};
 use crate::auth::TokenProvider;
 use crate::catalog::{self, HarnessInfo, ModelInfo};
 use crate::config::{AuthTokens, ClientConfig, Credentials};
@@ -23,7 +27,7 @@ use crate::events::{ClientEvent, ClientListener, EventPump};
 use crate::live::LiveBackend;
 use crate::rpc::{FolderListing, ProgressFn, QUEUED_ATTACHMENTS_MIN, RepoRef, capability};
 use crate::session::{HostCapabilities, OutgoingAttachment, RoomState, SessionCore, SessionHandle};
-use crate::workspace::{SearchHit, WorkspaceSnapshot, WorkspaceStore};
+use crate::workspace::{Lifecycle, SearchHit, WorkspaceSnapshot, WorkspaceStore};
 use crate::{lock, now_ms, read, write};
 
 /// Attachment read cache budget.
@@ -79,6 +83,8 @@ pub(crate) struct ClientInner {
     foreground: AtomicBool,
     synced: AtomicBool,
     harness_catalogs: Mutex<HashMap<String, Vec<HarnessInfo>>>,
+    /// Every host's "Needs you" queue (`crate::attention`).
+    pub(crate) attention: Arc<crate::attention::AttentionStore>,
 }
 
 impl Drop for ClientInner {
@@ -121,6 +127,10 @@ impl ClientInner {
 
     pub(crate) fn network_online(&self) -> bool {
         self.path_online.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_foreground(&self) -> bool {
+        self.foreground.load(Ordering::Acquire)
     }
 
     /// Re-derive the workspace snapshot; on change, notify and refresh every
@@ -179,6 +189,7 @@ impl ClientInner {
         self.recompute_connectivity();
         self.recompute_workspace();
         self.reconcile_change_request_watches();
+        self.reconcile_attention_watches();
         // New rows may flip a chat's roomGen / host: attach rooms.
         for core in self.cores() {
             core.ensure_room(self);
@@ -593,6 +604,7 @@ impl Client {
             foreground: AtomicBool::new(true),
             synced: AtomicBool::new(false),
             harness_catalogs: Mutex::new(HashMap::new()),
+            attention: Arc::new(crate::attention::AttentionStore::default()),
             credentials: credentials.clone(),
             config,
         });
@@ -1218,6 +1230,140 @@ impl Client {
         }
     }
 
+    // ── needs-you inbox ───────────────────────────────────────────────────
+
+    /// The merged cross-device "Needs you" queue (`crate::attention`).
+    /// Cheap; pull it after `AttentionChanged` and `WorkspaceChanged`.
+    pub fn attention(&self) -> AttentionView {
+        self.inner
+            .attention
+            .view(&self.inner.workspace.snapshot(), now_ms())
+    }
+
+    /// Approve (or decline) one approval with the provider's plain option.
+    /// The row hides at once; an error brings it back.
+    pub async fn respond_attention(
+        &self,
+        device_id: &str,
+        item_id: &str,
+        approve: bool,
+    ) -> Result<()> {
+        crate::attention::respond(&self.inner, device_id, item_id, approve).await
+    }
+
+    /// Mark a finished / failed / timed-out item seen.
+    pub async fn dismiss_attention(&self, device_id: &str, item_id: &str) -> Result<()> {
+        crate::attention::dismiss(&self.inner, device_id, item_id).await
+    }
+
+    /// Approve every low-risk approval on every host (each host re-checks
+    /// risk when the call lands and skips anything that changed).
+    pub async fn approve_low_risk(&self) -> BatchResult {
+        crate::attention::approve_low_risk(&self.inner).await
+    }
+
+    // ── thread lifecycle / usage limits ───────────────────────────────────
+
+    /// Settle, snooze or wake a chat (one LWW registry field; the host's
+    /// timer wakes snoozes and new activity wakes either).
+    pub fn set_lifecycle(&self, chat_id: &str, lifecycle: Lifecycle) -> Result<()> {
+        let now = Utc::now();
+        let state = match lifecycle {
+            Lifecycle::Active => LifecycleState::Active,
+            Lifecycle::Settled => LifecycleState::Settled,
+            Lifecycle::Snoozed { until_ms } => LifecycleState::Snoozed {
+                until: Utc
+                    .timestamp_millis_opt(until_ms)
+                    .single()
+                    .ok_or_else(|| ClientError::InvalidArgument("bad snooze time".into()))?,
+            },
+        };
+        let value = ChatLifecycle::new(state, now);
+        self.chat_write(chat_id, |doc| doc.set_chat_lifecycle(chat_id, &value))
+    }
+
+    /// A Limited chat's recovery choice, on the chat's host (its timer acts
+    /// on it): resume at the reset (or `reset_at_ms` when none is known),
+    /// snooze until the reset, back to asking, or drop the Limited state.
+    pub async fn set_limit_recovery(
+        &self,
+        chat_id: &str,
+        action: LimitRecoveryAction,
+        reset_at_ms: Option<i64>,
+    ) -> Result<()> {
+        let chat = self
+            .inner
+            .workspace
+            .chat(chat_id)
+            .ok_or_else(|| ClientError::NotFound(chat_id.to_owned()))?;
+        match self.inner.backend() {
+            Backend::Demo(demo) => demo.set_limit_recovery(&self.inner, &chat, action, reset_at_ms),
+            Backend::Live(live) => {
+                let mut params = serde_json::json!({ "chatId": chat_id, "action": action });
+                if let Some(at) = reset_at_ms.and_then(|ms| Utc.timestamp_millis_opt(ms).single()) {
+                    params["resetAt"] = serde_json::json!(at);
+                }
+                live.relay
+                    .call(
+                        &chat.device_id,
+                        zeron_rpc::methods::SET_CHAT_LIMIT_RECOVERY,
+                        params,
+                    )
+                    .await
+                    .map(|_| ())
+            }
+        }
+    }
+
+    // ── usage ─────────────────────────────────────────────────────────────
+
+    /// A host's agent logins with their live plan windows (5-hour, weekly…).
+    /// `force` re-probes the providers instead of serving the last probe.
+    pub async fn agent_accounts(
+        &self,
+        device_id: &str,
+        force: bool,
+    ) -> Result<AgentAccountsSnapshot> {
+        match self.inner.backend() {
+            Backend::Demo(_) => Ok(crate::demo::fixtures::agent_accounts(now_ms())),
+            Backend::Live(live) => live
+                .relay
+                .call(
+                    device_id,
+                    zeron_rpc::methods::LIST_AGENT_ACCOUNTS,
+                    serde_json::json!({ "forceUsage": force }),
+                )
+                .await
+                .and_then(|v| {
+                    serde_json::from_value(v).map_err(|e| ClientError::HostError(e.to_string()))
+                }),
+        }
+    }
+
+    /// Tokens and estimated API cost over `range` from a host's usage index
+    /// (`GetUsageHistory`, engines 0.5.1+), bucketed in `time_zone`'s days.
+    pub async fn usage_history(
+        &self,
+        device_id: &str,
+        range: UsageRange,
+        time_zone: Option<String>,
+    ) -> Result<UsageHistory> {
+        match self.inner.backend() {
+            Backend::Demo(_) => Ok(crate::demo::fixtures::usage_history(range, now_ms())),
+            Backend::Live(live) => live
+                .relay
+                .call(
+                    device_id,
+                    zeron_rpc::methods::GET_USAGE_HISTORY,
+                    serde_json::json!(UsageHistoryRequest { range, time_zone }),
+                )
+                .await
+                .and_then(|v| {
+                    serde_json::from_value(v).map_err(|e| ClientError::HostError(e.to_string()))
+                }),
+        }
+    }
+
     // ── push notifications ────────────────────────────────────────────────
 
     /// Ask for session notifications on this device: its APNs `token` (hex),
@@ -1494,6 +1640,8 @@ impl Client {
             self.kick_rooms();
             live.relay.clear_unsupported();
             self.inner.reconcile_change_request_watches();
+            self.inner.attention.clear_unsupported();
+            self.inner.reconcile_attention_watches();
         }
         self.inner.tick();
     }
@@ -1504,6 +1652,7 @@ impl Client {
         self.inner.foreground.store(false, Ordering::Release);
         if let Some(live) = self.inner.live() {
             live.relay.stop_watches();
+            self.inner.attention.stop();
             live.flush_registry(&self.inner);
             for core in self.inner.cores() {
                 core.flush();

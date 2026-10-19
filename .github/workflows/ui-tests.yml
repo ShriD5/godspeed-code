@@ -43,7 +43,8 @@ jobs:
   # steps of cursor-compatibility and preview-tests.
   core-tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Cold builds on private-repo runners (2 vCPU) take well over the 30 minutes a warm run needs.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/linux-ci
@@ -55,7 +56,8 @@ jobs:
 
   ui-tests:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Cold builds on private-repo runners (2 vCPU) take well over the 30 minutes a warm run needs.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/linux-ci
@@ -73,7 +75,8 @@ jobs:
 
   linux-browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Cold builds on private-repo runners (2 vCPU) take well over the 30 minutes a warm run needs.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: ./.github/actions/linux-ci

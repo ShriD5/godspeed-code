@@ -33,6 +33,8 @@ pub enum RowKind {
     Image,
     Working,
     Visual,
+    /// A finished turn's receipt line (expands into its details).
+    Receipt,
 }
 
 /// A user message awaiting its host echo (client-minted id = the echo's id).
@@ -84,6 +86,13 @@ pub(crate) struct Chip {
     pub text: PText,
 }
 
+/// A turn receipt: the one-liner, and key/value details when expanded.
+pub(crate) struct ReceiptRow {
+    pub summary: PText,
+    pub lines: Vec<(PText, PText)>,
+    pub expanded: bool,
+}
+
 // Cores are built once and shared behind Arc; boxing variants only adds a hop.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Content {
@@ -95,6 +104,7 @@ pub(crate) enum Content {
     Working { since_ms: Option<i64>, streaming: bool },
     /// An agent visual: its height comes from its worker.
     Visual(Arc<crate::visual::VisualSlot>),
+    Receipt(ReceiptRow),
 }
 
 /// A width-independent row: identity, top gap class and prepared content.
@@ -144,6 +154,7 @@ pub(crate) mod geom {
     pub const CHIP_LINE: f32 = 32.0;
     pub const IMAGE: f32 = 260.0;
     pub const WORKING: f32 = 36.0;
+    pub const RECEIPT_LINE: f32 = 28.0;
     pub const VISUAL_LOADING: f32 = 18.0;
 }
 
@@ -191,6 +202,8 @@ pub(crate) struct RowBuilder {
     /// Visual rows' links to their workers, by visual id (kept across
     /// rebuilds: the worker holds the same slot).
     pub visual_slots: HashMap<String, Arc<crate::visual::VisualSlot>>,
+    /// Receipt rows by anchor entry: (turn fingerprint, expanded, row).
+    receipts: HashMap<String, (u64, bool, Arc<RowCore>)>,
 }
 
 pub(crate) fn quick_hash(s: &str) -> u64 {
@@ -210,7 +223,12 @@ impl RowBuilder {
         let mut live_entries: HashSet<&str> = HashSet::with_capacity(input.entries.len());
         let mut live_parts: HashSet<String> = HashSet::new();
         let mut prev_role: Option<MessageRole> = None;
-        for entry in &input.entries {
+        let mut turn_start = 0usize;
+        let mut live_receipts: HashSet<String> = HashSet::new();
+        for (ix, entry) in input.entries.iter().enumerate() {
+            if entry.role == MessageRole::User {
+                turn_start = ix;
+            }
             live_entries.insert(entry.id.as_str());
             let first = out.is_empty();
             let sig = self.entry_sig(entry, first, prev_role);
@@ -245,7 +263,15 @@ impl RowBuilder {
                 prev_role = Some(entry.role);
             }
             out.extend(rows);
+            // A turn's receipt follows its last reply (desktop placement).
+            let ends_turn = entry.role != MessageRole::User
+                && input.entries.get(ix + 1).is_none_or(|next| next.role == MessageRole::User);
+            if ends_turn && let Some(core) = self.receipt_row(ctx, &input.entries[turn_start..=ix]) {
+                live_receipts.insert(entry.id.clone());
+                out.push(Placed { core, gap: Gap::Block });
+            }
         }
+        self.receipts.retain(|id, _| live_receipts.contains(id));
         self.entries.retain(|id, _| live_entries.contains(id.as_str()));
         self.parts.retain(|id, _| live_parts.contains(id));
         self.thoughts.retain(|id, _| live_parts.contains(id));
@@ -301,6 +327,62 @@ impl RowBuilder {
     pub fn invalidate(&mut self, key: u64) {
         self.entries.retain(|_, s| !s.rows.iter().any(|p| p.core.key == key));
         self.pending.retain(|_, (_, row)| row.key != key);
+        self.receipts.retain(|_, (_, _, row)| row.key != key);
+    }
+
+    /// The receipt row closing `turn`, cached by the turn's fingerprint and
+    /// its open state. `None` until the host stamps the finished turn.
+    fn receipt_row(&mut self, ctx: &mut Ctx, turn: &[Arc<SessionMessageEntry>]) -> Option<Arc<RowCore>> {
+        let anchor = turn.last()?.id.clone();
+        let key = row_key(&format!("{anchor}#receipt"));
+        let expanded = self.expanded.contains(&key);
+        let print = super::receipt::fingerprint(turn);
+        if let Some((cached, open, row)) = self.receipts.get(&anchor)
+            && *cached == print
+            && *open == expanded
+        {
+            return Some(row.clone());
+        }
+        let receipt = super::receipt::assemble(turn)?;
+        let summary = super::receipt::summary(&receipt);
+        let details = super::receipt::details(&receipt);
+        let (size, lh) = TYPE.small;
+        let lh = ctx.typo.px(lh);
+        let sans = ctx.typo.style(Family::Sans, Weight::Medium, false, size);
+        let mono = ctx.typo.style(Family::Mono, Weight::Regular, false, size - 1.0);
+        let lines = if expanded {
+            details
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        prepare_plain(ctx, k, sans, lh, ColorRole::TextTertiary, WhiteSpace::Pre),
+                        prepare_plain(ctx, v, mono, lh, ColorRole::TextSecondary, WhiteSpace::Pre),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut copy = summary.clone();
+        if expanded {
+            for (k, v) in &details {
+                copy.push_str(&format!("\n{}: {}", k.trim(), v));
+            }
+        }
+        let core = Arc::new(RowCore {
+            key,
+            version: next_version(),
+            kind: RowKind::Receipt,
+            entry_id: Arc::from(anchor.as_str()),
+            content: Content::Receipt(ReceiptRow {
+                summary: prepare_plain(ctx, &summary, sans, lh, ColorRole::TextTertiary, WhiteSpace::Pre),
+                lines,
+                expanded,
+            }),
+            copy_text: copy,
+        });
+        self.receipts.insert(anchor, (print, expanded, core.clone()));
+        Some(core)
     }
 
     /// Context outside the entry that changes its rows (gaps only).
@@ -782,6 +864,40 @@ pub(crate) fn place_row(
             }
             h
         }
+        Content::Receipt(r) => {
+            let line = px.v(RECEIPT_LINE);
+            let s = px.v(14.0);
+            let text_x = x + px.v(22.0);
+            if let Some(out) = out.as_deref_mut() {
+                out.widget(
+                    WidgetKind::Icon { name: "receipt".into(), color: ColorRole::TextTertiary },
+                    (x, top + (line - s) / 2.0, s, s),
+                    None,
+                );
+                let chevron = if r.expanded { "chevron.up" } else { "chevron.down" };
+                let cw_text = r.summary.p.max_content_width().ceil().min(cw - px.v(44.0));
+                out.widget(
+                    WidgetKind::Icon { name: chevron.into(), color: ColorRole::TextTertiary },
+                    (text_x + cw_text + px.v(6.0), top + (line - px.v(10.0)) / 2.0, px.v(10.0), px.v(10.0)),
+                    None,
+                );
+                place_text_lines(&r.summary, text_x, top + (line - r.summary.lh) / 2.0, cw - px.v(44.0), 1, px, out);
+            }
+            let mut y = top + line;
+            for (k, v) in &r.lines {
+                if let Some(out) = out.as_deref_mut() {
+                    let vw = v.p.max_content_width().ceil().min(cw * 0.6);
+                    place_text_lines(k, text_x, y, (cw - px.v(22.0) - vw - px.v(10.0)).max(20.0), 1, px, out);
+                    place_text_lines(v, x + cw - vw, y, vw, 1, px, out);
+                }
+                y += k.lh;
+            }
+            let h = y - top + if r.lines.is_empty() { 0.0 } else { px.v(6.0) };
+            if let Some(out) = out {
+                out.widget(WidgetKind::Disclosure { expanded: r.expanded }, (x, top, cw, line), None);
+            }
+            h
+        }
         Content::Working { since_ms, streaming } => {
             let h = px.v(WORKING);
             if let Some(out) = out {
@@ -931,5 +1047,6 @@ pub(crate) fn content_heap_bytes(content: &Content) -> usize {
         Content::Chip(c) => c.text.p.heap_bytes(),
         Content::Image { reference } => reference.len(),
         Content::Working { .. } | Content::Visual(_) => 0,
+        Content::Receipt(r) => r.summary.p.heap_bytes() + r.lines.iter().map(|(k, v)| k.p.heap_bytes() + v.p.heap_bytes()).sum::<usize>(),
     }
 }

@@ -244,6 +244,9 @@ struct Inner {
     /// Asked for the "Latest turn" file stats when a turn ends, for its
     /// receipt ([`zeron_doc::TurnStats::files`]). Absent in bare tests.
     turn_files: OnceLock<TurnFilesListener>,
+    /// Told the chat whose turn just got its [`zeron_doc::TurnStats`] —
+    /// the usage history indexes it. Absent in bare tests.
+    turn_stats_listener: OnceLock<TurnStatsListener>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -260,6 +263,9 @@ pub type TurnFilesListener = Arc<
         + Send
         + Sync,
 >;
+
+/// Turn-stats hook: called with the chat whose turn was just stamped.
+pub type TurnStatsListener = Arc<dyn Fn(&str) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -299,6 +305,7 @@ impl SessionsEngine {
                 turn_listener: OnceLock::new(),
                 limit_listener: OnceLock::new(),
                 turn_files: OnceLock::new(),
+                turn_stats_listener: OnceLock::new(),
             }),
         }
     }
@@ -378,6 +385,11 @@ impl SessionsEngine {
     /// Wire the turn-end file-stats capture (called once at engine assembly).
     pub fn set_turn_files_listener(&self, listener: TurnFilesListener) {
         let _ = self.inner.turn_files.set(listener);
+    }
+
+    /// Wire the turn-stats listener (called once at engine assembly).
+    pub fn set_turn_stats_listener(&self, listener: TurnStatsListener) {
+        let _ = self.inner.turn_stats_listener.set(listener);
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -2320,6 +2332,10 @@ fn stamp_turn_stats(
         .as_ref()
         .and_then(|c| c.reasoning)
         .or(facts.request_effort);
+    let session_id = lock(&inner.harness_sessions)
+        .get(chat_id)
+        .map(|known| known.session_id.clone())
+        .filter(|id| !id.is_empty());
     let stats = zeron_doc::TurnStats {
         harness: wire_name(&facts.harness),
         model: receipt_model(picked, facts.session_model, facts.request_model),
@@ -2327,9 +2343,15 @@ fn stamp_turn_stats(
         usage: facts.usage,
         wait_ms: facts.wait_ms,
         files: None,
+        session_id,
     };
-    if let Err(err) = doc.set_turn_stats(entry_id, &stats) {
-        tracing::warn!(chat = %chat_id, error = %err, "turn stats stamp failed");
+    match doc.set_turn_stats(entry_id, &stats) {
+        Ok(_) => {
+            if let Some(listener) = inner.turn_stats_listener.get() {
+                listener(chat_id);
+            }
+        }
+        Err(err) => tracing::warn!(chat = %chat_id, error = %err, "turn stats stamp failed"),
     }
     let Some(capture) = inner.turn_files.get().and_then(|listener| listener(chat_id)) else {
         return;
@@ -4654,6 +4676,39 @@ mod tests {
             })
         );
         assert_eq!(stats.wait_ms, None);
+        // The harness session rides along for the usage history's dedupe,
+        // and the history hears about the turn.
+        assert_eq!(stats.session_id.as_deref(), Some("hs-1"));
+        assert!(core.usage_history.noted(chat));
+        // An index over this engine's chats (no agent logs) reads the turn:
+        // from the live doc when noted, and from the saved snapshot in a
+        // backfill once the chat is a registry row.
+        let index = |name: &str| {
+            crate::UsageIndex::open(
+                &dir.path().join(name),
+                crate::UsageLogRoots::default(),
+                Some(crate::UsageDeps {
+                    store: core.doc_host.store(),
+                    workspace: core.workspace.clone(),
+                    doc_host: core.doc_host.clone(),
+                }),
+            )
+        };
+        let request = zeron_proto::UsageHistoryRequest {
+            range: zeron_proto::UsageRange::Today,
+            time_zone: Some("UTC".into()),
+        };
+        let live = index("usage-live");
+        live.note_turn(chat);
+        let history = live.history(request.clone()).await.unwrap();
+        assert_eq!(history.total.turns, 1);
+        assert_eq!(history.total.tokens.cache_read, 5_000);
+        core.workspace.create_chat(chat, None, None, None, None).unwrap();
+        core.doc_host.flush_all();
+        let backfill = index("usage-backfill");
+        let history = backfill.history(request).await.unwrap();
+        assert_eq!(history.total.turns, 1);
+        assert_eq!(history.by_provider[0].label, "Mock");
         core.sessions.shutdown().await;
     }
 

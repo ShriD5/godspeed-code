@@ -274,74 +274,17 @@ pub fn turn_fingerprint(turn: &[SessionMessageEntry]) -> u64 {
 
 // ── pricing ─────────────────────────────────────────────────────────────
 
-/// List API prices in USD per million tokens.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Price {
-    pub input: f64,
-    pub output: f64,
-    pub cache_read: f64,
-    /// 5-minute cache writes (1.25x input on Anthropic models).
-    pub cache_write: f64,
-}
-
-/// Local price table, checked 2026-10-17. Claude rows are Anthropic's
-/// first-party list prices (claude-api reference cached 2026-10-06). The one
-/// OpenAI row comes from third-party listings that agreed with each other
-/// (openai.com/api/pricing refused the fetch); the GPT-5.6 family is left out
-/// because sources disagreed after the September price cut. Fast mode, long
-/// context surcharges, batch and priority tiers are not modelled, so the
-/// figure is an estimate. A model missing here shows no cost rather than a
-/// guess — add rows as prices are confirmed.
-const PRICES: &[(&str, Price)] = &[
-    ("claude-fable-5-1", Price { input: 10.0, output: 50.0, cache_read: 0.25, cache_write: 12.5 }),
-    ("claude-fable-5", Price { input: 10.0, output: 50.0, cache_read: 1.0, cache_write: 12.5 }),
-    ("claude-opus-5-5", Price { input: 4.0, output: 20.0, cache_read: 0.2, cache_write: 5.0 }),
-    ("claude-opus-5", Price { input: 5.0, output: 25.0, cache_read: 0.5, cache_write: 6.25 }),
-    ("claude-opus-4-8", Price { input: 5.0, output: 25.0, cache_read: 0.5, cache_write: 6.25 }),
-    ("claude-opus-4-7", Price { input: 5.0, output: 25.0, cache_read: 0.5, cache_write: 6.25 }),
-    ("claude-opus-4-6", Price { input: 5.0, output: 25.0, cache_read: 0.5, cache_write: 6.25 }),
-    ("claude-sonnet-5-5", Price { input: 2.0, output: 10.0, cache_read: 0.2, cache_write: 2.5 }),
-    ("claude-sonnet-5", Price { input: 2.0, output: 10.0, cache_read: 0.2, cache_write: 2.5 }),
-    ("claude-sonnet-4-6", Price { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 }),
-    ("claude-haiku-4-5", Price { input: 1.0, output: 5.0, cache_read: 0.1, cache_write: 1.25 }),
-    ("gpt-6-astra", Price { input: 10.0, output: 50.0, cache_read: 1.0, cache_write: 12.5 }),
-];
-
-/// The table row for a model id, tolerating the decorations harnesses add:
-/// a provider prefix (`anthropic/`, `us.anthropic.`), a context tag
-/// (`[1m]`) and a dated snapshot suffix (`-20261001`). Exact id otherwise —
-/// `claude-opus-5` must never price `claude-opus-5-5`.
-pub fn price_for(model: &str) -> Option<Price> {
-    let mut id = model.trim().to_ascii_lowercase();
-    if let Some(ix) = id.find('[') {
-        id.truncate(ix);
-    }
-    if let Some(ix) = id.rfind("claude-") {
-        id.drain(..ix);
-    } else if let Some(ix) = id.rfind('/') {
-        id.drain(..=ix);
-    }
-    if let Some((base, date)) = id.rsplit_once('-')
-        && date.len() == 8
-        && date.bytes().all(|b| b.is_ascii_digit())
-    {
-        id = base.to_owned();
-    }
-    PRICES
-        .iter()
-        .find(|(name, _)| *name == id)
-        .map(|(_, price)| *price)
-}
+/// The shared list-price table ([`zeron_proto::pricing`]).
+pub use zeron_proto::pricing::{Price, price_for};
 
 /// Estimated USD for a turn's usage at list prices.
 pub fn estimate_cost(model: &str, usage: &TurnUsage) -> Option<f64> {
-    let price = price_for(model)?;
-    let per = |tokens: u64, rate: f64| tokens as f64 * rate / 1_000_000.0;
-    Some(
-        per(usage.input_tokens, price.input)
-            + per(usage.output_tokens, price.output)
-            + per(usage.cache_read_tokens.unwrap_or(0), price.cache_read)
-            + per(usage.cache_write_tokens.unwrap_or(0), price.cache_write),
+    zeron_proto::pricing::estimate_cost(
+        model,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens.unwrap_or(0),
+        usage.cache_write_tokens.unwrap_or(0),
     )
 }
 

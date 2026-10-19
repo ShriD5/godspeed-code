@@ -157,6 +157,10 @@ pub mod methods {
     // from its own local message index).
     /// `SearchMessagesRequest` → `SearchMessagesResult`.
     pub const SEARCH_MESSAGES: &str = "SearchMessages";
+    /// Tokens and estimated API cost over a range, from this engine's usage
+    /// index (`UsageHistoryRequest` → `UsageHistory`). IPC-only: it reads
+    /// this device's agent logs.
+    pub const GET_USAGE_HISTORY: &str = "GetUsageHistory";
     // Repos / worktrees / folders (ControlRpc, relay-forwardable).
     pub const LIST_REPOS: &str = "ListRepos";
     pub const ADD_REPO: &str = "AddRepo";
