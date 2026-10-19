@@ -2363,7 +2363,7 @@ pub struct Shell {
     connectivity_notifications: crate::sound::ConnectivityNotificationState,
     /// Persistent across AppState observer callbacks so simultaneous session
     /// failures and connectivity degradation produce one attention sound.
-    attention_sound_gate: crate::sound::AttentionSoundGate,
+    sound_gate: crate::sound::SoundGate,
     /// `{device,harness,latest}` discoveries already delivered as a desktop
     /// banner during this viewport lifetime.
     harness_update_seen: std::collections::HashSet<String>,
@@ -2869,7 +2869,7 @@ impl Shell {
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
             connectivity_notifications: Default::default(),
-            attention_sound_gate: Default::default(),
+            sound_gate: Default::default(),
             harness_update_seen: std::collections::HashSet::new(),
             harness_update_banner_task: None,
             harness_update_devices: Default::default(),
@@ -3191,11 +3191,10 @@ impl Shell {
                     && let Some(sound) = status.sound_since(&prev, send_pending)
                 {
                     if self.settings.session_sound_enabled(sound) {
-                        let should_play = sound != crate::sound::Sound::Attention
-                            || self
-                                .attention_sound_gate
-                                .should_play(std::time::Instant::now());
-                        if should_play {
+                        if self
+                            .sound_gate
+                            .should_play(sound, std::time::Instant::now())
+                        {
                             crate::sound::play(sound);
                         }
                     }
@@ -3222,8 +3221,8 @@ impl Shell {
             ) {
                 if self.settings.session_sound_enabled(sound)
                     && self
-                        .attention_sound_gate
-                        .should_play(std::time::Instant::now())
+                        .sound_gate
+                        .should_play(sound, std::time::Instant::now())
                 {
                     crate::sound::play(sound);
                 }

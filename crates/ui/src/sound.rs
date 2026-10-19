@@ -461,24 +461,24 @@ impl ConnectivityNotificationState {
     }
 }
 
-/// Coalesce attention requests delivered by independent state watches. The
-/// persistent gate also collapses multiple failures in one session snapshot.
+/// Coalesce chimes delivered together: chats finishing in the same snapshot,
+/// or attention from independent state watches. Each sound keeps its own slot,
+/// so an input request is still heard over a completion.
 #[derive(Debug, Default)]
-pub(crate) struct AttentionSoundGate {
-    last_played: Option<Instant>,
+pub(crate) struct SoundGate {
+    last_played: [Option<Instant>; 3],
 }
 
-impl AttentionSoundGate {
-    const COALESCE: Duration = Duration::from_millis(250);
+impl SoundGate {
+    /// The longest session chime; overlapping copies would sum into clipping.
+    const COALESCE: Duration = Duration::from_millis(650);
 
-    pub(crate) fn should_play(&mut self, now: Instant) -> bool {
-        if self
-            .last_played
-            .is_some_and(|last| now.duration_since(last) < Self::COALESCE)
-        {
+    pub(crate) fn should_play(&mut self, sound: Sound, now: Instant) -> bool {
+        let slot = &mut self.last_played[sound as usize];
+        if slot.is_some_and(|last| now.duration_since(last) < Self::COALESCE) {
             return false;
         }
-        self.last_played = Some(now);
+        *slot = Some(now);
         true
     }
 }
@@ -722,12 +722,15 @@ mod tests {
     }
 
     #[test]
-    fn attention_gate_coalesces_session_and_connectivity_watch_callbacks() {
+    fn sound_gate_plays_one_chime_per_burst_and_kind() {
         let t0 = Instant::now();
-        let mut gate = AttentionSoundGate::default();
-        assert!(gate.should_play(t0));
-        assert!(!gate.should_play(t0));
-        assert!(!gate.should_play(t0 + Duration::from_millis(200)));
-        assert!(gate.should_play(t0 + Duration::from_millis(250)));
+        let mut gate = SoundGate::default();
+        assert!(gate.should_play(Sound::Done, t0));
+        assert!(!gate.should_play(Sound::Done, t0));
+        assert!(gate.should_play(Sound::Request, t0));
+        assert!(gate.should_play(Sound::Attention, t0));
+        assert!(!gate.should_play(Sound::Attention, t0 + Duration::from_millis(200)));
+        assert!(!gate.should_play(Sound::Done, t0 + Duration::from_millis(600)));
+        assert!(gate.should_play(Sound::Done, t0 + Duration::from_millis(650)));
     }
 }
