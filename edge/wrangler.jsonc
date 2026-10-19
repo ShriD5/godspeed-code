@@ -62,6 +62,15 @@
     // A RELEASES binding (bucket "godspeed-releases") would re-enable the
     // /releases/* + /install.sh surface; left out on purpose (DEPLOY.md).
   ],
+  // Light per-IP limit on /auth/* (src/auth-routes.ts). Counters are per
+  // Cloudflare location and approximate; drop this block to disable.
+  "ratelimits": [
+    {
+      "name": "AUTH_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ],
   "vars": {
     // WorkOS AuthKit client id: JWTs are verified against its JWKS. Left as
     // a placeholder until the sign-in method is chosen, so every bearer is

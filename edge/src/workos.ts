@@ -28,6 +28,13 @@ export interface ExchangeResult {
   readonly refreshToken: string;
 }
 
+/** Who WorkOS authenticated, for the invite-only gate (never sent to clients). */
+export interface AuthenticatedUser {
+  readonly id: string;
+  readonly email: string;
+  readonly emailVerified: boolean;
+}
+
 export interface RefreshResult {
   readonly accessToken: string;
   readonly refreshToken: string;
@@ -42,6 +49,7 @@ export interface OrgMembership {
 interface WireUser {
   id: string;
   email: string;
+  email_verified?: boolean;
   first_name: string | null;
   last_name: string | null;
 }
@@ -80,7 +88,11 @@ const post = async (apiKey: string, path: string, body: unknown): Promise<Respon
   });
 
 /** `authenticateWithCode`: WorkOS code → tokens + user. */
-export const exchange = async (env: Env, apiKey: string, code: string): Promise<ExchangeResult> => {
+export const exchange = async (
+  env: Env,
+  apiKey: string,
+  code: string
+): Promise<{ result: ExchangeResult; user: AuthenticatedUser }> => {
   const res = await fetch(`${API}/user_management/authenticate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -94,16 +106,25 @@ export const exchange = async (env: Env, apiKey: string, code: string): Promise<
   if (!res.ok) return failed(res);
   const r = (await res.json()) as WireAuthResponse;
   return {
-    user: {
-      id: r.user.id,
-      email: r.user.email,
-      firstName: r.user.first_name,
-      lastName: r.user.last_name
+    result: {
+      user: {
+        id: r.user.id,
+        email: r.user.email,
+        firstName: r.user.first_name,
+        lastName: r.user.last_name
+      },
+      accessToken: r.access_token,
+      refreshToken: r.refresh_token
     },
-    accessToken: r.access_token,
-    refreshToken: r.refresh_token
+    user: wireUser(r.user)
   };
 };
+
+const wireUser = (u: WireUser): AuthenticatedUser => ({
+  id: u.id,
+  email: u.email,
+  emailVerified: u.email_verified === true
+});
 
 /** `authenticateWithRefreshToken`; passing `organizationId` scopes the session
  * to that org (the next access token carries `org_id`). */
@@ -112,7 +133,7 @@ export const refresh = async (
   apiKey: string,
   refreshToken: string,
   organizationId?: string
-): Promise<RefreshResult> => {
+): Promise<{ result: RefreshResult; user: AuthenticatedUser | undefined }> => {
   const res = await fetch(`${API}/user_management/authenticate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -126,7 +147,10 @@ export const refresh = async (
   });
   if (!res.ok) return failed(res);
   const r = (await res.json()) as WireAuthResponse;
-  return { accessToken: r.access_token, refreshToken: r.refresh_token };
+  return {
+    result: { accessToken: r.access_token, refreshToken: r.refresh_token },
+    user: r.user ? wireUser(r.user) : undefined
+  };
 };
 
 /** The user's active organization memberships. */

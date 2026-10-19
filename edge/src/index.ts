@@ -11,6 +11,7 @@
  *   GET  /auth/orgs                   — caller's active org memberships
  *   POST /auth/orgs                   — create org + admin membership
  *   GET  /auth/cli/callback           — headless sign-in paste-code page
+ *   GET  /auth/invite-only            — invite-only notice page
  *   GET  /session/:chatId/ws          — loro-protocol room (wss upgrade)
  *   GET  /tail/:chatId                — L2 instant-open tail JSON (§5)
  *   GET  /diff/:chatId                — latest working-tree diff (§6.1)
@@ -36,6 +37,7 @@
  *   GET  /chat2/:chatId/stats
  *   POST /chat2/:chatId/reset
  */
+import { gateUser } from "./allowlist";
 import { authenticate } from "./auth";
 import { chatRoute } from "./chat-route";
 import { handleAuthRoute } from "./auth-routes";
@@ -168,6 +170,9 @@ export default {
 
     const auth = await authenticate(env, request);
     if (!auth) return json({ error: "unauthenticated" }, 401);
+    // Invite-only deployments: a valid WorkOS token is not enough (allowlist.ts).
+    const denied = await gateUser(env, auth.userId);
+    if (denied) return denied;
 
     const preview = previewRoute(request, env, auth);
     if (preview) return preview;

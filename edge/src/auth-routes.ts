@@ -6,13 +6,17 @@
  *  - GET  /auth/orgs         — the caller's active org memberships.
  *  - POST /auth/orgs         — create an org + first (admin) membership.
  *  - GET  /auth/cli/callback — headless sign-in: shows a paste-able code.
+ *  - GET  /auth/invite-only  — the invite-only notice as a page (clients send
+ *                              the browser here when sign-in is refused).
  *
  * Exchange/refresh/callback run BEFORE the bearer gate (the caller has no
  * access token yet); the org routes verify the bearer themselves — the user
  * id is ALWAYS the token's `sub`, never request input: users manage their own
  * memberships and no one else's. Error mapping matches the old server: bad
- * body 400, missing bearer 401, WorkOS-off 501, rejected exchange/refresh 401.
+ * body 400, missing bearer 401, WorkOS-off 501, rejected exchange/refresh 401,
+ * not on the invite list 403 `invite_only` (allowlist.ts), per-IP rate limit 429.
  */
+import { INVITE_ONLY_MESSAGE, gateUser, gateWorkOsUser } from "./allowlist";
 import { bearerFromRequest, verifyToken } from "./auth";
 import type { Env } from "./env";
 import { WorkOsAuthFailed, createOrg, exchange, listOrgs, refresh } from "./workos";
@@ -44,17 +48,21 @@ export const handleAuthRoute = async (
 ): Promise<Response | undefined> => {
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts[0] !== "auth") return undefined;
+  const limited = await rateLimited(request, env);
+  if (limited) return limited;
   const apiKey = env.WORKOS_API_KEY;
 
   if (parts[1] === "exchange" && parts.length === 2 && request.method === "POST") {
     if (!apiKey) return notConfigured();
     const body = await bodyJson<{ code?: string }>(request);
     if (typeof body?.code !== "string") return json({ error: "missing code" }, 400);
+    let exchanged: Awaited<ReturnType<typeof exchange>>;
     try {
-      return json(await exchange(env, apiKey, body.code));
+      exchanged = await exchange(env, apiKey, body.code);
     } catch (e) {
       return authFailed(e);
     }
+    return gateWorkOsUser(env, exchanged.user) ?? json(exchanged.result);
   }
 
   if (parts[1] === "refresh" && parts.length === 2 && request.method === "POST") {
@@ -65,7 +73,9 @@ export const handleAuthRoute = async (
       return json({ error: "missing refreshToken" }, 400);
     }
     try {
-      return json(await refresh(env, apiKey, body.refreshToken, body.organizationId));
+      const refreshed = await refresh(env, apiKey, body.refreshToken, body.organizationId);
+      const denied = refreshed.user ? gateWorkOsUser(env, refreshed.user) : undefined;
+      return denied ?? json(refreshed.result);
     } catch (e) {
       // Identify repeat offenders: a client with a rotated-out session
       // retries every 30s forever and is otherwise anonymous in the tail
@@ -86,6 +96,8 @@ export const handleAuthRoute = async (
     const token = bearerFromRequest(request);
     const caller = token ? await verifyToken(env, token) : undefined;
     if (!caller) return json({ error: "invalid or missing bearer token" }, 401);
+    const denied = await gateUser(env, caller.userId);
+    if (denied) return denied;
     if (request.method === "GET") {
       try {
         return json({ orgs: await listOrgs(apiKey, caller.userId) });
@@ -112,7 +124,32 @@ export const handleAuthRoute = async (
     return cliCallback(url);
   }
 
+  if (parts[1] === "invite-only" && parts.length === 2 && request.method === "GET") {
+    return inviteOnlyPage();
+  }
+
   return undefined;
+};
+
+/**
+ * Light per-IP limit on /auth/* via the Workers rate limiting binding
+ * (`AUTH_RATE_LIMITER` in wrangler.jsonc). Unbound ⇒ no limit. The binding's
+ * counters are per Cloudflare location and approximate, which is fine for
+ * slowing down brute force. A limiter failure never blocks sign-in.
+ */
+const rateLimited = async (request: Request, env: Env): Promise<Response | undefined> => {
+  if (!env.AUTH_RATE_LIMITER) return undefined;
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  try {
+    const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `auth:${ip}` });
+    if (success) return undefined;
+  } catch {
+    return undefined;
+  }
+  return new Response(JSON.stringify({ error: "rate_limited" }), {
+    status: 429,
+    headers: { "content-type": "application/json", "retry-after": "60" }
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -154,6 +191,22 @@ const cliPage = (body: string): string => `<!doctype html>
 </head>
 <body><main>${body}</main></body>
 </html>`;
+
+const DEPLOY_DOC = "https://github.com/ShriD5/godspeed-code/blob/main/edge/DEPLOY.md";
+
+/** The invite-only notice as a page, in the same style as the callback. */
+export const inviteOnlyPage = (): Response =>
+  html(
+    cliPage(
+      `<h1>Cloud sync is invite-only</h1>
+<p>${escapeHtml(INVITE_ONLY_MESSAGE).replace(
+        "edge/DEPLOY.md",
+        `<a href="${DEPLOY_DOC}" style="color:#ededed">edge/DEPLOY.md</a>`
+      )}</p>
+<p style="margin-top:1rem;font-size:13px">You can close this tab.</p>`
+    ),
+    403
+  );
 
 const html = (body: string, status = 200): Response =>
   new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
