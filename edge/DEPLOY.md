@@ -18,6 +18,7 @@ account `f715952f0d5650529fe9401bcca31e2e`, served on workers.dev only.
 | secret | `WORKOS_API_KEY` | `/auth/exchange`, `/auth/refresh`, `/auth/orgs` (WorkOS sign-in) | WorkOS secret key; unset ⇒ those routes answer 501 |
 | secret | `APNS_KEY_P8` | push notifications | contents of `AuthKey_XXXXXXXXXX.p8` |
 | secret | `APNS_KEY_ID` | push notifications | the key's 10-character id |
+| secret | `ALLOWED_EMAILS` | invite-only sign-in (optional) | comma-separated emails and `@domain` entries; unset ⇒ anyone who can sign in may sync |
 
 Push is optional: without the two APNs secrets the edge decides and logs
 notifications (`/registry/:org/stats`) but sends none.
@@ -49,6 +50,7 @@ npx wrangler deploy
 npx wrangler secret put WORKOS_API_KEY          # only with WorkOS sign-in
 npx wrangler secret put APNS_KEY_P8 < AuthKey_XXXXXXXXXX.p8
 npx wrangler secret put APNS_KEY_ID
+npx wrangler secret put ALLOWED_EMAILS          # only for an invite-only edge
 
 # 7. Check it.
 curl https://godspeed-edge.<subdomain>.workers.dev/health   # {"ok":true,"auth":"workos"}
