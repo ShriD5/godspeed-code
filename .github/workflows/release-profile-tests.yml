@@ -5,12 +5,9 @@ name: Release-profile tests
 # ships, so optimization-only failures still surface. It does not save a Rust
 # cache, so it cannot evict the main-seeded caches pull requests depend on.
 
-# MINUTES POLICY (private repo): two cold release builds a day would use most of the free private
-# quota on their own, so this is manual-only until the repo is public. To restore at launch:
-# uncomment the schedule (see "Going public" in docs/godspeed/HANDOFF.md).
 on:
-  # schedule:
-  #   - cron: '17 7 * * *'
+  schedule:
+    - cron: '17 7 * * *'
   workflow_dispatch:
 
 permissions:

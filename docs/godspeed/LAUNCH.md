@@ -1,6 +1,6 @@
 # Going public: checklist
 
-Status as of 2026-10-18. The repo is private until the owner says otherwise.
+The repo went public on 2026-10-19 as ShriD5/godspeed-code.
 
 ## Done
 
@@ -35,6 +35,5 @@ Status as of 2026-10-18. The repo is private until the owner says otherwise.
 
 ## Launch day
 
-- Restore full CI triggers (see HANDOFF "Going public").
-- Flip the repo public; check the README download link works logged out.
+- [x] Full CI triggers restored, repo public, links point at ShriD5/godspeed-code.
 - Fresh release; launch video; posts (benchmark: 133 ms vs 877 ms start, 12 vs 166 MiB idle).

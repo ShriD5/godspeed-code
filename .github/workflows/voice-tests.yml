@@ -1,12 +1,6 @@
 name: Native Codex voice
-# MINUTES POLICY (private repo): the Linux legs run on every matching pull request; the macOS
-# (10x) and Windows (2x) legs run only on manual dispatch and on pull requests labelled `full-ci`.
-# Adding the label re-runs only the non-Linux legs. To restore at launch: drop `types:` from
-# `pull_request:`, put back each `os:` list shown in the `# launch:` comment, and delete each
-# `if:` line marked `# full-ci gate` (see "Going public" in docs/godspeed/HANDOFF.md).
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'crates/audio/**'
       - 'crates/voice-media/**'
@@ -36,12 +30,10 @@ permissions:
   contents: read
 jobs:
   runtime-packaging:
-    if: ${{ github.event.action != 'labeled' || github.event.label.name == 'full-ci' }} # full-ci gate
     strategy:
       fail-fast: false
       matrix:
-        # launch: os: [ubuntu-24.04, windows-latest]
-        os: ${{ fromJSON(github.event.action == 'labeled' && '["windows-latest"]' || ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["ubuntu-24.04","windows-latest"]' || '["ubuntu-24.04"]')) }} # full-ci gate
+        os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
@@ -53,12 +45,10 @@ jobs:
         run: python -m unittest discover -s scripts/tests -p 'test_voice_packaging.py' -v
 
   split-host-probe:
-    if: ${{ github.event.action != 'labeled' || github.event.label.name == 'full-ci' }} # full-ci gate
     strategy:
       fail-fast: false
       matrix:
-        # launch: os: [ubuntu-24.04, macos-14]
-        os: ${{ fromJSON(github.event.action == 'labeled' && '["macos-14"]' || ((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["ubuntu-24.04","macos-14"]' || '["ubuntu-24.04"]')) }} # full-ci gate
+        os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
@@ -70,7 +60,6 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_voice_remote*.py' -v
 
   offline-linux:
-    if: ${{ github.event.action != 'labeled' }} # full-ci gate (already ran on the push)
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
@@ -110,7 +99,6 @@ jobs:
         run: cargo test --locked -p zeron-audio --features aec --lib
 
   native-platform-check:
-    if: ${{ github.event_name != 'pull_request' || (contains(github.event.pull_request.labels.*.name, 'full-ci') && (github.event.action != 'labeled' || github.event.label.name == 'full-ci')) }} # full-ci gate
     strategy:
       fail-fast: false
       matrix:

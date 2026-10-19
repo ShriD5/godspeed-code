@@ -19,7 +19,7 @@ $Setup = (Resolve-Path -LiteralPath $Setup).Path
 $match = [regex]::Match((Split-Path $Setup -Leaf), '\Agodspeed-(\d+\.\d+\.\d+)-windows-[a-z0-9_]+-setup\.exe\z')
 if (-not $match.Success) { throw "Unexpected installer name: $Setup" }
 $version = $match.Groups[1].Value
-$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{AD5DEC34-E254-467B-8F24-8127EBAF4DA6}_is1'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{8105F319-A824-46C3-967A-8B3177CF8FA5}_is1'
 $protocolKey = 'HKCU:\Software\Classes\godspeed'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Godspeed.lnk'
 $root = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }

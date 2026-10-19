@@ -23,7 +23,7 @@ const BACKUP: &str = "godspeed.exe.old";
 const INCOMING: &str = ".zeron-update-incoming.exe";
 /// The installer's uninstall entry (`AppId` in `dist/windows/godspeed.iss`, plus
 /// Inno Setup's `_is1` suffix). Settings → Apps reads `DisplayVersion` here.
-const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{AD5DEC34-E254-467B-8F24-8127EBAF4DA6}_is1";
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8105F319-A824-46C3-967A-8B3177CF8FA5}_is1";
 
 #[derive(serde::Deserialize)]
 struct Config {

@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please check the [roadmap](https://github.com/ShriD5/godspeed/blob/main/docs/godspeed/ROADMAP.md) and existing issues first. Some features (plan mode, mid-chat provider switching) were cut on purpose.
+        Please check the [roadmap](https://github.com/ShriD5/godspeed-code/blob/main/docs/godspeed/ROADMAP.md) and existing issues first. Some features (plan mode, mid-chat provider switching) were cut on purpose.
   - type: textarea
     id: problem
     attributes:

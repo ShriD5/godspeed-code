@@ -6,6 +6,13 @@
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
+<p align="center">
+  <a href="https://github.com/ShriD5/godspeed-code/actions/workflows/ui-tests.yml"><img src="https://github.com/ShriD5/godspeed-code/actions/workflows/ui-tests.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/ShriD5/godspeed-code/releases/latest"><img src="https://img.shields.io/github/v/release/ShriD5/godspeed-code" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <a href="https://github.com/ShriD5/godspeed-code/stargazers"><img src="https://img.shields.io/github/stars/ShriD5/godspeed-code?style=social" alt="GitHub stars"></a>
+</p>
+
 > **Early access.** Godspeed 0.5 is an early release. Expect rough edges. See
 > [ROADMAP.md](docs/godspeed/ROADMAP.md) for what is done and what is next.
 
@@ -47,7 +54,7 @@ Linux builds and a shipped iPhone app (Godspeed's is in development). Full compa
 
 ## Download
 
-**[Download Godspeed for macOS (Apple silicon)](https://github.com/ShriD5/godspeed/releases/latest/download/Godspeed-macos-arm64.dmg)**
+**[Download Godspeed for macOS (Apple silicon)](https://github.com/ShriD5/godspeed-code/releases/latest/download/Godspeed-macos-arm64.dmg)**
 
 - Apple silicon (arm64) only. The bundle declares macOS 12 as its minimum; it has only been tested
   on macOS 27.
@@ -58,7 +65,7 @@ normally. (0.1.0 and 0.2.0 were unsigned; for those, use System Settings → Pri
 **Open Anyway**.)
 
 There is no auto-update yet. Download new releases from the
-[releases page](https://github.com/ShriD5/godspeed/releases).
+[releases page](https://github.com/ShriD5/godspeed-code/releases).
 
 ## iPhone app
 
@@ -156,7 +163,7 @@ data and limitations: [BENCHMARKS.md](docs/godspeed/BENCHMARKS.md).
 Requires the stable Rust toolchain pinned in `rust-toolchain.toml` and, on macOS, Xcode.
 
 ```sh
-git clone https://github.com/ShriD5/godspeed.git
+git clone https://github.com/ShriD5/godspeed-code.git
 cd godspeed
 cargo run -p godspeed               # desktop app
 cargo run -p godspeed -- headless   # engine only

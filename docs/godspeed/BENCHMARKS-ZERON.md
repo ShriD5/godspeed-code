@@ -29,7 +29,7 @@ GUI rendering, window memory, or agent/model task speed. See
 |---|---|
 | Machine | MacBook Air, Mac14,2, Apple M2 (4P + 4E cores), 16 GB |
 | OS | macOS 27.0 (26A428), Darwin 27.0.0 |
-| Godspeed | **0.2.0**, official release asset `godspeed-0.2.0-macos-arm64-app.tar.gz` from `ShriD5/godspeed` tag `v0.2.0` (`77b9540f`). `--version` prints `godspeed 0.2.0`. Ad-hoc signed. |
+| Godspeed | **0.2.0**, official release asset `godspeed-0.2.0-macos-arm64-app.tar.gz` from `ShriD5/godspeed-code` tag `v0.2.0` (`77b9540f`). `--version` prints `godspeed 0.2.0`. Ad-hoc signed. |
 | Godspeed tarball SHA-256 | `4a412fa9820d3c9da9385f6dc65aa9ce7c6d3ca0e78824793eb40a42b7f58992` (matches the release's `SHA256SUMS`) |
 | Godspeed binary SHA-256 | `e3c2b7ea87cd1bc39bb7c57bd7de7bb77b9935e347c2bee57ee9807f739b99d7` (148,005,680 B) |
 | Zeron | **0.2.113**, official release asset `zeron-0.2.113-macos-arm64-app.tar.gz` from `zeronsh/zeron` tag `v0.2.113` (`6ac88599`, the fork point). `--version` prints `zeron 0.2.113`. Developer ID signed and notarized (team `5XY3M483YQ`). |

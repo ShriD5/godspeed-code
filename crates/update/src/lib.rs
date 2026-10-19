@@ -317,11 +317,11 @@ fn validate_release_override(value: &str) -> anyhow::Result<String> {
 /// The project's GitHub releases page — the advisory update strip opens this
 /// for unmanaged installs (source builds, hand-copied binaries), where no
 /// updater flow exists to drive.
-pub const RELEASES_PAGE: &str = "https://github.com/ShriD5/godspeed/releases";
+pub const RELEASES_PAGE: &str = "https://github.com/ShriD5/godspeed-code/releases";
 
 /// The newest release's page — the download destination offered when this
 /// installation cannot replace itself.
-pub const LATEST_RELEASE_PAGE: &str = "https://github.com/ShriD5/godspeed/releases/latest";
+pub const LATEST_RELEASE_PAGE: &str = "https://github.com/ShriD5/godspeed-code/releases/latest";
 
 fn release_base(edge_url: &str) -> anyhow::Result<String> {
     if let Ok(url) = std::env::var("GODSPEED_RELEASES_URL")

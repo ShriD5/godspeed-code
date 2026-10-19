@@ -34,14 +34,14 @@
 ; Never change AppId: it identifies the installation across upgrades, and
 ; crates/update/src/windows.rs refreshes DisplayVersion under this key after
 ; in-app updates.
-AppId={{AD5DEC34-E254-467B-8F24-8127EBAF4DA6}
+AppId={{8105F319-A824-46C3-967A-8B3177CF8FA5}
 AppName=Godspeed
 AppVersion={#AppVersion}
 AppVerName=Godspeed {#AppVersion}
 AppPublisher=Godspeed
-AppPublisherURL=https://github.com/ShriD5/godspeed
-AppSupportURL=https://github.com/ShriD5/godspeed/issues
-AppUpdatesURL=https://github.com/ShriD5/godspeed/releases
+AppPublisherURL=https://github.com/ShriD5/godspeed-code
+AppSupportURL=https://github.com/ShriD5/godspeed-code/issues
+AppUpdatesURL=https://github.com/ShriD5/godspeed-code/releases
 VersionInfoVersion={#AppVersion}
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\Godspeed

@@ -71,7 +71,7 @@ installed builds can update into Godspeed. CI runs this on tags
 ## Windows
 
 ```powershell
-./scripts/package-windows.ps1 -ReleasesUrl https://github.com/ShriD5/godspeed/releases/latest/download
+./scripts/package-windows.ps1 -ReleasesUrl https://github.com/ShriD5/godspeed-code/releases/latest/download
 ```
 
 Produces, under `target/package/`:

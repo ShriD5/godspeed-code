@@ -10,7 +10,7 @@ final class RemoteVoiceController {
     static let capability = voiceHostCapability()
     /// Development override: offer voice before any host advertises it.
     static var forced: Bool {
-        ProcessInfo.processInfo.arguments.contains("-remote-voice") || ProcessInfo.processInfo.environment["ZERON_REMOTE_VOICE"] == "1"
+        ProcessInfo.processInfo.arguments.contains("-remote-voice") || ProcessInfo.processInfo.environment["GODSPEED_REMOTE_VOICE"] == "1"
     }
 
     private weak var app: AppModel?

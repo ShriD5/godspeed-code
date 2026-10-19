@@ -260,7 +260,7 @@ pub(crate) fn spaces(now: i64) -> Vec<Space> {
             created_at: ms(now - ago),
         };
     let godspeed = |mut space: Space| {
-        space.repository_id = Some("github.com/ShriD5/godspeed".into());
+        space.repository_id = Some("github.com/ShriD5/godspeed-code".into());
         space
     };
     vec![
