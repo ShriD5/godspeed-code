@@ -50,11 +50,28 @@ npx wrangler deploy
 npx wrangler secret put WORKOS_API_KEY          # only with WorkOS sign-in
 npx wrangler secret put APNS_KEY_P8 < AuthKey_XXXXXXXXXX.p8
 npx wrangler secret put APNS_KEY_ID
-npx wrangler secret put ALLOWED_EMAILS          # only for an invite-only edge
+# Invite-only edge: every existing WorkOS user plus extra emails / @domains.
+node scripts/allowlist.mjs friend@example.com | npx wrangler secret put ALLOWED_EMAILS
 
 # 7. Check it.
 curl https://godspeed-edge.<subdomain>.workers.dev/health   # {"ok":true,"auth":"workos"}
 ```
+
+### Inviting someone
+
+Wrangler cannot read a secret back, so `scripts/allowlist.mjs` rebuilds the
+list each time: every user in the WorkOS environment (anyone who has signed in
+before keeps access) plus the emails or `@domain` entries you pass. Domain
+entries only match verified emails. Only the count is printed:
+
+```sh
+cd edge
+node scripts/allowlist.mjs new.person@example.com | npx wrangler secret put ALLOWED_EMAILS
+```
+
+The key comes from `$WORKOS_API_KEY` or `~/.config/godspeed/workos-api-key`.
+An empty list turns the gate off, so the script refuses to output one.
+Refused accounts see the invite-only message (403 `invite_only`).
 
 Then point the apps at it: the desktop reads `GODSPEED_EDGE_URL` and
 `GODSPEED_WORKOS_CLIENT_ID` (`apps/godspeed/src/main.rs`; the baked defaults are
