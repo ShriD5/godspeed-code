@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@1451e7cb23034d29774338608368a15d8845df36 (2026-10-19)
+Reviewed T3 through: pingdotgg/t3code@d36b7da2485bc889b320a285deea181f637d760a (2026-10-20)
 
 ## Rules
 
@@ -23,6 +23,22 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-20 | Login-shell environment probes no longer take over the launching terminal (`7f63b10275`) | PR #19 |
+| 2026-10-20 | Idle Claude threads compact before the prompt cache expires, beta (`5d3875d703`) | queued (larger; pairs with the compact-on-return gap in PARITY-T3 §4) |
+| 2026-10-20 | Context meter marks the configured auto-compact threshold (`15c927899d`) | queued |
+| 2026-10-20 | A message promoted into a stopping run stays queued (`10f7db7e38`) | queued (with the held-queue rows) |
+| 2026-10-20 | Terminal history replay resets the modes a dead shell left on (`1125b40995`) | queued (check mouse/alt-screen after a shell dies, then reattach) |
+| 2026-10-20 | Powerline separators render flush to cell edges (`3982f20ce4`) | queued (Godspeed draws them with the font; check by eye) |
+| 2026-10-20 | Completions in threads you haven't opened are marked unread (`818c71d67d`) | queued (Godspeed has no unread state yet, PARITY-T3 §6) |
+| 2026-10-20 | Running banner shows the full command when truncated (`060ac670a9`) | queued |
+| 2026-10-20 | Composer continues and renumbers Markdown numbered lists (`d407f5443b`, `bac96aa3b2`) | queued (check the composer's list handling) |
+| 2026-10-20 | PR +/- split into code, tests and docs (`92a6f6d731`, `962428df10`) | queued |
+| 2026-10-20 | Helper processes no longer outlive the backend (`e85539ab59`) | queued (check engine shutdown leaves no agent children) |
+| 2026-10-20 | Synchronized terminal updates paint atomically (`26338ea544`) | skipped (alacritty_terminal 0.26 already buffers DEC 2026) |
+| 2026-10-20 | Claude shows automatic compaction while it runs (`fc21184afb`) | skipped (Godspeed handles `status: compacting` and notes the result) |
+| 2026-10-20 | Nushell environments hydrate (`2fcefc9abf`); bounded slow terminal output (`3284143b45`) | skipped (Godspeed already has both) |
+| 2026-10-20 | Idle terminals stop scanning the process table (`d1cac663a7`) | skipped (Godspeed never scans it) |
+| 2026-10-20 | ~600 other commits: mobile, desktop/Electron, T3 Connect, EAS/device hosts, usage page, rewind/edit-from-here, provider-specific (OpenCode, Pi, Cursor, Grok, Antigravity, Muse) and React fixes, reverts | skipped (internal/minor or out of scope) |
 | 2026-10-19 | Threads finishing together play one completion sound (`c1f9d20263`) | PR #9 |
 | 2026-10-19 | Terminals no longer inherit the launching tmux/screen/Zellij session (`88d104a35f`) | queued (`engine/src/terminals.rs` passes the app's env through) |
 | 2026-10-19 | A message you send resumes a held queue; queued messages land after a resume (`62d98096ca`, `529d8063cc`) | queued (Godspeed has no held-queue state yet, see PARITY-T3 §4) |
