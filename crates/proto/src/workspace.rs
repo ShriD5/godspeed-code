@@ -36,6 +36,7 @@ pub mod capabilities {
         PROJECTLESS_SCRATCH_V1,
         SIDEBAR_SECTION_ORDER_V1,
         crate::voice::remote::CAPABILITY,
+        crate::project_transfer::CAPABILITY,
     ];
 
     pub fn current() -> Vec<String> {
@@ -118,7 +119,8 @@ mod tests {
                     "harness-updates-v1",
                     "projectless-scratch-v1",
                     "sidebar-section-order-v1",
-                    "voice-client-media-v1"
+                    "voice-client-media-v1",
+                    "project-transfer-v1"
                 ],
             })
         );

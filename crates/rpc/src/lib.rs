@@ -166,6 +166,18 @@ pub mod methods {
     pub const ADD_REPO: &str = "AddRepo";
     pub const CLONE_REPO: &str = "CloneRepo";
     pub const CREATE_REPO: &str = "CreateRepo";
+    // Adding a project to another device (`zeron_proto::project_transfer`),
+    // all relay-forwardable. The viewport relays files between the engines.
+    /// `ListIgnoredFilesRequest` → `IgnoredFileListing` (on the source).
+    pub const LIST_IGNORED_FILES: &str = "ListIgnoredFiles";
+    /// `ReadProjectFileRequest` → `ProjectFileChunk` (on the source).
+    pub const READ_PROJECT_FILE: &str = "ReadProjectFile";
+    /// `CloneProjectRequest` → stream of `CloneProgress` (on the target).
+    pub const CLONE_PROJECT: &str = "CloneProject";
+    /// `CancelProjectCloneRequest` → `{ cancelled }` (on the target).
+    pub const CANCEL_PROJECT_CLONE: &str = "CancelProjectClone";
+    /// `WriteProjectFileRequest` → `WriteProjectFileOutcome` (on the target).
+    pub const WRITE_PROJECT_FILE: &str = "WriteProjectFile";
     pub const LIST_BRANCHES: &str = "ListBranches";
     pub const LIST_REFS: &str = "ListRefs";
     pub const LIST_GIT_HISTORY: &str = "ListGitHistory";
