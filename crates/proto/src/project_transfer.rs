@@ -199,10 +199,7 @@ fn strip_userinfo(authority: &str) -> &str {
     }
 }
 
-fn parse_authority_url<'a>(
-    rest: &'a str,
-    protocol: CloneProtocol,
-) -> Option<ParsedCloneUrl<'a>> {
+fn parse_authority_url<'a>(rest: &'a str, protocol: CloneProtocol) -> Option<ParsedCloneUrl<'a>> {
     let (authority, path) = rest.split_once('/')?;
     if path.is_empty() || authority.chars().any(char::is_whitespace) {
         return None;
@@ -294,7 +291,9 @@ pub fn is_default_copied_file(path: &str) -> bool {
     name == ".env"
         || name == ".envrc"
         || name == ".dev.vars"
-        || name.strip_prefix(".env.").is_some_and(|rest| !rest.is_empty())
+        || name
+            .strip_prefix(".env.")
+            .is_some_and(|rest| !rest.is_empty())
 }
 
 /// The folder a repository's clone defaults to on another device: the same
@@ -356,8 +355,11 @@ mod tests {
             Some("https://github.com/pingdotgg/t3code.git")
         );
         assert_eq!(
-            clone_url_for_protocol("https://github.com/pingdotgg/t3code.git", CloneProtocol::Ssh)
-                .as_deref(),
+            clone_url_for_protocol(
+                "https://github.com/pingdotgg/t3code.git",
+                CloneProtocol::Ssh
+            )
+            .as_deref(),
             Some("git@github.com:pingdotgg/t3code.git")
         );
         assert_eq!(

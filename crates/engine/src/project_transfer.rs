@@ -469,7 +469,9 @@ fn parse_progress(line: &str) -> Option<(String, Option<u8>)> {
     let line = line.trim().trim_start_matches("remote:").trim();
     let (stage, rest) = line.split_once(':')?;
     let stage = stage.trim();
-    if stage.is_empty() || stage.len() > 40 || !stage.chars().all(|c| c.is_alphanumeric() || c == ' ')
+    if stage.is_empty()
+        || stage.len() > 40
+        || !stage.chars().all(|c| c.is_alphanumeric() || c == ' ')
     {
         return None;
     }
@@ -812,7 +814,10 @@ mod tests {
             "a\\..\\b",
             "nul\0byte",
         ] {
-            assert!(relative_project_path(bad).is_err(), "{bad:?} must be refused");
+            assert!(
+                relative_project_path(bad).is_err(),
+                "{bad:?} must be refused"
+            );
         }
         assert_eq!(
             relative_project_path("apps/web/.env.local").unwrap(),

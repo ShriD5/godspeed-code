@@ -25,9 +25,7 @@ pub(super) fn is_stream(method: &str) -> bool {
 
 /// Clone progress as a stream: the current phase, every change, and nothing
 /// after the terminal item.
-fn clone_stream(
-    rx: watch::Receiver<CloneProgress>,
-) -> BoxStream<'static, serde_json::Value> {
+fn clone_stream(rx: watch::Receiver<CloneProgress>) -> BoxStream<'static, serde_json::Value> {
     futures::stream::unfold(Some((rx, false)), |state| async move {
         let (mut rx, emitted) = state?;
         if emitted && rx.changed().await.is_err() {
