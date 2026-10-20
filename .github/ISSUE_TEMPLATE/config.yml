@@ -3,3 +3,9 @@ contact_links:
   - name: Report a security vulnerability
     url: https://github.com/ShriD5/godspeed-code/security/advisories/new
     about: Please report security issues privately, not in a public issue.
+  - name: Ask a question
+    url: https://github.com/ShriD5/godspeed-code/discussions/categories/q-a
+    about: Questions about setup or usage go to Discussions.
+  - name: Suggest an idea
+    url: https://github.com/ShriD5/godspeed-code/discussions/categories/ideas
+    about: Early feature ideas are easier to shape in Discussions first.
