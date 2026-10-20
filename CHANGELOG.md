@@ -2,6 +2,19 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.5.4 (2026-10-20)
+
+### Added
+
+- When several chats finish at once you hear one chime, not a burst (ported from T3 Code).
+
+### Changed
+
+- Hosted cloud sync is invite-only for now. Signing in with an account that isn't invited shows a
+  clear notice on the Mac and the iPhone; Godspeed Code works fully without sync, and you can host
+  your own server (`edge/DEPLOY.md`).
+- Caught up with Zeron through `c526d6f7`, and updated dependencies.
+
 ## 0.5.3 (2026-10-19)
 
 ### Added
