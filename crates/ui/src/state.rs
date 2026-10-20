@@ -789,6 +789,13 @@ pub struct AppState {
     pub chats: Vec<Chat>,
     /// Fork RPC may arrive ahead of its registry row on a remote device.
     pending_side_chat: Option<Chat>,
+    /// Ignored files still owed to projects just added to another device,
+    /// by space id ([`crate::add_to_device`]). Their composers hold sends.
+    pub project_relays: HashMap<String, crate::add_to_device::ProjectRelay>,
+    /// "Add to <device>…" picked outside the shell (the composer's device
+    /// picker): `(space id, device id)`, taken by the shell, which opens
+    /// the dialog.
+    pub add_to_device_request: Option<(String, String)>,
     /// `pending_side_chat` was started by hand and nothing has minted it:
     /// no registry row, no doc, until its first send.
     unsaved_side_chat: bool,
@@ -957,6 +964,8 @@ impl AppState {
             spaces: Vec::new(),
             chats: Vec::new(),
             pending_side_chat: None,
+            project_relays: HashMap::new(),
+            add_to_device_request: None,
             unsaved_side_chat: false,
             sessions: Vec::new(),
             sidebar_preferences: SidebarPreferencesState::default(),
@@ -2468,6 +2477,7 @@ impl AppState {
         self.spaces.clear();
         self.chats.clear();
         self.pending_side_chat = None;
+        self.project_relays.clear();
         self.unsaved_side_chat = false;
         self.sessions.clear();
         self.sidebar_preferences = SidebarPreferencesState::default();

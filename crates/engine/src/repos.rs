@@ -183,6 +183,8 @@ struct ReposInner {
     worktree_locks: std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     /// Ports, sleep state and setup steps of worktree environments.
     worktree_records: crate::worktree_env::records::WorktreeRecords,
+    /// Clones started by `CloneProject`, for progress and cancellation.
+    project_clones: crate::project_transfer::CloneRegistry,
 }
 
 #[derive(Clone)]
@@ -254,8 +256,13 @@ impl Repos {
                     data_dir,
                     crate::worktree_env::ports::PortRange::DEFAULT,
                 ),
+                project_clones: Default::default(),
             }),
         }
+    }
+
+    pub(crate) fn project_clones(&self) -> &crate::project_transfer::CloneRegistry {
+        &self.inner.project_clones
     }
 
     pub(crate) fn worktree_records(&self) -> &crate::worktree_env::records::WorktreeRecords {

@@ -614,6 +614,8 @@ struct DeviceRow {
     space: Option<Space>,
     /// The checkout's path, when the device holds several of the project.
     detail: Option<String>,
+    /// "Add to <device>…": the device has no checkout of the picked project.
+    add: Option<crate::add_to_device::AddTarget>,
 }
 
 /// What names the selected model, shared by the composer chip and the
@@ -2824,6 +2826,17 @@ impl Pickers {
         };
         if let Some(space) = state.selected_space_row() {
             let members = state.project_members(space);
+            // Devices without a checkout offer to receive the project.
+            let adds = state
+                .add_targets(space, chrono::Utc::now())
+                .into_iter()
+                .map(|target| DeviceRow {
+                    device_id: target.device_id.clone(),
+                    name: format!("Add to {}…", target.name),
+                    space: None,
+                    detail: None,
+                    add: Some(target),
+                });
             return members
                 .iter()
                 .map(|member| {
@@ -2837,8 +2850,10 @@ impl Pickers {
                         name: device_name(&member.device_id),
                         space: Some((*member).clone()),
                         detail: shared.then(|| member.path.clone()),
+                        add: None,
                     }
                 })
+                .chain(adds)
                 .collect();
         }
         let mut devices: Vec<&zeron_proto::Device> = state.devices.iter().collect();
@@ -2856,6 +2871,7 @@ impl Pickers {
                 name: device.name.clone(),
                 space: None,
                 detail: None,
+                add: None,
             })
             .collect()
     }
@@ -2890,7 +2906,7 @@ impl Pickers {
             .iter()
             .position(|row| match &row.space {
                 Some(space) => selected.as_deref() == Some(space.id.as_str()),
-                None => effective.as_deref() == Some(row.device_id.as_str()),
+                None => row.add.is_none() && effective.as_deref() == Some(row.device_id.as_str()),
             })
             .unwrap_or(0)
     }
@@ -2898,6 +2914,20 @@ impl Pickers {
     /// A device row picks the project's checkout there, or — without a
     /// project — the device itself.
     fn pick_device_row(&mut self, row: DeviceRow, cx: &mut Context<Self>) {
+        if let Some(target) = row.add {
+            if target.disabled.is_some() {
+                return;
+            }
+            let Some(space_id) = self.state.read(cx).selected_space.clone() else {
+                return;
+            };
+            self.close(cx);
+            self.state.update(cx, |state, cx| {
+                state.add_to_device_request = Some((space_id, target.device_id));
+                cx.notify();
+            });
+            return;
+        }
         match row.space {
             Some(space) => self.pick_space(space.id, cx),
             None => self.pick_device(row.device_id, cx),
@@ -2954,9 +2984,15 @@ impl Pickers {
                                     Some(space) => {
                                         selected_space.as_deref() == Some(space.id.as_str())
                                     }
-                                    None => effective.as_deref() == Some(row.device_id.as_str()),
+                                    None => {
+                                        row.add.is_none()
+                                            && effective.as_deref() == Some(row.device_id.as_str())
+                                    }
                                 };
                                 let detail = row.detail.clone().map(SharedString::from);
+                                let adding = row.add.is_some();
+                                let disabled =
+                                    row.add.as_ref().and_then(|target| target.disabled.clone());
                                 popover::picker_row(
                                     &theme,
                                     is_selected,
@@ -2967,6 +3003,19 @@ impl Pickers {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pick_device_row(row.clone(), cx);
                                 }))
+                                .when(adding, |el| {
+                                    el.text_color(theme.text_muted).child(
+                                        crate::icons::icon(crate::icons::ADD_CIRCLE)
+                                            .size(px(12.0))
+                                            .flex_none()
+                                            .text_color(theme.text_muted),
+                                    )
+                                })
+                                .when_some(disabled, |el, reason| {
+                                    el.opacity(0.45)
+                                        .cursor_default()
+                                        .tooltip(crate::settings::widgets::text_tooltip(reason))
+                                })
                                 .child(
                                     div()
                                         .flex_1()
@@ -7807,6 +7856,86 @@ mod tests {
             pickers.held_ref = None; // as the refs load does on landing
             assert_eq!(pickers.ref_label(), SharedString::from("trunk"));
             assert_eq!(pickers.checkout_label(), "Current checkout");
+        });
+    }
+
+    #[gpui::test]
+    fn device_picker_offers_to_add_the_project_to_other_devices(cx: &mut gpui::TestAppContext) {
+        let now = chrono::Utc::now();
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("mac".into());
+            state.devices = [("mac", true), ("vps", true), ("old", false)]
+                .into_iter()
+                .map(|(id, capable)| {
+                    serde_json::from_value(serde_json::json!({
+                        "id": id, "name": id.to_uppercase(), "platform": "macos",
+                        "lastSeenAt": now,
+                        "capabilities": if capable {
+                            vec![zeron_proto::project_transfer::CAPABILITY]
+                        } else {
+                            Vec::new()
+                        },
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            state.apply_spaces(vec![Space {
+                id: "notes".into(),
+                device_id: "mac".into(),
+                path: "/mac/notes".into(),
+                name: None,
+                git_detected: true,
+                git_checked_at: None,
+                checkout_id: None,
+                repository_id: Some("commit:abc".into()),
+                created_at: now,
+            }]);
+            state.selected_space = Some("notes".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            let rows: Vec<(String, String, Option<String>)> = pickers
+                .device_rows(cx)
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.device_id,
+                        row.name,
+                        row.add.and_then(|target| target.disabled),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("mac".into(), "MAC".into(), None),
+                    (
+                        "old".into(),
+                        "Add to OLD…".into(),
+                        Some("Update Godspeed on OLD".into())
+                    ),
+                    ("vps".into(), "Add to VPS…".into(), None),
+                ]
+            );
+            // The checkout stays the selected row, never an Add row.
+            assert_eq!(pickers.selected_device_index(cx), 0);
+            // A disabled row does nothing.
+            let old = pickers.device_rows(cx).remove(1);
+            pickers.pick_device_row(old, cx);
+            assert_eq!(pickers.state.read(cx).add_to_device_request, None);
+            // An enabled one asks the shell for the dialog and keeps the canvas.
+            let vps = pickers.device_rows(cx).remove(2);
+            pickers.pick_device_row(vps, cx);
+            assert_eq!(
+                pickers.state.read(cx).add_to_device_request,
+                Some(("notes".into(), "vps".into()))
+            );
+            assert_eq!(
+                pickers.state.read(cx).selected_space.as_deref(),
+                Some("notes")
+            );
         });
     }
 

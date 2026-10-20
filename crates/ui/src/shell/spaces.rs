@@ -7700,8 +7700,49 @@ impl Shell {
             let closing = self.space_menu.closing_since();
             let rename_id = space_id.clone();
             let delete_id = space_id.clone();
+            let targets = {
+                let state = self.state.read(cx);
+                state
+                    .space_row(&space_id)
+                    .map(|space| state.add_targets(space, Utc::now()))
+                    .unwrap_or_default()
+            };
+            let add_rows: Vec<AnyElement> = targets
+                .into_iter()
+                .enumerate()
+                .map(|(ix, target)| {
+                    let enabled = target.disabled.is_none();
+                    let space_id = space_id.clone();
+                    let device_id = target.device_id.clone();
+                    popover::menu_row(&theme, false, format!("space-menu-add-{ix}-{space_id}"))
+                        .id(("space-menu-add", ix))
+                        .when(!enabled, |el| el.opacity(0.4).cursor_default())
+                        .when_some(target.disabled.clone(), |el, reason| {
+                            el.tooltip(crate::settings::widgets::text_tooltip(reason))
+                        })
+                        .when(enabled, |el| {
+                            el.on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_add_to_device(space_id.clone(), device_id.clone(), cx)
+                            }))
+                        })
+                        .child(
+                            icon(icons::ADD_CIRCLE)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(format!("Add to {}…", target.name))),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            let has_add_rows = !add_rows.is_empty();
             let menu = popover::popover_card(&theme)
-                .w(px(170.0))
+                .w(px(if has_add_rows { 210.0 } else { 170.0 }))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.close_space_menu(cx);
                 }))
@@ -7716,6 +7757,9 @@ impl Shell {
                         .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                         .child(SharedString::from("Rename…")),
                 )
+                .when(has_add_rows, |el| {
+                    el.child(popover::menu_separator()).children(add_rows)
+                })
                 .child(popover::menu_separator())
                 .child(
                     popover::menu_row(&theme, false, format!("space-menu-delete-{space_id}"))

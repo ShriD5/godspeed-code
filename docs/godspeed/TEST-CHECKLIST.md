@@ -191,6 +191,31 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 - [ ] A Limited chat: "Continue on another account…" opens a new "(continued)" chat with the prompt
       typed in; the original is untouched.
 
+## 15d. Add a project to another device
+
+Needs two devices signed into the same workspace (this Mac plus another machine or a headless
+server running `godspeed headless`).
+
+- [ ] New session canvas: pick a project that only this Mac has, open the device chip. Expect: the
+      Mac's checkout, then "Add to <other device>…" rows. An offline device's row is dimmed with
+      the offline glyph and a tooltip saying it is offline.
+- [ ] Right-click the project in the projects dropdown. Expect: the same "Add to …" rows.
+- [ ] Pick one. Expect: dialog with the route (Mac path → other device), a folder defaulting to the
+      same place under home (`~/…`), the clone URL with an SSH/HTTPS toggle, and the project's
+      git-ignored files with `.env`, `.env.*`, `.envrc`, `.dev.vars` already ticked and sizes shown.
+      `node_modules` and build folders are not listed; files over 1 MB can't be ticked.
+- [ ] Toggle HTTPS on an SSH remote. Expect: the URL rewrites (`git@github.com:o/r.git` →
+      `https://github.com/o/r.git`). A remote with a custom port keeps the toggle disabled.
+- [ ] Clone. Expect: progress in the dialog (reading files, receiving objects %, adding), then the
+      app lands on the new project on the other device with no toast; the composer shows
+      "Copying N files…" and holds sends until it clears. The ticked files exist in the new
+      checkout; nothing tracked was overwritten.
+- [ ] The new project groups with the original in the project picker (one row, two devices).
+- [ ] Clone into a non-empty folder. Expect: an error in the dialog, Retry after fixing the folder.
+- [ ] Stop during a slow clone. Expect: the dialog returns to editing; the folder on the other
+      device is gone (or left empty if it existed).
+- [ ] Subdirectory project (a monorepo package): adding it clones the repo and opens the package.
+
 ## 16. Robustness
 
 - [ ] Quit mid-run and reopen. Expect: chat recovers, no duplicate messages.

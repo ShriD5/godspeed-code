@@ -42,6 +42,7 @@ pub mod message_index;
 mod model_catalogs;
 pub mod profile;
 pub mod project_actions;
+pub mod project_transfer;
 pub mod registry;
 pub mod repos;
 pub mod rpc;
