@@ -13,6 +13,8 @@
   <a href="https://github.com/ShriD5/godspeed-code/stargazers"><img src="https://img.shields.io/github/stars/ShriD5/godspeed-code?style=social" alt="GitHub stars"></a>
 </p>
 
+<p align="center"><img src="docs/media/demo.gif" alt="Godspeed Code: Mission Control, receipts and the inbox" width="900"></p>
+
 > **Early access.** Godspeed 0.5 is an early release. Expect rough edges. See
 > [ROADMAP.md](docs/godspeed/ROADMAP.md) for what is done and what is next.
 

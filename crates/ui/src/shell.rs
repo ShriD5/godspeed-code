@@ -19297,6 +19297,30 @@ impl Shell {
     }
 }
 
+/// The README demo recording drives the production shell through these.
+#[cfg(feature = "demo-fixture")]
+impl Shell {
+    pub fn fixture_demo_mission_control(
+        &mut self,
+        open: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if open {
+            self.open_mission_control(window, cx);
+        } else {
+            self.close_mission_control(window, cx);
+        }
+    }
+    pub fn fixture_demo_inbox(&mut self, cx: &mut Context<Self>) {
+        self.open_inbox(cx);
+    }
+    pub fn fixture_demo_open_receipt(&self, cx: &mut Context<Self>) {
+        self.transcript
+            .update(cx, |t, cx| t.fixture_open_receipt(cx));
+    }
+}
+
 #[cfg(test)]
 mod settings_modal_regressions {
     use super::*;
