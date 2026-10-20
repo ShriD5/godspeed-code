@@ -57,6 +57,7 @@ mod chat_lifecycle;
 mod limit_recovery;
 mod git_actions;
 mod message_search;
+mod project_transfer;
 mod usage_history;
 mod telegram;
 mod voice_chat;
@@ -1238,6 +1239,7 @@ impl EngineRpc {
             if matches!(
                 method,
                 methods::OWN_VOICE_V2
+                    | methods::CLONE_PROJECT
                     | methods::WATCH_CHECKOUT_CHANGE_REQUEST
                     | methods::WATCH_WORKSPACE_GIT_STATUS
                     | methods::WATCH_HARNESS_UPDATES
@@ -1733,6 +1735,7 @@ const LOGIN_TUNNEL_TTL: Duration = Duration::from_secs(15 * 60);
 /// device-addressable — the handlers themselves need no changes.
 fn forwardable(method: &str) -> bool {
     if voice_remote::handles(method)
+        || project_transfer::handles(method)
         || agents::handles(method)
         || worktree_env::handles(method)
         || telegram::handles(method)
@@ -1859,7 +1862,7 @@ fn forwardable(method: &str) -> bool {
 
 /// Forwardable methods whose reply is a stream (proxied item-by-item).
 fn is_stream_method(method: &str) -> bool {
-    if method == methods::OWN_VOICE_V2 {
+    if method == methods::OWN_VOICE_V2 || project_transfer::is_stream(method) {
         return true;
     }
     matches!(
@@ -2159,6 +2162,9 @@ impl RpcService for EngineRpc {
         }
         if agents::handles(method) {
             return self.agents_rpc(method, params).await;
+        }
+        if project_transfer::handles(method) {
+            return self.project_transfer_rpc(method, params).await;
         }
         if worktree_env::handles(method) {
             return self.worktree_env_rpc(method, params).await;
