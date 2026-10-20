@@ -2156,3 +2156,449 @@ async fn mcp_standalone_session_executes_on_the_selected_device() {
     drop(host);
     relay.abort();
 }
+
+// ---------------------------------------------------------------------------
+// Adding a project to another device
+// ---------------------------------------------------------------------------
+
+/// Collect a `CloneProject` stream until its terminal item.
+async fn clone_until_terminal(mut stream: zeron_rpc::RpcSubscription) -> Vec<serde_json::Value> {
+    let mut items = Vec::new();
+    loop {
+        let item = tokio::time::timeout(Duration::from_secs(60), stream.recv())
+            .await
+            .expect("clone progress before timeout")
+            .expect("clone stream ends only after a terminal item");
+        let phase = item["phase"].as_str().unwrap_or_default().to_string();
+        items.push(item);
+        if matches!(phase.as_str(), "done" | "failed" | "cancelled") {
+            return items;
+        }
+    }
+}
+
+fn b64(text: &[u8]) -> String {
+    BASE64.encode(text)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_project_is_added_to_another_device_with_its_ignored_files() {
+    let (relay_url, _relay) = fake_device_room().await;
+    let dirs = tempfile::tempdir().expect("tempdir");
+    let root = dirs.path();
+
+    // A repository with a subdirectory project, published to a bare remote.
+    let origin = root.join("origin");
+    std::fs::create_dir_all(origin.join("apps/web")).unwrap();
+    git(&origin, &["init", "-b", "main"]).await;
+    std::fs::write(
+        origin.join(".gitignore"),
+        ".env*\nnode_modules/\n*.log\n.dev.vars\n",
+    )
+    .unwrap();
+    std::fs::write(origin.join("apps/web/index.ts"), "export {};\n").unwrap();
+    std::fs::write(origin.join("README.md"), "hi\n").unwrap();
+    git(&origin, &["add", "."]).await;
+    git(&origin, &["commit", "-m", "initial"]).await;
+    let remote = root.join("remote.git");
+    git(
+        root,
+        &[
+            "clone",
+            "--bare",
+            &origin.to_string_lossy(),
+            &remote.to_string_lossy(),
+        ],
+    )
+    .await;
+
+    // The source checkout on device A, with the files a clone lacks.
+    let source = root.join("source");
+    git(
+        root,
+        &["clone", &remote.to_string_lossy(), &source.to_string_lossy()],
+    )
+    .await;
+    std::fs::write(source.join(".env"), "A=1").unwrap();
+    std::fs::write(source.join("apps/web/.env.local"), "B=22").unwrap();
+    std::fs::write(source.join(".dev.vars"), "TOKEN=x").unwrap();
+    std::fs::create_dir_all(source.join("node_modules/pkg")).unwrap();
+    std::fs::write(source.join("node_modules/pkg/index.js"), "x").unwrap();
+    std::fs::write(
+        source.join("big.log"),
+        vec![b'x'; (zeron_proto::project_transfer::MAX_RELAY_FILE_BYTES + 1) as usize],
+    )
+    .unwrap();
+    let outside = root.join("outside-secret");
+    std::fs::write(&outside, "never").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, source.join("linked.log")).unwrap();
+
+    let core_a = assemble(&root.join("a"), "device-a");
+    core_a
+        .workspace
+        .create_space(
+            "space-src",
+            "device-a",
+            &source.to_string_lossy(),
+            None,
+            true,
+        )
+        .unwrap();
+    core_a
+        .workspace
+        .create_space(
+            "space-src-web",
+            "device-a",
+            &source.join("apps/web").to_string_lossy(),
+            None,
+            true,
+        )
+        .unwrap();
+    let core_b = assemble(&root.join("b"), "device-b");
+    let _host = core_b.start_host_relay(&relay_url);
+    let mut link_config =
+        LinkCacheConfig::new(relay_url, Arc::new(StaticToken("test-user".into())));
+    link_config.probe_timeout = Duration::from_secs(5);
+    core_a.set_links(LinkCache::new(link_config));
+    let client = zeron_rpc::memory_client(core_a.rpc_service());
+
+    // Listing on the source: env files and logs, never node_modules, symlinks or .git.
+    let listing = client
+        .call(
+            methods::LIST_IGNORED_FILES,
+            serde_json::json!({ "spaceId": "space-src" }),
+        )
+        .await
+        .expect("listing");
+    let paths: Vec<&str> = listing["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, [".dev.vars", ".env", "apps/web/.env.local", "big.log"]);
+    assert_eq!(listing["files"][1]["size"], 3);
+    assert_eq!(listing["truncated"], false);
+    assert_eq!(listing["subdirectory"], "");
+    assert_eq!(listing["repositoryName"], "source");
+    assert_eq!(listing["remoteUrl"], remote.to_string_lossy().as_ref());
+    let nested = client
+        .call(
+            methods::LIST_IGNORED_FILES,
+            serde_json::json!({ "spaceId": "space-src-web" }),
+        )
+        .await
+        .expect("subdirectory listing");
+    assert_eq!(nested["subdirectory"], "apps/web");
+    assert_eq!(nested["files"][0]["path"], ".env.local");
+    assert_eq!(nested["files"].as_array().unwrap().len(), 1);
+
+    // Reads stay inside the project and under the cap.
+    let chunk = client
+        .call(
+            methods::READ_PROJECT_FILE,
+            serde_json::json!({ "spaceId": "space-src-web", "path": ".env.local" }),
+        )
+        .await
+        .expect("read");
+    assert_eq!(chunk["data"], b64(b"B=22"));
+    assert_eq!(chunk["done"], true);
+    for bad in [
+        "../.env",
+        "../../outside-secret",
+        "/etc/hosts",
+        ".git/config",
+        "linked.log",
+        "big.log",
+    ] {
+        let space = if bad == "../.env" {
+            "space-src-web"
+        } else {
+            "space-src"
+        };
+        assert!(
+            client
+                .call(
+                    methods::READ_PROJECT_FILE,
+                    serde_json::json!({ "spaceId": space, "path": bad }),
+                )
+                .await
+                .is_err(),
+            "{bad} must not be readable"
+        );
+    }
+
+    // Wait for B's relay to answer.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while client
+        .call(
+            methods::LIST_REPOS,
+            serde_json::json!({ "targetDeviceId": "device-b" }),
+        )
+        .await
+        .is_err()
+    {
+        assert!(tokio::time::Instant::now() < deadline, "relay never came up");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Clone the subdirectory project onto B through the relay.
+    let destination = root.join("b-home/code/source");
+    let stream = client
+        .subscribe_checked(
+            methods::CLONE_PROJECT,
+            serde_json::json!({
+                "targetDeviceId": "device-b",
+                "cloneId": "clone-1",
+                "url": remote.to_string_lossy(),
+                "destination": destination.to_string_lossy(),
+                "subdirectory": "apps/web",
+                "spaceId": "space-b-web",
+                "name": "web",
+            }),
+        )
+        .await
+        .expect("clone starts");
+    let items = clone_until_terminal(stream).await;
+    let done = items.last().unwrap();
+    assert_eq!(done["phase"], "done", "{items:?}");
+    assert_eq!(done["spaceId"], "space-b-web");
+    let checkout = std::fs::canonicalize(&destination).unwrap();
+    assert_eq!(done["checkoutRoot"], checkout.to_string_lossy().as_ref());
+    let project = checkout.join("apps/web");
+    assert_eq!(done["projectPath"], project.to_string_lossy().as_ref());
+    let space = core_b
+        .workspace
+        .space("space-b-web")
+        .unwrap()
+        .expect("space registered on B");
+    assert_eq!(space.device_id, "device-b");
+    assert_eq!(space.path, project.to_string_lossy());
+    assert_eq!(space.name.as_deref(), Some("web"));
+    // Same repository identity as the source project, so clone grouping links them.
+    assert_eq!(
+        core_a
+            .repos
+            .repository_identity(&source.join("apps/web"))
+            .await
+            .unwrap(),
+        core_b.repos.repository_identity(&project).await.unwrap(),
+    );
+
+    // Relay writes land inside the new checkout.
+    let written = client
+        .call(
+            methods::WRITE_PROJECT_FILE,
+            serde_json::json!({
+                "targetDeviceId": "device-b", "spaceId": "space-b-web",
+                "path": ".env.local", "data": b64(b"B=22"), "done": true,
+            }),
+        )
+        .await
+        .expect("write");
+    assert_eq!(written["written"], 4);
+    assert_eq!(
+        std::fs::read_to_string(project.join(".env.local")).unwrap(),
+        "B=22"
+    );
+    // A retry may replace an untracked file it wrote before.
+    client
+        .call(
+            methods::WRITE_PROJECT_FILE,
+            serde_json::json!({
+                "targetDeviceId": "device-b", "spaceId": "space-b-web",
+                "path": ".env.local", "data": b64(b"B=23"), "done": true,
+            }),
+        )
+        .await
+        .expect("rewrite");
+    assert_eq!(
+        std::fs::read_to_string(project.join(".env.local")).unwrap(),
+        "B=23"
+    );
+    // Large files arrive in chunks, in order, into new folders.
+    let chunk_bytes = zeron_proto::project_transfer::RELAY_CHUNK_BYTES;
+    let body: Vec<u8> = (0..chunk_bytes + 1000).map(|i| (i % 251) as u8).collect();
+    client
+        .call(
+            methods::WRITE_PROJECT_FILE,
+            serde_json::json!({
+                "targetDeviceId": "device-b", "spaceId": "space-b-web",
+                "path": "config/local/settings.bin", "data": b64(&body[..chunk_bytes]),
+            }),
+        )
+        .await
+        .expect("first chunk");
+    assert!(
+        client
+            .call(
+                methods::WRITE_PROJECT_FILE,
+                serde_json::json!({
+                    "targetDeviceId": "device-b", "spaceId": "space-b-web",
+                    "path": "config/local/settings.bin", "offset": 5, "data": b64(b"x"),
+                }),
+            )
+            .await
+            .is_err(),
+        "out-of-order chunks are refused"
+    );
+    client
+        .call(
+            methods::WRITE_PROJECT_FILE,
+            serde_json::json!({
+                "targetDeviceId": "device-b", "spaceId": "space-b-web",
+                "path": "config/local/settings.bin", "offset": chunk_bytes,
+                "data": b64(&body[chunk_bytes..]), "done": true,
+            }),
+        )
+        .await
+        .expect("last chunk");
+    assert_eq!(
+        std::fs::read(project.join("config/local/settings.bin")).unwrap(),
+        body
+    );
+    // Tracked files, escapes and .git are refused.
+    for (path, why) in [
+        ("index.ts", "tracked"),
+        ("../../README.md", "escape"),
+        ("../.git/config", "escape"),
+        (".git/hooks/pre-commit", ".git"),
+        ("/tmp/evil", "absolute"),
+    ] {
+        assert!(
+            client
+                .call(
+                    methods::WRITE_PROJECT_FILE,
+                    serde_json::json!({
+                        "targetDeviceId": "device-b", "spaceId": "space-b-web",
+                        "path": path, "data": b64(b"x"), "done": true,
+                    }),
+                )
+                .await
+                .is_err(),
+            "{path} ({why}) must be refused"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.join("index.ts")).unwrap(),
+        "export {};\n"
+    );
+    // Writes only reach projects the target owns.
+    assert!(
+        client
+            .call(
+                methods::WRITE_PROJECT_FILE,
+                serde_json::json!({
+                    "targetDeviceId": "device-b", "spaceId": "space-src",
+                    "path": ".env", "data": b64(b"x"), "done": true,
+                }),
+            )
+            .await
+            .is_err()
+    );
+
+    // A non-empty destination is refused before anything runs.
+    let refused = client
+        .subscribe_checked(
+            methods::CLONE_PROJECT,
+            serde_json::json!({
+                "targetDeviceId": "device-b", "cloneId": "clone-2",
+                "url": remote.to_string_lossy(), "destination": destination.to_string_lossy(),
+                "spaceId": "space-b-again",
+            }),
+        )
+        .await;
+    match refused {
+        Ok(_) => panic!("a non-empty destination must be refused"),
+        Err(error) => assert!(error.to_string().contains("not empty"), "{error}"),
+    }
+
+    // A failed clone leaves nothing behind, not even the folders it made.
+    let failing = root.join("b-fail/deep/repo");
+    let items = clone_until_terminal(
+        client
+            .subscribe_checked(
+                methods::CLONE_PROJECT,
+                serde_json::json!({
+                    "targetDeviceId": "device-b", "cloneId": "clone-3",
+                    "url": root.join("missing.git").to_string_lossy(),
+                    "destination": failing.to_string_lossy(),
+                    "spaceId": "space-b-fail",
+                }),
+            )
+            .await
+            .expect("failing clone starts"),
+    )
+    .await;
+    assert_eq!(items.last().unwrap()["phase"], "failed", "{items:?}");
+    assert!(!root.join("b-fail").exists());
+    assert!(core_b.workspace.space("space-b-fail").unwrap().is_none());
+
+    // A missing subdirectory fails and cleans up too.
+    let items = clone_until_terminal(
+        client
+            .subscribe_checked(
+                methods::CLONE_PROJECT,
+                serde_json::json!({
+                    "targetDeviceId": "device-b", "cloneId": "clone-4",
+                    "url": remote.to_string_lossy(),
+                    "destination": root.join("b-nosub").to_string_lossy(),
+                    "subdirectory": "apps/missing",
+                    "spaceId": "space-b-nosub",
+                }),
+            )
+            .await
+            .expect("clone starts"),
+    )
+    .await;
+    assert_eq!(items.last().unwrap()["phase"], "failed", "{items:?}");
+    assert!(!root.join("b-nosub").exists());
+
+    // Cancelling a clone that hangs on a silent server kills git and cleans up.
+    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent_port = silent.local_addr().unwrap().port();
+    let _silent = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = silent.accept().await {
+            held.push(socket);
+        }
+    });
+    let hanging = root.join("b-hang");
+    std::fs::create_dir_all(&hanging).unwrap();
+    let mut stream = client
+        .subscribe_checked(
+            methods::CLONE_PROJECT,
+            serde_json::json!({
+                "targetDeviceId": "device-b", "cloneId": "clone-5",
+                "url": format!("http://127.0.0.1:{silent_port}/repo.git"),
+                "destination": hanging.to_string_lossy(),
+                "spaceId": "space-b-hang",
+            }),
+        )
+        .await
+        .expect("hanging clone starts");
+    let first = tokio::time::timeout(Duration::from_secs(10), stream.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first["phase"], "starting");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let cancelled = client
+        .call(
+            methods::CANCEL_PROJECT_CLONE,
+            serde_json::json!({ "targetDeviceId": "device-b", "cloneId": "clone-5" }),
+        )
+        .await
+        .expect("cancel");
+    assert_eq!(cancelled["cancelled"], true);
+    let items = clone_until_terminal(stream).await;
+    assert_eq!(items.last().unwrap()["phase"], "cancelled", "{items:?}");
+    // The folder existed and was empty: it stays, and stays empty.
+    assert!(hanging.is_dir());
+    assert_eq!(std::fs::read_dir(&hanging).unwrap().count(), 0);
+    assert!(core_b.workspace.space("space-b-hang").unwrap().is_none());
+
+    core_a.shutdown().await;
+    core_b.shutdown().await;
+}
