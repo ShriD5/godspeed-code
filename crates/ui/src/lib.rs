@@ -13,6 +13,7 @@
 //! - [`loaders`] — godspeed pulse loader, gradient spinner, boot splash.
 
 mod account_usage;
+pub mod add_to_device;
 pub mod app_menus;
 pub mod app_update;
 pub mod appearance;

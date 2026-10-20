@@ -44,6 +44,7 @@ use crate::theme::Theme;
 mod chip;
 pub(crate) mod continue_menu;
 pub(crate) mod limit_banner;
+mod relay_banner;
 pub use chip::ChipKind;
 use chip::*;
 pub(crate) use chip::{
@@ -8797,6 +8798,11 @@ impl Composer {
         if state.review_comment_flush_pending(&self.current_key) {
             return true;
         }
+        // A project just added to another device waits for its copied
+        // ignored files (`.env`…) before anything runs there.
+        if state.composer_project_relay().is_some() {
+            return true;
+        }
         if state.selected_chat.is_some() {
             return false;
         }
@@ -11268,6 +11274,10 @@ impl Render for Composer {
         let container = container.when_some(self.render_limit_banner(&theme, cx), |el, banner| {
             el.child(banner)
         });
+        // Files still being copied to a project just added to this device.
+        let container = container.when_some(self.render_relay_banner(&theme, cx), |el, banner| {
+            el.child(banner)
+        });
 
         // What is waiting to be sent, stacked directly above the box it was
         // typed in — the queue is a property of this composer, not a panel
@@ -12889,6 +12899,55 @@ mod tests {
                 "Pending edits must still block submission"
             );
         });
+    }
+
+    #[gpui::test]
+    fn a_project_waiting_for_copied_files_holds_sends(cx: &mut gpui::TestAppContext) {
+        use crate::add_to_device::{ProjectRelay, RelayFile, RelayPhase};
+        let state = cx.new(|_| AppState::new());
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        state.update(cx, |state, _| {
+            state.selected_space = Some("added".into());
+            state.project_relays.insert(
+                "added".into(),
+                ProjectRelay {
+                    target_device_id: "srv".into(),
+                    target_name: "server".into(),
+                    files: vec![RelayFile {
+                        path: ".env".into(),
+                        bytes: std::sync::Arc::new(b"A=1".to_vec()),
+                    }],
+                    phase: RelayPhase::Copying,
+                },
+            );
+        });
+        composer.update(cx, |composer, cx| {
+            composer.input.update(cx, |input, cx| input.set_text("run it", cx));
+            assert!(composer.send_blocked(cx), "sends wait for the copy");
+            composer.on_submit(cx);
+            assert_eq!(composer.input.read(cx).text(), "run it", "the draft stays");
+        });
+        // A failure keeps holding until dismissed.
+        state.update(cx, |state, _| {
+            state.project_relays.get_mut("added").unwrap().phase =
+                RelayPhase::Failed(vec![".env: nope".into()]);
+        });
+        composer.update(cx, |composer, cx| assert!(composer.send_blocked(cx)));
+        state.update(cx, |state, cx| state.dismiss_project_relay("added", cx));
+        composer.update(cx, |composer, cx| assert!(!composer.send_blocked(cx)));
+        // Other projects never wait on it.
+        state.update(cx, |state, _| {
+            state.project_relays.insert(
+                "elsewhere".into(),
+                ProjectRelay {
+                    target_device_id: "srv".into(),
+                    target_name: "server".into(),
+                    files: Vec::new(),
+                    phase: RelayPhase::Copying,
+                },
+            );
+        });
+        composer.update(cx, |composer, cx| assert!(!composer.send_blocked(cx)));
     }
 
     #[gpui::test]

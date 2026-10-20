@@ -66,6 +66,7 @@ use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 
 mod actions_ui;
+mod add_to_device_ui;
 mod chat_dropzone;
 #[cfg(test)]
 mod chat_dropzone_tests;
@@ -2335,6 +2336,8 @@ pub struct Shell {
     /// Space-row context menu (dropdown rows): (space id, window position).
     space_menu: popover::Popup<(String, Point<Pixels>)>,
     rename_space_dialog: Option<RenameSpaceDialog>,
+    /// The "Add to <device>…" dialog (`add_to_device_ui`).
+    add_to_device: Option<add_to_device_ui::AddToDeviceDialog>,
     sidebar_section_migration: Option<(String, crate::state::EngineHandle)>,
     section_dialog: Option<sidebar_sections::SectionDialog>,
     section_menu: Option<(String, Point<Pixels>)>,
@@ -2876,6 +2879,7 @@ impl Shell {
             create_pull_request: None,
             space_menu: popover::Popup::default(),
             rename_space_dialog: None,
+            add_to_device: None,
             sidebar_section_migration: None,
             section_dialog: None,
             section_menu: None,
@@ -3075,6 +3079,7 @@ impl Shell {
             self.voice.update(cx, |voice, cx| voice.cancel(cx));
         }
         self.prune_file_explorers(cx);
+        self.take_add_to_device_request(state, cx);
         self.refresh_harness_update_watch(cx);
         self.sync_search_warm(cx);
         if state.read(cx).engine().is_none() {
@@ -11132,6 +11137,10 @@ impl Shell {
             cx.notify();
             return true;
         }
+        if self.add_to_device.is_some() {
+            self.close_add_to_device(cx);
+            return true;
+        }
         if self.discard_working_tree.is_some() {
             self.discard_working_tree = None;
             cx.notify();
@@ -11436,6 +11445,9 @@ impl Shell {
             overlays.push(overlay);
         }
         if let Some(overlay) = self.render_environment_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_add_to_device_overlay(viewport, window, cx) {
             overlays.push(overlay);
         }
 
