@@ -71,6 +71,7 @@ fn block_segments(block: &Block, out: &mut Vec<String>) {
     match block {
         Block::Paragraph { runs } | Block::Heading { runs, .. } => out.push(runs_text(runs)),
         Block::CodeBlock { code, .. } => out.extend(code.lines().map(str::to_owned)),
+        Block::Math { tex } => out.extend(tex.lines().map(str::to_owned)),
         Block::BlockQuote { children } => {
             for child in children {
                 block_segments(child, out);
