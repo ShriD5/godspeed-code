@@ -23,7 +23,9 @@
 //! - Output is read on a side thread into a shared buffer; the poll loop
 //!   returns as soon as the end marker appears, so init that blocks *after*
 //!   printing (or grandchildren inheriting the pipe) can't wedge us.
-//! - A hard per-attempt timeout kills the shell.
+//! - The shell runs in its own session, so an interactive shell can't take
+//!   over the terminal Godspeed was launched from, and a hard per-attempt
+//!   timeout kills it with everything it started.
 //!
 //! Set `GODSPEED_NO_LOGIN_SHELL=1` to disable the snapshot entirely.
 
@@ -70,6 +72,7 @@ mod unix {
     use std::io::Read;
     use std::sync::OnceLock;
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::os::unix::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::process::Stdio;
     use std::sync::{Arc, Mutex};
@@ -304,8 +307,28 @@ mod unix {
             // VSCODE_RESOLVING_ENVIRONMENT; TERM=dumb quiets fancy prompts.
             .env("GODSPEED_RESOLVING_ENVIRONMENT", "1")
             .env("TERM", "dumb");
+        // An interactive zsh opens /dev/tty when stdin isn't one and takes the
+        // foreground from whatever terminal launched us, then stops on SIGTTOU
+        // or leaves that terminal suspended. Its own session has no
+        // controlling terminal, and its process group dies with it.
+        // SAFETY: setsid is async-signal-safe and touches no parent state.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         let Ok(mut child) = cmd.spawn() else {
             return (Vec::new(), false);
+        };
+        let group = child.id() as libc::pid_t;
+        let kill = |child: &mut std::process::Child| {
+            // SAFETY: the group is the shell's own session, created above.
+            unsafe { libc::kill(-group, libc::SIGKILL) };
+            let _ = child.kill();
+            let _ = child.wait();
         };
         let mut timed_out = false;
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
@@ -352,8 +375,7 @@ mod unix {
                 None => match child.try_wait() {
                     Ok(Some(_)) => exited_at = Some(Instant::now()),
                     Ok(None) if Instant::now() >= deadline => {
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        kill(&mut child);
                         timed_out = true;
                         break;
                     }
@@ -364,8 +386,7 @@ mod unix {
             std::thread::sleep(Duration::from_millis(20));
         }
         if exited_at.is_none() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill(&mut child);
         }
         let b = buf
             .lock()
@@ -493,6 +514,59 @@ exit 1
             // A shell that answers without a PATH is a real answer.
             let quiet = fake_shell(dir.path(), "#!/bin/sh\necho hello\n");
             assert_eq!(snapshot(&quiet, Duration::from_secs(5)), Snapshot::NoPath);
+        }
+
+        /// pingdotgg/t3code@7f63b10275: an interactive shell must not see the
+        /// terminal Godspeed was launched from. Leading its own process group
+        /// means it leads its own session, with no controlling terminal.
+        #[test]
+        fn probe_runs_in_its_own_session() {
+            let dir = tempfile::tempdir().unwrap();
+            let shell = fake_shell(
+                dir.path(),
+                &format!(
+                    "#!/bin/sh
+echo {BEGIN_MARKER}
+echo PATH=$(ps -o pgid= -p $$ | tr -d ' ')/$$
+echo {END_MARKER}
+"
+                ),
+            );
+            let Snapshot::Path(path) = snapshot(&shell, Duration::from_secs(10)) else {
+                panic!("no snapshot");
+            };
+            let path = path.to_string_lossy();
+            let (group, pid) = path.split_once('/').unwrap();
+            assert_eq!(group, pid);
+        }
+
+        #[test]
+        fn timeout_kills_what_the_shell_started() {
+            let dir = tempfile::tempdir().unwrap();
+            let pid_file = dir.path().join("sleeper.pid");
+            let shell = fake_shell(
+                dir.path(),
+                &format!(
+                    "#!/bin/sh
+sleep 60 >/dev/null &
+echo $! > {}
+wait
+",
+                    pid_file.display()
+                ),
+            );
+            assert_eq!(snapshot(&shell, Duration::from_millis(300)), Snapshot::TimedOut);
+            let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            // SAFETY: signal 0 only probes whether the pid still exists.
+            while unsafe { libc::kill(pid, 0) } == 0 {
+                assert!(Instant::now() < deadline, "sleep {pid} outlived the probe");
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
 
         #[test]
