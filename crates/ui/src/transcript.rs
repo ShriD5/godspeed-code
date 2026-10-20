@@ -16650,6 +16650,24 @@ mod tests {
     }
 }
 
+#[cfg(feature = "demo-fixture")]
+impl Transcript {
+    /// Open the latest turn's receipt slip, as a click on it would.
+    pub fn fixture_open_receipt(&mut self, cx: &mut Context<Self>) {
+        let last = self
+            .rows
+            .iter()
+            .rev()
+            .find(|row| matches!(row.kind, RowKind::Receipt { .. }))
+            .map(|row| row.id.clone());
+        if let Some(id) = last
+            && !self.receipts_open.contains_key(&id)
+        {
+            self.toggle_receipt(id, cx);
+        }
+    }
+}
+
 #[cfg(feature = "appshots-fixture")]
 impl Transcript {
     pub fn fixture_appshots_start(&mut self, cx: &mut Context<Self>) {

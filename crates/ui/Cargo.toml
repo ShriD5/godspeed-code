@@ -17,6 +17,8 @@ windows-render-fixture = []
 appshots-fixture = ["gpui_platform/test-support"]
 pull-request-fixture = ["gpui_platform/test-support"]
 resource-profile = ["gpui/bench", "gpui_platform/test-support"]
+# README demo recording: renders its own window to PNG frames.
+demo-fixture = ["gpui_platform/test-support"]
 
 [[example]]
 name = "macos-resource-profile"
@@ -57,6 +59,10 @@ required-features = ["project-palette-fixture"]
 [[example]]
 name = "compact-picker-fixture"
 required-features = ["compact-picker-fixture"]
+
+[[example]]
+name = "demo-fixture"
+required-features = ["demo-fixture"]
 
 [dependencies]
 zeron-voice-media.workspace = true
