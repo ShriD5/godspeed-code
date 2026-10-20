@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-20 | Login-shell environment probes no longer take over the launching terminal (`7f63b10275`) | PR #? |
+| 2026-10-20 | Login-shell environment probes no longer take over the launching terminal (`7f63b10275`) | PR #19 |
 | 2026-10-20 | Idle Claude threads compact before the prompt cache expires, beta (`5d3875d703`) | queued (larger; pairs with the compact-on-return gap in PARITY-T3 §4) |
 | 2026-10-20 | Context meter marks the configured auto-compact threshold (`15c927899d`) | queued |
 | 2026-10-20 | A message promoted into a stopping run stays queued (`10f7db7e38`) | queued (with the held-queue rows) |
