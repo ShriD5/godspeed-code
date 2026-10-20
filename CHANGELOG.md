@@ -2,6 +2,15 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.5.5 (2026-10-20)
+
+### Added
+
+- **Add a project to another device.** From the device picker or a project's menu, choose "Add to
+  <device>…": the other machine clones the repo (SSH or HTTPS), then your git-ignored files such as
+  `.env` are copied over through your own signed-in engines, and you land on the project there.
+  Ported from T3 Code.
+
 ## 0.5.4 (2026-10-20)
 
 ### Added
