@@ -110,7 +110,7 @@ fn checked_parent(root: &Path, relative: &Path, create: bool) -> Result<PathBuf,
 // ---------------------------------------------------------------------------
 
 fn git_command(cwd: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("git");
+    let mut cmd = tokio::process::Command::new(crate::git_program::git_program());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

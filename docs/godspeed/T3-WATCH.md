@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@d36b7da2485bc889b320a285deea181f637d760a (2026-10-20)
+Reviewed T3 through: pingdotgg/t3code@96f09c6558b098f05ad0c027afa3846209c03d4f (2026-10-21)
 
 ## Rules
 
@@ -23,6 +23,15 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-21 | git skips the macOS xcrun shim (`efdda5e521`) | PR #TBD |
+| 2026-10-21 | A stalled clone says "Stalled" instead of a frozen speed (`8fe4206dec`) | queued (`project_transfer.rs` clone progress has no stall timer) |
+| 2026-10-21 | Composer stays usable during approvals; sending declines and redirects (`a93b03c8a5`) | queued (check the composer while an approval is pending) |
+| 2026-10-21 | Stop on a stuck delegate always clears it (`6a6c84f990`, `163bdeaa11`) | queued (check Stop on a delegated chat that hangs) |
+| 2026-10-21 | Steers split a finished turn's work instead of stacking under it (`a8bb769d65`) | queued (check transcript grouping after a steer) |
+| 2026-10-21 | Selected held messages send when a thread is stopped (`96f09c6558`); idle orphaned follow-ups can be cancelled (`849b3f8948`) | queued (with the held-queue rows) |
+| 2026-10-21 | Mermaid diagrams render natively (`fcb20e49aa`) | skipped (Godspeed already renders Mermaid, `markdown/mermaid.rs`) |
+| 2026-10-21 | `t3 thread` CLI starts, messages and reads threads (`955b4cc801`) | skipped (Godspeed's MCP tools cover it) |
+| 2026-10-21 | ~140 other commits: web refactors and test pruning, mobile, release/CI, scheduled-task webhooks, thread chips, Limits bars, storage cleanup | skipped (internal/minor) |
 | 2026-10-20 | Add a project to another machine from Run on, .env files included (`effb4337`); it takes you there, no toasts (`54346a61`) | ported ("Add to <device>…" in the device picker and project menu; engine clone + ignored-file relay) |
 | 2026-10-20 | Login-shell environment probes no longer take over the launching terminal (`7f63b10275`) | PR #19 |
 | 2026-10-20 | Idle Claude threads compact before the prompt cache expires, beta (`5d3875d703`) | queued (larger; pairs with the compact-on-return gap in PARITY-T3 §4) |
