@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-21 | git skips the macOS xcrun shim (`efdda5e521`) | PR #TBD |
+| 2026-10-21 | git skips the macOS xcrun shim (`efdda5e521`) | PR #22 |
 | 2026-10-21 | A stalled clone says "Stalled" instead of a frozen speed (`8fe4206dec`) | queued (`project_transfer.rs` clone progress has no stall timer) |
 | 2026-10-21 | Composer stays usable during approvals; sending declines and redirects (`a93b03c8a5`) | queued (check the composer while an approval is pending) |
 | 2026-10-21 | Stop on a stuck delegate always clears it (`6a6c84f990`, `163bdeaa11`) | queued (check Stop on a delegated chat that hangs) |
