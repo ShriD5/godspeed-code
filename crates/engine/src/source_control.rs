@@ -2269,7 +2269,11 @@ struct SystemProcessRunner;
 #[async_trait]
 impl ProcessRunner for SystemProcessRunner {
     async fn run(&self, request: ProcessRequest) -> Result<ProcessOutput, ProcessRunError> {
-        let mut command = tokio::process::Command::new(&request.program);
+        let mut command = if request.program == "git" {
+            tokio::process::Command::new(crate::git_program::git_program())
+        } else {
+            tokio::process::Command::new(&request.program)
+        };
         if request.program == "gh" {
             zeron_harness::compose_login_shell_path(&mut command);
         }
