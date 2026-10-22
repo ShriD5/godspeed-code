@@ -62,7 +62,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-10-20 | Idle terminals stop scanning the process table (`d1cac663a7`) | skipped (Godspeed never scans it) |
 | 2026-10-20 | ~600 other commits: mobile, desktop/Electron, T3 Connect, EAS/device hosts, usage page, rewind/edit-from-here, provider-specific (OpenCode, Pi, Cursor, Grok, Antigravity, Muse) and React fixes, reverts | skipped (internal/minor or out of scope) |
 | 2026-10-19 | Threads finishing together play one completion sound (`c1f9d20263`) | PR #9 |
-| 2026-10-19 | Terminals no longer inherit the launching tmux/screen/Zellij session (`88d104a35f`) | PR #TBD |
+| 2026-10-19 | Terminals no longer inherit the launching tmux/screen/Zellij session (`88d104a35f`) | PR #23 |
 | 2026-10-19 | A message you send resumes a held queue; queued messages land after a resume (`62d98096ca`, `529d8063cc`) | queued (Godspeed has no held-queue state yet, see PARITY-T3 §4) |
 | 2026-10-19 | A steered send no longer leaves a subagent task running (`afc12ab70a`) | queued (same as the `0b68a4a9c3` row) |
 | 2026-10-19 | Failed attachment uploads no longer block sending (`073734c1e9`) | queued (check a failed attachment in the composer) |
