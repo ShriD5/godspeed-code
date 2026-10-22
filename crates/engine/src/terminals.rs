@@ -36,6 +36,18 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_REPLAY_BYTES: usize = 1024 * 1024;
 const EXITED_TTL: Duration = Duration::from_secs(30 * 60);
 const REAPER_INTERVAL: Duration = Duration::from_secs(60);
+/// These name the multiplexer pane Godspeed was launched from. A terminal that
+/// inherits them points `tmux`, `screen` and `zellij` at that unrelated pane.
+#[cfg(not(windows))]
+const LAUNCHING_MULTIPLEXER_ENV: [&str; 7] = [
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "WINDOW",
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
+    "ZELLIJ_PANE_ID",
+];
 
 struct LiveTerminal {
     // Keep the private action script alive until the shell exits or the tab is closed.
@@ -200,6 +212,13 @@ fn clamp_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+#[cfg(not(windows))]
+fn forget_launching_multiplexer(cmd: &mut CommandBuilder) {
+    for name in LAUNCHING_MULTIPLEXER_ENV {
+        cmd.env_remove(name);
+    }
+}
+
 /// The user's interactive shell: `$SHELL`, else the platform default.
 fn selected_shell() -> String {
     if cfg!(windows) {
@@ -343,6 +362,7 @@ impl Terminals {
                 cmd.arg("-l"); // login shell — the user's real PATH/profile
             }
             cmd.cwd(cwd);
+            forget_launching_multiplexer(&mut cmd);
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
             cmd.env("TERM_PROGRAM", "Godspeed");
@@ -1196,6 +1216,24 @@ mod windows_tests {
 mod initial_command_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn shells_forget_the_multiplexer_godspeed_was_launched_from() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.env("TMUX", "/tmp/tmux-501/default,4242,0");
+        cmd.env("TMUX_PANE", "%3");
+        cmd.env("STY", "4242.pts-0.host");
+        cmd.env("WINDOW", "1");
+        cmd.env("ZELLIJ", "0");
+        cmd.env("ZELLIJ_SESSION_NAME", "work");
+        cmd.env("ZELLIJ_PANE_ID", "2");
+        cmd.env("EDITOR", "vim");
+        forget_launching_multiplexer(&mut cmd);
+        for name in LAUNCHING_MULTIPLEXER_ENV {
+            assert_eq!(cmd.get_env(name), None, "{name} leaked into the shell");
+        }
+        assert_eq!(cmd.get_env("EDITOR"), Some(std::ffi::OsStr::new("vim")));
+    }
 
     #[tokio::test]
     async fn long_command_survives_delayed_shell_startup_and_script_is_cleaned_up() {
