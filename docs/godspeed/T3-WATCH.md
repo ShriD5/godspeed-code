@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@96f09c6558b098f05ad0c027afa3846209c03d4f (2026-10-21)
+Reviewed T3 through: pingdotgg/t3code@8d3b061121fe65669d5d43d011b48cd3027a4108 (2026-10-22)
 
 ## Rules
 
@@ -23,6 +23,18 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-22 | Clones retry over HTTPS when the SSH key is refused (`a49d18cf3b`) | queued (`project_transfer.rs` clone has no fallback) |
+| 2026-10-22 | The background service picks up JAVA_HOME from the login shell (`a7c22f12b7`) | queued (`shell_env.rs` hydrates PATH only) |
+| 2026-10-22 | Pushes the remote refuses say why (`fb7f08782b`) | queued (check the push error text in `git_actions.rs`) |
+| 2026-10-22 | Codex multi-file patches keep every path (`aacd1ee337`) | queued (check Codex file changes with several paths) |
+| 2026-10-22 | A Claude agent stops when the server that started it dies (`5ffe045931`) | queued (with the helper-processes row) |
+| 2026-10-22 | Idle compaction gets a global default and per-instance overrides (`d13fc84670`, `43879d9702`) | queued (with the idle-compaction row) |
+| 2026-10-22 | Status refreshes skip expensive diff minimization (`370b9ae793`) | queued (check `diff_sync.rs` refresh cost) |
+| 2026-10-22 | Mentions like `posts.$postId.tsx` or `[id].tsx` stay chips (`5c3721e20a`); typing a price no longer opens the skill menu (`1ee0241730`) | queued (check composer mention and `$` parsing) |
+| 2026-10-22 | `../` links outside the workspace open as host files; folder links with a trailing slash resolve (`edce5f0e53`, `6de7da548d`) | queued (check transcript link resolution) |
+| 2026-10-22 | Generated merge messages drop Claude Code's claude.com footer; commit prompts don't repeat CLAUDE.md (`b5a226e49c`, `1d9060b9af`) | queued (check generated commit messages) |
+| 2026-10-22 | Approvals in full access say why Claude asked (`e749245387`) | skipped (the approval card already shows `decision_reason` and `blocked_path`) |
+| 2026-10-22 | ~115 other commits: web refactors and render perf, iPhone Duo/mobile, GitLab/GitCafe/Forgejo/Azure, T3 Connect, OpenCode/Pi/Cursor/Antigravity fixes, MCP thread tooling, webhooks, telemetry, RTL text | skipped (internal/minor) |
 | 2026-10-21 | git skips the macOS xcrun shim (`efdda5e521`) | PR #22 |
 | 2026-10-21 | A stalled clone says "Stalled" instead of a frozen speed (`8fe4206dec`) | queued (`project_transfer.rs` clone progress has no stall timer) |
 | 2026-10-21 | Composer stays usable during approvals; sending declines and redirects (`a93b03c8a5`) | queued (check the composer while an approval is pending) |
@@ -50,7 +62,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-10-20 | Idle terminals stop scanning the process table (`d1cac663a7`) | skipped (Godspeed never scans it) |
 | 2026-10-20 | ~600 other commits: mobile, desktop/Electron, T3 Connect, EAS/device hosts, usage page, rewind/edit-from-here, provider-specific (OpenCode, Pi, Cursor, Grok, Antigravity, Muse) and React fixes, reverts | skipped (internal/minor or out of scope) |
 | 2026-10-19 | Threads finishing together play one completion sound (`c1f9d20263`) | PR #9 |
-| 2026-10-19 | Terminals no longer inherit the launching tmux/screen/Zellij session (`88d104a35f`) | queued (`engine/src/terminals.rs` passes the app's env through) |
+| 2026-10-19 | Terminals no longer inherit the launching tmux/screen/Zellij session (`88d104a35f`) | PR #TBD |
 | 2026-10-19 | A message you send resumes a held queue; queued messages land after a resume (`62d98096ca`, `529d8063cc`) | queued (Godspeed has no held-queue state yet, see PARITY-T3 §4) |
 | 2026-10-19 | A steered send no longer leaves a subagent task running (`afc12ab70a`) | queued (same as the `0b68a4a9c3` row) |
 | 2026-10-19 | Failed attachment uploads no longer block sending (`073734c1e9`) | queued (check a failed attachment in the composer) |
