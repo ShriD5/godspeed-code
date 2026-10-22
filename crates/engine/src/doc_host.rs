@@ -3679,7 +3679,7 @@ impl DocHost {
         let parent = workspace
             .chat(chat_id)?
             .ok_or_else(|| EngineError::Other(format!("no such parent chat: {chat_id}")))?;
-        if !parent.is_top_level() || parent.device_id != self.inner.config.device_id {
+        if !workspace.chat_may_parent(&parent)? || parent.device_id != self.inner.config.device_id {
             return Err(EngineError::Other(
                 "delegation notifications require a top-level parent hosted on this device".into(),
             ));

@@ -370,6 +370,8 @@ pub mod methods {
     pub const SET_CONDUCTOR_NOTES: &str = "SetConductorNotes";
     /// `{id}` → `ConductorNode[]`: the main chat and every sub-agent below it.
     pub const GET_CONDUCTOR_TREE: &str = "GetConductorTree";
+    /// Stream of `Conductor[]`: every conductor row, archived included.
+    pub const WATCH_CONDUCTORS: &str = "WatchConductors";
     /// `{chatId}` → `ConductorMembership | null`.
     pub const GET_CONDUCTOR_MEMBERSHIP: &str = "GetConductorMembership";
 

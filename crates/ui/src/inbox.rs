@@ -583,6 +583,7 @@ mod tests {
             request_id: None,
             approval: None,
             agent_run: None,
+            conductor: None,
         }
     }
 

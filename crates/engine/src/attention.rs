@@ -369,6 +369,7 @@ impl Inner {
             .unwrap_or_default();
         self.prune_timed_out(&chats);
         let timed_out = lock(&self.timed_out).clone();
+        let conductors = self.workspace.conductors().unwrap_or_default();
         let items = derive::derive(
             &Sources {
                 device_id: &self.device_id,
@@ -378,6 +379,7 @@ impl Inner {
                 pending: &pending,
                 runs: &runs,
                 timed_out: &timed_out,
+                conductors: &conductors,
             },
             now,
         );

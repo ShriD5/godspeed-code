@@ -25,6 +25,7 @@ pub mod change_requests;
 pub mod chat2_host;
 pub mod chat_import;
 pub mod chat_lifecycle;
+pub mod conductor;
 mod chat_persistence;
 pub mod delegation;
 pub mod diff_sync;
