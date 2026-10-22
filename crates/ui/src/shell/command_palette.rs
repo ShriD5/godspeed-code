@@ -290,6 +290,7 @@ impl Section {
 enum Command {
     NewChat,
     NewProject,
+    NewConductor,
     Settings,
     MissionControl,
     Theme(AppearanceMode),
@@ -306,6 +307,7 @@ impl Command {
         match self {
             Self::NewChat => "New chat",
             Self::NewProject => "New project",
+            Self::NewConductor => "New conductor",
             Self::Settings => "Open settings",
             Self::MissionControl => "Open Mission Control",
             Self::Theme(AppearanceMode::System) => "Switch to system theme",
@@ -323,6 +325,7 @@ impl Command {
         match self {
             Self::NewChat => icons::PEN_NEW_SQUARE,
             Self::NewProject => icons::FOLDER,
+            Self::NewConductor => icons::WIDGET,
             Self::Settings => icons::SETTINGS,
             Self::MissionControl => icons::WIDGET,
             Self::Theme(mode) => mode.icon(),
@@ -417,6 +420,7 @@ fn commands_for(query: &str, is_dark: bool, can_archive: bool) -> Vec<Command> {
     [
         Command::NewChat,
         Command::NewProject,
+        Command::NewConductor,
         Command::Settings,
         Command::MissionControl,
         Command::Theme(if is_dark {
@@ -1124,6 +1128,7 @@ impl Shell {
         match row.kind {
             RowKind::Command(Command::NewChat) => self.open_new_session(None, cx),
             RowKind::Command(Command::NewProject) => self.open_add_space(cx),
+            RowKind::Command(Command::NewConductor) => self.open_conductor_sheet(cx),
             RowKind::Command(Command::Settings) => self.open_last_settings(cx),
             RowKind::Command(Command::MissionControl) => self.open_mission_control(window, cx),
             RowKind::Command(Command::Theme(_)) => unreachable!(),
@@ -1191,7 +1196,8 @@ impl Shell {
             Command::Settings => return Some(crate::settings::badge_combo("mod-,")),
             Command::ArchiveThread => ShortcutId::ArchiveSession,
             Command::MissionControl => ShortcutId::MissionControl,
-            Command::Theme(_)
+            Command::NewConductor
+            | Command::Theme(_)
             | Command::GitCommit
             | Command::GitPush
             | Command::GitPull
@@ -3166,6 +3172,7 @@ mod tests {
             vec![
                 Command::NewChat,
                 Command::NewProject,
+                Command::NewConductor,
                 Command::Settings,
                 Command::MissionControl,
                 Command::Theme(AppearanceMode::Light)
@@ -3173,7 +3180,7 @@ mod tests {
         );
         assert_eq!(
             commands_for("new", true, false),
-            vec![Command::NewChat, Command::NewProject]
+            vec![Command::NewChat, Command::NewProject, Command::NewConductor]
         );
         assert_eq!(
             commands_for("settings", true, false),
