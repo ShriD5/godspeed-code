@@ -13,6 +13,7 @@ pub mod attention;
 pub mod chat_mentions;
 pub mod change_request_assessment;
 pub mod chat_import;
+pub mod conductor;
 pub mod device_paths;
 pub mod entities;
 pub mod file_mentions;
