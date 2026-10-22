@@ -49,6 +49,9 @@ Children record `Chat.parent_chat_id` (proto) ⇄ `parentChatId` on the registry
 row (`Mutate createChat { parentChatId? }`). Chats with a parent cannot create
 chats through MCP, including standalone and batch creation or an explicit parent
 override. A side chat cannot be selected as a parent; only one level is supported.
+The exception is a [conductor](#conductor-tools) member: it may create and parent
+sub-agents until `MAX_CONDUCTOR_DEPTH` (3) levels below the conductor's main
+chat, enforced by both this server and the engine (`chat_may_parent`).
 
 For children, `parent` (id, prefix, or title) overrides the origin (`ZERON_CHAT_ID`).
 `list_chats { parent }` returns children, and chat summaries carry `parentChatId`.
@@ -126,6 +129,9 @@ name (default: the local engine's device).
 | `interrupt_chat`   | `QueueCommand` Interrupt                                  |
 | `respond_to_input` | `QueueCommand` RespondInput                               |
 | `archive_chat`     | `Mutate setChatArchived`                                  |
+| `conductor_info`   | `GetConductorMembership`, `ListConductors`, `GetConductorTree`, `WatchSpaces`/`WatchSessions` snapshots (conductor members only) |
+| `conductor_notes_read` | `GetConductorNotes` |
+| `conductor_notes_write` | `SetConductorNotes {id, notes}` (refused over 32 KB) |
 | `show_visual`      | `PublishVisual {chatId, title, script, assets}` (origin chat only; assets base64 by name, read by the MCP server from the agent's cwd) |
 
 Watch streams are the engine's only read surface (there is no one-shot "get
@@ -167,6 +173,30 @@ before the send: it returns on a new `last_completed_turn`, an
 edge. A brand-new chat has no session row until the host picks the run up, so
 the wait keeps waiting in that case rather than reporting the unstarted run as
 done (this was the one bug the first live run found).
+
+### Conductor tools
+
+A *conductor* (`zeron_proto::conductor`; the UI calls it "Conductor") is one
+long-lived main chat bound to a folder; its agent starts and steers nested
+sub-agents with `create_chat` and `send_message`. Membership is not stored on
+chats: the engine derives it by walking `parentChatId` up to a conductor's main
+chat (`GetConductorMembership {chatId}` → `{conductorId, depth}` or `null`).
+Like `show_visual`, the three conductor tools are listed only when
+`ZERON_CHAT_ID` is set, and fail clearly for a chat outside every conductor.
+
+- `conductor_info` returns `{conductor, yourDepth, mayStartSubAgents, repos:
+  [{space, path, name}], subAgents: [{chatId, title, depth, parentChatId,
+  status}]}`. Call it before starting a sub-agent and reuse one that already
+  owns the work.
+- `conductor_notes_read` / `conductor_notes_write {notes}` read and replace the
+  project notes stored on the conductor row. Notes lead every fresh session of
+  the conductor's agents.
+
+`respond_to_input` is stricter for a conductor member than for other agents:
+it may approve only `ApprovalRisk::Low` requests (judged against the answered
+chat's cwd), may always decline, and may not answer questions: those wait for
+the user. The existing rule that an agent never approves beyond its own access
+mode still applies on top.
 
 ### Visual replies
 
