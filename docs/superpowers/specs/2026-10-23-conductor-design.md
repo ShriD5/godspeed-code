@@ -249,8 +249,11 @@ Existing pieces and gaps:
   `MEMORY.md` (32 KB).
 - In piece 1 the notes are written by hand, by the user or the agent. Piece 3 adds learning.
 
-Builder's call: where the file lives. The consistent choice is `{data_dir}/conductors/{id}/NOTES.md`,
-following always-on agents (`{data_dir}/agents/{id}/MEMORY.md`).
+Decided while building piece 1: the notes live **on the synced conductor row** (a `notes` string,
+capped at 32 KB), not in a file. They then sync with the rest of the registry and need no data-dir
+plumbing; the cost is that they are not a file on disk. The engine reads them through
+`GetConductorNotes` / `SetConductorNotes`, and the main agent through the `conductor_notes_read` /
+`conductor_notes_write` MCP tools.
 
 ### Changing the main agent
 
