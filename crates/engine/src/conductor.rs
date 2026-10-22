@@ -43,13 +43,19 @@ impl WorkspaceHost {
     /// Make a conductor over `params.folder`: a space per repo found there
     /// (reusing any that exist), the main chat, and the registry row.
     /// Idempotent by conductor id so optimistic retries never duplicate.
-    pub fn create_conductor(&self, params: CreateConductorParams) -> Result<Conductor, EngineError> {
+    pub fn create_conductor(
+        &self,
+        params: CreateConductorParams,
+    ) -> Result<Conductor, EngineError> {
         let folder = params.folder.trim().trim_end_matches('/').to_string();
         if folder.is_empty() {
             return Err(EngineError::Other("A conductor needs a folder".into()));
         }
         let own_device = self.device_id().to_string();
-        let device_id = params.device_id.clone().unwrap_or_else(|| own_device.clone());
+        let device_id = params
+            .device_id
+            .clone()
+            .unwrap_or_else(|| own_device.clone());
         if device_id != own_device {
             return Err(EngineError::Other(
                 "A conductor is created on the device that holds its folder".into(),
@@ -64,7 +70,9 @@ impl WorkspaceHost {
             return Ok(existing);
         }
         if params.chat_id.trim().is_empty() {
-            return Err(EngineError::Other("A conductor needs a main chat id".into()));
+            return Err(EngineError::Other(
+                "A conductor needs a main chat id".into(),
+            ));
         }
         if !Path::new(&folder).is_dir() {
             return Err(EngineError::Other(format!("{folder} is not a folder")));
@@ -169,8 +177,11 @@ impl WorkspaceHost {
     /// Add spaces for repos that appeared in the folder since creation.
     pub fn rescan_conductor(&self, id: &str) -> Result<Conductor, EngineError> {
         let conductor = self.conductor(id)?.ok_or_else(|| no_such_conductor(id))?;
-        let space_ids =
-            self.ensure_repo_spaces(&conductor.device_id, &conductor.folder, &conductor.space_ids)?;
+        let space_ids = self.ensure_repo_spaces(
+            &conductor.device_id,
+            &conductor.folder,
+            &conductor.space_ids,
+        )?;
         if space_ids != conductor.space_ids {
             self.mutate(|doc| doc.set_conductor_spaces(id, &space_ids))?;
         }
@@ -222,12 +233,7 @@ impl WorkspaceHost {
                 space_id: chat.space_id.clone(),
                 archived: chat.archived,
             });
-            for child in children
-                .get(chat.id.as_str())
-                .into_iter()
-                .flatten()
-                .rev()
-            {
+            for child in children.get(chat.id.as_str()).into_iter().flatten().rev() {
                 frontier.push((child, depth.saturating_add(1)));
             }
         }
@@ -331,7 +337,14 @@ mod tests {
 
     /// Start a chat under `parent`, as the MCP does for a sub-agent.
     fn spawn(host: &WorkspaceHost, id: &str, parent: &str) -> Result<(), EngineError> {
-        host.create_chat_with_parent(id, None, Some("dev-a"), None, Some("/tmp".into()), Some(parent.into()))
+        host.create_chat_with_parent(
+            id,
+            None,
+            Some("dev-a"),
+            None,
+            Some("/tmp".into()),
+            Some(parent.into()),
+        )
     }
 
     #[tokio::test]
@@ -339,7 +352,9 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&["api", "web"]);
-        let conductor = host.create_conductor(params(folder.path(), "main")).unwrap();
+        let conductor = host
+            .create_conductor(params(folder.path(), "main"))
+            .unwrap();
         assert_eq!(conductor.space_ids.len(), 2);
         assert_eq!(host.read_spaces().unwrap().len(), 2);
         let main = host.chat("main").unwrap().unwrap();
@@ -361,7 +376,9 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&[]);
-        let conductor = host.create_conductor(params(folder.path(), "main")).unwrap();
+        let conductor = host
+            .create_conductor(params(folder.path(), "main"))
+            .unwrap();
         assert!(conductor.space_ids.is_empty());
     }
 
@@ -370,8 +387,12 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&["api", "web"]);
-        let first = host.create_conductor(params(folder.path(), "main-1")).unwrap();
-        let second = host.create_conductor(params(folder.path(), "main-2")).unwrap();
+        let first = host
+            .create_conductor(params(folder.path(), "main-1"))
+            .unwrap();
+        let second = host
+            .create_conductor(params(folder.path(), "main-2"))
+            .unwrap();
         assert_eq!(first.space_ids, second.space_ids);
         assert_eq!(host.read_spaces().unwrap().len(), 2);
         assert_ne!(first.id, second.id);
@@ -394,7 +415,8 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&[]);
-        host.create_conductor(params(folder.path(), "main")).unwrap();
+        host.create_conductor(params(folder.path(), "main"))
+            .unwrap();
         spawn(&host, "d1", "main").unwrap();
         spawn(&host, "d2", "d1").unwrap();
         spawn(&host, "d3", "d2").unwrap();
@@ -408,12 +430,16 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&[]);
-        host.create_conductor(params(folder.path(), "main")).unwrap();
+        host.create_conductor(params(folder.path(), "main"))
+            .unwrap();
         spawn(&host, "member", "main").unwrap();
         host.create_chat("plain", None, Some("dev-a"), None, Some("/tmp".into()))
             .unwrap();
         spawn(&host, "plain-child", "plain").unwrap();
-        let may = |id: &str| host.chat_may_parent(&host.chat(id).unwrap().unwrap()).unwrap();
+        let may = |id: &str| {
+            host.chat_may_parent(&host.chat(id).unwrap().unwrap())
+                .unwrap()
+        };
         assert!(may("main"));
         assert!(may("member"));
         assert!(may("plain"));
@@ -428,9 +454,14 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&[]);
-        let c = host.create_conductor(params(folder.path(), "main")).unwrap();
+        let c = host
+            .create_conductor(params(folder.path(), "main"))
+            .unwrap();
         host.set_conductor_notes(&c.id, "ship fridays").unwrap();
-        assert_eq!(host.conductor(&c.id).unwrap().unwrap().notes, "ship fridays");
+        assert_eq!(
+            host.conductor(&c.id).unwrap().unwrap().notes,
+            "ship fridays"
+        );
         assert!(
             host.set_conductor_notes(&c.id, &"x".repeat(MAX_NOTES_BYTES + 1))
                 .is_err()
@@ -443,7 +474,9 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&["api"]);
-        let c = host.create_conductor(params(folder.path(), "main")).unwrap();
+        let c = host
+            .create_conductor(params(folder.path(), "main"))
+            .unwrap();
         assert_eq!(c.space_ids.len(), 1);
         std::fs::create_dir_all(folder.path().join("web/.git")).unwrap();
         let rescanned = host.rescan_conductor(&c.id).unwrap();
@@ -458,7 +491,9 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&[]);
-        let c = host.create_conductor(params(folder.path(), "main")).unwrap();
+        let c = host
+            .create_conductor(params(folder.path(), "main"))
+            .unwrap();
         spawn(&host, "d1", "main").unwrap();
         spawn(&host, "d2", "d1").unwrap();
         let updated = host
@@ -480,7 +515,9 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let host = host(data.path());
         let folder = folder_with_repos(&["api"]);
-        let c = host.create_conductor(params(folder.path(), "main")).unwrap();
+        let c = host
+            .create_conductor(params(folder.path(), "main"))
+            .unwrap();
         host.set_conductor_notes(&c.id, "blunt reviews").unwrap();
         spawn(&host, "sub", "main").unwrap();
         host.create_chat("plain", None, Some("dev-a"), None, Some("/tmp".into()))

@@ -16,7 +16,9 @@ pub fn discover_repos(folder: &Path) -> Vec<PathBuf> {
         .flatten()
         .filter(|entry| {
             let hidden = entry.file_name().to_string_lossy().starts_with('.');
-            let plain_dir = entry.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink());
+            let plain_dir = entry
+                .file_type()
+                .is_ok_and(|t| t.is_dir() && !t.is_symlink());
             !hidden && plain_dir
         })
         .map(|entry| entry.path())
