@@ -2405,3 +2405,103 @@ fn chat_lifecycle_has_its_own_writer_and_defaults_to_active() {
     assert_eq!(row.lifecycle.state, LifecycleState::Active);
     assert_eq!(row.id, "chat-1");
 }
+
+fn conductor(id: &str, main_chat: &str) -> zeron_proto::Conductor {
+    zeron_proto::Conductor {
+        id: id.into(),
+        name: "Acme".into(),
+        purpose: Some("Ship billing".into()),
+        folder: "/code/acme".into(),
+        device_id: "dev-a".into(),
+        main_chat_id: main_chat.into(),
+        space_ids: vec!["space-1".into()],
+        config: None,
+        notes: String::new(),
+        archived: false,
+        created_at: ts(1_000),
+    }
+}
+
+fn chat_under(id: &str, parent: Option<&str>) -> Chat {
+    let mut c = chat(id, "dev-a");
+    c.parent_chat_id = parent.map(str::to_string);
+    c
+}
+
+#[test]
+fn conductor_row_round_trips() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    assert_eq!(ws.conductor("c1"), Some(conductor("c1", "main")));
+    assert_eq!(ws.conductors().len(), 1);
+    assert!(ws.conductor("nope").is_none());
+    assert!(ws.upsert_conductor(&conductor("", "main")).is_err());
+}
+
+#[test]
+fn membership_depth_counts_from_main_chat() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    ws.upsert_chat(&chat_under("main", None)).unwrap();
+    ws.upsert_chat(&chat_under("sub", Some("main"))).unwrap();
+    ws.upsert_chat(&chat_under("nested", Some("sub"))).unwrap();
+    ws.upsert_chat(&chat_under("elsewhere", None)).unwrap();
+    let depth = |id: &str| ws.conductor_of_chat(id).map(|m| (m.conductor_id, m.depth));
+    assert_eq!(depth("main"), Some(("c1".into(), 0)));
+    assert_eq!(depth("sub"), Some(("c1".into(), 1)));
+    assert_eq!(depth("nested"), Some(("c1".into(), 2)));
+    assert_eq!(depth("elsewhere"), None);
+}
+
+#[test]
+fn membership_survives_dangling_parent_as_none() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    ws.upsert_chat(&chat_under("orphan", Some("deleted-parent")))
+        .unwrap();
+    assert_eq!(ws.conductor_of_chat("orphan"), None);
+    assert_eq!(ws.conductor_of_chat("unknown-chat"), None);
+}
+
+#[test]
+fn membership_terminates_on_parent_cycle() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    ws.upsert_chat(&chat_under("a", Some("b"))).unwrap();
+    ws.upsert_chat(&chat_under("b", Some("a"))).unwrap();
+    assert_eq!(ws.conductor_of_chat("a"), None);
+}
+
+#[test]
+fn conductor_updates_notes_and_clears_purpose() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    assert!(ws.set_conductor_notes("c1", "release on fridays").unwrap());
+    assert_eq!(ws.conductor("c1").unwrap().notes, "release on fridays");
+    assert!(!ws.set_conductor_notes("missing", "x").unwrap());
+    let too_big = "x".repeat(zeron_proto::MAX_NOTES_BYTES + 1);
+    assert!(ws.set_conductor_notes("c1", &too_big).is_err());
+
+    let cleared = zeron_proto::UpdateConductorParams {
+        id: "c1".into(),
+        purpose: Some("  ".into()),
+        archived: Some(true),
+        ..Default::default()
+    };
+    assert!(ws.update_conductor(&cleared).unwrap());
+    let c = ws.conductor("c1").unwrap();
+    assert_eq!(c.purpose, None);
+    assert!(c.archived);
+    assert_eq!(c.notes, "release on fridays");
+}
+
+#[test]
+fn conductor_spaces_replace_the_list() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    assert!(
+        ws.set_conductor_spaces("c1", &["s1".into(), "s2".into()])
+            .unwrap()
+    );
+    assert_eq!(ws.conductor("c1").unwrap().space_ids, vec!["s1", "s2"]);
+}
