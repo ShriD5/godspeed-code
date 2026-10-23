@@ -525,7 +525,8 @@ mod tests {
         let main = conductor_prompt_prefix(&host, "main").unwrap();
         assert!(main.contains("main agent"));
         assert!(main.contains("blunt reviews"));
-        assert!(main.contains("/api"));
+        let api = folder.path().join("api");
+        assert!(main.contains(api.to_string_lossy().as_ref()));
         let sub = conductor_prompt_prefix(&host, "sub").unwrap();
         assert!(sub.contains("sub-agent"));
         assert!(sub.contains("blunt reviews"));
