@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@8d3b061121fe65669d5d43d011b48cd3027a4108 (2026-10-22)
+Reviewed T3 through: pingdotgg/t3code@b2377db9432591a4b844ebff8237ae958bf6a828 (2026-10-23)
 
 ## Rules
 
@@ -23,6 +23,15 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-23 | Thread title instructions in settings (`51273020db`) | PR #27 |
+| 2026-10-23 | Messages from other agents fold into one-line rows (`f054d1b801`) | queued (`agent_message_display` in `transcript.rs` keeps the full bubble) |
+| 2026-10-23 | Claude approval feedback reaches the subagent that asked (`b7e802bdec`) | queued (check a decline-with-message on a subagent approval) |
+| 2026-10-23 | agent-browser and Chrome no longer outlive the agent that started them (`1aa7179670`) | queued (with the helper-processes row) |
+| 2026-10-23 | New threads no longer hang when a project's machine is offline (`56c365cc29`) | queued (check a new chat in an offline device's project) |
+| 2026-10-23 | The sidebar follows the active thread after back/forward (`044f07257c`) | queued (check `NavigateBack` reveals the row) |
+| 2026-10-23 | Cmd+K search hides subagents and favors recent whole-word matches (`4812dcad02`) | skipped (`shell/thread_search.rs` already scores word starts and breaks ties by recency) |
+| 2026-10-23 | Cmd+B toggles the sidebar unless text is selected (`7d6b5bec87`) | skipped (the composer has no bold; `mod-b` always toggles) |
+| 2026-10-23 | ~53 other commits: GitCafe/Forgejo PR watches, managed Codex auth, mobile, SQLite contention, usage, toasts, test cleanup, CI | skipped (internal/minor) |
 | 2026-10-22 | Clones retry over HTTPS when the SSH key is refused (`a49d18cf3b`) | queued (`project_transfer.rs` clone has no fallback) |
 | 2026-10-22 | The background service picks up JAVA_HOME from the login shell (`a7c22f12b7`) | queued (`shell_env.rs` hydrates PATH only) |
 | 2026-10-22 | Pushes the remote refuses say why (`fb7f08782b`) | queued (check the push error text in `git_actions.rs`) |
