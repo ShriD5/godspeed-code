@@ -1,7 +1,7 @@
 //! Conductor view models: what the sidebar entry and the main chat's cards
 //! show, derived from rows the client already holds. Pure, so the rules test
-//! without a window; the GPUI views live in `shell/conductor_ui.rs`, which
-//! needs the shell's private state.
+//! without a window. The cards render as transcript rows (`transcript.rs`);
+//! the sidebar, sheet and Answer pop-up live in `shell/conductor_ui.rs`.
 
 use chrono::{DateTime, Utc};
 use zeron_proto::attention::AttentionItem;
@@ -44,6 +44,8 @@ pub struct CardModel {
     pub nested: usize,
     /// The item to answer when something below (or here) is waiting.
     pub attention: Option<AttentionItem>,
+    /// When the sub-agent was started: places the card in the transcript.
+    pub created_at: DateTime<Utc>,
 }
 
 impl CardModel {
@@ -110,6 +112,7 @@ pub fn card_model(
         steps: steps[from..].to_vec(),
         nested,
         attention,
+        created_at: chat.created_at,
     }
 }
 
@@ -162,6 +165,59 @@ pub fn cards_for_main_chat(
             )
         })
         .collect()
+}
+
+/// Cards for `chat_id` when it is a live conductor's main chat, else none.
+/// A card's one step is the sub-agent's last-message preview.
+pub fn cards_for_chat(
+    chat_id: &str,
+    conductors: &[Conductor],
+    chats: &[Chat],
+    sessions: &[Session],
+    attention: &[AttentionItem],
+    now: DateTime<Utc>,
+) -> Vec<CardModel> {
+    let Some(conductor) = conductors
+        .iter()
+        .find(|c| c.main_chat_id == chat_id && !c.archived)
+    else {
+        return Vec::new();
+    };
+    let steps = |id: &str| -> Vec<String> {
+        chats
+            .iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.last_message_preview.as_deref())
+            .map(clean_preview)
+            .filter(|line| !line.is_empty())
+            .map(|line| vec![line])
+            .unwrap_or_default()
+    };
+    cards_for_main_chat(conductor, chats, sessions, attention, &steps, now)
+}
+
+/// One plain line from a chat's last-message preview: markdown marks and the
+/// live "Running…" tail dropped.
+pub fn clean_preview(preview: &str) -> String {
+    let plain: String = preview
+        .chars()
+        .filter(|c| !matches!(c, '*' | '`' | '#'))
+        .collect();
+    let line = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    line.trim_end_matches("Running…")
+        .trim_end_matches("Running...")
+        .trim()
+        .to_string()
+}
+
+/// The transcript entry a card follows: the last one written at or before the
+/// sub-agent started (`entry_times` in epoch ms, transcript order). A card
+/// older than every entry follows the first one.
+pub fn anchor_entry(started_ms: i64, entry_times: &[i64]) -> Option<usize> {
+    if entry_times.is_empty() {
+        return None;
+    }
+    Some(entry_times.iter().rposition(|t| *t <= started_ms).unwrap_or(0))
 }
 
 /// Whether anything in the conductor waits on the user: an item linked to one
@@ -364,6 +420,35 @@ mod tests {
         let entries = sidebar_entries(&[conductor(), archived, older], &[]);
         let ids: Vec<_> = entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["old", "cond"]);
+    }
+
+    #[test]
+    fn a_card_follows_the_last_entry_before_its_start() {
+        assert_eq!(anchor_entry(50, &[]), None);
+        assert_eq!(anchor_entry(50, &[10, 40, 60]), Some(1));
+        assert_eq!(anchor_entry(40, &[10, 40, 60]), Some(1));
+        assert_eq!(anchor_entry(5, &[10, 40]), Some(0));
+        assert_eq!(anchor_entry(99, &[10, 40]), Some(1));
+    }
+
+    #[test]
+    fn previews_lose_markdown_and_the_running_tail() {
+        assert_eq!(
+            clean_preview("**Verdict: safe**\n with `caveats`. Running…"),
+            "Verdict: safe with caveats."
+        );
+        assert_eq!(clean_preview("Running…"), "");
+    }
+
+    #[test]
+    fn only_a_conductor_main_chat_gets_cards() {
+        let chats = vec![chat("main", None, 0), chat("a", Some("main"), 1)];
+        let conductors = [conductor()];
+        assert_eq!(
+            cards_for_chat("main", &conductors, &chats, &[], &[], at(5)).len(),
+            1
+        );
+        assert!(cards_for_chat("a", &conductors, &chats, &[], &[], at(5)).is_empty());
     }
 
     #[test]

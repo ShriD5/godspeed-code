@@ -1,13 +1,14 @@
 //! Conductor on the shell ([`crate::conductor`] holds the view models): the
-//! sidebar entries, the creation sheet, the sub-agent cards pinned over a
-//! main chat, and the Answer pop-up that settles a card's waiting request
-//! without leaving the main chat.
+//! sidebar entries, the creation sheet, and the Answer pop-up that settles a
+//! card's waiting request without leaving the main chat. The cards themselves
+//! are transcript rows.
 use super::*;
 
 use zeron_proto::attention::AttentionItem;
-use zeron_proto::{Conductor, CreateConductorParams};
+use zeron_engine::registry::HarnessDescriptor;
+use zeron_proto::{AccessMode, ChatConfig, Conductor, CreateConductorParams, HarnessId};
 
-use crate::conductor::{self, CardModel, CardStatus};
+use crate::conductor;
 
 /// How long a freshly created conductor's main chat gets to reach this
 /// window's chat list before it is opened anyway.
@@ -18,9 +19,14 @@ pub(super) struct ConductorSheet {
     folder: Option<String>,
     name: Entity<ComposerInput>,
     purpose: Entity<ComposerInput>,
+    /// Agents this device can run; empty until the catalog loads.
+    harnesses: Vec<HarnessDescriptor>,
+    harness: Option<HarnessId>,
+    access: AccessMode,
     error: Option<String>,
     busy: bool,
     focus_pending: bool,
+    harness_task: Option<Task<()>>,
     pick_task: Option<Task<()>>,
     task: Option<Task<()>>,
     _events: Vec<Subscription>,
@@ -31,16 +37,6 @@ pub(super) struct AnswerPopup {
     error: Option<String>,
     busy: bool,
     task: Option<Task<()>>,
-}
-
-fn status_color(status: CardStatus, theme: &Theme) -> gpui::Hsla {
-    match status {
-        CardStatus::NeedsYou => theme.warning,
-        CardStatus::Failed => theme.danger,
-        CardStatus::Done => theme.success,
-        CardStatus::Working => theme.accent,
-        CardStatus::Idle => theme.text_faint,
-    }
 }
 
 impl Shell {
@@ -192,14 +188,55 @@ impl Shell {
             folder: None,
             name,
             purpose,
+            harnesses: Vec::new(),
+            harness: None,
+            access: crate::settings::default_access_mode(cx),
             error: None,
             busy: false,
             focus_pending: true,
+            harness_task: None,
             pick_task: None,
             task: None,
             _events: events,
         });
+        self.load_conductor_harnesses(cx);
         cx.notify();
+    }
+
+    /// The sheet picks its own agent: the composer follows the selected chat,
+    /// which may be on an agent this conductor should not inherit.
+    fn load_conductor_harnesses(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let task = cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call_as::<Vec<HarnessDescriptor>>(
+                    zeron_rpc::methods::LIST_HARNESSES,
+                    serde_json::json!({}),
+                )
+                .await;
+            this.update(cx, |shell, cx| {
+                let Some(sheet) = shell.conductor_sheet.as_mut() else {
+                    return;
+                };
+                match result {
+                    Ok(list) => {
+                        sheet.harnesses = crate::pickers::offered_harnesses(&list);
+                        if sheet.harness.is_none() {
+                            sheet.harness = sheet.harnesses.first().map(|d| d.id);
+                        }
+                    }
+                    Err(error) => sheet.error = Some(error.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        if let Some(sheet) = self.conductor_sheet.as_mut() {
+            sheet.harness_task = Some(task);
+        }
     }
 
     fn close_conductor_sheet(&mut self, cx: &mut Context<Self>) {
@@ -246,19 +283,25 @@ impl Shell {
             let state = self.state.read(cx);
             (state.engine().cloned(), state.local_device_id.clone())
         };
-        let config = self
-            .composer
-            .read(cx)
-            .pickers()
-            .read(cx)
-            .resolved(cx)
-            .chat_config();
         let Some(sheet) = self.conductor_sheet.as_mut() else {
             return;
         };
         if sheet.busy {
             return;
         }
+        let Some(harness) = sheet.harness else {
+            sheet.error = Some("No agent is available on this device.".into());
+            cx.notify();
+            return;
+        };
+        let config = Some(ChatConfig {
+            harness,
+            model: None,
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox: sheet.access.legacy().0,
+            access_mode: Some(sheet.access),
+        });
         let Some(folder) = sheet.folder.clone() else {
             sheet.error = Some("Choose a folder first.".into());
             cx.notify();
@@ -337,180 +380,9 @@ impl Shell {
         cx.notify();
     }
 
-    // ── cards over the main chat ────────────────────────────────────────────
-
-    /// The conductor whose main chat is selected, with its cards.
-    fn selected_conductor_cards(&self, cx: &App) -> Option<(Conductor, Vec<CardModel>)> {
-        let state = self.state.read(cx);
-        let selected = state.selected_chat.as_deref()?;
-        let conductor = state
-            .conductors
-            .iter()
-            .find(|c| c.main_chat_id == selected && !c.archived)?
-            .clone();
-        let steps = |chat_id: &str| -> Vec<String> {
-            state
-                .chats
-                .iter()
-                .find(|c| c.id == chat_id)
-                .and_then(|c| c.last_message_preview.as_deref())
-                .map(|preview| vec![preview.trim().to_string()])
-                .unwrap_or_default()
-        };
-        let cards = conductor::cards_for_main_chat(
-            &conductor,
-            &state.chats,
-            &state.sessions,
-            &state.attention.items,
-            &steps,
-            Utc::now(),
-        );
-        Some((conductor, cards))
-    }
-
-    /// Sub-agent cards pinned along the top of a conductor's main chat; `None`
-    /// for any other chat, or while the conductor has started no sub-agents.
-    pub(super) fn render_conductor_cards(
-        &mut self,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let (_, cards) = self.selected_conductor_cards(cx)?;
-        if cards.is_empty() {
-            return None;
-        }
-        let cards: Vec<AnyElement> = cards
-            .into_iter()
-            .map(|card| self.render_conductor_card(card, theme, cx))
-            .collect();
-        Some(
-            div()
-                .id("conductor-cards")
-                .absolute()
-                .top(px(0.0))
-                .left(px(0.0))
-                .right(px(0.0))
-                .px(px(16.0))
-                .py(px(8.0))
-                .flex()
-                .flex_row()
-                .gap(px(8.0))
-                .overflow_x_scroll()
-                .children(cards)
-                .into_any_element(),
-        )
-    }
-
-    fn render_conductor_card(
-        &mut self,
-        card: CardModel,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let color = status_color(card.status, theme);
-        let open_id = card.chat_id.clone();
-        let answer_item = card.attention.as_ref().map(|item| item.id.clone());
-        let nested = card.nested;
-        div()
-            .id(SharedString::from(format!(
-                "conductor-card-{}",
-                card.chat_id
-            )))
-            .flex_none()
-            .w(px(240.0))
-            .p(px(10.0))
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(if card.needs_you() {
-                theme.warning.opacity(0.6)
-            } else {
-                crate::theme::hairline(0.10)
-            })
-            .bg(popover::surface_bg(theme))
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(div().flex_none().size(px(7.0)).rounded_full().bg(color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(crate::typography::ui_rems(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(SharedString::from(card.title.clone())),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .text_color(color)
-                            .child(SharedString::from(card.status.label())),
-                    ),
-            )
-            .children(card.steps.iter().map(|step| {
-                div()
-                    .truncate()
-                    .text_size(crate::typography::ui_rems(11.5))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(step.clone()))
-            }))
-            .when(nested > 0, |el| {
-                el.child(
-                    div()
-                        .text_size(crate::typography::ui_rems(11.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from(format!(
-                            "{nested} sub-agent{}",
-                            if nested == 1 { "" } else { "s" }
-                        ))),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(6.0))
-                    .child(
-                        popover::btn_ghost(
-                            theme,
-                            "Open thread",
-                            format!("conductor-open-{}", card.chat_id),
-                        )
-                        .id(SharedString::from(format!(
-                            "conductor-open-{}",
-                            card.chat_id
-                        )))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_chat(open_id.clone(), cx);
-                        })),
-                    )
-                    .when_some(answer_item, |el, item_id| {
-                        el.child(
-                            popover::btn_primary(theme, "Answer")
-                                .id(SharedString::from(format!(
-                                    "conductor-answer-{}",
-                                    card.chat_id
-                                )))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.open_answer_popup(item_id.clone(), cx);
-                                })),
-                        )
-                    }),
-            )
-            .into_any_element()
-    }
-
     // ── Answer pop-up ───────────────────────────────────────────────────────
 
-    fn open_answer_popup(&mut self, item_id: String, cx: &mut Context<Self>) {
+    pub(super) fn open_answer_popup(&mut self, item_id: String, cx: &mut Context<Self>) {
         self.answer_popup = Some(AnswerPopup {
             item_id,
             error: None,
@@ -618,27 +490,6 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let agent = self
-            .composer
-            .read(cx)
-            .pickers()
-            .read(cx)
-            .resolved(cx)
-            .chat_config()
-            .map(|config| {
-                let model = config
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "default model".into());
-                let mode = config
-                    .access_mode
-                    .map(|mode| mode.label().to_string())
-                    .unwrap_or_default();
-                format!(
-                    "{} · {model} · {mode}",
-                    super::harness_updates::agent_name(config.harness)
-                )
-            });
         let sheet = self.conductor_sheet.as_mut()?;
         if std::mem::take(&mut sheet.focus_pending) {
             window.focus(&sheet.name.focus_handle(cx), cx);
@@ -653,6 +504,12 @@ impl Shell {
             .unwrap_or_else(|| "No folder chosen".into());
         let has_folder = sheet.folder.is_some();
         let error = sheet.error.clone();
+        let harnesses: Vec<(HarnessId, bool)> = sheet
+            .harnesses
+            .iter()
+            .map(|d| (d.id, sheet.harness == Some(d.id)))
+            .collect();
+        let access = sheet.access;
         let card = popover::dialog_card(theme)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
@@ -704,17 +561,73 @@ impl Shell {
                     .mt(px(8.0))
                     .child(popover::dialog_field(purpose.into_any_element())),
             )
-            .when_some(agent, |el, agent| {
-                el.child(
-                    div()
-                        .mt(px(10.0))
-                        .text_size(crate::typography::ui_rems(12.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from(format!(
-                            "Main agent: {agent} (change it with the pickers beside the composer)"
-                        ))),
-                )
-            })
+            .child(
+                div()
+                    .mt(px(12.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_faint)
+                    .child("Main agent"),
+            )
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .when(harnesses.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_faint)
+                                .child("Loading agents…"),
+                        )
+                    })
+                    .children(harnesses.into_iter().map(|(id, selected)| {
+                        let label = super::harness_updates::agent_name(id);
+                        let key = format!("conductor-agent-{label}");
+                        let chip = if selected {
+                            popover::btn_primary(theme, label)
+                        } else {
+                            popover::btn_ghost(theme, label, key.clone())
+                        };
+                        chip.id(SharedString::from(key)).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                if let Some(sheet) = this.conductor_sheet.as_mut() {
+                                    sheet.harness = Some(id);
+                                    if !zeron_proto::access_mode_supported(id, sheet.access) {
+                                        sheet.access = AccessMode::default();
+                                    }
+                                }
+                                cx.notify();
+                            },
+                        ))
+                    })),
+            )
+            .child(
+                div()
+                    .mt(px(10.0))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(6.0))
+                    .children(AccessMode::ALL.into_iter().map(|mode| {
+                        let key = format!("conductor-access-{}", mode.label());
+                        let chip = if mode == access {
+                            popover::btn_primary(theme, mode.label())
+                        } else {
+                            popover::btn_ghost(theme, mode.label(), key.clone())
+                        };
+                        chip.id(SharedString::from(key)).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                if let Some(sheet) = this.conductor_sheet.as_mut() {
+                                    sheet.access = mode;
+                                }
+                                cx.notify();
+                            },
+                        ))
+                    })),
+            )
             .when_some(error, |el, error| {
                 el.child(
                     div()

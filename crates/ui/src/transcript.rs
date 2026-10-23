@@ -1110,6 +1110,38 @@ pub enum RowKind {
     Receipt {
         receipt: Arc<crate::receipt::Receipt>,
     },
+    /// A conductor sub-agent's live card ([`crate::conductor`]), placed after
+    /// the entry during which the main agent started it.
+    ConductorCard {
+        card: Arc<crate::conductor::CardModel>,
+    },
+}
+
+fn conductor_card_row(card: &crate::conductor::CardModel) -> Row {
+    let id: SharedString = format!("conductor-card:{}", card.chat_id).into();
+    Row {
+        id: id.clone(),
+        version: fnv1a(format!("{card:?}").as_bytes()),
+        turn_start: true,
+        kind: RowKind::ConductorCard {
+            card: Arc::new(card.clone()),
+        },
+        entry_id: id,
+        timestamp: None,
+        copy_text: None,
+        compact_fold: None,
+    }
+}
+
+fn conductor_status_color(status: crate::conductor::CardStatus, theme: &Theme) -> gpui::Hsla {
+    use crate::conductor::CardStatus;
+    match status {
+        CardStatus::NeedsYou => theme.warning,
+        CardStatus::Failed => theme.danger,
+        CardStatus::Done => theme.success,
+        CardStatus::Working => theme.accent,
+        CardStatus::Idle => theme.text_faint,
+    }
 }
 
 fn generated_image_devices(owner: &str, fallback: &[String]) -> Vec<String> {
@@ -3181,7 +3213,10 @@ pub struct Transcript {
     pub(crate) find: Option<crate::transcript_find::FindState>,
     /// A search result to scroll to once its chat's rows arrive.
     pub(crate) pending_reveal: Option<crate::transcript_find::PendingReveal>,
-    last_source: Option<(Option<String>, TranscriptReplayState, u64)>,
+    last_source: Option<(Option<String>, TranscriptReplayState, u64, u64)>,
+    /// Sub-agent cards when this is a conductor's main chat; their
+    /// fingerprint joins `last_source` so status changes re-place them.
+    conductor_cards: Vec<crate::conductor::CardModel>,
     chat_id: Option<String>,
     /// The shell may retain this already-laid-out view briefly for its exit.
     /// Cleared as soon as the exit is invisible; never used for another chat.
@@ -3462,6 +3497,10 @@ pub enum TranscriptEvent {
         title: String,
         frozen: bool,
     },
+    /// A conductor card's "Open thread".
+    OpenChat { chat_id: String },
+    /// A conductor card's "Answer": settle the waiting item in place.
+    AnswerAttention { item_id: String },
 }
 
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
@@ -3639,6 +3678,7 @@ impl Transcript {
             list,
             rows: Vec::new(),
             last_source: None,
+            conductor_cards: Vec::new(),
             // Pre-set so `sync` never sees an attach edge — an override
             // instance must not reset (or re-pin) on selection changes.
             chat_id: doc_override.clone(),
@@ -4773,10 +4813,27 @@ impl Transcript {
             }
         };
 
+        let conductor_cards = match (&self.doc_override, &selected) {
+            (None, Some(chat_id)) => {
+                let s = self.state.read(cx);
+                crate::conductor::cards_for_chat(
+                    chat_id,
+                    &s.conductors,
+                    &s.chats,
+                    &s.sessions,
+                    &s.attention.items,
+                    chrono::Utc::now(),
+                )
+            }
+            _ => Vec::new(),
+        };
+        let cards_fingerprint = fnv1a(format!("{conductor_cards:?}").as_bytes());
+        self.conductor_cards = conductor_cards;
         let source = (
             selected.clone(),
             replay,
             self.state.read(cx).transcript_revision,
+            cards_fingerprint,
         );
         if self.last_source.as_ref() == Some(&source) {
             return;
@@ -4908,6 +4965,20 @@ impl Transcript {
                         .and_then(|v| v.as_str().map(str::to_owned)),
                 }
             });
+            let entry_times: Vec<i64> = entries.iter().map(|e| e.created_at).collect();
+            let mut card_rows: HashMap<usize, Vec<Row>> = HashMap::new();
+            for card in &self.conductor_cards {
+                let Some(anchor) = crate::conductor::anchor_entry(
+                    card.created_at.timestamp_millis(),
+                    &entry_times,
+                ) else {
+                    continue;
+                };
+                card_rows
+                    .entry(anchor)
+                    .or_default()
+                    .push(conductor_card_row(card));
+            }
             let mut turn_start = 0usize;
             for (ix, entry) in entries.iter().enumerate() {
                 if entry.role == MessageRole::User {
@@ -4919,6 +4990,9 @@ impl Transcript {
                     new_rows.extend(rows.iter().cloned());
                 } else {
                     new_rows.extend(self.rows_for(entry, false));
+                }
+                if let Some(cards) = card_rows.remove(&ix) {
+                    new_rows.extend(cards);
                 }
                 if let Some(fallback) = &receipts
                     && entry.role != MessageRole::User
@@ -7656,6 +7730,7 @@ impl Transcript {
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
             RowKind::Receipt { receipt } => self.render_receipt(&row.id, receipt, &theme, cx),
+            RowKind::ConductorCard { card } => self.render_conductor_card(card, &theme, cx),
         };
         // Diagram fences this row just requested start rendering after layout.
         self.ensure_diagram_worker(cx);
@@ -8009,6 +8084,131 @@ impl Transcript {
                 Err(err) => tracing::warn!(error = %err, "receipt image render failed"),
             }
         }));
+    }
+
+    /// A sub-agent's card in its conductor's main chat: title and status, its
+    /// latest step, nested count, and "Open thread" / "Answer".
+    fn render_conductor_card(
+        &mut self,
+        card: &crate::conductor::CardModel,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let color = conductor_status_color(card.status, theme);
+        let open_id = card.chat_id.clone();
+        let answer_item = card.attention.as_ref().map(|item| item.id.clone());
+        let nested = card.nested;
+        let link = |label: &'static str, id: String, color: gpui::Hsla| {
+            div()
+                .id(SharedString::from(id))
+                .cursor_pointer()
+                .text_size(crate::typography::ui_rems(12.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(color)
+                .role(gpui::Role::Button)
+                .child(label)
+        };
+        div()
+            .w_full()
+            .max_w(px(self.content_width))
+            .child(
+                div()
+                    .w_full()
+                    .px(px(12.0))
+                    .py(px(10.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(if card.needs_you() {
+                        theme.warning.opacity(0.6)
+                    } else {
+                        crate::theme::hairline(0.10)
+                    })
+                    .bg(crate::theme::hairline(0.03))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(div().flex_none().size(px(7.0)).rounded_full().bg(color))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(crate::typography::ui_rems(13.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text)
+                                    .child(SharedString::from(card.title.clone())),
+                            )
+                            .when(nested > 0, |el| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(crate::typography::ui_rems(11.0))
+                                        .text_color(theme.text_faint)
+                                        .child(SharedString::from(format!(
+                                            "+{nested} sub-agent{}",
+                                            if nested == 1 { "" } else { "s" }
+                                        ))),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(crate::typography::ui_rems(11.0))
+                                    .text_color(color)
+                                    .child(SharedString::from(card.status.label())),
+                            ),
+                    )
+                    .children(card.steps.iter().map(|step| {
+                        div()
+                            .pl(px(15.0))
+                            .truncate()
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(step.clone()))
+                    }))
+                    .child(
+                        div()
+                            .pl(px(15.0))
+                            .pt(px(2.0))
+                            .flex()
+                            .flex_row()
+                            .gap(px(14.0))
+                            .child(
+                                link(
+                                    "Open thread",
+                                    format!("conductor-open-{}", card.chat_id),
+                                    theme.text_muted,
+                                )
+                                .hover(|el| el.text_color(theme.text))
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(TranscriptEvent::OpenChat {
+                                        chat_id: open_id.clone(),
+                                    });
+                                })),
+                            )
+                            .when_some(answer_item, |el, item_id| {
+                                el.child(
+                                    link(
+                                        "Answer",
+                                        format!("conductor-answer-{}", card.chat_id),
+                                        theme.warning,
+                                    )
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.emit(TranscriptEvent::AnswerAttention {
+                                            item_id: item_id.clone(),
+                                        });
+                                    })),
+                                )
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_receipt(

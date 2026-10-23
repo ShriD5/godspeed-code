@@ -4606,6 +4606,10 @@ impl Shell {
                     cx,
                 );
             }
+            TranscriptEvent::OpenChat { chat_id } => self.open_chat(chat_id.clone(), cx),
+            TranscriptEvent::AnswerAttention { item_id } => {
+                self.open_answer_popup(item_id.clone(), cx);
+            }
         }
     }
 
@@ -11802,11 +11806,6 @@ impl Shell {
         } else {
             None
         };
-        let conductor_cards = if has_selection {
-            self.render_conductor_cards(&theme_owned, cx)
-        } else {
-            None
-        };
         let outlet: AnyElement = if has_selection || departing_transcript {
             div()
                 .relative()
@@ -11831,7 +11830,6 @@ impl Shell {
                     el.child(div().absolute().inset_0().occlude())
                 })
                 .children(find_bar)
-                .children(conductor_cards)
                 .into_any_element()
         } else if !has_spaces && !no_project {
             // Onboarding (first boot / after the destructive wipe): no folders
