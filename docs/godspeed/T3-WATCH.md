@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-23 | Thread title instructions in settings (`51273020db`) | ported ("Title instructions" in Settings → Thread naming) |
+| 2026-10-23 | Thread title instructions in settings (`51273020db`) | PR #27 |
 | 2026-10-23 | Messages from other agents fold into one-line rows (`f054d1b801`) | queued (`agent_message_display` in `transcript.rs` keeps the full bubble) |
 | 2026-10-23 | Claude approval feedback reaches the subagent that asked (`b7e802bdec`) | queued (check a decline-with-message on a subagent approval) |
 | 2026-10-23 | agent-browser and Chrome no longer outlive the agent that started them (`1aa7179670`) | queued (with the helper-processes row) |
