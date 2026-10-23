@@ -785,6 +785,8 @@ pub struct AppState {
     pub(crate) connectivity_observed: bool,
     /// Sorted (see [`sort_spaces`]).
     pub spaces: Vec<Space>,
+    /// Conductors (`WatchConductors`), oldest first, archived included.
+    pub conductors: Vec<zeron_proto::Conductor>,
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
     pub chats: Vec<Chat>,
     /// Fork RPC may arrive ahead of its registry row on a remote device.
@@ -962,6 +964,7 @@ impl AppState {
             connectivity: zeron_proto::Connectivity::default(),
             connectivity_observed: false,
             spaces: Vec::new(),
+            conductors: Vec::new(),
             chats: Vec::new(),
             pending_side_chat: None,
             project_relays: HashMap::new(),
@@ -1262,6 +1265,14 @@ impl AppState {
         }
         self.heal_space_selection();
         changed || self.selected_space != previous_selection
+    }
+
+    pub fn apply_conductors(&mut self, conductors: Vec<zeron_proto::Conductor>) -> bool {
+        if self.conductors == conductors {
+            return false;
+        }
+        self.conductors = conductors;
+        true
     }
 
     fn heal_space_selection(&mut self) {
@@ -2475,6 +2486,7 @@ impl AppState {
         self.device_presentation = None;
         self.session_presence_presentation.clear();
         self.spaces.clear();
+        self.conductors.clear();
         self.chats.clear();
         self.pending_side_chat = None;
         self.project_relays.clear();
@@ -2658,7 +2670,7 @@ impl AppState {
             self.harness_updates.clear();
         }
         self.engine = Some(handle.clone());
-        let mut watch_tasks = Vec::with_capacity(10);
+        let mut watch_tasks = Vec::with_capacity(11);
         if let Some(task) = spawn_deferred_engine_watch(cx, handle.clone()) {
             watch_tasks.push(task);
         }
@@ -2699,6 +2711,12 @@ impl AppState {
                 handle.clone(),
                 methods::WATCH_SPACES,
                 AppState::apply_spaces,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_CONDUCTORS,
+                AppState::apply_conductors,
             ),
             spawn_watch(
                 cx,

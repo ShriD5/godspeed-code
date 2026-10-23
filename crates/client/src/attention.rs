@@ -452,6 +452,7 @@ fn derived_item(row: &SessionRow, now_ms: i64) -> Option<AttentionItem> {
         request_id: None,
         approval: None,
         agent_run: None,
+        conductor: None,
     })
 }
 
@@ -710,6 +711,7 @@ mod tests {
             request_id: Some("r".into()),
             approval: Some(request),
             agent_run: None,
+            conductor: None,
         }
     }
 

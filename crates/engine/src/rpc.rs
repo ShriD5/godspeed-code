@@ -54,6 +54,7 @@
 mod agents;
 mod attention;
 mod chat_lifecycle;
+mod conductor;
 mod limit_recovery;
 mod git_actions;
 mod message_search;
@@ -1741,6 +1742,7 @@ fn forwardable(method: &str) -> bool {
         || telegram::handles(method)
         || attention::handles(method)
         || limit_recovery::handles(method)
+        || conductor::handles(method)
     {
         return true;
     }
@@ -2186,6 +2188,9 @@ impl RpcService for EngineRpc {
         }
         if chat_lifecycle::handles(method) {
             return self.chat_lifecycle_rpc(method, params);
+        }
+        if conductor::handles(method) {
+            return self.conductor_rpc(method, params);
         }
         if git_actions::handles(method) {
             return self.git_action(method, params).await;
@@ -2782,6 +2787,9 @@ impl RpcService for EngineRpc {
             ))),
             methods::WATCH_SPACES => Ok(RpcReply::Stream(watch_stream(
                 self.workspace.watch_spaces(),
+            ))),
+            methods::WATCH_CONDUCTORS => Ok(RpcReply::Stream(watch_stream(
+                self.workspace.watch_conductors(),
             ))),
             methods::WATCH_SESSIONS => {
                 // Local live statuses merged with remote devices' workspace rows.
@@ -4220,6 +4228,69 @@ mod tests {
         core.sessions.shutdown().await;
         assert!(!first.voice.owns_chat("chat"));
         drop(owner);
+    }
+
+    #[tokio::test]
+    async fn conductor_rpcs_create_list_and_keep_notes() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = crate::EngineCore::assemble_with_profile(
+            crate::EngineProfile::local(temp.path()).unwrap(),
+            std::sync::Arc::new(HarnessRegistry::new()),
+            HarnessId::Codex,
+            None,
+        )
+        .unwrap();
+        let rpc = core.rpc_service();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(folder.path().join("api/.git")).unwrap();
+        let value = |reply: RpcReply| match reply {
+            RpcReply::Value(value) => value,
+            _ => panic!("expected a value reply"),
+        };
+        let created = value(
+            rpc.handle(
+                methods::CREATE_CONDUCTOR,
+                serde_json::json!({"chatId":"main","folder":folder.path()}),
+            )
+            .await
+            .unwrap(),
+        );
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["spaceIds"].as_array().unwrap().len(), 1);
+        let listed = value(
+            rpc.handle(methods::LIST_CONDUCTORS, serde_json::json!({}))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(listed[0]["id"], id.as_str());
+        rpc.handle(
+            methods::SET_CONDUCTOR_NOTES,
+            serde_json::json!({"id":id,"notes":"be brief"}),
+        )
+        .await
+        .unwrap();
+        let notes = value(
+            rpc.handle(methods::GET_CONDUCTOR_NOTES, serde_json::json!({"id":id}))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(notes["notes"], "be brief");
+        let membership = value(
+            rpc.handle(
+                methods::GET_CONDUCTOR_MEMBERSHIP,
+                serde_json::json!({"chatId":"main"}),
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(membership["depth"], 0);
+        assert!(
+            rpc.handle(methods::GET_CONDUCTOR_NOTES, serde_json::json!({"id":"nope"}))
+                .await
+                .is_err()
+        );
+        assert!(forwardable(methods::CREATE_CONDUCTOR));
+        core.sessions.shutdown().await;
     }
 
     #[tokio::test]

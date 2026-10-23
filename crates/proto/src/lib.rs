@@ -13,6 +13,7 @@ pub mod attention;
 pub mod chat_mentions;
 pub mod change_request_assessment;
 pub mod chat_import;
+pub mod conductor;
 pub mod device_paths;
 pub mod entities;
 pub mod file_mentions;
@@ -37,6 +38,11 @@ pub use access::*;
 pub use account_usage::*;
 pub use agent::*;
 pub use approval_risk::{ApprovalRisk, approval_risk};
+pub use conductor::{
+    Conductor, ConductorMembership, ConductorNode, ConductorRepo, CreateConductorParams,
+    MAX_CONDUCTOR_DEPTH, MAX_NOTES_BYTES, UpdateConductorParams, can_spawn_at, clamp_notes,
+    main_agent_instructions, sub_agent_instructions,
+};
 pub use entities::*;
 pub use git_actions::*;
 pub use message_search::*;

@@ -2578,6 +2578,16 @@ async fn drive_run(
     {
         request.prompt = format!("{brief}\n\n{}", request.prompt);
     }
+    // A conductor chat's first prompt of a fresh provider session leads with
+    // its role and the notes. Slash commands are left bare so they still parse.
+    if request.resume.is_none()
+        && !resume_state.idle
+        && !native_command(&request.prompt, harness_id)
+        && let Some(workspace) = inner.workspace()
+        && let Some(prefix) = crate::conductor::conductor_prompt_prefix(&workspace, &chat_id)
+    {
+        request.prompt = format!("{prefix}{}", request.prompt);
+    }
     // Startup can stop before the SDK saves user text, with no new session
     // ID or receipt. Bridge that unacknowledged tail from our transcript;
     // a fresh session needs all prior user text, not just the latest tail.

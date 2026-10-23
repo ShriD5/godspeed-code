@@ -629,6 +629,7 @@ pub(crate) fn attention(
                 request_id: None,
                 approval: None,
                 agent_run: None,
+                conductor: None,
             }
         };
     let approval = |chat: &str,

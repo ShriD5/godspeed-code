@@ -353,6 +353,28 @@ pub mod methods {
     /// `{chatId, timeout: ChatQuestionTimeout | null}` → `QuestionTimeoutSettings`.
     pub const SET_CHAT_QUESTION_TIMEOUT: &str = "SetChatQuestionTimeout";
 
+    // Conductor (`zeron_proto::conductor`): one long-lived main chat per
+    // folder. Device-scoped like the chats it owns, so relay-forwardable.
+    /// `CreateConductorParams` → `Conductor`. Finds repos in the folder, makes
+    /// their spaces and the main chat.
+    pub const CREATE_CONDUCTOR: &str = "CreateConductor";
+    /// `{}` → `Conductor[]` (archived ones included).
+    pub const LIST_CONDUCTORS: &str = "ListConductors";
+    /// `UpdateConductorParams` → `Conductor`.
+    pub const UPDATE_CONDUCTOR: &str = "UpdateConductor";
+    /// `{id}` → `Conductor`. Adds spaces for repos new to the folder.
+    pub const RESCAN_CONDUCTOR: &str = "RescanConductor";
+    /// `{id}` → `{notes}`.
+    pub const GET_CONDUCTOR_NOTES: &str = "GetConductorNotes";
+    /// `{id, notes}` → `{}`. Refuses notes over `MAX_NOTES_BYTES`.
+    pub const SET_CONDUCTOR_NOTES: &str = "SetConductorNotes";
+    /// `{id}` → `ConductorNode[]`: the main chat and every sub-agent below it.
+    pub const GET_CONDUCTOR_TREE: &str = "GetConductorTree";
+    /// Stream of `Conductor[]`: every conductor row, archived included.
+    pub const WATCH_CONDUCTORS: &str = "WatchConductors";
+    /// `{chatId}` → `ConductorMembership | null`.
+    pub const GET_CONDUCTOR_MEMBERSHIP: &str = "GetConductorMembership";
+
     // Usage-limit recovery (`zeron_proto::ChatLimit`). Relay-forwardable: the
     // chat's host device owns the recovery timer and its default.
     /// `{}` → `LimitRecoverySettings`.
