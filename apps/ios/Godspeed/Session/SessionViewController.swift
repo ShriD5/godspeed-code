@@ -48,6 +48,11 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         // steps aside with the accessory; the call stays a tap away up here.
         let voiceBar = VoiceBarItem(app: app, host: self)
         self.voiceBar = voiceBar
+        // A custom view reads as horizontal-only; on iPhone Duo it joins ⋯ in
+        // the vertical bar.
+        #if compiler(>=6.4)
+        if #available(iOS 27.1, *) { voiceBar.item.axisBehavior = .verticalPreferred }
+        #endif
         let menu = navigationItem.rightBarButtonItem!
         let syncVoice = { [weak self, weak voiceBar] in
             guard let self, let voiceBar else { return }
@@ -194,6 +199,9 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
     }
 
     private var hasAppeared = false
+    /// Set by the split for the moment it moves this page between its
+    /// shells, so the move doesn't read as closing the session.
+    var relocating = false
     private var backgroundObserver: NSObjectProtocol?
     private var voiceBar: VoiceBarItem?
     private var voiceToken: AnyObject?
@@ -321,6 +329,10 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
     /// frozen (no new updates) until you left and came back.
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        // Carried to the other shell (iPhone Duo folding or unfolding): it
+        // left one stack for another and stays live. UIKit may report the
+        // move late or not at all, so ask where the page is, not how it left.
+        if relocating || navigationController?.viewControllers.contains(self) == true { return }
         if isMovingFromParent || navigationController == nil {
             if tabBarController != nil { (splitViewController as? SplitRootController)?.sessionDidClose(chatId) }
             source.detach()

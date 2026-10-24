@@ -303,6 +303,10 @@ impl Peers {
         service: &str,
         websocket: bool,
     ) -> anyhow::Result<Stream> {
+        self.connect(device).await?.open(service, websocket).await
+    }
+    /// The live connection to `device`, pairing first when there is none.
+    pub async fn connect(&self, device: &str) -> anyhow::Result<Mux> {
         let device = device.to_owned();
         let result = tokio::time::timeout(Duration::from_secs(30), async {
             // A failed or transport-dead peer is closed here; the loop below
@@ -313,8 +317,7 @@ impl Peers {
             if let Some(peer) = stale { peer.close().await; }
             loop {
                 let changed = self.0.changed.notified();
-                let mux = self.0.peers.lock().await.get(&device).and_then(|peer| peer.ready.borrow().clone());
-                if let Some(mux) = mux.filter(|m| !m.is_closed()) { return mux.open(service, websocket).await; }
+                if let Some(mux) = self.ready(&device).await { return Ok(mux); }
                 // Pairing is re-attempted while waiting, so one lost signal or
                 // a stalled attempt costs at most the pacing interval rather
                 // than the whole timeout.
@@ -326,6 +329,17 @@ impl Peers {
             self.remove(&device).await;
         }
         result.context("Could not connect directly to this device. Check that both devices are online and their networks allow WebRTC.")?
+    }
+    /// The open connection to `device`, without pairing.
+    pub async fn ready(&self, device: &str) -> Option<Mux> {
+        let mux = self
+            .0
+            .peers
+            .lock()
+            .await
+            .get(device)
+            .and_then(|peer| peer.ready.borrow().clone());
+        mux.filter(|m| !m.is_closed())
     }
     /// Starts (or asks the initiating device to start) a pairing attempt, at
     /// most once per pacing interval per device. `remove` resets the pacing.
