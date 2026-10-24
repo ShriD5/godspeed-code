@@ -320,6 +320,8 @@ pub struct DialogModel {
     pub listing: Listing,
     pub selection: FileSelection,
     pub protocol: Option<CloneProtocol>,
+    /// The user chose the protocol rather than keeping the source's.
+    pub protocol_picked: bool,
     pub phase: TransferPhase,
 }
 
@@ -336,6 +338,7 @@ impl DialogModel {
             listing: Listing::Loading,
             selection: FileSelection::default(),
             protocol: None,
+            protocol_picked: false,
             phase: TransferPhase::Editing,
         }
     }
@@ -394,7 +397,14 @@ impl DialogModel {
             return false;
         }
         self.protocol = Some(protocol);
+        self.protocol_picked = true;
         true
+    }
+
+    /// Let the target retry over HTTPS if its SSH login is refused: only
+    /// for the source's own SSH remote, never an SSH the user picked.
+    pub fn https_fallback(&self) -> bool {
+        !self.protocol_picked && self.protocol == Some(CloneProtocol::Ssh)
     }
 
     /// Where the clone lands by default on the target.
@@ -819,6 +829,10 @@ mod tests {
         assert_eq!(model.default_destination(), "~/code/mono");
         assert_eq!(model.subdirectory(), "apps/web");
         assert_eq!(model.protocol, Some(CloneProtocol::Ssh));
+        assert!(
+            model.https_fallback(),
+            "the source's SSH remote may fall back"
+        );
         assert!(model.shows_protocol());
         assert_eq!(
             model.clone_url().as_deref(),
@@ -829,6 +843,7 @@ mod tests {
             model.clone_url().as_deref(),
             Some("https://github.com/me/mono.git")
         );
+        assert!(!model.https_fallback());
         assert_eq!(model.selection.chosen(), [file(".env.local", 4)]);
         assert_eq!(model.submit_blocked("~/code/mono"), None);
         assert!(model.submit_blocked("  ").is_some());

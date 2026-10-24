@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@b2377db9432591a4b844ebff8237ae958bf6a828 (2026-10-23)
+Reviewed T3 through: pingdotgg/t3code@6e792117436662208bf2b6eb71ee8d0d88817e43 (2026-10-24)
 
 ## Rules
 
@@ -23,6 +23,16 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-24 | Stop stops a thread's subagents again (`fbc6a08159`) | queued (check Stop while a Claude background subagent runs, with the steering rows) |
+| 2026-10-24 | Interrupts an agent started no longer read "by user" (`7d87be3596`) | queued (check a chat interrupted through `interrupt_chat`) |
+| 2026-10-24 | A fork's first /compact compacts its inherited history (`5b55036f8c`) | queued (check /compact right after a fork) |
+| 2026-10-24 | Pasted images show their upload tile instantly (`4dcc244fe1`) | queued (check pasting a large screenshot into the composer) |
+| 2026-10-24 | An instructed /compact no longer runs a bare compaction first (`16aaf5ba7d`) | skipped (Godspeed has no compact-before-send yet, PARITY-T3 §4) |
+| 2026-10-24 | Cmd+K finds the right thread first, with indexed message search (`bb7783e295`) | skipped (`shell/thread_search.rs` already ranks message hits) |
+| 2026-10-24 | Deleted threads' worktrees are cleaned up with their subagents (`171f8d880f`) | skipped (T3's subagent worktree model) |
+| 2026-10-24 | Faster large terminal clipboard sequences (`9f660d3845`); streaming coalescing and allocation perf (`27e0c684c5`, `f7f02d779e`, `7de9535a6c`) | skipped (T3 history sanitizer and web runtime internals) |
+| 2026-10-24 | Screen readers hear thread state changes (`eb1510d249`); readable blockquotes (`1df9c32943`) | skipped (web-only) |
+| 2026-10-24 | ~55 other commits: forge refactors, PR list filters, Bitbucket, mobile/Duo, desktop quit and preview, usage, observability, relay, CI | skipped (internal/minor) |
 | 2026-10-23 | Thread title instructions in settings (`51273020db`) | PR #27 |
 | 2026-10-23 | Messages from other agents fold into one-line rows (`f054d1b801`) | queued (`agent_message_display` in `transcript.rs` keeps the full bubble) |
 | 2026-10-23 | Claude approval feedback reaches the subagent that asked (`b7e802bdec`) | queued (check a decline-with-message on a subagent approval) |
@@ -32,7 +42,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-10-23 | Cmd+K search hides subagents and favors recent whole-word matches (`4812dcad02`) | skipped (`shell/thread_search.rs` already scores word starts and breaks ties by recency) |
 | 2026-10-23 | Cmd+B toggles the sidebar unless text is selected (`7d6b5bec87`) | skipped (the composer has no bold; `mod-b` always toggles) |
 | 2026-10-23 | ~53 other commits: GitCafe/Forgejo PR watches, managed Codex auth, mobile, SQLite contention, usage, toasts, test cleanup, CI | skipped (internal/minor) |
-| 2026-10-22 | Clones retry over HTTPS when the SSH key is refused (`a49d18cf3b`) | queued (`project_transfer.rs` clone has no fallback) |
+| 2026-10-22 | Clones retry over HTTPS when the SSH key is refused (`a49d18cf3b`) | PR #29 |
 | 2026-10-22 | The background service picks up JAVA_HOME from the login shell (`a7c22f12b7`) | queued (`shell_env.rs` hydrates PATH only) |
 | 2026-10-22 | Pushes the remote refuses say why (`fb7f08782b`) | queued (check the push error text in `git_actions.rs`) |
 | 2026-10-22 | Codex multi-file patches keep every path (`aacd1ee337`) | queued (check Codex file changes with several paths) |
