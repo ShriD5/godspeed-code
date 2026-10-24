@@ -126,6 +126,10 @@ pub struct CloneProjectRequest {
     pub space_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Retry once over HTTPS when the SSH login is refused. Set when the
+    /// user kept the source's SSH remote rather than picking SSH.
+    #[serde(default)]
+    pub https_fallback: bool,
 }
 
 /// `CancelProjectClone` request.
