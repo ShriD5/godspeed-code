@@ -368,7 +368,9 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 pub async fn connect_ws(url: &str) -> Result<RpcClient, RpcError> {
     let (ws, _) = tokio::time::timeout(
         CONNECT_TIMEOUT,
-        tokio_tungstenite::connect_async_with_config(url, Some(crate::ws::config()), false),
+        // Nagle off: terminal keystrokes are tiny frames that must not wait
+        // for the previous one's ACK.
+        tokio_tungstenite::connect_async_with_config(url, Some(crate::ws::config()), true),
     )
     .await
     .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?

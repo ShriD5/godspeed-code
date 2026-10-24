@@ -2,8 +2,9 @@
 //! emulator fed by the engine's PTY stream over the generic RPC client.
 //!
 //! - [`emulator`] — pure Term + vte state machine (bytes in, grid out);
-//! - [`view`] — cell palette, keystroke→bytes encoding, input coalescing, and
-//!   the custom grid-painting element;
+//! - [`view`] — cell palette, key/pointer/focus encodings, the ordered input
+//!   queue, and the custom grid-painting element;
+//! - [`predict`] — local echo prediction for terminals on other devices;
 //! - [`panel`] — session-scoped tabs, subscriptions with reconnect backoff,
 //!   drag-reorder, and the Cmd/Ctrl+J toggle action.
 //!
@@ -14,4 +15,5 @@
 pub(crate) mod dock;
 pub mod emulator;
 pub mod panel;
+pub mod predict;
 pub mod view;

@@ -2,8 +2,9 @@
 //! godspeed's `terminals.ts` over `portable-pty`).
 //!
 //! - `open` spawns the user's login shell in the chat's cwd; `subscribe` replays a
-//!   bounded 1MB window (resumable via `afterSeq`) then tails live output, batched
-//!   at [`TERMINAL_OUTPUT_BATCH_MS`]; data rides base64 (PTY bytes ≠ UTF-8).
+//!   bounded 1MB window (resumable via `afterSeq`) then tails live output — sent
+//!   as soon as it is read, paced at [`TERMINAL_OUTPUT_BATCH_MS`] only while it
+//!   streams; data rides base64 (PTY bytes ≠ UTF-8).
 //! - Live shells survive subscriber detach — a detached session is the user's
 //!   running process, kept until its tab is explicitly closed or the engine exits.
 //!   Only EXITED sessions expire (30min TTL on their inert replay buffers), and
@@ -28,6 +29,9 @@ use tokio::sync::mpsc;
 
 use zeron_doc::TERMINAL_OUTPUT_BATCH_MS;
 use zeron_proto::{TerminalEvent, TerminalSession};
+
+pub mod link;
+mod replies;
 
 use crate::{EngineError, new_id};
 
@@ -54,18 +58,29 @@ struct LiveTerminal {
     #[cfg(windows)]
     cleanup: Option<Arc<windows::Cleanup>>,
     subscribers: Vec<Subscriber>,
+    /// Answers terminal queries from beside the PTY ([`replies`]).
+    replies: replies::HostReplies,
     replay: VecDeque<TerminalEvent>,
     replay_bytes: usize,
     seq: u64,
     last_active_at: std::time::Instant,
     exited: bool,
+    /// Highest input seq applied per remote viewer, so input replayed after
+    /// a path change (direct link ↔ relay) is applied exactly once.
+    applied_inputs: HashMap<String, u64>,
 }
+
+/// Remote viewers whose input seqs one terminal remembers.
+const MAX_INPUT_CLIENTS: usize = 16;
 
 /// One attached stream's live tail: bounded, so a client that stops reading
 /// (a suspended phone, a stalled relay) never makes the engine queue output
 /// for it without limit.
 struct Subscriber {
     tx: mpsc::Sender<TerminalEvent>,
+    /// Its viewer answers terminal queries itself (an app from before host
+    /// replies): while one is attached the host stays silent.
+    answers_itself: bool,
     /// Set when the tail overflowed and was cut; the stream resyncs.
     lagged: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -90,9 +105,18 @@ pub struct TerminalSubscription {
     rx: mpsc::Receiver<TerminalEvent>,
     lagged: Arc<std::sync::atomic::AtomicBool>,
     last_seq: u64,
+    answers_itself: bool,
 }
 
 impl TerminalSubscription {
+    /// An event already queued, without waiting (tests poll with this).
+    #[cfg(test)]
+    pub(crate) fn try_recv(&mut self) -> Option<TerminalEvent> {
+        let event = self.rx.try_recv().ok()?;
+        self.last_seq = event_seq(&event);
+        Some(event)
+    }
+
     /// The next event; `None` once the terminal exits or is closed.
     pub async fn recv(&mut self) -> Option<TerminalEvent> {
         loop {
@@ -105,7 +129,7 @@ impl TerminalSubscription {
             }
             let inner = self.terminals.upgrade()?;
             let next = Terminals { inner }
-                .subscribe(&self.terminal_id, Some(self.last_seq))
+                .subscribe_viewer(&self.terminal_id, Some(self.last_seq), self.answers_itself)
                 .ok()?;
             self.rx = next.rx;
             self.lagged = next.lagged;
@@ -133,22 +157,28 @@ impl LiveTerminal {
                 };
             }
         }
-        self.subscribers.retain(|sub| match sub.tx.try_send(event.clone()) {
-            Ok(()) => true,
-            // A client that stopped reading: stop queueing for it. Its
-            // stream drains what it holds, then resyncs from the replay.
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                sub.lagged
-                    .store(true, std::sync::atomic::Ordering::Release);
-                false
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
-        });
+        self.subscribers
+            .retain(|sub| match sub.tx.try_send(event.clone()) {
+                Ok(()) => true,
+                // A client that stopped reading: stop queueing for it. Its
+                // stream drains what it holds, then resyncs from the replay.
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    sub.lagged.store(true, std::sync::atomic::Ordering::Release);
+                    false
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+            });
         if matches!(event, TerminalEvent::Exit { .. }) {
             self.initial_script.take();
             self.exited = true;
             self.subscribers.clear();
         }
+    }
+
+    /// The host answers queries unless a viewer that answers them itself is
+    /// attached (two answers would read as typed input).
+    fn host_answers(&self) -> bool {
+        !self.subscribers.iter().any(|sub| sub.answers_itself)
     }
 
     fn next_seq(&mut self) -> u64 {
@@ -383,15 +413,20 @@ impl Terminals {
             #[cfg(windows)]
             cleanup: None,
             subscribers: Vec::new(),
+            replies: replies::HostReplies::new(
+                clamp_size(cols, rows).cols,
+                clamp_size(cols, rows).rows,
+            ),
             replay: VecDeque::new(),
             replay_bytes: 0,
             seq: 0,
             last_active_at: std::time::Instant::now(),
             exited: false,
+            applied_inputs: HashMap::new(),
         }));
         lock(&self.inner.sessions).insert(id.clone(), session.clone());
 
-        // Raw PTY bytes: blocking reader thread → batcher task (12ms windows).
+        // Raw PTY bytes: blocking reader thread → batcher task.
         let (raw_tx, raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let reader_thread = std::thread::Builder::new()
             .name(format!("pty-read-{id}"))
@@ -442,6 +477,7 @@ impl Terminals {
             id,
             cwd: cwd.to_string(),
             shell: shell_name,
+            host_replies: true,
         })
     }
 
@@ -458,6 +494,18 @@ impl Terminals {
         &self,
         terminal_id: &str,
         after_seq: Option<u64>,
+    ) -> Result<TerminalSubscription, EngineError> {
+        self.subscribe_viewer(terminal_id, after_seq, false)
+    }
+
+    /// [`Self::subscribe`] for a viewer; `answers_itself` marks an app from
+    /// before host replies, which answers terminal queries from its own
+    /// emulator — while one is attached the host stays silent.
+    pub fn subscribe_viewer(
+        &self,
+        terminal_id: &str,
+        after_seq: Option<u64>,
+        answers_itself: bool,
     ) -> Result<TerminalSubscription, EngineError> {
         let session = self.session(terminal_id)?;
         let mut session = lock(&session);
@@ -479,6 +527,7 @@ impl Terminals {
         if !session.exited {
             session.subscribers.push(Subscriber {
                 tx,
+                answers_itself,
                 lagged: lagged.clone(),
             });
         }
@@ -489,6 +538,7 @@ impl Terminals {
             rx,
             lagged,
             last_seq: after,
+            answers_itself,
         })
     }
 
@@ -522,6 +572,36 @@ impl Terminals {
             .map_err(|e| EngineError::Other(format!("Terminal write failed: {e}")))
     }
 
+    /// Write input a remote viewer numbered: applied only if `seq` is newer
+    /// than the last one applied from `client`. Returns whether it was
+    /// applied (a replay of already-applied input is acknowledged, not
+    /// written twice).
+    pub fn write_sequenced(
+        &self,
+        terminal_id: &str,
+        client: &str,
+        seq: u64,
+        bytes: &[u8],
+    ) -> Result<bool, EngineError> {
+        {
+            let session = self.session(terminal_id)?;
+            let mut session = lock(&session);
+            let applied = session.applied_inputs.get(client).copied().unwrap_or(0);
+            if seq <= applied {
+                return Ok(false);
+            }
+            if !session.applied_inputs.contains_key(client)
+                && session.applied_inputs.len() >= MAX_INPUT_CLIENTS
+                && let Some(oldest) = session.applied_inputs.keys().next().cloned()
+            {
+                session.applied_inputs.remove(&oldest);
+            }
+            session.applied_inputs.insert(client.to_owned(), seq);
+        }
+        self.write_bytes(terminal_id, bytes)?;
+        Ok(true)
+    }
+
     pub fn resize(&self, terminal_id: &str, cols: u16, rows: u16) -> Result<(), EngineError> {
         let session = self.session(terminal_id)?;
         let mut session = lock(&session);
@@ -529,11 +609,13 @@ impl Terminals {
         if session.exited {
             return Ok(());
         }
+        let size = clamp_size(cols, rows);
+        session.replies.resize(size.cols, size.rows);
         let Some(master) = session.master.as_ref() else {
             return Ok(());
         };
         master
-            .resize(clamp_size(cols, rows))
+            .resize(size)
             .map_err(|e| EngineError::Other(format!("Terminal resize failed: {e}")))
     }
 
@@ -620,7 +702,7 @@ fn dispose(session: &Arc<Mutex<LiveTerminal>>, kill: bool) -> bool {
 /// Blocking PTY reader: forwards raw chunks until EOF. A closed PTY reads as an
 /// error on some platforms (EIO on Linux once the shell exits) — both end the loop.
 fn read_pty(mut reader: Box<dyn Read + Send>, tx: mpsc::UnboundedSender<Vec<u8>>) {
-    let mut buf = [0u8; 8192];
+    let mut buf = vec![0u8; 64 * 1024];
     loop {
         match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
@@ -636,7 +718,8 @@ fn read_pty(mut reader: Box<dyn Read + Send>, tx: mpsc::UnboundedSender<Vec<u8>>
     }
 }
 
-/// Batches raw chunks into `Data` events every [`TERMINAL_OUTPUT_BATCH_MS`].
+/// Turns raw chunks into `Data` events: immediately after a quiet spell, at
+/// most once per [`TERMINAL_OUTPUT_BATCH_MS`] while output keeps coming.
 /// ConPTY keeps its output pipe open while the pseudoconsole handle is alive, even after
 /// the child exits, so child wait and output reads must be driven concurrently. Once the
 /// child is gone we close the PTY handles, drain its final buffered output, then emit `Exit`.
@@ -652,6 +735,16 @@ async fn pump_output(
             return false;
         };
         let mut session = lock(&session);
+        // Answer terminal queries now, beside the PTY: a viewer's answer
+        // could arrive after the program stopped waiting.
+        let answers = session.replies.feed(&buffer);
+        if !answers.is_empty()
+            && session.host_answers()
+            && let Some(writer) = session.writer.as_mut()
+            && let Err(error) = writer.write_all(&answers).and_then(|_| writer.flush())
+        {
+            tracing::debug!(%error, "terminal query answer failed");
+        }
         let seq = session.next_seq();
         session.emit(TerminalEvent::Data {
             seq,
@@ -660,21 +753,35 @@ async fn pump_output(
         true
     };
 
-    // Start a batch only when output arrives; idle terminals need no timer.
+    // Output that follows a quiet spell (a keystroke's echo) goes out the
+    // moment it is read; only a continuous stream waits out the pacing
+    // interval. Idle terminals need no timer.
     let flush = tokio::time::sleep(batch);
     tokio::pin!(flush);
     let mut buffer = Vec::new();
     let mut raw_open = true;
     let mut exit_code = None;
+    let mut last_emit = tokio::time::Instant::now() - batch;
 
     while raw_open || exit_code.is_none() {
         tokio::select! {
             chunk = raw_rx.recv(), if raw_open => match chunk {
                 Some(chunk) => {
-                    if buffer.is_empty() {
-                        flush.as_mut().reset(tokio::time::Instant::now() + batch);
-                    }
+                    let was_empty = buffer.is_empty();
                     buffer.extend_from_slice(&chunk);
+                    // Whatever the reader already has queued rides along.
+                    while let Ok(more) = raw_rx.try_recv() {
+                        buffer.extend_from_slice(&more);
+                    }
+                    let now = tokio::time::Instant::now();
+                    if now >= last_emit + batch {
+                        last_emit = now;
+                        if !emit(std::mem::take(&mut buffer)) {
+                            return;
+                        }
+                    } else if was_empty {
+                        flush.as_mut().reset(last_emit + batch);
+                    }
                 },
                 None => raw_open = false,
             },
@@ -714,6 +821,7 @@ async fn pump_output(
                 }
             }
             _ = &mut flush, if !buffer.is_empty() => {
+                last_emit = tokio::time::Instant::now();
                 if !emit(std::mem::take(&mut buffer)) {
                     return;
                 }
