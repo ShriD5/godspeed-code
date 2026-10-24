@@ -421,7 +421,15 @@ final class TranscriptListView: UIScrollView, RowViewDelegate, UIScrollViewDeleg
             for i in 0..<frame.rowCount() { if let p = frame.placement(index: i) { knownKeys.insert(p.key) } }
             contentOffset.y = maxOffsetY
         } else if following {
-            if !isTracking { startSpring() }
+            // A reflow for a new width (rotation, iPhone Duo folding) lands
+            // on the tail at once; the follow spring visibly glided there
+            // under the system's fold animation.
+            if let old, old.width() != frame.width() {
+                stopSpring()
+                contentOffset.y = maxOffsetY
+            } else if !isTracking {
+                startSpring()
+            }
         } else if let anchor, let i = frame.indexOf(key: anchor.key), let p = frame.placement(index: i) {
             let target = CGFloat(p.y) + anchor.delta
             if abs(target - contentOffset.y) > 0.5 {
