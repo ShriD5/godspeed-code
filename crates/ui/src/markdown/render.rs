@@ -1638,7 +1638,7 @@ fn link_text_element(
 /// The range maps back through the label/slot offset map; a map that goes
 /// non-monotonic (a truncation stage over a slot stage that doesn't line up)
 /// can hand back an inverted or mid-codepoint range, and slicing that
-/// panicked during prepaint and took the whole app down (Zeron #892). The
+/// panicked during prepaint and took the whole app down (Godspeed #892). The
 /// label only feeds copy and the hover tooltip, so a clamped range — or the
 /// shown text when the mapped one is unusable — is always good enough.
 fn link_source_label<'a>(flat: &'a FlatText, range: &std::ops::Range<usize>) -> &'a str {
@@ -1846,6 +1846,27 @@ pub(crate) fn selection_test_bounds(key: &str) -> gpui::Bounds<gpui::Pixels> {
             .expect("text must be registered")
             .layout
             .bounds()
+    })
+}
+
+/// Where `needle` starts in the painted text that contains it, for tests
+/// that click into a surface without knowing its row keys.
+#[cfg(test)]
+pub(crate) fn selection_test_position(needle: &str) -> gpui::Point<gpui::Pixels> {
+    REGISTRY.with(|registry| {
+        let registry = registry.borrow();
+        let (entry, ix) = registry
+            .iter()
+            .find_map(|entry| Some((entry, entry.text.find(needle)?)))
+            .unwrap_or_else(|| panic!("missing painted text: {needle}"));
+        let ix = entry
+            .offsets
+            .as_ref()
+            .map_or(ix, |offsets| offsets.displayed(ix));
+        entry
+            .layout
+            .position_for_index(ix)
+            .expect("painted text is laid out")
     })
 }
 
@@ -4580,7 +4601,7 @@ mod tests {
         assert!(cache.code.is_empty());
     }
 
-    /// Zeron #892: an offset map that maps a link's range backwards (or into
+    /// Godspeed #892: an offset map that maps a link's range backwards (or into
     /// a codepoint) must fall back, not panic in prepaint.
     #[test]
     fn link_label_survives_inverted_and_mid_char_ranges() {
