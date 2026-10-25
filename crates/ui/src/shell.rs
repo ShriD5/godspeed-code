@@ -2473,6 +2473,9 @@ pub struct Shell {
     session_info_tween: Option<WidthTween>,
     /// Whether the card showed last frame; a change starts the reveal tween.
     session_info_shown: bool,
+    /// The next frame lands the card without the tween: a switch between
+    /// two chats swaps the column under it.
+    session_info_snap: bool,
     /// The card opened over a transcript too narrow to show it beside.
     session_info_overlay: bool,
     /// Whether the card showed at the toggle's press (see
@@ -2959,6 +2962,7 @@ impl Shell {
             files_tween: None,
             session_info_tween: None,
             session_info_shown: false,
+            session_info_snap: false,
             session_info_overlay: false,
             session_info_pressed_open: None,
             session_info_docked: false,
@@ -3434,6 +3438,10 @@ impl Shell {
                 self.panels
                     .update(&self.active_chat, |panels| panels.right_expanded = expanded);
             }
+            // The session card lands with the destination's panels rather
+            // than fading over its transcript. To or from the new-chat
+            // canvas it still eases, with the transcript's own entrance.
+            self.session_info_snap = !self.active_chat.is_empty() && !selected.is_empty();
             self.active_chat = selected;
             // Route history: a chat switch is a navigation. The very first
             // selection off the untouched boot canvas REPLACES that entry —

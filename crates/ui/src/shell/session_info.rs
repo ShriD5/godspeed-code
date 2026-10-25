@@ -230,7 +230,8 @@ impl Shell {
     /// it), its reveal, 0 (hidden) → 1 (shown), and the room the transcript
     /// holds free for it. The reveal eases on the shell's resize clock
     /// whenever the card shows or hides, by toggle or by the column crossing
-    /// the fit, and the reserve eases with it.
+    /// the fit, and the reserve eases with it. A switch between chats lands
+    /// it directly, with the destination's panels.
     pub(super) fn session_info_frame(&mut self, has_selection: bool, cx: &App) -> (bool, f32, f32) {
         let reserve = self.session_info_reserve(cx);
         if let Some(reserve) = reserve {
@@ -243,11 +244,13 @@ impl Shell {
             self.session_info_docked = reserve.is_some();
         }
         let target = if shown { 1.0 } else { 0.0 };
-        if shown != self.session_info_shown {
+        if std::mem::take(&mut self.session_info_snap) {
+            self.session_info_tween = None;
+        } else if shown != self.session_info_shown {
             let from = self.eval_tween(self.session_info_tween, 1.0 - target);
             self.session_info_tween = Some(WidthTween::new(from, target));
-            self.session_info_shown = shown;
         }
+        self.session_info_shown = shown;
         let reveal = self.eval_tween(self.session_info_tween, target);
         // Hiding as the column stops fitting, the card keeps its docked look
         // and the transcript eases back from the last room it held.
