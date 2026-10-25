@@ -3367,6 +3367,9 @@ pub struct Transcript {
     bottom_clearance: f32,
     /// Hovered rail tick (grows + shows the preview card).
     rail_hover: Option<usize>,
+    /// The rail's tick stack bounds (painted last frame): maps pointer y to
+    /// a prompt index.
+    rail_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// `(row id, entry id)` under the pointer — reveals the entry's timestamp
     /// strip (godspeed chat-view.tsx `group-hover`; the rows report hover
     /// themselves). Keyed by ROW so a row→row move within one entry can't
@@ -3707,6 +3710,7 @@ impl Transcript {
             rail_enabled,
             bottom_clearance: 0.0,
             rail_hover: None,
+            rail_bounds: Rc::new(Cell::new(None)),
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
@@ -3791,6 +3795,14 @@ impl Transcript {
 
     pub(crate) fn set_rail_hover(&mut self, hover: Option<usize>) {
         self.rail_hover = hover;
+    }
+
+    pub(crate) fn rail_bounds(&self) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
+        &self.rail_bounds
+    }
+
+    pub(crate) fn bottom_clearance(&self) -> f32 {
+        self.bottom_clearance
     }
 
     pub(crate) fn rows(&self) -> &[Row] {
@@ -4274,7 +4286,7 @@ impl Transcript {
     /// carries the titlebar chrome inside its own box (the first row's
     /// top gap), so the hold adds nothing — adding the inset on top parked
     /// a new chat's first prompt a double-chrome ~66px low (user report).
-    fn own_send_inset(anchor_ix: usize) -> f32 {
+    pub(crate) fn own_send_inset(anchor_ix: usize) -> f32 {
         if anchor_ix == 0 {
             0.0
         } else {

@@ -7,7 +7,10 @@
 //! in free functions with unit tests; rendering is an `impl Transcript`
 //! extension since the rail shares the transcript's rows and `ListState`.
 
-use gpui::{AnyElement, Context, ListOffset, SharedString, div, prelude::*, px};
+use gpui::{
+    AnyElement, ClickEvent, Context, ListOffset, MouseMoveEvent, Pixels, SharedString, canvas, div,
+    prelude::*, px,
+};
 use std::time::{Duration, Instant};
 
 use zeron_doc::{MessagePart, MessageRole, SessionMessageEntry};
@@ -112,51 +115,60 @@ pub fn active_tick(tick_rows: &[usize], top_row: usize) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Fixed-footprint outline (shadcn MessageScroller "Transcript Outline")
+// Continuous prompt ring (NeverWrite ChatPromptRing)
 // ---------------------------------------------------------------------------
 
-/// One tick's hit-row height and the gap between ticks (message-rail.tsx).
+/// Natural spacing between adjacent ticks while the stack fits.
+pub const TICK_SPACING: f32 = 8.0;
+/// One tick's hit-row height: the stack pads half of it above the first tick
+/// and below the last so the end ticks stay as easy to hit as the rest.
 pub const TICK_SLOT: f32 = 10.0;
-pub const TICK_GAP: f32 = 3.0;
-/// Vertical breathing room kept clear above/below the tick stack.
-pub const RAIL_V_MARGIN: f32 = 24.0;
+/// Vertical room kept clear of the stack (NeverWrite `100vh - 18rem`), so a
+/// long conversation compresses its ticks instead of overflowing.
+pub const RAIL_RESERVED_V: f32 = 288.0;
+/// The rail's hit strip width (the widest tick plus breathing room).
+pub const RAIL_HIT_WIDTH: f32 = 32.0;
 
-/// Hard cap on visible ticks — the always-compact shadcn outline (its demo
-/// trigger holds a small fixed stack of micro-marks regardless of window
-/// height), not "fill the viewport, then condense".
-pub const MAX_RAIL_TICKS: usize = 12;
-
-/// How many tick slots fit in a rail of `height` px (always ≥ 1).
-pub fn rail_capacity(height: f32) -> usize {
-    let usable = (height - 2.0 * RAIL_V_MARGIN).max(TICK_SLOT);
-    (((usable + TICK_GAP) / (TICK_SLOT + TICK_GAP)).floor() as usize).max(1)
+/// The tick stack's height: one [`TICK_SPACING`] per gap while it fits, then
+/// every prompt shares the available height — every prompt keeps its own tick
+/// at any conversation length.
+pub fn rail_height(n: usize, viewport_height: f32) -> f32 {
+    let natural = n.saturating_sub(1) as f32 * TICK_SPACING;
+    let available = (viewport_height - RAIL_RESERVED_V).max(TICK_SPACING);
+    natural.min(available)
 }
 
-/// Slots the rail actually uses: what fits the viewport, hard-capped at
-/// [`MAX_RAIL_TICKS`] so the outline stays compact even on tall windows.
-pub fn rail_slots(height: f32) -> usize {
-    rail_capacity(height).min(MAX_RAIL_TICKS)
-}
-
-/// shadcn's Transcript Outline keeps the always-visible rail a FIXED footprint
-/// (tiny marks in a fixed-size trigger; the full turn list lives behind it) —
-/// it never grows with the conversation. Same idea here: when prompts
-/// outnumber the slots that fit the viewport, ticks become evenly-sized
-/// BUCKETS over the conversation (a downsampled minimap) instead of
-/// overflowing. Returns each bucket's `[start, end)` tick range; with
-/// `n <= capacity` every bucket is a single tick — the identity, i.e. the
-/// old per-prompt rail.
-pub fn tick_buckets(n: usize, capacity: usize) -> Vec<(usize, usize)> {
-    if n == 0 {
-        return Vec::new();
+/// Tick `ix`'s offset from the stack's first tick: evenly spread over
+/// `height`.
+pub fn tick_offset(ix: usize, n: usize, height: f32) -> f32 {
+    if n <= 1 {
+        0.0
+    } else {
+        ix.min(n - 1) as f32 / (n - 1) as f32 * height
     }
-    let cap = capacity.clamp(1, n);
-    (0..cap).map(|k| (k * n / cap, (k + 1) * n / cap)).collect()
 }
 
-/// The bucket containing tick `ix` (for active/hover mapping).
-pub fn bucket_of(buckets: &[(usize, usize)], ix: usize) -> Option<usize> {
-    buckets.iter().position(|&(s, e)| ix >= s && ix < e)
+/// The prompt under pointer `y` (relative to the stack's first tick): the
+/// nearest tick, clamped to the ends.
+pub fn tick_at(n: usize, height: f32, y: f32) -> Option<usize> {
+    if n == 0 {
+        return None;
+    }
+    if n == 1 || height <= 0.0 {
+        return Some(0);
+    }
+    let progress = (y / height).clamp(0.0, 1.0);
+    Some(((progress * (n - 1) as f32).round() as usize).min(n - 1))
+}
+
+/// Fisheye width for a tick `distance` ticks from the hovered one.
+pub fn tick_width(distance: Option<usize>) -> f32 {
+    match distance {
+        Some(0) => 24.0,
+        Some(1) => 16.0,
+        Some(2) => 10.0,
+        _ => 8.0,
+    }
 }
 
 /// Char-cap a preview with an ellipsis. Whitespace runs (including newlines —
@@ -232,7 +244,9 @@ fn scroll_trace_enabled() -> bool {
 // ---------------------------------------------------------------------------
 
 impl Transcript {
-    /// Smooth-scroll the list so `target` sits at the viewport top, reusing the
+    /// Smooth-scroll the list so `target` rests at the own-send reading line
+    /// (just below the titlebar overlaying the list — landing at the raw
+    /// viewport top parked the prompt under the chrome blur), reusing the
     /// transcript scroll-task slot (any running stick/jump animation yields).
     ///
     /// A [`motion::SCROLL_GLIDE`] (500ms ease-in-out) timeline drives every
@@ -250,11 +264,15 @@ impl Transcript {
     /// - once the target row is measured the glide is pixel-exact.
     pub fn scroll_to_row(&mut self, target: usize, cx: &mut Context<Self>) {
         self.begin_scroll_navigation();
+        // Row 0 carries the chrome inside its own top gap; every other row
+        // lands `inset` below the viewport top, like a freshly-sent prompt.
+        let inset = Self::own_send_inset(target);
+        let landing = ListOffset {
+            item_ix: target,
+            offset_in_item: px(-inset),
+        };
         if motion::reduced_motion(cx) {
-            self.list_state().scroll_to(ListOffset {
-                item_ix: target,
-                offset_in_item: px(0.0),
-            });
+            self.list_state().scroll_to(landing);
             cx.notify();
             return;
         }
@@ -275,10 +293,7 @@ impl Transcript {
                 let done = this.update(cx, |t, cx| {
                     let list = t.list_state().clone();
                     if raw >= 1.0 {
-                        list.scroll_to(ListOffset {
-                            item_ix: target,
-                            offset_in_item: px(0.0),
-                        });
+                        list.scroll_to(landing);
                         cx.notify();
                         return true;
                     }
@@ -337,8 +352,13 @@ impl Transcript {
 
                     if target < top.item_ix {
                         // Above the viewport (unmeasured): progressive
-                        // item-space anchoring within the eased timeline.
-                        let next = here - frac * (here - target as f32);
+                        // item-space anchoring within the eased timeline,
+                        // aiming `inset` px above the target row (estimated
+                        // in rows; the measured branch below takes over
+                        // pixel-exactly once the target is laid out).
+                        let goal = (target as f32 - height_ema.map_or(0.0, |h| inset / h.max(1.0)))
+                            .max(0.0);
+                        let next = here - frac * (here - goal);
                         // Small steps ride `scroll_by` — the list keeps a
                         // 320px measured leading overdraw, so a step that
                         // fits inside it crosses rows at their TRUE heights
@@ -373,7 +393,8 @@ impl Transcript {
                     match list.bounds_for_item(target) {
                         Some(bounds) => {
                             // Measured: pixel-exact step along the timeline.
-                            let delta = f32::from(bounds.top() - list.viewport_bounds().top());
+                            let delta =
+                                f32::from(bounds.top() - list.viewport_bounds().top()) - inset;
                             list.scroll_by(px(frac * delta));
                         }
                         None => {
@@ -397,10 +418,7 @@ impl Transcript {
             }
             // Timeline exhausted (shouldn't happen): land exactly.
             this.update(cx, |t, cx| {
-                t.list_state().scroll_to(ListOffset {
-                    item_ix: target,
-                    offset_in_item: px(0.0),
-                });
+                t.list_state().scroll_to(landing);
                 cx.notify();
             })
             .ok();
@@ -455,54 +473,58 @@ impl Transcript {
             }
         }
         let active = active_tick(&tick_rows, top_row);
-        let hover = self.rail_hover();
+        // Every prompt whose row shows between the titlebar and the bottom
+        // chrome lights its tick; with none on screen (a long reply), the
+        // prompt being read stays lit.
+        let viewport = self.list_state().viewport_bounds();
+        let view_top = f32::from(viewport.top()) + crate::transcript::OWN_SEND_TOP_INSET_PX;
+        let view_bottom = f32::from(viewport.bottom()) - self.bottom_clearance();
+        let in_view: Vec<bool> = tick_rows
+            .iter()
+            .map(|&row| {
+                self.list_state().bounds_for_item(row).is_some_and(|b| {
+                    f32::from(b.bottom()) > view_top && f32::from(b.top()) < view_bottom
+                })
+            })
+            .collect();
+        let any_in_view = in_view.iter().any(|&v| v);
+        let n = pairs.len();
+        let hover = self.rail_hover().filter(|&ix| ix < n);
         let theme = Theme::of(cx).clone();
 
-        // Fixed footprint (shadcn Transcript Outline): a compact stack of at
-        // most MAX_RAIL_TICKS marks — past that, ticks become even buckets
-        // over the conversation. Pre-layout the viewport reads 0; assume a
-        // typical height for that one frame rather than collapsing to a
-        // single tick.
-        let viewport_h = f32::from(self.list_state().viewport_bounds().size.height);
-        let capacity = rail_slots(if viewport_h > 0.0 { viewport_h } else { 600.0 });
-        let buckets = tick_buckets(pairs.len(), capacity);
-        let active_bucket = active.and_then(|ix| bucket_of(&buckets, ix));
+        // Pre-layout the viewport reads 0; assume a typical height for that
+        // one frame rather than collapsing the stack.
+        let viewport_h = f32::from(viewport.size.height);
+        let height = rail_height(n, if viewport_h > 0.0 { viewport_h } else { 600.0 });
+        let ids: std::rc::Rc<[SharedString]> = pairs
+            .iter()
+            .map(|(tick, _)| SharedString::from(tick.message_id.clone()))
+            .collect();
+        let bounds_cell = self.rail_bounds().clone();
+        let tick_under = {
+            let bounds_cell = bounds_cell.clone();
+            move |y: Pixels| {
+                let bounds = bounds_cell.get()?;
+                tick_at(n, height, f32::from(y - bounds.top()) - TICK_SLOT / 2.0)
+            }
+        };
+        let move_under = tick_under.clone();
 
-        div()
-            .absolute()
-            .left(px(16.0))
-            .top_0()
-            .bottom_0()
-            .w(px(26.0))
-            .flex()
-            .flex_col()
-            .items_start()
-            .justify_center()
-            .gap(px(TICK_GAP))
-            .children(buckets.into_iter().enumerate().map(|(ix, (start, end))| {
-                // The bucket's representative prompt: the ACTIVE tick when it
-                // falls inside (hover then previews what you're reading),
-                // the first prompt of the range otherwise.
-                let rep = active.filter(|&a| a >= start && a < end).unwrap_or(start);
-                let (tick, row) = &pairs[rep];
-                let (tick, row) = (tick.clone(), *row);
-                let bucket_len = end - start;
-                let is_active = active_bucket == Some(ix);
-                let is_hovered = hover == Some(ix);
-                // Only hover grows the tick; the active one just reads brighter
-                // (message-rail.tsx: w-3 rest, w-5 hovered).
-                let bar_width = if is_hovered { 20.0 } else { 12.0 };
-                let bar_color = if is_active || is_hovered {
+        let ticks =
+            pairs.into_iter().enumerate().map(|(ix, (tick, _))| {
+                let distance = hover.map(|h| h.abs_diff(ix));
+                let lit = in_view[ix] || (!any_in_view && active == Some(ix));
+                let bar_color = if distance == Some(0) || lit {
                     theme.text.opacity(0.8)
                 } else {
                     crate::theme::ink(0.16)
                 };
-                let prompt = truncate_preview(&tick.prompt, PREVIEW_PROMPT_CHARS);
-                let reply = tick
-                    .reply
-                    .as_deref()
-                    .map(|r| truncate_preview(r, PREVIEW_REPLY_CHARS));
-                let card: Option<AnyElement> = is_hovered.then(|| {
+                let card: Option<AnyElement> = (distance == Some(0)).then(|| {
+                    let prompt = truncate_preview(&tick.prompt, PREVIEW_PROMPT_CHARS);
+                    let reply = tick
+                        .reply
+                        .as_deref()
+                        .map(|r| truncate_preview(r, PREVIEW_REPLY_CHARS));
                     let theme = theme.for_popup();
                     let card = popover::popover_card(&theme)
                         .w(px(280.0))
@@ -514,24 +536,14 @@ impl Transcript {
                             div()
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text)
-                                .child(SharedString::from(prompt.clone())),
+                                .child(SharedString::from(prompt)),
                         )
-                        .when_some(reply.clone(), |el, reply| {
+                        .when_some(reply, |el, reply| {
                             el.child(
                                 div()
                                     .text_size(crate::typography::ui_rems(11.0))
                                     .text_color(theme.text_muted)
                                     .child(SharedString::from(reply)),
-                            )
-                        })
-                        // Condensed bucket: say how many prompts it stands for
-                        // (the outline still spans the whole conversation).
-                        .when(bucket_len > 1, |el| {
-                            el.child(
-                                div()
-                                    .text_size(crate::typography::ui_rems(10.0))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from(format!("{bucket_len} prompts"))),
                             )
                         });
                     // Mounted straight through deferred/anchored (not a popover
@@ -539,36 +551,90 @@ impl Transcript {
                     crate::frost::frosted(12.0, crate::frost::MENU_BLUR, card).into_any_element()
                 });
                 div()
-                    .id(("rail-tick", ix))
-                    .relative()
+                    .absolute()
+                    .left_0()
+                    .top(px(tick_offset(ix, n, height)))
                     .h(px(TICK_SLOT))
                     .w_full()
                     .flex()
                     .items_center()
-                    .cursor_pointer()
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        this.set_rail_hover(if *hovered { Some(ix) } else { None });
-                        cx.notify();
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.scroll_to_row(row, cx);
-                    }))
                     .child(
                         div()
                             .h(px(2.0))
-                            .w(px(bar_width))
+                            .w(px(tick_width(distance)))
                             .rounded(px(1.0))
                             .bg(bar_color),
                     )
                     .when_some(card, |el, card| {
-                        el.child(gpui::deferred(
-                            gpui::anchored()
-                                .anchor(gpui::Anchor::LeftCenter)
-                                .snap_to_window_with_margin(px(8.0))
-                                .child(div().pl(px(26.0)).child(card)),
-                        ))
+                        el.child(
+                            div().absolute().left_0().top(px(TICK_SLOT / 2.0)).child(
+                                gpui::deferred(
+                                    gpui::anchored()
+                                        .anchor(gpui::Anchor::LeftCenter)
+                                        .snap_to_window_with_margin(px(8.0))
+                                        .child(div().pl(px(RAIL_HIT_WIDTH + 4.0)).child(card)),
+                                ),
+                            ),
+                        )
                     })
-            }))
+            });
+
+        div()
+            .absolute()
+            .left(px(16.0))
+            .top_0()
+            .bottom_0()
+            .w(px(RAIL_HIT_WIDTH))
+            .flex()
+            .flex_col()
+            .justify_center()
+            .child(
+                div()
+                    .id("rail-ticks")
+                    .relative()
+                    .w_full()
+                    .h(px(height + TICK_SLOT))
+                    .cursor_pointer()
+                    .child(
+                        canvas(
+                            move |bounds, _, _| bounds_cell.set(Some(bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    // One hit strip resolves the nearest tick from the pointer,
+                    // so dense stacks never fall between per-tick hitboxes.
+                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                        let ix = move_under(event.position.y);
+                        if this.rail_hover() != ix {
+                            this.set_rail_hover(ix);
+                            cx.notify();
+                        }
+                    }))
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if !*hovered && this.rail_hover().is_some() {
+                            this.set_rail_hover(None);
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        let ix = match event {
+                            ClickEvent::Mouse(_) => tick_under(event.position().y),
+                            _ => None,
+                        }
+                        .or(this.rail_hover());
+                        // Resolve the row at click time: rows can splice
+                        // between the render that drew the tick and the click.
+                        let Some(id) = ix.and_then(|ix| ids.get(ix)) else {
+                            return;
+                        };
+                        if let Some(row) = this.rows().iter().position(|r| r.id == *id) {
+                            this.scroll_to_row(row, cx);
+                        }
+                    }))
+                    .children(ticks),
+            )
             .into_any_element()
     }
 }
@@ -596,58 +662,49 @@ mod tests {
     }
 
     #[test]
-    fn capacity_counts_slots_that_fit() {
-        // 880px viewport − 48 margin = 832 usable → (832+3)/13 = 64 slots.
-        assert_eq!(rail_capacity(880.0), 64);
-        // Tiny (or unmeasured) heights still hand out one slot.
-        assert_eq!(rail_capacity(0.0), 1);
-        assert!(rail_capacity(200.0) >= 10);
-        // The rail itself is hard-capped: compact on any window height.
-        assert_eq!(rail_slots(880.0), MAX_RAIL_TICKS);
-        assert_eq!(rail_slots(2000.0), MAX_RAIL_TICKS);
-        // Short rails still shrink below the cap.
-        assert!(rail_slots(100.0) < MAX_RAIL_TICKS);
+    fn rail_height_spaces_ticks_then_compresses() {
+        // Natural spacing while it fits.
+        assert_eq!(rail_height(2, 900.0), TICK_SPACING);
+        assert_eq!(rail_height(10, 900.0), 9.0 * TICK_SPACING);
+        // A long conversation shares the available height instead of growing.
+        assert_eq!(rail_height(500, 900.0), 900.0 - RAIL_RESERVED_V);
+        // Tiny (or unmeasured) heights still leave a usable stack.
+        assert_eq!(rail_height(500, 0.0), TICK_SPACING);
+        assert_eq!(rail_height(1, 900.0), 0.0);
     }
 
     #[test]
-    fn buckets_are_identity_under_capacity() {
-        // n <= capacity: one tick per prompt — the old per-prompt rail.
-        let b = tick_buckets(5, 64);
-        assert_eq!(b.len(), 5);
-        assert!(
-            b.iter()
-                .enumerate()
-                .all(|(k, &(s, e))| s == k && e == k + 1)
-        );
+    fn tick_offsets_spread_evenly_end_to_end() {
+        assert_eq!(tick_offset(0, 5, 40.0), 0.0);
+        assert_eq!(tick_offset(2, 5, 40.0), 20.0);
+        assert_eq!(tick_offset(4, 5, 40.0), 40.0);
+        assert_eq!(tick_offset(0, 1, 40.0), 0.0);
     }
 
+    /// Every prompt is reachable: pointer → nearest tick → same tick's
+    /// offset, at any density (the old fixed 12-slot buckets skipped prompts).
     #[test]
-    fn buckets_partition_evenly_over_capacity() {
-        // 100 prompts into 8 slots: every tick in exactly one bucket, in
-        // order, first starts at 0, last ends at n, sizes within ±1 of even.
-        let n = 100;
-        let b = tick_buckets(n, 8);
-        assert_eq!(b.len(), 8);
-        assert_eq!(b[0].0, 0);
-        assert_eq!(b.last().unwrap().1, n);
-        for w in b.windows(2) {
-            assert_eq!(w[0].1, w[1].0, "contiguous");
+    fn pointer_maps_to_every_tick() {
+        for n in [2usize, 7, 12, 13, 80, 300] {
+            let height = rail_height(n, 900.0);
+            for ix in 0..n {
+                let y = tick_offset(ix, n, height);
+                assert_eq!(tick_at(n, height, y), Some(ix), "n={n} ix={ix}");
+            }
         }
-        for &(s, e) in &b {
-            assert!((e - s) == 12 || (e - s) == 13, "even split, got {}", e - s);
-        }
+        // Clamped past either end.
+        assert_eq!(tick_at(5, 32.0, -20.0), Some(0));
+        assert_eq!(tick_at(5, 32.0, 99.0), Some(4));
+        assert_eq!(tick_at(0, 32.0, 0.0), None);
+        assert_eq!(tick_at(1, 0.0, 5.0), Some(0));
     }
 
     #[test]
-    fn bucket_of_maps_ticks_to_their_bucket() {
-        let b = tick_buckets(10, 3); // [0,3) [3,6) [6,10)
-        assert_eq!(bucket_of(&b, 0), Some(0));
-        assert_eq!(bucket_of(&b, 3), Some(1));
-        assert_eq!(bucket_of(&b, 9), Some(2));
-        assert_eq!(bucket_of(&b, 10), None);
-        // Degenerate inputs.
-        assert!(tick_buckets(0, 8).is_empty());
-        assert_eq!(tick_buckets(3, 0), vec![(0, 3)]);
+    fn fisheye_widths_fall_off_from_hover() {
+        assert_eq!(tick_width(Some(0)), 24.0);
+        assert!(tick_width(Some(1)) < tick_width(Some(0)));
+        assert!(tick_width(Some(2)) < tick_width(Some(1)));
+        assert_eq!(tick_width(Some(3)), tick_width(None));
     }
 
     #[test]
