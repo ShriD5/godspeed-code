@@ -8,6 +8,8 @@ publish.workspace = true
 [features]
 voice-experimental = [] # Compatibility flag; native subscription voice uses Codex's packaged helper.
 project-palette-fixture = []
+# New project's typed path against a real engine, filmed in process.
+project-path-fixture = ["gpui_platform/test-support"]
 compact-picker-fixture = ["gpui_platform/test-support"]
 
 # Native captures explicitly present the freshly drawn scene, including when
@@ -51,6 +53,10 @@ required-features = ["pull-request-fixture"]
 [[example]]
 name = "new-project-fixture"
 required-features = ["project-palette-fixture"]
+
+[[example]]
+name = "new-project-path-fixture"
+required-features = ["project-path-fixture"]
 
 [[example]]
 name = "sidebar-fixture"

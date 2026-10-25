@@ -11160,6 +11160,10 @@ impl Shell {
             self.close_project_crumb_menu(cx);
             return true;
         }
+        // A typed path gives the crumbs back before the palette closes.
+        if self.add_space_cancel_path_edit(cx) {
+            return true;
+        }
         if self.add_space.is_some() {
             self.close_add_space(cx);
             return true;

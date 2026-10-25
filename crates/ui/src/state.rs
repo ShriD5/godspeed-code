@@ -6293,7 +6293,11 @@ mod tests {
     }
 }
 
-#[cfg(any(feature = "appshots-fixture", feature = "pull-request-fixture"))]
+#[cfg(any(
+    feature = "appshots-fixture",
+    feature = "pull-request-fixture",
+    feature = "project-path-fixture"
+))]
 impl AppState {
     /// Keep fixture documents deterministic while using the real attachment RPC.
     pub fn fixture_attachment_engine(&mut self, engine: EngineHandle) {
