@@ -2512,6 +2512,7 @@ impl HighlightStore {
                             Lang::Php => "php",
                             Lang::Sql => "sql",
                             Lang::Lua => "lua",
+                            Lang::Luau => "luau",
                             Lang::Dockerfile => "dockerfile",
                             Lang::Nix => "nix",
                             Lang::Make => "make",
