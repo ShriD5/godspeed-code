@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-25 | Worktree setup waits for the shell before typing, so a startup prompt cannot eat the command (`5d5b6e025c`) | ported (Actions and worktree setup wait for the line editor; branch t3-watch/2026-10-25-shell-ready-action) |
+| 2026-10-25 | Worktree setup waits for the shell before typing, so a startup prompt cannot eat the command (`5d5b6e025c`) | PR #31 |
 | 2026-10-25 | ACP terminal commands that ignore SIGTERM are force-killed (`c4fa4629eb`) | skipped (Godspeed's ACP client offers no terminal capability) |
 | 2026-10-25 | ACP idle agent errors fail their turns (`5a969c17e7`) | queued (check an ACP agent that errors between turns) |
 | 2026-10-25 | Codex pending requests are bounded after app-server stdout closes (`7769d709ce`) | queued (check a Codex crash mid-request ends the turn) |
