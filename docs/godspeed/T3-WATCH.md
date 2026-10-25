@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@6e792117436662208bf2b6eb71ee8d0d88817e43 (2026-10-24)
+Reviewed T3 through: pingdotgg/t3code@375da0fb9a20dfdbd2eb2db99050341fc30f3a23 (2026-10-25)
 
 ## Rules
 
@@ -23,6 +23,19 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-25 | Worktree setup waits for the shell before typing, so a startup prompt cannot eat the command (`5d5b6e025c`) | ported (Actions and worktree setup wait for the line editor; branch t3-watch/2026-10-25-shell-ready-action) |
+| 2026-10-25 | ACP terminal commands that ignore SIGTERM are force-killed (`c4fa4629eb`) | skipped (Godspeed's ACP client offers no terminal capability) |
+| 2026-10-25 | ACP idle agent errors fail their turns (`5a969c17e7`) | queued (check an ACP agent that errors between turns) |
+| 2026-10-25 | Codex pending requests are bounded after app-server stdout closes (`7769d709ce`) | queued (check a Codex crash mid-request ends the turn) |
+| 2026-10-25 | Working holds only background work the agent waits on (`91ea0e18eb`) | queued (with the Agents-pill row) |
+| 2026-10-25 | `ENABLE_TOOL_SEARCH=auto` no longer costs 10x cache writes (`24c80f34a1`) | skipped (only when a user sets auto; Godspeed adds few MCP tools) |
+| 2026-10-25 | Command palette search finds options inside submenus (`e9d61252f6`) | skipped (Godspeed's palette has no submenus) |
+| 2026-10-25 | Follow-ups steer the running turn by default (`b808f7fc6d`) | skipped (default send behaviour is the owner's call) |
+| 2026-10-25 | Compactions T3 starts read as one quiet working row (`0345e852ed`) | skipped (Godspeed has no idle compaction yet; see the 2026-10-20 row) |
+| 2026-10-25 | Share a thread with a guest who watches live (`fb76594d7b`) | skipped (T3 Connect relay, out of scope) |
+| 2026-10-25 | Agents' shell-created PRs get linked (`dca46e2b24`); PR-watch, delegated-review and thread-tool fixes (`2da177c2a6`, `909e4c9482`, `003b64dfa5`, `a96cf0818e`, `e641761e2a`, `639dc20e43`, `3eb836664e`) | skipped (T3's forge watch and orchestrator tools) |
+| 2026-10-25 | Thread-open and cold-connect payload cuts (`553203c57b`, `e19fe0837b`, `80455376f0`, `67c3afbd58`, `e57c093cdd`) | skipped (T3 projection store and wire format) |
+| 2026-10-25 | ~70 other commits: mobile/Duo, Shiki to @pierre/highlights, screen readers, GitCafe, LAN devices, request_secret, Cursor/Grok/Antigravity fixes, analytics, comment trims, CI | skipped (internal/minor) |
 | 2026-10-24 | Stop stops a thread's subagents again (`fbc6a08159`) | queued (check Stop while a Claude background subagent runs, with the steering rows) |
 | 2026-10-24 | Interrupts an agent started no longer read "by user" (`7d87be3596`) | queued (check a chat interrupted through `interrupt_chat`) |
 | 2026-10-24 | A fork's first /compact compacts its inherited history (`5b55036f8c`) | queued (check /compact right after a fork) |
