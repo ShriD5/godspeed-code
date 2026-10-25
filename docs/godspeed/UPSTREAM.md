@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@4231cb7b (2026-10-23)
+Synced through: zeronsh/zeron@187b4024 (2026-10-25)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -20,6 +20,13 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
   needs `managed.rs` and npm repair), 987bb2f8 (agent CLI update ownership, known-bad release
   list, Muse Code accounts; builds on dd0c36fa and Cloud agent accounts), 5b8edb2d (iOS Cloud
   Providers screen only).
+- Also built on cc7da5c2 (deferred 2026-10-25): fd7d268c (iOS terminals, side chats and
+  subagents; uses CloudStore, error-card sign-in actions and provider switching), with its
+  follow-ups dfbb6876 (iOS direct WebRTC terminal link; moves remote terminals into a
+  `zeron-term-link` crate), 3c97a05c (terminal glyphs) and 2ea4e3a0 (composer level with the
+  sidebar toolbar); a9e6c48b (previews only for ports Zeron started; needs the terminal-to-chat
+  association and `prepare_run` from cc7da5c2); 684becf0 and 8ae969ad (Android app on the
+  mobile core; its screens use the Cloud and billing FFI, and it would need a rebrand).
 
 A Godspeed always-on agent ("Zeron sync") runs daily, ports anything newer than the line above on a
 branch, runs the test suites, merges to main when everything passes, and otherwise leaves a pull
