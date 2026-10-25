@@ -935,6 +935,9 @@ pub struct Pickers {
     /// Space the branch draft/cache belong to (see the state observer).
     space_owner: Option<String>,
     device_owner: Option<String>,
+    /// The checkout kind each project's canvas was left with, put back when
+    /// the canvas returns to that project (see the state observer).
+    checkout_by_space: HashMap<String, CheckoutKind>,
     target_generation: u64,
     menu_geometry: HashMap<PickerKind, popover::MenuGeometry>,
     model_trigger_bounds: Option<gpui::Bounds<gpui::Pixels>>,
@@ -1132,11 +1135,17 @@ impl Pickers {
                 this.switch_error = None;
             }
             // A space switch invalidates the branch draft + cache — the folder
-            // (and possibly the device) changed under them.
+            // (and possibly the device) changed under them. The checkout kind
+            // is the project's own: it is filed away on the way out and put
+            // back on return, so a visit elsewhere can't quietly turn "New
+            // worktree" into a run in the main checkout.
             let space = state.read(cx).selected_space.clone();
             let device = state.read(cx).effective_device_id();
             let device_changed = device != this.device_owner;
             if space != this.space_owner || device_changed {
+                if let Some(left) = this.space_owner.take() {
+                    this.checkout_by_space.insert(left, this.config.checkout);
+                }
                 this.space_owner = space;
                 this.device_owner = device;
                 this.setting_menu = None;
@@ -1144,7 +1153,15 @@ impl Pickers {
                 this.held_ref = this.selected_ref().cloned().or(this.held_ref.take());
                 this.refs_task = None;
                 this.config.branch = None;
-                this.config.checkout = CheckoutKind::default();
+                this.config.checkout = match state.read(cx).selected_space_row() {
+                    // Only a git project can make a worktree.
+                    Some(space) if space.git_detected => this
+                        .checkout_by_space
+                        .get(&space.id)
+                        .copied()
+                        .unwrap_or_default(),
+                    _ => CheckoutKind::default(),
+                };
                 this.refs = Loadable::Idle;
                 this.refs_space = None;
             }
@@ -1213,6 +1230,7 @@ impl Pickers {
             state,
             space_owner,
             device_owner,
+            checkout_by_space: HashMap::new(),
             target_generation: 0,
             menu_geometry: HashMap::new(),
             model_trigger_bounds: None,
@@ -8067,6 +8085,100 @@ mod tests {
                 pickers.state.read(cx).selected_space.as_deref(),
                 Some("notes")
             );
+        });
+    }
+
+    #[gpui::test]
+    fn project_round_trip_puts_the_canvas_checkout_back(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "local")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_checkout(CheckoutKind::NewWorktree, cx);
+            pickers.config.branch = Some("main".into());
+        });
+        state.update(cx, |state, cx| state.select_space(Some("b".into()), cx));
+        cx.run_until_parked();
+        // The pick was a's: b starts in its own folder.
+        pickers.read_with(cx, |pickers, _| {
+            assert_eq!(pickers.config.checkout, CheckoutKind::Local);
+        });
+        state.update(cx, |state, cx| state.select_space(Some("a".into()), cx));
+        cx.run_until_parked();
+        pickers.read_with(cx, |pickers, _| {
+            assert_eq!(pickers.config.checkout, CheckoutKind::NewWorktree);
+            assert_eq!(pickers.checkout_label(), "New worktree");
+            // a's refs reload on the way back; the ref pick starts over.
+            assert_eq!(pickers.config.branch, None);
+        });
+    }
+
+    #[gpui::test]
+    fn canvas_reopens_with_its_checkout_after_another_projects_chat(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "local")]);
+            state.apply_chats(vec![
+                serde_json::from_value(serde_json::json!({
+                    "id":"in-b", "deviceId":"local", "spaceId":"b", "archived":false,
+                    "createdAt":"2026-09-01T00:00:00Z",
+                }))
+                .unwrap(),
+            ]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_checkout(CheckoutKind::NewWorktree, cx);
+        });
+        state.update(cx, |state, cx| state.select_chat(Some("in-b".into()), cx));
+        cx.run_until_parked();
+        // New session: the canvas target comes back, and its checkout with it.
+        state.update(cx, |state, cx| state.select_chat(None, cx));
+        cx.run_until_parked();
+        pickers.read_with(cx, |pickers, cx| {
+            assert_eq!(pickers.state.read(cx).selected_space.as_deref(), Some("a"));
+            assert_eq!(pickers.config.checkout, CheckoutKind::NewWorktree);
+        });
+    }
+
+    #[gpui::test]
+    fn a_project_that_lost_git_never_gets_a_worktree_back(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.local_device_id = Some("local".into());
+            state.apply_spaces(vec![git_space("a", "local"), git_space("b", "local")]);
+            state.selected_space = Some("a".into());
+            state
+        });
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        pickers.update(cx, |pickers, cx| {
+            pickers.pick_checkout(CheckoutKind::NewWorktree, cx);
+        });
+        state.update(cx, |state, cx| state.select_space(Some("b".into()), cx));
+        cx.run_until_parked();
+        state.update(cx, |state, _| {
+            state.apply_spaces(vec![
+                Space {
+                    git_detected: false,
+                    ..git_space("a", "local")
+                },
+                git_space("b", "local"),
+            ]);
+        });
+        state.update(cx, |state, cx| state.select_space(Some("a".into()), cx));
+        cx.run_until_parked();
+        // No checkout chip shows without git: a kept "New worktree" would ask
+        // for a worktree the user can neither see nor change.
+        pickers.read_with(cx, |pickers, _| {
+            assert_eq!(pickers.config.checkout, CheckoutKind::Local);
         });
     }
 
