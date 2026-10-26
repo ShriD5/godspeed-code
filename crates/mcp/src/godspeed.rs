@@ -17,7 +17,8 @@ use zeron_doc::{
     SessionCommandPayload, SessionMessageEntry, TranscriptFrame, apply_transcript_frame,
 };
 use zeron_proto::{
-    Chat, Conductor, ConductorMembership, ConductorNode, Device, HarnessId, Model, ReasoningLevel, Session, SessionStatus, Space, SteeringMode,
+    Chat, Conductor, ConductorMembership, ConductorNode, Device, HarnessId, Model, ReasoningLevel,
+    Session, SessionStatus, Space, SteeringMode,
 };
 use zeron_rpc::{RpcClient, RpcError, RpcSubscription, connect_ws, methods};
 
@@ -244,17 +245,28 @@ impl Godspeed {
     }
 
     /// Where `chat_id` sits in a conductor. `None` outside every conductor, and
-    /// also against an engine that predates conductors, so the old nesting
-    /// rules stay in force there.
-    pub async fn conductor_membership(&self, chat_id: &str) -> Option<ConductorMembership> {
-        let reply = self
-            .call(
-                methods::GET_CONDUCTOR_MEMBERSHIP,
-                json!({ "chatId": chat_id }),
-            )
-            .await
-            .ok()?;
-        serde_json::from_value(reply).ok()
+    /// also against an engine that predates conductors (it doesn't know the
+    /// method), so the old nesting rules stay in force there. Any other
+    /// failure is an error: approval checks must fail closed on it.
+    pub async fn conductor_membership(
+        &self,
+        chat_id: &str,
+    ) -> anyhow::Result<Option<ConductorMembership>> {
+        let method = methods::GET_CONDUCTOR_MEMBERSHIP;
+        let params = json!({ "chatId": chat_id });
+        let client = self.client().await?;
+        let reply = match client.call(method, params.clone()).await {
+            Err(RpcError::Closed) => {
+                self.forget_client().await;
+                self.client().await?.call(method, params).await
+            }
+            other => other,
+        };
+        match reply {
+            Ok(reply) => serde_json::from_value(reply).context("conductor membership"),
+            Err(RpcError::UnknownMethod(_)) => Ok(None),
+            Err(e) => Err(anyhow!("{method}: {e}")),
+        }
     }
 
     pub async fn conductor(&self, id: &str) -> anyhow::Result<Conductor> {
