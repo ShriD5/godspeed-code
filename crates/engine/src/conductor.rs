@@ -8,9 +8,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use chrono::Utc;
+use zeron_proto::conductor::MAX_RUNNING_SUB_AGENTS;
+use zeron_proto::view::{Indicator, SESSION_STALE_MS, effective_indicator};
 use zeron_proto::{
     Chat, Conductor, ConductorMembership, ConductorNode, ConductorRepo, CreateConductorParams,
-    MAX_CONDUCTOR_DEPTH, MAX_NOTES_BYTES, UpdateConductorParams, can_spawn_at,
+    LifecycleState, MAX_CONDUCTOR_DEPTH, MAX_NOTES_BYTES, Session, UpdateConductorParams,
+    can_spawn_at,
 };
 
 pub use discover::discover_repos;
@@ -95,6 +98,8 @@ impl WorkspaceHost {
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .map(str::to_string);
+        zeron_proto::conductor::check_conductor_text(Some(&name), purpose.as_deref())
+            .map_err(EngineError::Other)?;
 
         let space_ids = self.ensure_repo_spaces(&device_id, &folder, &[])?;
         self.create_chat(
@@ -279,14 +284,60 @@ impl WorkspaceHost {
             .is_some_and(|m| can_spawn_at(m.depth)))
     }
 
-    /// Refuse a child under a conductor member that is already at the cap.
+    /// Refuse a child under a conductor member that is already at the depth
+    /// cap, or when the conductor already runs [`MAX_RUNNING_SUB_AGENTS`].
     pub(crate) fn check_conductor_depth(&self, parent_id: &str) -> Result<(), EngineError> {
-        match self.conductor_membership(parent_id)? {
-            Some(m) if !can_spawn_at(m.depth) => Err(EngineError::Other(format!(
+        let Some(m) = self.conductor_membership(parent_id)? else {
+            return Ok(());
+        };
+        if !can_spawn_at(m.depth) {
+            return Err(EngineError::Other(format!(
                 "Sub-agents nest at most {MAX_CONDUCTOR_DEPTH} levels below a conductor's main chat"
-            ))),
-            _ => Ok(()),
+            )));
         }
+        let running = self.running_sub_agents(&m.conductor_id)?;
+        if running >= MAX_RUNNING_SUB_AGENTS {
+            return Err(EngineError::Other(format!(
+                "This conductor already runs {running} sub-agents (at most \
+{MAX_RUNNING_SUB_AGENTS} at once). Wait for one to finish, or reuse one by sending it a message."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Sub-agents of a conductor still at work: not archived or settled, and
+    /// working, waiting on input, or created so recently that their session
+    /// has not reported yet.
+    fn running_sub_agents(&self, conductor_id: &str) -> Result<usize, EngineError> {
+        let now = Utc::now();
+        let chats: HashMap<String, Chat> = self
+            .read_chats()?
+            .into_iter()
+            .map(|chat| (chat.id.clone(), chat))
+            .collect();
+        let sessions: HashMap<String, Session> = self
+            .read_sessions()?
+            .into_iter()
+            .map(|session| (session.chat_id.clone(), session))
+            .collect();
+        Ok(self
+            .conductor_tree(conductor_id)?
+            .iter()
+            .filter(|node| node.depth > 0 && !node.archived)
+            .filter_map(|node| chats.get(&node.chat_id))
+            .filter(|chat| chat.lifecycle.at(now) == LifecycleState::Active)
+            .filter(|chat| match sessions.get(&chat.id) {
+                Some(session) => matches!(
+                    effective_indicator(Some(session), now),
+                    Indicator::Working | Indicator::AwaitingInput
+                ),
+                None => {
+                    now.signed_duration_since(chat.created_at)
+                        .num_milliseconds()
+                        <= SESSION_STALE_MS
+                }
+            })
+            .count())
     }
 }
 
@@ -423,6 +474,62 @@ mod tests {
         let err = spawn(&host, "d4", "d3").unwrap_err().to_string();
         assert!(err.contains(&MAX_CONDUCTOR_DEPTH.to_string()), "{err}");
         assert!(host.chat("d4").unwrap().is_none());
+    }
+
+    fn session(chat_id: &str, status: zeron_proto::SessionStatus) -> Session {
+        Session {
+            chat_id: chat_id.into(),
+            device_id: "dev-a".into(),
+            status,
+            last_completed_turn: None,
+            started_at: None,
+            updated_at: Utc::now(),
+            running_subagents: 0,
+            background_tasks: 0,
+            awaiting_approval: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_conductor_runs_at_most_eight_sub_agents_at_once() {
+        use zeron_proto::SessionStatus;
+        let data = tempfile::tempdir().unwrap();
+        let host = host(data.path());
+        let folder = folder_with_repos(&[]);
+        host.create_conductor(params(folder.path(), "main"))
+            .unwrap();
+        // Eight running, across depths: working, waiting, and just started.
+        for i in 0..4 {
+            spawn(&host, &format!("w{i}"), "main").unwrap();
+            host.record_session(&session(&format!("w{i}"), SessionStatus::Working));
+        }
+        spawn(&host, "ask", "w0").unwrap();
+        host.record_session(&session("ask", SessionStatus::AwaitingInput));
+        for i in 0..3 {
+            spawn(&host, &format!("new{i}"), "w1").unwrap();
+        }
+        let err = spawn(&host, "ninth", "main").unwrap_err().to_string();
+        assert!(err.contains("at most 8"), "{err}");
+        assert!(host.chat("ninth").unwrap().is_none());
+        let err = spawn(&host, "ninth", "w2").unwrap_err().to_string();
+        assert!(err.contains("at most 8"), "{err}");
+
+        // Finished, archived and settled sub-agents free their slots.
+        host.record_session(&session("w3", SessionStatus::Idle));
+        spawn(&host, "ninth", "main").unwrap();
+        host.record_session(&session("ninth", SessionStatus::Working));
+        assert!(spawn(&host, "tenth", "main").is_err());
+        host.set_chat_archived("w2", true).unwrap();
+        spawn(&host, "tenth", "main").unwrap();
+        host.record_session(&session("tenth", SessionStatus::Working));
+        assert!(spawn(&host, "eleventh", "main").is_err());
+
+        // Chats outside the conductor are not capped.
+        host.create_chat("plain", None, Some("dev-a"), None, Some("/tmp".into()))
+            .unwrap();
+        for i in 0..10 {
+            spawn(&host, &format!("plain-{i}"), "plain").unwrap();
+        }
     }
 
     #[tokio::test]

@@ -1,16 +1,45 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, params};
 use zeron_doc::{MessagePart, MessageRole, SessionMessageEntry};
 use zeron_proto::{Chat, Session, SessionStatus};
 
+use crate::EngineError;
 use crate::doc_host::DocHost;
 use crate::sessions::SessionsEngine;
 use crate::workspace_host::WorkspaceHost;
-use crate::EngineError;
+
+/// Most wake-ups a conductor's chats receive per minute. Past it, notices
+/// wait in the outbox and go out on the next retries, so a busy tree of
+/// sub-agents can't keep its parents in a tight wake loop.
+const CONDUCTOR_WAKES_PER_MINUTE: usize = 20;
+
+/// Per-conductor sliding window over the last minute of wake-ups.
+#[derive(Default)]
+struct WakeBudget {
+    recent: HashMap<String, VecDeque<Instant>>,
+}
+
+impl WakeBudget {
+    /// Spend one wake for `conductor_id`, or `false` when its minute is full.
+    fn try_take(&mut self, conductor_id: &str, now: Instant) -> bool {
+        let window = self.recent.entry(conductor_id.to_string()).or_default();
+        while window
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(60))
+        {
+            window.pop_front();
+        }
+        if window.len() >= CONDUCTOR_WAKES_PER_MINUTE {
+            return false;
+        }
+        window.push_back(now);
+        true
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingNotice {
@@ -159,8 +188,9 @@ impl DelegationNotifications {
                 tracing::warn!(%error, "delegation notification recovery scan failed");
             }
             let mut retry_after = Duration::from_secs(1);
+            let mut wakes = WakeBudget::default();
             let _ = retry_pending(
-                &store, &workspace, &doc_host, &sessions, &device_id, &current,
+                &store, &workspace, &doc_host, &sessions, &device_id, &current, &mut wakes,
             )
             .await;
             loop {
@@ -179,6 +209,7 @@ impl DelegationNotifications {
                             }
                             if let Err(error) = retry_pending(
                                 &store, &workspace, &doc_host, &sessions, &device_id, &current,
+                                &mut wakes,
                             ).await {
                                 tracing::warn!(%error, "delegation outbox retry failed");
                             }
@@ -208,7 +239,7 @@ impl DelegationNotifications {
                     tracing::warn!(%error, "delegation notification transition failed");
                 }
                 if let Err(error) = retry_pending(
-                    &store, &workspace, &doc_host, &sessions, &device_id, &current,
+                    &store, &workspace, &doc_host, &sessions, &device_id, &current, &mut wakes,
                 )
                 .await
                 {
@@ -405,6 +436,7 @@ async fn retry_pending(
     sessions: &SessionsEngine,
     device_id: &str,
     current: &HashMap<String, Session>,
+    wakes: &mut WakeBudget,
 ) -> Result<(), EngineError> {
     for pending in store.pending()? {
         let Some(session) = current.get(&pending.child_chat_id) else {
@@ -446,6 +478,11 @@ async fn retry_pending(
         {
             store.finish(&pending.event_id, DROPPED)?;
             continue;
+        }
+        if let Some(membership) = workspace.conductor_membership(&parent.id)?
+            && !wakes.try_take(&membership.conductor_id, Instant::now())
+        {
+            continue; // stays pending; the outbox retries it later
         }
         match doc_host
             .queue_delegation_notice(&pending.parent_chat_id, &pending.event_id, &pending.text)
@@ -873,5 +910,19 @@ mod tests {
         assert!(!parent_accepts(&ws, &plain_child, &plain_grandchild, "dev").unwrap());
         // Device mismatch still blocks.
         assert!(!parent_accepts(&ws, &mid, &leaf, "other").unwrap());
+    }
+
+    #[test]
+    fn conductor_wakes_are_capped_per_minute() {
+        let mut wakes = WakeBudget::default();
+        let start = Instant::now();
+        for _ in 0..CONDUCTOR_WAKES_PER_MINUTE {
+            assert!(wakes.try_take("c1", start));
+        }
+        assert!(!wakes.try_take("c1", start + Duration::from_secs(30)));
+        // Another conductor has its own budget.
+        assert!(wakes.try_take("c2", start));
+        // The window slides.
+        assert!(wakes.try_take("c1", start + Duration::from_secs(60)));
     }
 }
