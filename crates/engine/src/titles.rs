@@ -156,10 +156,8 @@ impl TitleGenerator {
         prompt: &str,
         _cwd: &str,
     ) -> Option<String> {
-        let title_prompt = format!(
-            "{SESSION_TITLE_TASK}\n\nSession request (JSON string):\n{}",
-            serde_json::to_string(prompt).ok()?
-        );
+        let instructions = self.inner.registry.title_settings().title_instructions;
+        let title_prompt = session_title_prompt(prompt, &instructions)?;
         generate_text(
             &self.inner.registry,
             Some(harness_id),
@@ -173,6 +171,20 @@ impl TitleGenerator {
 
 /// The title task, sent ahead of the quoted session request.
 pub(crate) const SESSION_TITLE_TASK: &str = "Task: write a session title. Return only a concise 3-5 word title in Title Case, without quotes or punctuation.";
+
+/// The title task, the user's title instructions when set, then the quoted
+/// session request.
+fn session_title_prompt(request: &str, instructions: &str) -> Option<String> {
+    let request = serde_json::to_string(request).ok()?;
+    let instructions = instructions.trim();
+    Some(if instructions.is_empty() {
+        format!("{SESSION_TITLE_TASK}\n\nSession request (JSON string):\n{request}")
+    } else {
+        format!(
+            "{SESSION_TITLE_TASK}\nAdditional instructions: {instructions}\n\nSession request (JSON string):\n{request}"
+        )
+    })
+}
 
 /// One restricted text-generation run on the device's configured text model
 /// (Settings → Thread naming): titles, commit messages, pull request text and
@@ -493,6 +505,7 @@ mod tests {
             .set_title_settings(crate::registry::TitleSettings {
                 harness: Some(HarnessId::ClaudeCode),
                 model: Some("chosen-title-model".into()),
+                title_instructions: "Lead with the ticket id".into(),
                 ..Default::default()
             })
             .unwrap();
@@ -519,13 +532,24 @@ mod tests {
                 !std::path::Path::new(&request.cwd).exists(),
                 "scratch directory is cleaned up"
             );
-            assert!(
-                request
-                    .prompt
-                    .contains(&serde_json::to_string(prompt).unwrap())
-            );
+            let quoted = request
+                .prompt
+                .find(&serde_json::to_string(prompt).unwrap())
+                .expect("the session request is quoted");
+            let instructions = request
+                .prompt
+                .find("Additional instructions: Lead with the ticket id")
+                .expect("the title instructions are included");
+            assert!(instructions < quoted);
         }
         core.shutdown().await;
+    }
+
+    #[test]
+    fn blank_title_instructions_leave_the_prompt_unchanged() {
+        let prompt = session_title_prompt("fix login", "  ").unwrap();
+        assert!(!prompt.contains("Additional instructions"));
+        assert!(prompt.starts_with(SESSION_TITLE_TASK));
     }
 
     #[test]

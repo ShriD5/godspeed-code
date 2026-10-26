@@ -131,7 +131,7 @@ directly comparable; the movers are listed below.
 
 | Item | Status | Notes |
 |---|---|---|
-| Thread titles with a configurable model | 🟡 | Codex and Claude only (`supports_titles`), cheapest-model heuristic |
+| Thread titles with a configurable model | 🟡 | Codex and Claude only (`supports_titles`), cheapest-model heuristic, user title instructions (`engine/src/titles.rs`) |
 | Regenerate title | ❌ | manual rename only |
 | Commit message, PR title/body, branch name generation | ✅ | repo-style aware, PR template aware, credits stripped (`engine/src/text_generation.rs`) |
 | Writing style, writer model, repository conventions setting | 🟡 | one shared model (Settings → Thread naming); no per-task model |

@@ -111,6 +111,8 @@ pub struct TitleSettings {
     /// Strip agent attribution trailers (`Co-Authored-By: Claude …`,
     /// `Generated with Claude Code`) from commit messages and PR bodies.
     pub remove_agent_credits: bool,
+    /// The user's own guidance for session titles, added to the title prompt.
+    pub title_instructions: String,
 }
 
 impl Default for TitleSettings {
@@ -119,6 +121,7 @@ impl Default for TitleSettings {
             harness: None,
             model: None,
             remove_agent_credits: true,
+            title_instructions: String::new(),
         }
     }
 }
@@ -457,6 +460,7 @@ impl HarnessRegistry {
             return Err("Choose a title harness before choosing a model".into());
         }
         settings.model = settings.model.filter(|model| !model.trim().is_empty());
+        settings.title_instructions = settings.title_instructions.trim().to_string();
         self.prefs().titles = settings;
         self.persist_prefs();
         Ok(())
@@ -1290,6 +1294,7 @@ mod title_tests {
             harness: Some(HarnessId::ClaudeCode),
             model: Some("haiku-test".into()),
             remove_agent_credits: false,
+            title_instructions: "Lead with the ticket id".into(),
         };
         registry.set_title_settings(settings.clone()).unwrap();
         let reloaded = HarnessRegistry::new();

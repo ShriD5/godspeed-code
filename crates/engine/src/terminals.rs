@@ -36,6 +36,18 @@ const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_REPLAY_BYTES: usize = 1024 * 1024;
 const EXITED_TTL: Duration = Duration::from_secs(30 * 60);
 const REAPER_INTERVAL: Duration = Duration::from_secs(60);
+/// These name the multiplexer pane Godspeed was launched from. A terminal that
+/// inherits them points `tmux`, `screen` and `zellij` at that unrelated pane.
+#[cfg(not(windows))]
+const LAUNCHING_MULTIPLEXER_ENV: [&str; 7] = [
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "WINDOW",
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
+    "ZELLIJ_PANE_ID",
+];
 
 struct LiveTerminal {
     // Keep the private action script alive until the shell exits or the tab is closed.
@@ -200,6 +212,13 @@ fn clamp_size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+#[cfg(not(windows))]
+fn forget_launching_multiplexer(cmd: &mut CommandBuilder) {
+    for name in LAUNCHING_MULTIPLEXER_ENV {
+        cmd.env_remove(name);
+    }
+}
+
 /// The user's interactive shell: `$SHELL`, else the platform default.
 fn selected_shell() -> String {
     if cfg!(windows) {
@@ -343,6 +362,7 @@ impl Terminals {
                 cmd.arg("-l"); // login shell — the user's real PATH/profile
             }
             cmd.cwd(cwd);
+            forget_launching_multiplexer(&mut cmd);
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
             cmd.env("TERM_PROGRAM", "Godspeed");
@@ -429,14 +449,19 @@ impl Terminals {
                 })?;
             tokio::spawn(async move { rx.await.map_err(std::io::Error::other)? })
         };
-        tokio::spawn(pump_output(Arc::downgrade(&session), raw_rx, wait));
-
-        if let Some(bootstrap) = bootstrap
-            && let Err(err) = self.write_bytes(&id, bootstrap.as_bytes())
-        {
-            let _ = self.close(&id);
-            return Err(err);
-        }
+        #[cfg(windows)]
+        let pending = {
+            if let Some(bootstrap) = bootstrap
+                && let Err(err) = self.write_bytes(&id, bootstrap.as_bytes())
+            {
+                let _ = self.close(&id);
+                return Err(err);
+            }
+            None
+        };
+        #[cfg(not(windows))]
+        let pending = bootstrap.map(PendingCommand::new);
+        tokio::spawn(pump_output(Arc::downgrade(&session), raw_rx, wait, pending));
 
         Ok(TerminalSession {
             id,
@@ -636,6 +661,81 @@ fn read_pty(mut reader: Box<dyn Read + Send>, tx: mpsc::UnboundedSender<Vec<u8>>
     }
 }
 
+/// Line editors (zsh, fish, bash 5.1+) turn bracketed paste on when they start
+/// reading a command line.
+const BRACKETED_PASTE_ON: &[u8] = b"\x1b[?2004h";
+const BRACKETED_PASTE_OFF: &[u8] = b"\x1b[?2004l";
+/// Shells without bracketed paste get their command once startup goes quiet
+/// with nothing but the shell in the foreground.
+const SHELL_QUIET: Duration = Duration::from_secs(1);
+
+/// An Action's command, held until the shell is ready for it: input typed
+/// during startup can be read by an rc-file prompt (an update check, fnm,
+/// nvm) instead of the shell, which loses the command.
+struct PendingCommand {
+    bytes: Vec<u8>,
+    reading: bool,
+    carry: Vec<u8>,
+}
+
+impl PendingCommand {
+    #[cfg(not(windows))]
+    fn new(command: String) -> Self {
+        Self {
+            bytes: command.into_bytes(),
+            reading: false,
+            carry: Vec::new(),
+        }
+    }
+
+    /// Whether the shell's line editor is reading after this output.
+    fn observe(&mut self, chunk: &[u8]) -> bool {
+        let mut text = std::mem::take(&mut self.carry);
+        text.extend_from_slice(chunk);
+        let last = |needle: &[u8]| text.windows(needle.len()).rposition(|w| w == needle);
+        match (last(BRACKETED_PASTE_ON), last(BRACKETED_PASTE_OFF)) {
+            (Some(on), Some(off)) => self.reading = on > off,
+            (Some(_), None) => self.reading = true,
+            (None, Some(_)) => self.reading = false,
+            (None, None) => {}
+        }
+        let keep = BRACKETED_PASTE_ON.len() - 1;
+        self.carry = text[text.len().saturating_sub(keep)..].to_vec();
+        self.reading
+    }
+}
+
+/// A startup prompt runs as a child process, which then owns the foreground.
+#[cfg(not(windows))]
+fn foreground_busy(session: &LiveTerminal) -> bool {
+    let leader = session
+        .master
+        .as_ref()
+        .and_then(|master| master.process_group_leader());
+    matches!((leader, session.pid), (Some(leader), Some(pid)) if leader as u32 != pid)
+}
+
+#[cfg(windows)]
+fn foreground_busy(_session: &LiveTerminal) -> bool {
+    false
+}
+
+fn deliver_command(session: &Weak<Mutex<LiveTerminal>>, command: &PendingCommand) {
+    let Some(session) = session.upgrade() else {
+        return;
+    };
+    let mut session = lock(&session);
+    let Some(writer) = session.writer.as_mut() else {
+        return;
+    };
+    if let Err(error) = writer
+        .write_all(&command.bytes)
+        .and_then(|_| writer.flush())
+    {
+        tracing::warn!(%error, "terminal command was not written");
+    }
+}
+
 /// Batches raw chunks into `Data` events every [`TERMINAL_OUTPUT_BATCH_MS`].
 /// ConPTY keeps its output pipe open while the pseudoconsole handle is alive, even after
 /// the child exits, so child wait and output reads must be driven concurrently. Once the
@@ -645,6 +745,7 @@ async fn pump_output(
     session: Weak<Mutex<LiveTerminal>>,
     mut raw_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     mut wait: tokio::task::JoinHandle<Result<portable_pty::ExitStatus, std::io::Error>>,
+    mut pending: Option<PendingCommand>,
 ) {
     let batch = Duration::from_millis(TERMINAL_OUTPUT_BATCH_MS);
     let emit = |buffer: Vec<u8>| -> bool {
@@ -663,6 +764,8 @@ async fn pump_output(
     // Start a batch only when output arrives; idle terminals need no timer.
     let flush = tokio::time::sleep(batch);
     tokio::pin!(flush);
+    let quiet = tokio::time::sleep(SHELL_QUIET);
+    tokio::pin!(quiet);
     let mut buffer = Vec::new();
     let mut raw_open = true;
     let mut exit_code = None;
@@ -671,12 +774,30 @@ async fn pump_output(
         tokio::select! {
             chunk = raw_rx.recv(), if raw_open => match chunk {
                 Some(chunk) => {
+                    if let Some(command) = pending.as_mut() {
+                        if command.observe(&chunk) {
+                            deliver_command(&session, command);
+                            pending = None;
+                        } else {
+                            quiet.as_mut().reset(tokio::time::Instant::now() + SHELL_QUIET);
+                        }
+                    }
                     if buffer.is_empty() {
                         flush.as_mut().reset(tokio::time::Instant::now() + batch);
                     }
                     buffer.extend_from_slice(&chunk);
                 },
                 None => raw_open = false,
+            },
+            _ = &mut quiet, if pending.is_some() && exit_code.is_none() => {
+                let busy = session
+                    .upgrade()
+                    .is_some_and(|session| foreground_busy(&lock(&session)));
+                if busy {
+                    quiet.as_mut().reset(tokio::time::Instant::now() + SHELL_QUIET);
+                } else if let Some(command) = pending.take() {
+                    deliver_command(&session, &command);
+                }
             },
             result = &mut wait, if exit_code.is_none() => {
                 exit_code = Some(match result {
@@ -1197,6 +1318,24 @@ mod initial_command_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    #[test]
+    fn shells_forget_the_multiplexer_godspeed_was_launched_from() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.env("TMUX", "/tmp/tmux-501/default,4242,0");
+        cmd.env("TMUX_PANE", "%3");
+        cmd.env("STY", "4242.pts-0.host");
+        cmd.env("WINDOW", "1");
+        cmd.env("ZELLIJ", "0");
+        cmd.env("ZELLIJ_SESSION_NAME", "work");
+        cmd.env("ZELLIJ_PANE_ID", "2");
+        cmd.env("EDITOR", "vim");
+        forget_launching_multiplexer(&mut cmd);
+        for name in LAUNCHING_MULTIPLEXER_ENV {
+            assert_eq!(cmd.get_env(name), None, "{name} leaked into the shell");
+        }
+        assert_eq!(cmd.get_env("EDITOR"), Some(std::ffi::OsStr::new("vim")));
+    }
+
     #[tokio::test]
     async fn long_command_survives_delayed_shell_startup_and_script_is_cleaned_up() {
         let root = tempfile::tempdir().unwrap();
@@ -1256,6 +1395,75 @@ mod initial_command_tests {
             std::fs::remove_file(output).unwrap();
         }
         assert!(!terminals.any_open());
+    }
+
+    #[tokio::test]
+    async fn a_startup_prompt_does_not_swallow_the_command() {
+        if !std::path::Path::new("/bin/zsh").exists() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let zdotdir = root.path().join("zdotdir");
+        std::fs::create_dir(&zdotdir).unwrap();
+        std::fs::write(
+            zdotdir.join(".zshrc"),
+            "/bin/sh -c 'printf \"Update now? [y/N] \"; read answer; printf %s \"$answer\" > answer'\n",
+        )
+        .unwrap();
+        let terminals = Terminals::new();
+        let session = terminals
+            .open_session(
+                root.path().to_str().unwrap(),
+                80,
+                24,
+                Some("/bin/zsh"),
+                &HashMap::from([("ZDOTDIR".to_string(), zdotdir.to_string_lossy().into())]),
+                Some("printf ran > result"),
+            )
+            .unwrap();
+        let mut rx = terminals.subscribe(&session.id, None).unwrap();
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !String::from_utf8_lossy(&output).contains("Update now?") {
+                if let Some(TerminalEvent::Data { data, .. }) = rx.recv().await {
+                    output.extend(BASE64.decode(data).unwrap());
+                }
+            }
+        })
+        .await
+        .expect("the startup prompt never showed");
+
+        tokio::time::sleep(SHELL_QUIET * 2).await;
+        assert!(!root.path().join("answer").exists());
+        assert!(!root.path().join("result").exists());
+
+        terminals.write_bytes(&session.id, b"n\r").unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while std::fs::read_to_string(root.path().join("result"))
+                .ok()
+                .as_deref()
+                != Some("ran")
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the command never ran after the prompt was answered");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("answer")).unwrap(),
+            "n"
+        );
+        terminals.close(&session.id).unwrap();
+    }
+
+    #[test]
+    fn bracketed_paste_is_tracked_across_chunks() {
+        let mut command = PendingCommand::new("true\r".into());
+        assert!(!command.observe(b"Update now? [y/N] "));
+        assert!(!command.observe(b"\x1b[?20"));
+        assert!(command.observe(b"04h% "));
+        assert!(!command.observe(b"\x1b[?2004l\r\n"));
+        assert!(command.observe(b"\x1b[?2004l\x1b[?2004h"));
     }
 
     #[tokio::test]
