@@ -2505,3 +2505,89 @@ fn conductor_spaces_replace_the_list() {
     );
     assert_eq!(ws.conductor("c1").unwrap().space_ids, vec!["s1", "s2"]);
 }
+
+/// A conductor with every field at its longest: full notes (with line
+/// breaks, as real notes have), the longest name and purpose, a PATH_MAX
+/// folder, eight repos and a configured agent.
+fn largest_conductor(device: &str) -> zeron_proto::Conductor {
+    use zeron_proto::conductor::{MAX_NAME_BYTES, MAX_PURPOSE_BYTES};
+    let uuid = |n: usize| format!("{n:08}-0000-4000-8000-000000000000");
+    let line = format!("{}\n", "n".repeat(79));
+    let mut notes = line.repeat(zeron_proto::MAX_NOTES_BYTES / line.len() + 1);
+    notes.truncate(zeron_proto::MAX_NOTES_BYTES);
+    zeron_proto::Conductor {
+        id: uuid(1),
+        name: "a".repeat(MAX_NAME_BYTES),
+        purpose: Some("p".repeat(MAX_PURPOSE_BYTES)),
+        folder: format!("/{}", "f".repeat(1023)),
+        device_id: device.into(),
+        main_chat_id: uuid(2),
+        space_ids: (10..18).map(uuid).collect(),
+        config: Some(ChatConfig {
+            harness: HarnessId::ClaudeCode,
+            model: Some("claude-opus-5-5".into()),
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox: SandboxLevel::WorkspaceWrite,
+            access_mode: Some(zeron_proto::AccessMode::default()),
+        }),
+        notes,
+        archived: false,
+        created_at: ts(1_000),
+    }
+}
+
+#[test]
+fn every_conductor_write_fits_the_per_change_budget() {
+    let device = "00000000-0000-4000-8000-0000000000aa";
+    let mut ws = RegistryDoc::new(device);
+    let big = largest_conductor(device);
+    assert_eq!(big.notes.len(), zeron_proto::MAX_NOTES_BYTES);
+    ws.upsert_conductor(&big).unwrap();
+    assert!(ws.set_conductor_notes(&big.id, &big.notes).unwrap());
+    assert!(ws.set_conductor_spaces(&big.id, &big.space_ids).unwrap());
+    let patch = zeron_proto::UpdateConductorParams {
+        id: big.id.clone(),
+        name: Some(big.name.clone()),
+        purpose: big.purpose.clone(),
+        config: big.config.clone(),
+        archived: Some(true),
+    };
+    assert!(ws.update_conductor(&patch).unwrap());
+    for op in ws.pending.iter().flat_map(|b| &b.ops) {
+        assert!(
+            fits_op_budget(op),
+            "{} bytes",
+            serde_json::to_vec(op).unwrap().len()
+        );
+    }
+    // A recovery re-seed pushes the whole row with every clock; it fits too.
+    let row = ws.overlay_row(KIND_CONDUCTORS, &big.id).unwrap();
+    assert!(fits_op_budget(&row_to_seed_op(&row)));
+}
+
+#[test]
+fn conductor_writes_over_the_budget_are_refused_before_they_queue() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    let queued = ws.pending_ops_len();
+    // Under the byte cap, but JSON escaping doubles every quote.
+    let quotes = "\"".repeat(zeron_proto::MAX_NOTES_BYTES);
+    let err = ws.set_conductor_notes("c1", &quotes).unwrap_err();
+    assert!(err.to_string().contains("too large to sync"), "{err}");
+    assert_eq!(ws.pending_ops_len(), queued);
+    assert_eq!(ws.conductor("c1").unwrap().notes, "");
+
+    let mut huge = conductor("c2", "main-2");
+    huge.notes = quotes;
+    assert!(ws.upsert_conductor(&huge).is_err());
+    assert!(ws.conductor("c2").is_none());
+
+    let too_long = zeron_proto::UpdateConductorParams {
+        id: "c1".into(),
+        name: Some("a".repeat(zeron_proto::conductor::MAX_NAME_BYTES + 1)),
+        ..Default::default()
+    };
+    assert!(ws.update_conductor(&too_long).is_err());
+    assert_eq!(ws.pending_ops_len(), queued);
+}

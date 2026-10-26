@@ -24,19 +24,80 @@ fn conductor_fields(conductor: &Conductor) -> BTreeMap<String, Value> {
     }
 }
 
+fn check_notes(notes: &str) -> Result<(), DocError> {
+    if notes.len() > zeron_proto::MAX_NOTES_BYTES {
+        return Err(DocError::Schema(format!(
+            "Notes are over the {} KB limit",
+            zeron_proto::MAX_NOTES_BYTES / 1024
+        )));
+    }
+    Ok(())
+}
+
 impl RegistryDoc {
+    /// Refuse a conductor write the room would reject: a batch over
+    /// [`MAX_OP_BYTES`] is refused whole and wedges sync. The check covers
+    /// the whole row the write leaves behind, with a clock on every field,
+    /// as a re-seed would push it; the change itself is a subset of that.
+    fn check_conductor_budget(
+        &self,
+        id: &str,
+        set: &BTreeMap<String, Value>,
+    ) -> Result<(), DocError> {
+        let row = self
+            .overlay_row(KIND_CONDUCTORS, id)
+            .filter(|row| !row.deleted);
+        let mut fields: BTreeMap<String, Value> = row
+            .as_ref()
+            .map(|row| row.fields.clone())
+            .unwrap_or_default();
+        fields.extend(set.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let fresh = encode_hlc(Self::now_ms(), 0, &self.device_id);
+        let clocks: BTreeMap<String, String> = fields
+            .keys()
+            .map(|key| {
+                let clock = row
+                    .as_ref()
+                    .filter(|_| !set.contains_key(key))
+                    .and_then(|row| row.clocks.get(key))
+                    .map_or_else(|| fresh.clone(), Clone::clone);
+                (key.clone(), clock)
+            })
+            .collect();
+        let op = RowOp {
+            kind: KIND_CONDUCTORS.to_string(),
+            id: id.to_string(),
+            op: OpKind::Upsert,
+            set: Some(fields),
+            hlc: fresh,
+            clocks: Some(clocks),
+        };
+        if fits_op_budget(&op) {
+            Ok(())
+        } else {
+            Err(DocError::Schema(format!(
+                "This conductor change is too large to sync (each change is limited to {} KB). \
+Shorten the notes or the other fields and try again.",
+                MAX_OP_BYTES / 1024
+            )))
+        }
+    }
+
     pub fn upsert_conductor(&mut self, conductor: &Conductor) -> Result<(), DocError> {
         if conductor.id.is_empty() || conductor.main_chat_id.is_empty() {
             return Err(DocError::Schema(
                 "A conductor needs an id and a main chat".into(),
             ));
         }
-        self.write(
-            KIND_CONDUCTORS,
-            &conductor.id.clone(),
-            OpKind::Upsert,
-            conductor_fields(conductor),
-        );
+        check_notes(&conductor.notes)?;
+        zeron_proto::conductor::check_conductor_text(
+            Some(&conductor.name),
+            conductor.purpose.as_deref(),
+        )
+        .map_err(DocError::Schema)?;
+        let set = conductor_fields(conductor);
+        self.check_conductor_budget(&conductor.id, &set)?;
+        self.write(KIND_CONDUCTORS, &conductor.id.clone(), OpKind::Upsert, set);
         Ok(())
     }
 
@@ -57,6 +118,11 @@ impl RegistryDoc {
         if !self.row_exists(KIND_CONDUCTORS, &patch.id) {
             return Ok(false);
         }
+        zeron_proto::conductor::check_conductor_text(
+            patch.name.as_deref().map(str::trim),
+            patch.purpose.as_deref().map(str::trim),
+        )
+        .map_err(DocError::Schema)?;
         let mut set = BTreeMap::new();
         if let Some(name) = patch.name.as_deref() {
             let name = name.trim();
@@ -86,27 +152,20 @@ impl RegistryDoc {
             set.insert("archived".into(), json!(archived));
         }
         if !set.is_empty() {
+            self.check_conductor_budget(&patch.id, &set)?;
             self.write(KIND_CONDUCTORS, &patch.id, OpKind::Update, set);
         }
         Ok(true)
     }
 
     pub fn set_conductor_notes(&mut self, id: &str, notes: &str) -> Result<bool, DocError> {
-        if notes.len() > zeron_proto::MAX_NOTES_BYTES {
-            return Err(DocError::Schema(format!(
-                "Notes are over the {} KB limit",
-                zeron_proto::MAX_NOTES_BYTES / 1024
-            )));
-        }
+        check_notes(notes)?;
         if !self.row_exists(KIND_CONDUCTORS, id) {
             return Ok(false);
         }
-        self.write(
-            KIND_CONDUCTORS,
-            id,
-            OpKind::Update,
-            fields([("notes", json!(notes))]),
-        );
+        let set = fields([("notes", json!(notes))]);
+        self.check_conductor_budget(id, &set)?;
+        self.write(KIND_CONDUCTORS, id, OpKind::Update, set);
         Ok(true)
     }
 
@@ -118,12 +177,9 @@ impl RegistryDoc {
         if !self.row_exists(KIND_CONDUCTORS, id) {
             return Ok(false);
         }
-        self.write(
-            KIND_CONDUCTORS,
-            id,
-            OpKind::Update,
-            fields([("spaceIds", json!(space_ids))]),
-        );
+        let set = fields([("spaceIds", json!(space_ids))]);
+        self.check_conductor_budget(id, &set)?;
+        self.write(KIND_CONDUCTORS, id, OpKind::Update, set);
         Ok(true)
     }
 

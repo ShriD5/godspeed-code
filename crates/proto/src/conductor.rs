@@ -1,6 +1,6 @@
 //! Conductor: one long-lived main chat bound to a folder, whose agent starts,
 //! reuses and steers nested sub-agent chats. See
-//! `docs/superpowers/specs/2026-10-23-conductor-design.md`.
+//! `docs/design/2026-10-23-conductor-design.md`.
 //!
 //! A conductor is a synced registry row. Chats carry no conductor field:
 //! membership is derived by walking `Chat::parent_chat_id` up to a conductor's
@@ -18,8 +18,37 @@ pub const DISPLAY_NAME: &str = "Conductor";
 /// Levels of sub-agents allowed below the main chat (the main chat is depth 0).
 pub const MAX_CONDUCTOR_DEPTH: u8 = 3;
 
-/// Notes beyond this are refused on write and cut from the prompt.
-pub const MAX_NOTES_BYTES: usize = 32 * 1024;
+/// Most sub-agents one conductor runs at once (working, waiting on input, or
+/// just started). Settled, archived and finished ones don't count.
+pub const MAX_RUNNING_SUB_AGENTS: usize = 8;
+
+/// Notes beyond this are refused on write and cut from the prompt. Notes
+/// ride the synced conductor row, and every registry change must stay under
+/// the room's 16 KiB per-change budget, so this leaves room for the rest of
+/// the row.
+pub const MAX_NOTES_BYTES: usize = 12 * 1024;
+
+/// Longest conductor name, so the synced row stays inside the per-change
+/// budget next to full notes.
+pub const MAX_NAME_BYTES: usize = 120;
+
+/// Longest conductor purpose line, for the same reason.
+pub const MAX_PURPOSE_BYTES: usize = 500;
+
+/// Why `name` / `purpose` can't go on a conductor row, if either is too long.
+pub fn check_conductor_text(name: Option<&str>, purpose: Option<&str>) -> Result<(), String> {
+    if name.is_some_and(|n| n.len() > MAX_NAME_BYTES) {
+        return Err(format!(
+            "A conductor name is at most {MAX_NAME_BYTES} bytes"
+        ));
+    }
+    if purpose.is_some_and(|p| p.len() > MAX_PURPOSE_BYTES) {
+        return Err(format!(
+            "A conductor purpose is at most {MAX_PURPOSE_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
 
 /// A chat at `depth` may start children only while the children stay within
 /// [`MAX_CONDUCTOR_DEPTH`].
