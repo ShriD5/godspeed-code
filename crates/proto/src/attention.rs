@@ -92,6 +92,19 @@ pub struct AttentionItem {
     pub approval: Option<ApprovalRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_run: Option<AttentionAgentRun>,
+    /// Set when the item comes from a chat nested below a conductor's main
+    /// chat, so the conductor view can light the sub-agent's card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conductor: Option<ConductorLink>,
+}
+
+/// Which conductor card a nested chat's attention item belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConductorLink {
+    pub conductor_id: String,
+    /// The depth-1 ancestor: the sub-agent card the main chat shows.
+    pub card_chat_id: String,
 }
 
 impl AttentionItem {
@@ -229,6 +242,7 @@ mod tests {
             request_id: None,
             approval: None,
             agent_run: None,
+            conductor: None,
         }
     }
 

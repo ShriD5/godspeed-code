@@ -185,6 +185,7 @@ struct WorkspaceHostInner {
     devices_tx: watch::Sender<Vec<Device>>,
     sessions_tx: watch::Sender<Vec<Session>>,
     spaces_tx: watch::Sender<Vec<Space>>,
+    conductors_tx: watch::Sender<Vec<zeron_proto::Conductor>>,
     sidebar_preferences_tx: watch::Sender<SidebarPreferencesState>,
     room: Mutex<Option<Arc<RegistryClient>>>,
     /// Bumped on every registry change (local mutation or applied server
@@ -312,6 +313,7 @@ impl WorkspaceHost {
         let (devices_tx, _) = watch::channel(state.devices);
         let (sessions_tx, _) = watch::channel(state.sessions);
         let (spaces_tx, _) = watch::channel(state.spaces);
+        let (conductors_tx, _) = watch::channel(doc.conductors());
         let preferences = doc.sidebar_preferences();
         let (sidebar_preferences_tx, _) = watch::channel(SidebarPreferencesState {
             revision: 0,
@@ -336,6 +338,7 @@ impl WorkspaceHost {
                 devices_tx,
                 sessions_tx,
                 spaces_tx,
+                conductors_tx,
                 sidebar_preferences_tx,
                 room: Mutex::new(None),
                 changed_tx,
@@ -660,7 +663,7 @@ impl WorkspaceHost {
 
     /// Run a mutation under the registry lock, then wake the publish/persist
     /// task and push the write to the room.
-    fn mutate<R>(&self, f: impl FnOnce(&mut RegistryDoc) -> R) -> R {
+    pub(crate) fn mutate<R>(&self, f: impl FnOnce(&mut RegistryDoc) -> R) -> R {
         let result = f(&mut lock(&self.inner.reg));
         self.announce_write();
         result
@@ -673,7 +676,7 @@ impl WorkspaceHost {
         }
     }
 
-    fn read<R>(&self, f: impl FnOnce(&RegistryDoc) -> R) -> R {
+    pub(crate) fn read<R>(&self, f: impl FnOnce(&RegistryDoc) -> R) -> R {
         f(&lock(&self.inner.reg))
     }
 
@@ -751,6 +754,11 @@ impl WorkspaceHost {
 
     pub fn watch_spaces(&self) -> watch::Receiver<Vec<Space>> {
         self.inner.spaces_tx.subscribe()
+    }
+
+    /// Every conductor row (archived included), oldest first.
+    pub fn watch_conductors(&self) -> watch::Receiver<Vec<zeron_proto::Conductor>> {
+        self.inner.conductors_tx.subscribe()
     }
 
     pub fn watch_sidebar_preferences(&self) -> watch::Receiver<SidebarPreferencesState> {
@@ -1029,7 +1037,7 @@ impl WorkspaceHost {
                 let parent = self.read(|doc| doc.chat(parent_id))?.ok_or_else(|| {
                     EngineError::Other(format!("no such parent chat: {parent_id}"))
                 })?;
-                if !parent.is_top_level() || parent.device_id != existing.device_id {
+                if !self.chat_may_parent(&parent)? || parent.device_id != existing.device_id {
                     return Err(EngineError::Other(
                         "notify requires a top-level parent and child hosted on the same device"
                             .into(),
@@ -1056,6 +1064,9 @@ impl WorkspaceHost {
             }
         };
         let parent_chat_id = parent_chat_id.filter(|p| !p.trim().is_empty());
+        if let Some(parent_id) = parent_chat_id.as_deref() {
+            self.check_conductor_depth(parent_id)?;
+        }
         if notify_parent {
             let parent_id = parent_chat_id
                 .as_deref()
@@ -1063,7 +1074,7 @@ impl WorkspaceHost {
             let parent = self
                 .read(|doc| doc.chat(parent_id))?
                 .ok_or_else(|| EngineError::Other(format!("no such parent chat: {parent_id}")))?;
-            if !parent.is_top_level() {
+            if !self.chat_may_parent(&parent)? {
                 return Err(EngineError::Other(
                     "notify requires a top-level parent chat".into(),
                 ));
@@ -1462,6 +1473,7 @@ impl WorkspaceHostInner {
                 Err(error) => tracing::warn!(%error, "sidebar pin cleanup failed"),
             }
             self.publish_sidebar_preferences(&doc, registry_synced);
+            publish_if_changed(&self.conductors_tx, doc.conductors());
             doc.read_all()
         };
         match snapshot {

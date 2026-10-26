@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeron_doc::SessionCommandPayload;
 use zeron_proto::{
-    AccessMode, Chat, ChatConfig, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, Session,
-    SessionStatus, Space, UserInputAnswer, UserInputQuestion,
+    AccessMode, ApprovalDecision, ApprovalRisk, Chat, ChatConfig, HarnessId, MAX_CONDUCTOR_DEPTH,
+    MAX_NOTES_BYTES, ReasoningLevel, RunRequest, SandboxLevel, Session, SessionStatus, Space,
+    UserInputAnswer, UserInputQuestion, approval_risk, can_spawn_at,
 };
 
 use crate::godspeed::{Godspeed, HarnessInfo, TurnOutcome, session_for, short};
@@ -199,6 +200,25 @@ fn catalog() -> Vec<ToolDef> {
                 "archived": { "type": "boolean", "default": true }
             })),
         },
+        ToolDef {
+            name: CONDUCTOR_INFO,
+            description: "The conductor you belong to: its folder, the repos it covers (project id, path, name) and every sub-agent in its tree (chat id, title, depth, parent, status). Call it before starting a sub-agent so you can reuse one that already owns the work.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
+            name: "conductor_notes_read",
+            description: "Read your conductor's project notes: how the user works, conventions and decisions worth keeping.",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDef {
+            name: "conductor_notes_write",
+            description: "Replace your conductor's project notes with `notes` (up to 12 KB; read them first and keep what still holds). They lead every fresh session of the conductor's agents.",
+            input_schema: json!({
+                "type": "object",
+                "properties": { "notes": { "type": "string" } },
+                "required": ["notes"]
+            }),
+        },
     ];
     for (name, single, description) in [
         (
@@ -253,6 +273,15 @@ fn catalog() -> Vec<ToolDef> {
 /// Shows a page in the CALLING chat, so it is offered only to an agent that
 /// Godspeed launched (`GODSPEED_CHAT_ID` set).
 const SHOW_VISUAL: &str = "show_visual";
+
+/// Conductor tools are for agents inside a Godspeed chat, like `show_visual`.
+const CONDUCTOR_INFO: &str = "conductor_info";
+fn is_conductor_tool(name: &str) -> bool {
+    matches!(
+        name,
+        CONDUCTOR_INFO | "conductor_notes_read" | "conductor_notes_write"
+    )
+}
 
 const SHOW_VISUAL_DESCRIPTION: &str = "\
 Show an interactive visual (chart, table, dashboard, diagram, simulation, 3D view) inline in this \
@@ -561,6 +590,11 @@ struct WaitArgs {
 }
 
 #[derive(Deserialize)]
+struct NotesArgs {
+    notes: String,
+}
+
+#[derive(Deserialize)]
 struct ArchiveArgs {
     chat: String,
     archived: Option<bool>,
@@ -667,16 +701,30 @@ impl Tools {
         }
     }
 
-    pub fn list(&self) -> Vec<ToolDef> {
-        let in_chat = self.godspeed.origin().chat_id.is_some();
-        catalog()
-            .into_iter()
-            .filter(|tool| in_chat || tool.name != SHOW_VISUAL)
+    /// The tools offered to this server's chat. Conductor tools are listed
+    /// only for conductor members.
+    pub async fn list(&self) -> Vec<ToolDef> {
+        let member = self
+            .origin_conductor_membership()
+            .await
+            .is_ok_and(|m| m.is_some());
+        self.callable()
+            .filter(|tool| member || !is_conductor_tool(tool.name))
             .collect()
     }
 
+    /// Whether `name` may be called here. Conductor tools are callable from
+    /// any chat and refuse outside a conductor themselves, so this needs no
+    /// engine round trip per call.
     pub fn has(&self, name: &str) -> bool {
-        self.list().iter().any(|t| t.name == name)
+        self.callable().any(|t| t.name == name)
+    }
+
+    fn callable(&self) -> impl Iterator<Item = ToolDef> {
+        let in_chat = self.godspeed.origin().chat_id.is_some();
+        catalog().into_iter().filter(move |tool| {
+            in_chat || (tool.name != SHOW_VISUAL && !is_conductor_tool(tool.name))
+        })
     }
 
     /// `Ok` is the tool's structured result; `Err` is a message the model
@@ -700,6 +748,9 @@ impl Tools {
             "respond_to_input" => self.respond_to_input(parse(args)?).await,
             "archive_chat" => self.archive_chat(parse(args)?).await,
             SHOW_VISUAL => self.show_visual(parse(args)?).await,
+            CONDUCTOR_INFO => self.conductor_info().await,
+            "conductor_notes_read" => self.conductor_notes_read().await,
+            "conductor_notes_write" => self.conductor_notes_write(parse(args)?).await,
             other => return Err(format!("unknown tool: {other}")),
         };
         result.map_err(|e| format!("{e:#}"))
@@ -896,13 +947,24 @@ impl Tools {
     }
 
     async fn create_chat(&self, args: CreateChatArgs) -> anyhow::Result<Value> {
-        if let Some(origin) = self.godspeed.origin().chat_id.as_deref() {
-            let chat = self.godspeed.resolve_chat(origin).await?;
-            anyhow::ensure!(
-                chat.parent_chat_id.is_none(),
-                "Side chats cannot create chats. Ask your parent chat to create another side chat."
-            );
-        }
+        let origin_conductor = match self.godspeed.origin().chat_id.as_deref() {
+            Some(origin) => {
+                let chat = self.godspeed.resolve_chat(origin).await?;
+                self.ensure_may_parent(
+                    &chat,
+                    "Side chats cannot create chats. Ask your parent chat to create another side chat.",
+                )
+                .await?;
+                self.godspeed.conductor_membership(&chat.id).await?
+            }
+            None => None,
+        };
+        // A conductor's agents stay inside its tree, where the depth and
+        // fan-out caps and the approval rule hold.
+        anyhow::ensure!(
+            origin_conductor.is_none() || args.kind != Some(ChatKind::Chat),
+            "Conductor agents can't start standalone chats. Omit kind (or use kind side) to start a sub-agent inside this conductor."
+        );
         // Parent: the explicit `parent` argument, else the chat this server
         // speaks for. Resolved so a prefix/title works and a typo fails loud.
         let explicit_parent = args
@@ -938,12 +1000,25 @@ impl Tools {
             ChatKind::Chat
         };
 
+        if let (Some(member), Some(parent)) = (&origin_conductor, parent_chat_id.as_deref()) {
+            let inside = self
+                .godspeed
+                .conductor_membership(parent)
+                .await?
+                .is_some_and(|m| m.conductor_id == member.conductor_id);
+            anyhow::ensure!(
+                inside,
+                "Conductor agents start sub-agents inside their own conductor, and {} is outside it.",
+                short(parent)
+            );
+        }
         if let Some(parent) = parent_chat_id.as_deref() {
             let chat = self.godspeed.resolve_chat(parent).await?;
-            anyhow::ensure!(
-                chat.parent_chat_id.is_none(),
-                "Cannot create a child of a side chat. Choose a top-level parent chat."
-            );
+            self.ensure_may_parent(
+                &chat,
+                "Cannot create a child of a side chat. Choose a top-level parent chat.",
+            )
+            .await?;
         }
         let (space, device_id) = self
             .godspeed
@@ -1330,6 +1405,30 @@ impl Tools {
             .collect();
         // Approving is a grant of access: only as far as this agent's own
         // chat could go without asking. Declining is always allowed.
+        //
+        // Conductor rule, keyed on the chat being answered (and on the
+        // answering chat): when either is a conductor member, an agent may
+        // only approve a low-risk request once; questions and anything past
+        // low risk wait for the user. A failed membership lookup refuses.
+        let conductor_rule = self.conductor_rule_for(&chat.id).await;
+        if conductor_rule.as_ref().map_or(true, |applies| *applies) {
+            for answer in &answers {
+                let is_approval = questions
+                    .iter()
+                    .find(|q| q.id == answer.question_id)
+                    .is_some_and(UserInputQuestion::is_approval);
+                if let Err(error) = &conductor_rule {
+                    anyhow::ensure!(
+                        is_approval,
+                        "Couldn't check whether this chat belongs to a conductor ({error:#}), so its questions wait for the user."
+                    );
+                }
+                anyhow::ensure!(
+                    is_approval,
+                    "Questions in a conductor wait for the user; don't answer them for another agent."
+                );
+            }
+        }
         if questions.iter().any(UserInputQuestion::is_approval) {
             let mode = self.origin_access_mode().await?;
             for answer in &answers {
@@ -1352,6 +1451,33 @@ impl Tools {
                                 .join(", ")
                         )
                     })?;
+                    if decision.approves() {
+                        match &conductor_rule {
+                            Err(error) => anyhow::bail!(
+                                "Couldn't check whether this chat belongs to a conductor ({error:#}), so \"{}\" waits for the user.",
+                                approval.title
+                            ),
+                            Ok(true) => {
+                                let risk = approval_risk(approval, chat.cwd.as_deref());
+                                anyhow::ensure!(
+                                    risk == ApprovalRisk::Low,
+                                    "\"{}\" is {}; in a conductor, agents approve low-risk requests only. Decline it or leave it for the user.",
+                                    approval.title,
+                                    risk.label().to_lowercase()
+                                );
+                                anyhow::ensure!(
+                                    decision == ApprovalDecision::Approve,
+                                    "In a conductor, agents approve one request at a time; use \"{}\" instead of \"{label}\".",
+                                    approval
+                                        .decisions
+                                        .iter()
+                                        .find(|o| o.decision == ApprovalDecision::Approve)
+                                        .map_or("Approve", |o| o.label.as_str())
+                                );
+                            }
+                            Ok(false) => {}
+                        }
+                    }
                     anyhow::ensure!(
                         !decision.approves() || mode.is_some_and(|m| m.covers(approval)),
                         "Your chat runs in {}, which doesn't allow approving \"{}\" for another agent. Decline it or leave it for the user.",
@@ -1372,6 +1498,139 @@ impl Tools {
             )
             .await?;
         Ok(json!({ "chatId": chat.id, "requestId": request_id, "commandId": command_id }))
+    }
+
+    /// A chat may start sub-agents when it is top-level or a conductor member
+    /// below the depth cap; otherwise `refusal` says why not.
+    async fn ensure_may_parent(&self, chat: &Chat, refusal: &str) -> anyhow::Result<()> {
+        if chat.parent_chat_id.is_none() {
+            return Ok(());
+        }
+        match self.godspeed.conductor_membership(&chat.id).await? {
+            Some(m) => {
+                anyhow::ensure!(
+                    can_spawn_at(m.depth),
+                    "This conductor allows sub-agents at most {MAX_CONDUCTOR_DEPTH} levels below its main chat, and {} is at the deepest level. Do the work there instead.",
+                    short(&chat.id)
+                );
+                Ok(())
+            }
+            None => anyhow::bail!("{refusal}"),
+        }
+    }
+
+    /// Where the chat this server speaks for sits in a conductor; `None`
+    /// outside a chat or a conductor. Errors when the lookup fails, so
+    /// callers can fail closed.
+    async fn origin_conductor_membership(
+        &self,
+    ) -> anyhow::Result<Option<zeron_proto::ConductorMembership>> {
+        match self.godspeed.origin().chat_id.as_deref() {
+            Some(origin) => self.godspeed.conductor_membership(origin).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Whether the conductor rule governs answering `target`: it or the
+    /// answering chat belongs to a conductor. `Err` when that can't be told.
+    async fn conductor_rule_for(&self, target: &str) -> anyhow::Result<bool> {
+        if self.godspeed.conductor_membership(target).await?.is_some() {
+            return Ok(true);
+        }
+        Ok(self.origin_conductor_membership().await?.is_some())
+    }
+
+    /// The conductor the calling chat belongs to.
+    async fn origin_conductor(&self) -> anyhow::Result<(zeron_proto::Conductor, u8)> {
+        let origin = self
+            .godspeed
+            .origin()
+            .chat_id
+            .clone()
+            .context("conductor tools need a Godspeed chat")?;
+        let membership = self
+            .godspeed
+            .conductor_membership(&origin)
+            .await?
+            .context("this chat doesn't belong to a conductor")?;
+        let conductor = self.godspeed.conductor(&membership.conductor_id).await?;
+        Ok((conductor, membership.depth))
+    }
+
+    async fn conductor_info(&self) -> anyhow::Result<Value> {
+        let (conductor, depth) = self.origin_conductor().await?;
+        let spaces = self.godspeed.spaces().await?;
+        let sessions = self.godspeed.sessions().await?;
+        let chats = self.godspeed.chats().await?;
+        let repos: Vec<Value> = conductor
+            .space_ids
+            .iter()
+            .filter_map(|id| spaces.iter().find(|s| &s.id == id))
+            .map(|s| json!({ "space": s.id, "path": s.path, "name": s.display_name() }))
+            .collect();
+        let sub_agents: Vec<Value> = self
+            .godspeed
+            .conductor_tree(&conductor.id)
+            .await?
+            .into_iter()
+            .filter(|node| node.depth > 0 && !node.archived)
+            .map(|node| {
+                let status = chats
+                    .iter()
+                    .find(|c| c.id == node.chat_id)
+                    .map(|chat| status_of(session_for(&sessions, chat).as_ref()).0)
+                    .unwrap_or_else(|| "idle".into());
+                json!({
+                    "chatId": node.chat_id,
+                    "title": node.title,
+                    "depth": node.depth,
+                    "parentChatId": node.parent_chat_id,
+                    "status": status,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "conductor": {
+                "id": conductor.id,
+                "name": conductor.name,
+                "purpose": conductor.purpose,
+                "folder": conductor.folder,
+                "mainChatId": conductor.main_chat_id,
+            },
+            "yourDepth": depth,
+            "mayStartSubAgents": can_spawn_at(depth),
+            "repos": repos,
+            "subAgents": sub_agents,
+        }))
+    }
+
+    async fn conductor_notes_read(&self) -> anyhow::Result<Value> {
+        let (conductor, _) = self.origin_conductor().await?;
+        let reply = self
+            .godspeed
+            .call(
+                zeron_rpc::methods::GET_CONDUCTOR_NOTES,
+                json!({ "id": conductor.id }),
+            )
+            .await?;
+        Ok(json!({ "notes": reply["notes"] }))
+    }
+
+    async fn conductor_notes_write(&self, args: NotesArgs) -> anyhow::Result<Value> {
+        anyhow::ensure!(
+            args.notes.len() <= MAX_NOTES_BYTES,
+            "Notes are {} bytes; the limit is {} KB. Trim them and write again.",
+            args.notes.len(),
+            MAX_NOTES_BYTES / 1024
+        );
+        let (conductor, _) = self.origin_conductor().await?;
+        self.godspeed
+            .call(
+                zeron_rpc::methods::SET_CONDUCTOR_NOTES,
+                json!({ "id": conductor.id, "notes": args.notes }),
+            )
+            .await?;
+        Ok(json!({ "saved": true, "bytes": args.notes.len() }))
     }
 
     /// The access mode of the chat this server speaks for; `None` outside a
@@ -1646,6 +1905,11 @@ mod tests {
         reads: Mutex<Vec<(String, Value)>>,
         /// Replaces the default two-message transcript.
         transcript: Option<Value>,
+        /// Chats that belong to the fake conductor `cond-1`: (chat id, depth).
+        conductor: Vec<(&'static str, u8)>,
+        /// Conductor membership lookups fail (engine trouble).
+        membership_error: bool,
+        notes: Mutex<String>,
     }
 
     fn stream(item: Value) -> RpcReply {
@@ -1688,7 +1952,7 @@ mod tests {
                     let mut chats = json!([
                     {
                         "id": "chat-alpha-1", "deviceId": "dev-local", "title": "Alpha",
-                        "archived": false, "spaceId": "space-1",
+                        "archived": false, "spaceId": "space-1", "cwd": "/repo/comet",
                         "config": { "harness": "claude-code", "model": "opus", "reasoning": null, "sandbox": "workspace-write" },
                         "createdAt": "2026-09-01T00:00:00Z"
                     },
@@ -1752,6 +2016,35 @@ mod tests {
                         barrier.wait().await;
                     }
                     RpcReply::Value(json!({ "commandId": "cmd-1", "id": "q-1" }))
+                }
+                methods::GET_CONDUCTOR_MEMBERSHIP => {
+                    if self.membership_error {
+                        return Err(RpcError::Failed("registry unavailable".into()));
+                    }
+                    let chat = params["chatId"].as_str().unwrap_or_default();
+                    RpcReply::Value(match self.conductor.iter().find(|(id, _)| *id == chat) {
+                        Some((_, depth)) => json!({ "conductorId": "cond-1", "depth": depth }),
+                        None => Value::Null,
+                    })
+                }
+                methods::LIST_CONDUCTORS => RpcReply::Value(json!([{
+                    "id": "cond-1", "name": "Acme", "folder": "/repo",
+                    "deviceId": "dev-local", "mainChatId": "chat-boss-3",
+                    "spaceIds": ["space-1"], "notes": "", "archived": false,
+                    "createdAt": "2026-09-01T00:00:00Z"
+                }])),
+                methods::GET_CONDUCTOR_TREE => RpcReply::Value(json!([
+                    { "chatId": "chat-boss-3", "depth": 0, "archived": false },
+                    { "chatId": "chat-alpha-1", "parentChatId": "chat-boss-3", "depth": 1,
+                      "title": "Alpha", "archived": false }
+                ])),
+                methods::GET_CONDUCTOR_NOTES => {
+                    RpcReply::Value(json!({ "notes": self.notes.lock().unwrap().clone() }))
+                }
+                methods::SET_CONDUCTOR_NOTES => {
+                    *self.notes.lock().unwrap() =
+                        params["notes"].as_str().unwrap_or_default().to_owned();
+                    RpcReply::Value(json!({}))
                 }
                 other => return Err(RpcError::UnknownMethod(other.into())),
             })
@@ -2032,6 +2325,34 @@ mod tests {
     /// A worker chat parked on a command approval, and an orchestrator chat
     /// in `mode` speaking through this server.
     fn approval_world(mode: &str) -> Arc<World> {
+        approval_world_in(mode, Vec::new())
+    }
+
+    /// [`approval_world`] with the boss chat (and any others listed) inside
+    /// the fake conductor.
+    fn approval_world_in(mode: &str, conductor: Vec<(&'static str, u8)>) -> Arc<World> {
+        Arc::new(approval_world_parts(mode, conductor))
+    }
+
+    fn approval_world_parts(mode: &str, conductor: Vec<(&'static str, u8)>) -> World {
+        use zeron_proto::ApprovalDecision as D;
+        let ls = {
+            let mut request =
+                zeron_proto::ApprovalRequest::new(zeron_proto::ApprovalKind::Command, "List files")
+                    .with_decisions(&[
+                        D::Approve,
+                        D::ApproveForSession,
+                        D::ApproveAlways,
+                        D::Decline,
+                    ]);
+            request.command = Some("ls".into());
+            request.cwd = Some("/repo/comet".into());
+            request.into_question("q-3")
+        };
+        let pick = json!({
+            "id": "q-4", "header": "Database", "question": "Which database?",
+            "options": ["Postgres", "SQLite"]
+        });
         let question =
             zeron_proto::ApprovalRequest::new(zeron_proto::ApprovalKind::Command, "Run the deploy")
                 .into_question("q-1");
@@ -2040,7 +2361,7 @@ mod tests {
             "Edit src/lib.rs",
         )
         .into_question("q-2");
-        Arc::new(World {
+        World {
             extra_chats: vec![json!({
                 "id": "chat-boss-3", "deviceId": "dev-local", "title": "Boss",
                 "archived": false, "spaceId": "space-1",
@@ -2051,11 +2372,12 @@ mod tests {
             transcript: Some(json!([
                 { "id": "a1", "role": "assistant", "createdAt": 2, "deviceId": "dev-local",
                   "status": "streaming",
-                  "parts": [{ "kind": "input", "id": "in-req-1", "requestId": "req-1", "questions": [question, edit],
+                  "parts": [{ "kind": "input", "id": "in-req-1", "requestId": "req-1", "questions": [question, edit, ls, pick],
                               "resolved": false }] }
             ])),
+            conductor,
             ..World::default()
-        })
+        }
     }
 
     #[tokio::test]
@@ -2113,6 +2435,318 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("no Godspeed chat"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn conductor_agents_approve_low_risk_only_and_never_answer_questions() {
+        let origin = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let answer = |question: &str, label: &str| json!({ "chat": "chat-alpha-1", "answers": [{ "question_id": question, "labels": [label] }] });
+        let world = approval_world_in("full-access", vec![("chat-boss-3", 0)]);
+        let tools = self::tools(world.clone(), origin.clone());
+        // Medium risk: refused with the risk named, even in full access.
+        let err = tools
+            .call("respond_to_input", answer("q-1", "Approve"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("medium risk"), "{err}");
+        assert!(err.contains("low-risk"), "{err}");
+        // Low risk goes through, and declining is always allowed.
+        tools
+            .call("respond_to_input", answer("q-3", "Approve"))
+            .await
+            .unwrap();
+        tools
+            .call("respond_to_input", answer("q-1", "Decline"))
+            .await
+            .unwrap();
+        assert_eq!(world.writes.lock().unwrap().len(), 2);
+
+        // The same agent outside a conductor keeps the access-mode rule only.
+        let plain = self::tools(approval_world("full-access"), origin);
+        plain
+            .call("respond_to_input", answer("q-1", "Approve"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_conductor_rule_follows_the_answered_chat_for_any_agent() {
+        // The boss is outside every conductor and in full access; the chat it
+        // answers is a conductor sub-agent, so the conductor rule applies.
+        let origin = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let answer = |question: &str, label: &str| json!({ "chat": "chat-alpha-1", "answers": [{ "question_id": question, "labels": [label] }] });
+        let world = approval_world_in("full-access", vec![("chat-alpha-1", 1)]);
+        let tools = self::tools(world.clone(), origin.clone());
+        let err = tools
+            .call("respond_to_input", answer("q-1", "Approve"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("medium risk"), "{err}");
+        let err = tools
+            .call("respond_to_input", answer("q-4", "Postgres"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("wait for the user"), "{err}");
+        // Low risk, approved once, and declines go through.
+        tools
+            .call("respond_to_input", answer("q-3", "Approve"))
+            .await
+            .unwrap();
+        tools
+            .call("respond_to_input", answer("q-1", "Decline"))
+            .await
+            .unwrap();
+        assert_eq!(world.writes.lock().unwrap().len(), 2);
+
+        // Outside a conductor on both ends, the same agent answers freely.
+        let plain = approval_world_in("full-access", Vec::new());
+        let tools = self::tools(plain.clone(), origin);
+        tools
+            .call("respond_to_input", answer("q-4", "Postgres"))
+            .await
+            .unwrap();
+        tools
+            .call("respond_to_input", answer("q-3", "Always approve"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn conductor_agents_approve_once_never_for_the_session_or_always() {
+        let origin = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let answer = |label: &str| json!({ "chat": "chat-alpha-1", "answers": [{ "question_id": "q-3", "labels": [label] }] });
+        let world = approval_world_in("full-access", vec![("chat-boss-3", 0), ("chat-alpha-1", 1)]);
+        let tools = self::tools(world.clone(), origin);
+        for label in ["Approve for this session", "Always approve"] {
+            let err = tools
+                .call("respond_to_input", answer(label))
+                .await
+                .unwrap_err();
+            assert!(err.contains("one request at a time"), "{err}");
+        }
+        assert!(world.writes.lock().unwrap().is_empty());
+        tools
+            .call("respond_to_input", answer("Approve"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_conductor_lookup_refuses_approvals() {
+        let origin = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let answer = |question: &str, label: &str| json!({ "chat": "chat-alpha-1", "answers": [{ "question_id": question, "labels": [label] }] });
+        let world = Arc::new(World {
+            membership_error: true,
+            ..approval_world_parts("full-access", Vec::new())
+        });
+        let tools = self::tools(world.clone(), origin);
+        let err = tools
+            .call("respond_to_input", answer("q-3", "Approve"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Couldn't check"), "{err}");
+        let err = tools
+            .call("respond_to_input", answer("q-4", "Postgres"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Couldn't check"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
+        // Declining grants nothing, so it still goes through.
+        tools
+            .call("respond_to_input", answer("q-1", "Decline"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn conductor_agents_cannot_leave_the_tree() {
+        let main = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: None,
+        };
+        let world = approval_world_in("full-access", vec![("chat-boss-3", 0)]);
+        let tools = self::tools(world.clone(), main);
+        let err = tools
+            .call(
+                "create_chat",
+                json!({ "kind": "chat", "project": "space-1" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("standalone"), "{err}");
+        let err = tools
+            .call(
+                "create_chats",
+                json!({ "requests": [{ "kind": "chat", "project": "space-1" }] }),
+            )
+            .await
+            .map(|v| v.to_string())
+            .unwrap_or_else(|e| e);
+        assert!(err.contains("standalone"), "{err}");
+        // A parent outside the conductor is refused too.
+        let err = tools
+            .call(
+                "create_chat",
+                json!({ "parent": "chat-beta-2", "project": "space-1" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("outside it"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
+        // A sub-agent inside the conductor is fine.
+        tools
+            .call("create_chat", json!({ "project": "space-1" }))
+            .await
+            .unwrap();
+
+        // A depth-2 member is refused standalone chats as well.
+        let world = Arc::new(World {
+            beta_parent: Some("chat-alpha-1".into()),
+            conductor: vec![("chat-beta-2", 2)],
+            ..Default::default()
+        });
+        let deep = Origin {
+            chat_id: Some("chat-beta-2".into()),
+            device_id: None,
+        };
+        let err = self::tools(world.clone(), deep)
+            .call(
+                "create_chat",
+                json!({ "kind": "chat", "project": "space-1" }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("standalone"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn conductor_tools_are_listed_only_for_members() {
+        let world = Arc::new(World {
+            conductor: vec![("chat-boss-3", 0)],
+            ..Default::default()
+        });
+        let names = |tools: Vec<ToolDef>| tools.into_iter().map(|t| t.name).collect::<Vec<_>>();
+        let member = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-boss-3".into()),
+                device_id: None,
+            },
+        );
+        assert!(names(member.list().await).contains(&"conductor_info"));
+        let plain = tools(
+            world,
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        let listed = names(plain.list().await);
+        assert!(listed.contains(&"show_visual"));
+        assert!(!listed.iter().any(|name| is_conductor_tool(name)));
+    }
+
+    #[tokio::test]
+    async fn conductor_members_nest_to_the_cap_and_plain_side_chats_still_cannot() {
+        let member = |id: &str| Origin {
+            chat_id: Some(id.into()),
+            device_id: None,
+        };
+        let spawn = json!({ "parent": "chat-beta-2", "project": "space-1" });
+        // Depth 2 may start a sub-agent.
+        let world = Arc::new(World {
+            beta_parent: Some("chat-alpha-1".into()),
+            conductor: vec![("chat-beta-2", 2)],
+            ..Default::default()
+        });
+        tools(world.clone(), member("chat-beta-2"))
+            .call("create_chat", spawn.clone())
+            .await
+            .unwrap();
+        assert!(
+            world
+                .writes
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, w)| w["op"] == "createChat" && w["parentChatId"] == "chat-beta-2")
+        );
+        // Depth 3 is at the cap: refused, naming it.
+        let world = Arc::new(World {
+            beta_parent: Some("chat-alpha-1".into()),
+            conductor: vec![("chat-beta-2", 3)],
+            ..Default::default()
+        });
+        let err = tools(world.clone(), member("chat-beta-2"))
+            .call("create_chat", spawn)
+            .await
+            .unwrap_err();
+        assert!(err.contains("3 levels"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
+        // Outside a conductor the old rule holds.
+        let world = Arc::new(World {
+            beta_parent: Some("chat-alpha-1".into()),
+            ..Default::default()
+        });
+        let err = tools(world, member("chat-beta-2"))
+            .call("create_chat", json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Side chats cannot"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn conductor_tools_report_the_tree_and_keep_notes() {
+        let world = Arc::new(World {
+            conductor: vec![("chat-boss-3", 0), ("chat-alpha-1", 1)],
+            extra_chats: vec![json!({
+                "id": "chat-boss-3", "deviceId": "dev-local", "title": "Boss",
+                "archived": false, "createdAt": "2026-09-03T00:00:00Z"
+            })],
+            ..Default::default()
+        });
+        let main = Origin {
+            chat_id: Some("chat-boss-3".into()),
+            device_id: None,
+        };
+        let t = tools(world.clone(), main);
+        let info = t.call("conductor_info", json!({})).await.unwrap();
+        assert_eq!(info["conductor"]["name"], "Acme");
+        assert_eq!(info["repos"][0]["path"], "/repo/comet");
+        assert_eq!(info["subAgents"][0]["chatId"], "chat-alpha-1");
+        assert_eq!(info["subAgents"][0]["depth"], 1);
+        assert_eq!(info["mayStartSubAgents"], true);
+        t.call("conductor_notes_write", json!({ "notes": "ship fridays" }))
+            .await
+            .unwrap();
+        let notes = t.call("conductor_notes_read", json!({})).await.unwrap();
+        assert_eq!(notes["notes"], "ship fridays");
+
+        // A chat outside every conductor gets a clear refusal, and the tools
+        // are not offered outside a chat at all.
+        let plain = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-beta-2".into()),
+                device_id: None,
+            },
+        );
+        let err = plain.call("conductor_info", json!({})).await.unwrap_err();
+        assert!(err.contains("doesn't belong to a conductor"), "{err}");
+        assert!(!tools(world, Origin::default()).has("conductor_info"));
     }
 
     #[tokio::test]

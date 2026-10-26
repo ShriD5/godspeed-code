@@ -19,3 +19,14 @@
 - **Recommended surface treatment** — A theme variant's authored recommendation for whether its surfaces are frosted or opaque. It is used only when the user keeps the surface preference at theme default.
 - **Surface preference** — A device-local choice of theme default, frosted, or opaque that is independent of appearance, theme, and accent selections.
 - **Resolved surface treatment** — The effective frosted or opaque treatment produced by applying the surface preference to the active variant's recommendation.
+
+## Conductor vocabulary
+
+- **Conductor** — One long-lived main chat bound to a folder. Its agent starts, reuses and steers sub-agents in the repos inside and reports back. "Conductor" is the display name only (`zeron_proto::conductor::DISPLAY_NAME`); stored and wire names use `conductor`.
+- **Main chat** — A conductor's one chat, at depth 0. The user talks only to it.
+- **Sub-agent** — A chat the main agent (or another sub-agent) started below it. Chats carry no conductor field: membership is derived by walking `parentChatId` up to a main chat.
+- **Depth** — A chat's distance below the main chat. `MAX_CONDUCTOR_DEPTH` (3) caps how far sub-agents nest; chats outside a conductor keep the one-level rule.
+- **Card** — A depth-1 sub-agent shown over the main chat with its status and last steps. A request waiting anywhere below it lights it (`AttentionItem.conductor`).
+- **Answer pop-up** — Settles a card's waiting approval without leaving the main chat. Agents may answer low-risk approvals only; questions and anything riskier wait for the user.
+- **Notes** — Project notes on the conductor row (up to 12 KB, so the synced row fits the per-change budget), edited by the user and the main agent, put in front of every fresh session of the conductor's agents.
+

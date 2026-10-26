@@ -67,6 +67,7 @@ use crate::transcript::{self, Transcript, TranscriptEvent};
 
 mod actions_ui;
 mod add_to_device_ui;
+mod conductor_ui;
 mod chat_dropzone;
 #[cfg(test)]
 mod chat_dropzone_tests;
@@ -2342,6 +2343,8 @@ pub struct Shell {
     add_to_device: Option<add_to_device_ui::AddToDeviceDialog>,
     sidebar_section_migration: Option<(String, crate::state::EngineHandle)>,
     section_dialog: Option<sidebar_sections::SectionDialog>,
+    conductor_sheet: Option<conductor_ui::ConductorSheet>,
+    answer_popup: Option<conductor_ui::AnswerPopup>,
     section_menu: Option<(String, Point<Pixels>)>,
     section_header_hover: Option<String>,
     section_menu_focus: FocusHandle,
@@ -2887,6 +2890,8 @@ impl Shell {
             add_to_device: None,
             sidebar_section_migration: None,
             section_dialog: None,
+            conductor_sheet: None,
+            answer_popup: None,
             section_menu: None,
             section_header_hover: None,
             section_menu_focus: cx.focus_handle(),
@@ -4630,6 +4635,9 @@ impl Shell {
                 );
             }
             TranscriptEvent::OpenChat { chat_id } => self.open_chat(chat_id.clone(), cx),
+            TranscriptEvent::AnswerAttention { item_id } => {
+                self.open_answer_popup(item_id.clone(), cx);
+            }
         }
     }
 
@@ -6723,6 +6731,8 @@ impl Shell {
             || self.mission_control.is_some()
             || self.voice.read(cx).stage_open
             || self.section_dialog.is_some()
+            || self.conductor_sheet.is_some()
+            || self.answer_popup.is_some()
             || self.section_menu.is_some()
             || self.add_space.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
@@ -10026,6 +10036,10 @@ impl Shell {
             // window above this column.)
             .child(self.render_inbox_entry(theme, cx))
             .child(self.render_mission_control_entry(theme, cx))
+            .children(
+                crate::settings::conductor_preview(cx)
+                    .then(|| self.render_conductor_entries(theme, cx)),
+            )
             .child(filter_row)
             .child(sidebar_lists)
             // Global connection pill (durable-by-design UI truth): appears
@@ -11465,6 +11479,7 @@ impl Shell {
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         overlays.extend(self.render_section_overlays(viewport, window, cx));
+        overlays.extend(self.render_conductor_overlays(viewport, window, cx));
         if let Some(overlay) = self.render_mission_control_overlay(viewport, cx) {
             overlays.push(overlay);
         }

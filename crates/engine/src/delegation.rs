@@ -1,16 +1,45 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, params};
 use zeron_doc::{MessagePart, MessageRole, SessionMessageEntry};
-use zeron_proto::{Session, SessionStatus};
+use zeron_proto::{Chat, Session, SessionStatus};
 
+use crate::EngineError;
 use crate::doc_host::DocHost;
 use crate::sessions::SessionsEngine;
 use crate::workspace_host::WorkspaceHost;
-use crate::EngineError;
+
+/// Most wake-ups a conductor's chats receive per minute. Past it, notices
+/// wait in the outbox and go out on the next retries, so a busy tree of
+/// sub-agents can't keep its parents in a tight wake loop.
+const CONDUCTOR_WAKES_PER_MINUTE: usize = 20;
+
+/// Per-conductor sliding window over the last minute of wake-ups.
+#[derive(Default)]
+struct WakeBudget {
+    recent: HashMap<String, VecDeque<Instant>>,
+}
+
+impl WakeBudget {
+    /// Spend one wake for `conductor_id`, or `false` when its minute is full.
+    fn try_take(&mut self, conductor_id: &str, now: Instant) -> bool {
+        let window = self.recent.entry(conductor_id.to_string()).or_default();
+        while window
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(60))
+        {
+            window.pop_front();
+        }
+        if window.len() >= CONDUCTOR_WAKES_PER_MINUTE {
+            return false;
+        }
+        window.push_back(now);
+        true
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingNotice {
@@ -159,8 +188,9 @@ impl DelegationNotifications {
                 tracing::warn!(%error, "delegation notification recovery scan failed");
             }
             let mut retry_after = Duration::from_secs(1);
+            let mut wakes = WakeBudget::default();
             let _ = retry_pending(
-                &store, &workspace, &doc_host, &sessions, &device_id, &current,
+                &store, &workspace, &doc_host, &sessions, &device_id, &current, &mut wakes,
             )
             .await;
             loop {
@@ -179,6 +209,7 @@ impl DelegationNotifications {
                             }
                             if let Err(error) = retry_pending(
                                 &store, &workspace, &doc_host, &sessions, &device_id, &current,
+                                &mut wakes,
                             ).await {
                                 tracing::warn!(%error, "delegation outbox retry failed");
                             }
@@ -208,7 +239,7 @@ impl DelegationNotifications {
                     tracing::warn!(%error, "delegation notification transition failed");
                 }
                 if let Err(error) = retry_pending(
-                    &store, &workspace, &doc_host, &sessions, &device_id, &current,
+                    &store, &workspace, &doc_host, &sessions, &device_id, &current, &mut wakes,
                 )
                 .await
                 {
@@ -316,11 +347,7 @@ async fn observe_one(
     let Some(parent) = workspace.chat(parent_id)? else {
         return Ok(true);
     };
-    if child.id == parent.id
-        || !parent.is_top_level()
-        || child.device_id != parent.device_id
-        || child.device_id != device_id
-    {
+    if child.id == parent.id || !parent_accepts(workspace, &parent, &child, device_id)? {
         return Ok(true);
     }
     let handle = match doc_host.open(&child.id) {
@@ -343,6 +370,20 @@ async fn observe_one(
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Whether `parent` takes wake-ups from `child`: an eligible parent (a
+/// top-level chat, or a conductor member above the depth cap) on this device,
+/// hosting the child too. The wake target stays the direct parent.
+fn parent_accepts(
+    workspace: &WorkspaceHost,
+    parent: &Chat,
+    child: &Chat,
+    device_id: &str,
+) -> Result<bool, EngineError> {
+    Ok(workspace.chat_may_parent(parent)?
+        && child.device_id == parent.device_id
+        && child.device_id == device_id)
 }
 
 fn has_notifiable_status(session: &Session) -> bool {
@@ -395,6 +436,7 @@ async fn retry_pending(
     sessions: &SessionsEngine,
     device_id: &str,
     current: &HashMap<String, Session>,
+    wakes: &mut WakeBudget,
 ) -> Result<(), EngineError> {
     for pending in store.pending()? {
         let Some(session) = current.get(&pending.child_chat_id) else {
@@ -416,10 +458,7 @@ async fn retry_pending(
             store.finish(&pending.event_id, DROPPED)?;
             continue;
         };
-        if !parent.is_top_level()
-            || child.device_id != device_id
-            || child.device_id != parent.device_id
-        {
+        if !parent_accepts(workspace, &parent, &child, device_id)? {
             store.finish(&pending.event_id, DROPPED)?;
             continue;
         }
@@ -439,6 +478,11 @@ async fn retry_pending(
         {
             store.finish(&pending.event_id, DROPPED)?;
             continue;
+        }
+        if let Some(membership) = workspace.conductor_membership(&parent.id)?
+            && !wakes.try_take(&membership.conductor_id, Instant::now())
+        {
+            continue; // stays pending; the outbox retries it later
         }
         match doc_host
             .queue_delegation_notice(&pending.parent_chat_id, &pending.event_id, &pending.text)
@@ -809,5 +853,76 @@ mod tests {
         assert!(store.pending().unwrap().is_empty());
         store.enqueue(&notice).unwrap();
         assert!(store.pending().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nested_conductor_parents_take_wake_ups_but_plain_children_do_not() {
+        use crate::workspace_host::{WorkspaceHost, WorkspaceHostConfig};
+        use zeron_proto::CreateConductorParams;
+        use zeron_sync::DocsStore;
+
+        let data = tempfile::tempdir().unwrap();
+        let ws = WorkspaceHost::open(
+            Arc::new(DocsStore::open(data.path()).unwrap()),
+            WorkspaceHostConfig {
+                device_id: "dev".into(),
+                device_name: "Dev".into(),
+                platform: "macos".into(),
+                org_id: "org".into(),
+                user_id: "user".into(),
+                edge: None,
+                local_only: false,
+            },
+        )
+        .unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        ws.create_conductor(CreateConductorParams {
+            chat_id: "main".into(),
+            id: String::new(),
+            folder: folder.path().to_string_lossy().into_owned(),
+            name: None,
+            purpose: None,
+            device_id: None,
+            config: None,
+        })
+        .unwrap();
+        let mk = |id: &str, parent: Option<&str>| {
+            ws.create_chat_with_parent(
+                id,
+                None,
+                Some("dev"),
+                None,
+                Some("/tmp".into()),
+                parent.map(str::to_string),
+            )
+            .unwrap();
+            ws.chat(id).unwrap().unwrap()
+        };
+        let (mid, leaf) = (mk("mid", Some("main")), mk("leaf", Some("mid")));
+        let plain = mk("plain", None);
+        let plain_child = mk("plain-child", Some("plain"));
+        let plain_grandchild = mk("plain-grandchild", Some("plain-child"));
+        // A child of a depth-1 conductor member wakes that direct parent.
+        assert!(parent_accepts(&ws, &mid, &leaf, "dev").unwrap());
+        // Children of ordinary top-level chats keep working.
+        assert!(parent_accepts(&ws, &plain, &plain_child, "dev").unwrap());
+        // A child of a non-conductor child still produces no wake-up.
+        assert!(!parent_accepts(&ws, &plain_child, &plain_grandchild, "dev").unwrap());
+        // Device mismatch still blocks.
+        assert!(!parent_accepts(&ws, &mid, &leaf, "other").unwrap());
+    }
+
+    #[test]
+    fn conductor_wakes_are_capped_per_minute() {
+        let mut wakes = WakeBudget::default();
+        let start = Instant::now();
+        for _ in 0..CONDUCTOR_WAKES_PER_MINUTE {
+            assert!(wakes.try_take("c1", start));
+        }
+        assert!(!wakes.try_take("c1", start + Duration::from_secs(30)));
+        // Another conductor has its own budget.
+        assert!(wakes.try_take("c2", start));
+        // The window slides.
+        assert!(wakes.try_take("c1", start + Duration::from_secs(60)));
     }
 }

@@ -11,10 +11,12 @@ use serde::{Deserialize, Serialize};
 use zeron_doc::{MessagePart, SessionMessageEntry};
 use zeron_proto::agents::{AgentRun, AgentRunStatus};
 use zeron_proto::attention::{
-    AttentionAction, AttentionAgentRun, AttentionItem, AttentionKind, attention_order,
+    AttentionAction, AttentionAgentRun, AttentionItem, AttentionKind, ConductorLink,
+    attention_order,
 };
 use zeron_proto::{
-    Chat, ChatIndicator, LifecycleState, Session, Space, UserInputQuestion, approval_risk,
+    Chat, ChatIndicator, Conductor, LifecycleState, Session, Space, UserInputQuestion,
+    approval_risk,
 };
 
 const SUMMARY_CHARS: usize = 140;
@@ -86,7 +88,11 @@ pub(super) struct Sources<'a> {
     /// Newest first, as the agent store lists them.
     pub runs: &'a [AgentRun],
     pub timed_out: &'a [TimedOutQuestion],
+    pub conductors: &'a [Conductor],
 }
+
+/// Longest parent chain followed to find a conductor; only stops cycles.
+const MAX_CONDUCTOR_HOPS: usize = 16;
 
 pub(super) fn derive(sources: &Sources, now: DateTime<Utc>) -> Vec<AttentionItem> {
     let chats: HashMap<&str, &Chat> = sources
@@ -112,6 +118,16 @@ pub(super) fn derive(sources: &Sources, now: DateTime<Utc>) -> Vec<AttentionItem
     let context = Context {
         spaces: &spaces,
         latest_run: &latest_run,
+        parents: sources
+            .chats
+            .iter()
+            .filter_map(|chat| Some((chat.id.as_str(), chat.parent_chat_id.as_deref()?)))
+            .collect(),
+        conductor_mains: sources
+            .conductors
+            .iter()
+            .map(|c| (c.main_chat_id.as_str(), c.id.as_str()))
+            .collect(),
     };
     let mut items = Vec::new();
 
@@ -189,9 +205,32 @@ fn seen_since(chat: &Chat, run: &AgentRun) -> bool {
 struct Context<'a> {
     spaces: &'a HashMap<&'a str, &'a Space>,
     latest_run: &'a HashMap<&'a str, &'a AgentRun>,
+    /// Child chat id → parent chat id, over every chat row.
+    parents: HashMap<&'a str, &'a str>,
+    /// A conductor's main chat id → the conductor's id.
+    conductor_mains: HashMap<&'a str, &'a str>,
 }
 
 impl Context<'_> {
+    /// The conductor card a chat's item belongs to: the depth-1 ancestor below
+    /// a main chat. `None` for chats outside every conductor and for the main
+    /// chat itself, which has no card.
+    fn conductor_link(&self, chat: &Chat) -> Option<ConductorLink> {
+        let mut card = None;
+        let mut current = chat.id.as_str();
+        for _ in 0..=MAX_CONDUCTOR_HOPS {
+            if let Some(conductor_id) = self.conductor_mains.get(current) {
+                return card.map(|card: &str| ConductorLink {
+                    conductor_id: (*conductor_id).to_string(),
+                    card_chat_id: card.to_string(),
+                });
+            }
+            card = Some(current);
+            current = self.parents.get(current)?;
+        }
+        None
+    }
+
     fn base(&self, id: String, kind: AttentionKind, chat: &Chat) -> AttentionItem {
         let space = chat.space_id.as_deref().and_then(|id| self.spaces.get(id));
         AttentionItem {
@@ -212,6 +251,7 @@ impl Context<'_> {
                 .latest_run
                 .get(chat.id.as_str())
                 .map(|run| agent_run(run)),
+            conductor: self.conductor_link(chat),
         }
     }
 
@@ -306,6 +346,7 @@ impl Context<'_> {
                 request_id: None,
                 approval: None,
                 agent_run: None,
+                conductor: None,
             },
         };
         item.created_at = run.finished_at.unwrap_or(run.created_at);
@@ -515,6 +556,7 @@ mod tests {
         pending: Vec<PendingInput>,
         runs: Vec<AgentRun>,
         timed_out: Vec<TimedOutQuestion>,
+        conductors: Vec<Conductor>,
     }
 
     impl Fixture {
@@ -525,6 +567,7 @@ mod tests {
                 pending: Vec::new(),
                 runs: Vec::new(),
                 timed_out: Vec::new(),
+                conductors: Vec::new(),
             }
         }
 
@@ -539,6 +582,7 @@ mod tests {
                     pending: &self.pending,
                     runs: &self.runs,
                     timed_out: &self.timed_out,
+                    conductors: &self.conductors,
                 },
                 now,
             )
@@ -743,5 +787,70 @@ mod tests {
         let mut many = question_input("c", "r", 0).questions;
         many.push(many[0].clone());
         assert_eq!(question_summary(&many), "Which database? (+1 more)");
+    }
+
+    #[test]
+    fn nested_conductor_items_link_to_their_depth_one_card() {
+        let now = at(30);
+        let mut f = Fixture::new();
+        for (id, parent) in [
+            ("main", None),
+            ("card", Some("main")),
+            ("nested", Some("card")),
+            ("plain", None),
+        ] {
+            let mut c = with_config(chat(id));
+            c.parent_chat_id = parent.map(str::to_string);
+            f.chats.push(c);
+        }
+        f.conductors.push(Conductor {
+            id: "cond".into(),
+            name: "Acme".into(),
+            purpose: None,
+            folder: "/code".into(),
+            device_id: DEVICE.into(),
+            main_chat_id: "main".into(),
+            space_ids: vec![],
+            config: None,
+            notes: String::new(),
+            archived: false,
+            created_at: at(0),
+        });
+        for chat in ["nested", "card", "main", "plain"] {
+            f.pending
+                .push(approval_input(chat, &format!("r-{chat}"), "ls", 5));
+        }
+        let items = f.derive(now);
+        let link = |chat: &str| {
+            items
+                .iter()
+                .find(|i| i.chat_id.as_deref() == Some(chat))
+                .unwrap()
+                .conductor
+                .clone()
+        };
+        let expected = |card: &str| {
+            Some(ConductorLink {
+                conductor_id: "cond".into(),
+                card_chat_id: card.into(),
+            })
+        };
+        assert_eq!(link("nested"), expected("card"));
+        assert_eq!(link("card"), expected("card"));
+        assert_eq!(link("main"), None, "the main chat has no card");
+        assert_eq!(link("plain"), None);
+    }
+
+    #[test]
+    fn a_parent_cycle_never_links_and_never_hangs() {
+        let mut f = Fixture::new();
+        for (id, parent) in [("a", "b"), ("b", "a")] {
+            let mut c = with_config(chat(id));
+            c.parent_chat_id = Some(parent.into());
+            f.chats.push(c);
+        }
+        f.pending.push(approval_input("a", "r", "ls", 5));
+        let items = f.derive(at(30));
+        assert!(items.iter().all(|i| i.conductor.is_none()));
     }
 }

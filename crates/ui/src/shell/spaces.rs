@@ -3246,7 +3246,11 @@ impl Shell {
         }
         let state = self.state.read(cx);
         let visible: HashSet<String> = state
-            .sidebar_chats(Utc::now(), payload.filter.as_deref())
+            .sidebar_chats(
+                Utc::now(),
+                payload.filter.as_deref(),
+                crate::settings::conductor_preview(cx),
+            )
             .into_iter()
             .map(|(_, chat)| chat.id.clone())
             .collect();
@@ -5010,7 +5014,11 @@ impl Shell {
             .map_or(saved_pins.as_slice(), |ids| ids.as_slice());
         let state = self.state.read(cx);
         let mut chats: Vec<zeron_proto::Chat> = state
-            .sidebar_chats(Utc::now(), filter.as_deref())
+            .sidebar_chats(
+                Utc::now(),
+                filter.as_deref(),
+                crate::settings::conductor_preview(cx),
+            )
             .into_iter()
             .map(|(_, chat)| chat.clone())
             .collect();
@@ -5159,7 +5167,11 @@ impl Shell {
         let (active, shelved) = {
             let state = self.state.read(cx);
             let active = state
-                .sidebar_chats(Utc::now(), self.settings.space_filter.as_deref())
+                .sidebar_chats(
+                    Utc::now(),
+                    self.settings.space_filter.as_deref(),
+                    crate::settings::conductor_preview(cx),
+                )
                 .into_iter()
                 .find(|(_, chat)| chat.id == chat_id)
                 .map(|(_, chat)| chat.clone());
@@ -5325,7 +5337,11 @@ impl Shell {
         let mut rows: Vec<ActiveChatRow> = {
             let state = self.state.read(cx);
             let mut chats: Vec<_> = state
-                .sidebar_chats(now, filter.as_deref())
+                .sidebar_chats(
+                    now,
+                    filter.as_deref(),
+                    crate::settings::conductor_preview(cx),
+                )
                 .into_iter()
                 .map(|(status, chat)| (status, chat.clone()))
                 .collect();

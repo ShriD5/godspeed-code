@@ -340,6 +340,7 @@ fn seed(state: &mut state::AppState, project: &std::path::Path) {
             "summary": summary, "actions": actions,
         }))
         .unwrap()
+        conductor: None,
     };
     let mut push = item(
         "approval:search:push",
