@@ -2,14 +2,28 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.5.6 (2026-10-26)
 
 ### Added
 
-- **Conductor (preview, Settings → General).** Point a conductor at a folder and talk to its one long-lived main chat. Its agent
-  starts, reuses and steers sub-agents in the repos inside (nested up to three levels), and they show
-  up as live cards you can answer from. Agents approve only low-risk requests; questions and anything
-  riskier wait for you. Project notes lead every fresh session.
+- **Conductor (preview).** A long-lived main chat bound to a folder that plans and steers nested
+  sub-agents across the repos inside it, with a live card per sub-agent and their approvals surfaced
+  on the cards. Turn it on in Settings → General → Conductor (preview). Agents inside a conductor can
+  only approve low-risk requests once; everything else waits for you. At most 8 sub-agents run at a
+  time. Contributed by @devnm21.
+- Thread title instructions: tell Godspeed how to title your chats (ported from T3 Code).
+- Cloning a project onto another device retries over HTTPS when the SSH login is refused.
+
+### Fixed
+
+- Actions wait for the shell to be ready before typing their command, so rc-file prompts no longer
+  swallow it.
+- Terminals no longer inherit the tmux, screen or Zellij session Godspeed was launched from.
+- Git commands run Xcode's git directly instead of the macOS `xcrun` shim (faster on macOS).
+
+### Changed
+
+- Caught up with Zeron through `325384d8`.
 
 ## 0.5.5 (2026-10-20)
 
