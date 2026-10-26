@@ -3366,11 +3366,11 @@ pub struct Transcript {
     /// transcript's bottom (measured last frame): the last row pads past it
     /// so pinned content rests above the glass chrome it scrolls under.
     bottom_clearance: f32,
-    /// Hovered rail tick (grows + shows the preview card).
-    rail_hover: Option<usize>,
-    /// The rail's tick stack bounds (painted last frame): maps pointer y to
-    /// a prompt index.
-    rail_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The prompt list that replaces the rail while the pointer is on it.
+    rail_popover: Option<crate::rail::RailPopover>,
+    /// Opens the prompt list once the pointer has rested on the rail
+    /// ([`crate::rail::RAIL_HOVER_DELAY`]); dropped when it leaves first.
+    rail_hover_intent: Option<Task<()>>,
     /// `(row id, entry id)` under the pointer — reveals the entry's timestamp
     /// strip (godspeed chat-view.tsx `group-hover`; the rows report hover
     /// themselves). Keyed by ROW so a row→row move within one entry can't
@@ -3710,8 +3710,8 @@ impl Transcript {
             selection_scroll_task: None,
             rail_enabled,
             bottom_clearance: 0.0,
-            rail_hover: None,
-            rail_bounds: Rc::new(Cell::new(None)),
+            rail_popover: None,
+            rail_hover_intent: None,
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
@@ -3790,16 +3790,25 @@ impl Transcript {
         }
     }
 
-    pub(crate) fn rail_hover(&self) -> Option<usize> {
-        self.rail_hover
+    pub(crate) fn rail_popover(&self) -> Option<&crate::rail::RailPopover> {
+        self.rail_popover.as_ref()
     }
 
-    pub(crate) fn set_rail_hover(&mut self, hover: Option<usize>) {
-        self.rail_hover = hover;
+    pub(crate) fn rail_popover_mut(&mut self) -> &mut Option<crate::rail::RailPopover> {
+        &mut self.rail_popover
     }
 
-    pub(crate) fn rail_bounds(&self) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
-        &self.rail_bounds
+    pub(crate) fn rail_hover_intent_mut(&mut self) -> &mut Option<Task<()>> {
+        &mut self.rail_hover_intent
+    }
+
+    /// Where the reading column starts, from the transcript's left edge: the
+    /// rows' 48px gutter plus whatever centring the configured width leaves
+    /// (a docked side card's room comes off the right, as in the rows).
+    pub(crate) fn column_left(&self) -> f32 {
+        let width = f32::from(self.list.viewport_bounds().size.width);
+        let free = width - 96.0 - self.right_reserve - self.content_width;
+        48.0 + (free / 2.0).max(0.0)
     }
 
     pub(crate) fn bottom_clearance(&self) -> f32 {
@@ -10701,7 +10710,7 @@ impl Render for Transcript {
                     .ok();
             });
         }
-        let rail = self.render_rail(cx);
+        let rail = self.render_rail(window, cx);
         // The scroll-to-bottom pill is rendered by the SHELL (conversation
         // region overlay): it must float just above the composer and paint
         // OVER the bottom fade gradient, which is a later sibling of this
@@ -10745,6 +10754,7 @@ impl Render for Transcript {
                 cx.listener(Self::on_selection_mouse_down),
             )
             .on_mouse_move(cx.listener(Self::on_selection_mouse_move))
+            .on_mouse_move(cx.listener(Self::rail_pointer_moved))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_selection_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_selection_mouse_up))
             // FIRST child ⇒ paints first: clears this transcript's slice of the
