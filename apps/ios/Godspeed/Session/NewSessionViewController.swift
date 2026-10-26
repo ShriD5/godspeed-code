@@ -78,7 +78,15 @@ final class NewSessionViewController: UIViewController, UIGestureRecognizerDeleg
         // Pick up where the page was left (closed without sending).
         composer.text = prompt ?? app.newSessionText
         composer.images = app.newSessionImages
+        // The call owns the microphone: the composer's dictation waits.
+        composer.voiceCallActive = app.voice.live
+        voiceToken = app.voice.observe { [weak self] in
+            guard let self else { return }
+            self.composer.voiceCallActive = self.app.voice.live
+        }
     }
+
+    private var voiceToken: AnyObject?
 
     /// A session was created from this page: nothing to keep.
     private var created = false

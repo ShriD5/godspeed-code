@@ -50,12 +50,16 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         self.voiceBar = voiceBar
         // A custom view reads as horizontal-only; on iPhone Duo it joins ⋯ in
         // the vertical bar.
-        #if compiler(>=6.4)
+        // The 27.1 API: Xcode 27.0's Swift 6.4 lacks it, so gate on the SDK's
+        // UIKit (27.0 ships 9127.0.84) as well as the compiler.
+        #if compiler(>=6.4) && canImport(UIKit, _version: 9127.0.85)
         if #available(iOS 27.1, *) { voiceBar.item.axisBehavior = .verticalPreferred }
         #endif
         let menu = navigationItem.rightBarButtonItem!
         let syncVoice = { [weak self, weak voiceBar] in
             guard let self, let voiceBar else { return }
+            // The call owns the microphone: the composer's dictation waits.
+            self.composer.voiceCallActive = self.app.voice.live
             let items = voiceBar.visible ? [menu, voiceBar.item] : [menu]
             if self.navigationItem.rightBarButtonItems?.count != items.count {
                 self.navigationItem.setRightBarButtonItems(items, animated: self.view.window != nil)

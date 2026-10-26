@@ -81,16 +81,37 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     var text: String {
         get { textView.text }
         set {
-            textView.text = newValue
-            textChanged()
-            updateMode(animated: false)
+            // Our own dictation hands over to whatever replaces the text.
+            if dictationPhase != .idle { stopDictation(haptic: false) }
+            // Replacing the text mid system dictation would end it and drop
+            // the words in flight: apply once iOS is done.
+            guard textView.isFirstResponder, textView.isSystemDictating else {
+                pendingText = nil
+                textView.text = newValue
+                textChanged()
+                updateMode(animated: false)
+                return
+            }
+            pendingText = newValue
         }
     }
 
-    let textView = UITextView()
+    /// The Codex voice call owns the microphone: dictation is off meanwhile.
+    var voiceCallActive = false {
+        didSet {
+            guard voiceCallActive != oldValue else { return }
+            if DictationButtonModel.shouldStop(phase: dictationPhase, voiceCallLive: voiceCallActive) { stopDictation(haptic: false) }
+            refreshDictateButton()
+        }
+    }
+
+    let textView = ComposerTextView()
     private let glass = Glass.surface(interactive: false, radius: 25)
     private let placeholderLabel = UILabel()
     private let attachButton = UIButton(type: .system)
+    private let dictateButton = UIButton(type: .system)
+    /// Soft halo behind the mic that breathes with the input level.
+    private let dictateHalo = UIView()
     private let actionButton = UIButton(type: .system)
     private let thumbs = UIStackView()
     private let thumbsScroll = FadingScrollView()
@@ -108,6 +129,17 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     private let suggestions = MentionSuggestions()
     private var mentionQuery: (range: NSRange, query: String)?
     private var mentionTask: Task<Void, Never>?
+
+    // Dictation
+    private lazy var dictation = makeDictation()
+    private(set) var dictationPhase: DictationButtonModel.Phase = .idle
+    private var insertion: DictationInsertion?
+    /// A `text` set that arrived during system dictation.
+    private(set) var pendingText: String?
+    /// Our own text edits (dictation results) aren't user edits.
+    private var applyingDictation = false
+    /// One composer dictates at a time (split view shows two).
+    private static weak var dictatingComposer: ComposerBar?
 
     private let font = Fonts.ui(.sans, UIFontMetrics(forTextStyle: .body).scaledValue(for: 16.5))
     private var maxLines: Int {
@@ -160,6 +192,17 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         attachButton.showsMenuAsPrimaryAction = true
         content.addSubview(attachButton)
 
+        dictateHalo.translatesAutoresizingMaskIntoConstraints = false
+        dictateHalo.isUserInteractionEnabled = false
+        dictateHalo.backgroundColor = Palette.accentSoft
+        dictateHalo.layer.cornerRadius = Self.control / 2
+        dictateHalo.alpha = 0
+        content.addSubview(dictateHalo)
+        dictateButton.accessibilityIdentifier = "composer-dictate"
+        dictateButton.translatesAutoresizingMaskIntoConstraints = false
+        dictateButton.addAction(UIAction { [weak self] _ in self?.dictateTapped() }, for: .touchUpInside)
+        content.addSubview(dictateButton)
+
         textView.font = font
         textView.textColor = Palette.text
         textView.tintColor = Palette.accent
@@ -171,6 +214,9 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         textView.accessibilityIdentifier = "composer-input"
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.keyboardDismissMode = .interactive
+        textView.onDictationChange = { [weak self] active in
+            if !active { self?.systemDictationEnded() }
+        }
         content.addSubview(textView)
 
         placeholderLabel.font = font
@@ -234,10 +280,18 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
 
             attachButton.widthAnchor.constraint(equalToConstant: c),
             attachButton.heightAnchor.constraint(equalToConstant: c),
+            dictateButton.widthAnchor.constraint(equalToConstant: c),
+            dictateButton.heightAnchor.constraint(equalToConstant: c),
+            dictateButton.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 6),
+            dictateButton.centerYAnchor.constraint(equalTo: attachButton.centerYAnchor),
+            dictateHalo.centerXAnchor.constraint(equalTo: dictateButton.centerXAnchor),
+            dictateHalo.centerYAnchor.constraint(equalTo: dictateButton.centerYAnchor),
+            dictateHalo.widthAnchor.constraint(equalToConstant: c),
+            dictateHalo.heightAnchor.constraint(equalToConstant: c),
             actionButton.heightAnchor.constraint(equalToConstant: c),
             actionButton.widthAnchor.constraint(greaterThanOrEqualToConstant: c),
 
-            chipScroll.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 8),
+            chipScroll.leadingAnchor.constraint(equalTo: dictateButton.trailingAnchor, constant: 8),
             chipScroll.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -8),
             chipScroll.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             chipScroll.heightAnchor.constraint(equalToConstant: c),
@@ -253,7 +307,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             attachButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             actionButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8),
             actionButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
-            textView.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 10),
+            textView.leadingAnchor.constraint(equalTo: dictateButton.trailingAnchor, constant: 10),
             textView.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -8),
         ]
         // Card: full-width text, controls in the toolbar row.
@@ -271,6 +325,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         suggestions.translatesAutoresizingMaskIntoConstraints = false
         suggestions.onPick = { [weak self] file in self?.insertMention(file) }
         refreshAction(animated: false)
+        refreshDictateButton()
     }
 
     /// Taps on controls (attach, chips, send) are theirs: focusing would
@@ -292,6 +347,8 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     /// the screen's root view (ancestors would otherwise swallow their taps).
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        // Off screen nothing listens (and no audio session stays held).
+        if window == nil, dictationPhase != .idle { stopDictation(haptic: false) }
         guard let root = findViewController()?.view, suggestions.superview !== root else { return }
         root.addSubview(suggestions)
         NSLayoutConstraint.activate([
@@ -306,7 +363,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     /// The card is for composing: focused, holding photos, or pinned open
     /// (new-session canvas). An unfocused draft rests as the capsule.
     private var wantsCard: Bool {
-        chipsAlwaysVisible || textView.isFirstResponder || !images.isEmpty
+        chipsAlwaysVisible || textView.isFirstResponder || !images.isEmpty || dictationPhase != .idle
     }
 
     private func updateMode(animated: Bool) {
@@ -380,7 +437,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
 
     /// Accent the live `@tokens`; everything else is plain body text.
     private func styleMentions() {
-        guard !mentions.tokens.isEmpty, textView.markedTextRange == nil else { return }
+        guard !mentions.tokens.isEmpty, canRewriteText else { return }
         let selected = textView.selectedRange
         let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Palette.text]
         let styled = NSMutableAttributedString(string: textView.text, attributes: base)
@@ -519,9 +576,31 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     // MARK: Text
 
     func textViewDidChange(_ textView: UITextView) {
+        self.textView.refreshDictation()
+        // Typing (or the keyboard's own dictation) while the mic button
+        // listens: the user took over, keep everything and stop listening.
+        if dictationPhase != .idle, !applyingDictation { stopDictation(haptic: true) }
         textChanged()
         styleMentions()
         updateMentionQuery()
+    }
+
+    /// Whole-text replacement is safe (no dictation or IME composition in flight).
+    var canRewriteText: Bool {
+        ComposerRewriteGuard.canRewrite(
+            systemDictating: textView.isSystemDictating,
+            ownDictating: dictationPhase != .idle,
+            hasMarkedText: textView.markedTextRange != nil
+        )
+    }
+
+    /// iOS finished dictating: catch up on what was held back.
+    private func systemDictationEnded() {
+        if let pending = pendingText {
+            pendingText = nil
+            text = pending
+        }
+        styleMentions()
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
@@ -531,7 +610,9 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     private func recomputeTextHeight() {
         // At rest a draft is a preview: whole lines ending in "…", never a
         // scrolled view whose next line bleeds into the bottom inset.
-        let preview = !isCard
+        // Never while editing: re-flowing the container under the keyboard
+        // (or dictation) disturbs input in flight.
+        let preview = !isCard && !textView.isFirstResponder
         let lines = preview ? maxLines : 0
         let breakMode: NSLineBreakMode = preview ? .byTruncatingTail : .byWordWrapping
         if textView.textContainer.maximumNumberOfLines != lines || textView.textContainer.lineBreakMode != breakMode {
@@ -649,6 +730,8 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     }
 
     private func send(_ mode: DeliveryMode) {
+        // Sending ends dictation; the words heard so far go with the message.
+        if dictationPhase != .idle { stopDictation(haptic: false) }
         guard hasContent else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         let body = mentions.encode(textView.text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -659,6 +742,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         // `.replaced` put a draft back: its @file mentions must still resolve.
         guard result == .sent else { return }
         mentions.reset()
+        pendingText = nil
         textView.text = ""
         images = []
         textChanged()
@@ -671,5 +755,136 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
 
     @objc private func commandReturn() {
         if hasContent { primaryAction() }
+    }
+
+    // MARK: Dictation (mic button)
+
+    private func makeDictation() -> DictationController {
+        let d = DictationController()
+        d.onPhase = { [weak self] phase in self?.dictationPhaseChanged(phase) }
+        d.onTranscript = { [weak self] segment, transcript, _ in self?.applyDictation(segment: segment, transcript: transcript) }
+        d.onLevel = { [weak self] level in self?.showDictationLevel(level) }
+        d.onFailure = { [weak self] failure in self?.dictationFailed(failure) }
+        return d
+    }
+
+    private func dictateTapped() {
+        switch DictationButtonModel.tapAction(phase: dictationPhase, voiceCallLive: voiceCallActive) {
+        case .start: startDictation()
+        case .stop: stopDictation(haptic: true)
+        case .none: break
+        }
+    }
+
+    func startDictation() {
+        guard dictationPhase == .idle, !voiceCallActive else { return }
+        if let other = Self.dictatingComposer, other !== self { other.stopDictation(haptic: false) }
+        Self.dictatingComposer = self
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        dictation.start()
+    }
+
+    func stopDictation(haptic: Bool) {
+        guard dictationPhase != .idle else { return }
+        if haptic { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+        dictation.stop()
+        // stop() reports .idle through onPhase; settle here if it didn't.
+        if dictationPhase != .idle { dictationPhaseChanged(.idle) }
+    }
+
+    private func dictationPhaseChanged(_ phase: DictationButtonModel.Phase) {
+        let old = dictationPhase
+        dictationPhase = phase
+        if phase == .listening, old != .listening {
+            beginDictationInsertion()
+        } else if phase == .idle {
+            endDictationInsertion()
+            if Self.dictatingComposer === self { Self.dictatingComposer = nil }
+        }
+        refreshDictateButton()
+        updateMode(animated: true)
+    }
+
+    /// Words land at the caret; unfocused, after the existing text.
+    func beginDictationInsertion() {
+        let selection = textView.isFirstResponder ? textView.selectedRange : NSRange(location: (textView.text as NSString).length, length: 0)
+        insertion = DictationInsertion(text: textView.text, selection: selection)
+    }
+
+    func endDictationInsertion() {
+        insertion = nil
+        styleMentions()
+    }
+
+    /// A segment's latest transcript: replace the live words in place.
+    func applyDictation(segment: Int, transcript: String) {
+        guard var current = insertion else { return }
+        guard current.isIntact(in: textView.text) else {
+            // Edited underneath us: keep what's there, stop listening.
+            return stopDictation(haptic: false)
+        }
+        guard let edit = current.update(segment: segment, transcript: transcript) else { return }
+        insertion = current
+        applyingDictation = true
+        defer { applyingDictation = false }
+        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: Palette.text]
+        let storage = textView.textStorage
+        storage.beginEditing()
+        storage.replaceCharacters(in: edit.range, with: NSAttributedString(string: edit.replacement, attributes: base))
+        storage.endEditing()
+        textView.selectedRange = NSRange(location: edit.cursor, length: 0)
+        textView.typingAttributes = base
+        textChanged()
+        if textView.isScrollEnabled { textView.scrollRangeToVisible(textView.selectedRange) }
+    }
+
+    private func refreshDictateButton() {
+        let model = DictationButtonModel(phase: dictationPhase, voiceCallLive: voiceCallActive)
+        var config = UIButton.Configuration.filled()
+        config.image = UIImage(systemName: model.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+        config.baseForegroundColor = model.live ? .white : (model.enabled ? Palette.text : Palette.tertiary)
+        config.baseBackgroundColor = model.live ? Palette.accent : Palette.controlFill
+        config.cornerStyle = .capsule
+        config.contentInsets = .zero
+        let changed = dictateButton.accessibilityLabel != model.accessibilityLabel
+        dictateButton.configuration = config
+        dictateButton.isEnabled = model.enabled
+        dictateButton.accessibilityLabel = model.accessibilityLabel
+        dictateButton.accessibilityHint = model.enabled ? nil : "Unavailable during a voice call"
+        if changed, window != nil, !UIAccessibility.isReduceMotionEnabled {
+            dictateButton.imageView?.addSymbolEffect(.bounce.byLayer, options: .nonRepeating)
+        }
+        if !model.live { showDictationLevel(nil) }
+    }
+
+    /// The halo grows with the voice; nil hides it.
+    private func showDictationLevel(_ level: Float?) {
+        guard let level, dictationPhase == .listening else {
+            UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+                self.dictateHalo.alpha = 0
+                self.dictateHalo.transform = .identity
+            }
+            return
+        }
+        let scale = UIAccessibility.isReduceMotionEnabled ? 1.15 : 1.08 + CGFloat(level) * 0.42
+        UIView.animate(withDuration: 0.12, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut]) {
+            self.dictateHalo.alpha = 1
+            self.dictateHalo.transform = CGAffineTransform(scaleX: scale, y: scale)
+        }
+    }
+
+    private func dictationFailed(_ failure: DictationController.Failure) {
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        let window = self.window
+        switch failure {
+        case .denied:
+            Toast.show("Allow the microphone and speech recognition to dictate.", action: "Open Settings", in: window) {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+        case .unavailable:
+            Toast.show("Dictation isn't available right now.", in: window)
+        case .audio:
+            Toast.show("The microphone is busy. Try again in a moment.", in: window)
+        }
     }
 }
