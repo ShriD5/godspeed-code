@@ -56,6 +56,8 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         let menu = navigationItem.rightBarButtonItem!
         let syncVoice = { [weak self, weak voiceBar] in
             guard let self, let voiceBar else { return }
+            // The call owns the microphone: the composer's dictation waits.
+            self.composer.voiceCallActive = self.app.voice.live
             let items = voiceBar.visible ? [menu, voiceBar.item] : [menu]
             if self.navigationItem.rightBarButtonItems?.count != items.count {
                 self.navigationItem.setRightBarButtonItems(items, animated: self.view.window != nil)
