@@ -24,9 +24,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use zeron_proto::project_transfer::{
-    CloneProgress, CloneProjectRequest, IgnoredFile, IgnoredFileListing, MAX_LISTED_IGNORED_FILES,
-    MAX_RELAY_FILE_BYTES, ProjectFileChunk, RELAY_CHUNK_BYTES, WriteProjectFileOutcome,
-    WriteProjectFileRequest,
+    CloneProgress, CloneProjectRequest, CloneProtocol, IgnoredFile, IgnoredFileListing,
+    MAX_LISTED_IGNORED_FILES, MAX_RELAY_FILE_BYTES, ProjectFileChunk, RELAY_CHUNK_BYTES,
+    WriteProjectFileOutcome, WriteProjectFileRequest, clone_url_for_protocol, clone_url_protocol,
 };
 
 use crate::EngineError;
@@ -110,7 +110,7 @@ fn checked_parent(root: &Path, relative: &Path, create: bool) -> Result<PathBuf,
 // ---------------------------------------------------------------------------
 
 fn git_command(cwd: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new("git");
+    let mut cmd = tokio::process::Command::new(crate::git_program::git_program());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -617,6 +617,7 @@ pub fn start_clone(
             &workspace,
             &device_id,
             &url,
+            request.https_fallback,
             &destination,
             subdirectory.as_deref(),
             &request.space_id,
@@ -631,26 +632,70 @@ pub fn start_clone(
     Ok(rx)
 }
 
-#[allow(clippy::too_many_arguments)] // one call site, all of it the request
-async fn run_clone(
-    repos: &Repos,
-    workspace: &WorkspaceHost,
-    device_id: &str,
+/// Whether git's stderr says the SSH login itself was refused: no usable
+/// key, or a host key this device doesn't know. A repository that's missing
+/// or private to someone else fails differently and isn't retried.
+fn ssh_login_refused(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    [
+        "permission denied (publickey",
+        "host key verification failed",
+        "too many authentication failures",
+        "no supported authentication methods",
+    ]
+    .iter()
+    .any(|needle| stderr.contains(needle))
+}
+
+/// The HTTPS URL to retry a failed SSH clone with, if any: allowed, an SSH
+/// URL, its login refused, and rewritable without guessing.
+fn https_retry_url(url: &str, https_fallback: bool, stderr: &str) -> Option<String> {
+    if !https_fallback
+        || clone_url_protocol(url) != Some(CloneProtocol::Ssh)
+        || !ssh_login_refused(stderr)
+    {
+        return None;
+    }
+    clone_url_for_protocol(url, CloneProtocol::Https)
+}
+
+/// Why one `git clone` run didn't produce a checkout.
+enum CloneEnd {
+    /// Git exited non-zero; the tail of its stderr.
+    Failed(String),
+    Broken(String),
+    Cancelled,
+    TimedOut,
+}
+
+impl CloneEnd {
+    fn outcome(self) -> CloneProgress {
+        match self {
+            Self::Failed(tail) => CloneProgress::Failed {
+                message: clone_failure(&tail),
+            },
+            Self::Broken(message) => CloneProgress::Failed { message },
+            Self::Cancelled => CloneProgress::Cancelled,
+            Self::TimedOut => CloneProgress::Failed {
+                message: "The clone took too long".into(),
+            },
+        }
+    }
+}
+
+async fn clone_attempt(
     url: &str,
     destination: &Path,
-    subdirectory: Option<&Path>,
-    space_id: &str,
-    name: Option<String>,
+    deadline: tokio::time::Instant,
     cancel: &CancellationToken,
     progress: &watch::Sender<CloneProgress>,
-) -> CloneProgress {
-    let cleanup = Cleanup::for_destination(destination);
+) -> Result<(), CloneEnd> {
     let parent = destination.parent().unwrap_or(destination);
     if let Err(error) = std::fs::create_dir_all(parent) {
-        cleanup.run();
-        return CloneProgress::Failed {
-            message: format!("Couldn't create {}: {error}", parent.display()),
-        };
+        return Err(CloneEnd::Broken(format!(
+            "Couldn't create {}: {error}",
+            parent.display()
+        )));
     }
     let spawned = git_command(parent)
         .args(["clone", "--progress", "--", url])
@@ -660,12 +705,7 @@ async fn run_clone(
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
-        Err(error) => {
-            cleanup.run();
-            return CloneProgress::Failed {
-                message: format!("git failed to start: {error}"),
-            };
-        }
+        Err(error) => return Err(CloneEnd::Broken(format!("git failed to start: {error}"))),
     };
     let mut stderr = child.stderr.take().expect("piped stderr");
     let mut tail = String::new();
@@ -704,35 +744,89 @@ async fn run_clone(
     let ended = tokio::select! {
         status = read_loop => Ended::Exited(status),
         () = cancel.cancelled() => Ended::Cancelled,
-        () = tokio::time::sleep(CLONE_TIMEOUT) => Ended::TimedOut,
+        () = tokio::time::sleep_until(deadline) => Ended::TimedOut,
     };
-    let status = match ended {
-        Ended::Exited(Ok(status)) => status,
-        Ended::Exited(Err(error)) => {
-            cleanup.run();
-            return CloneProgress::Failed {
-                message: format!("git clone failed: {error}"),
-            };
-        }
+    match ended {
+        Ended::Exited(Ok(status)) if status.success() => Ok(()),
+        Ended::Exited(Ok(_)) => Err(CloneEnd::Failed(tail)),
+        Ended::Exited(Err(error)) => Err(CloneEnd::Broken(format!("git clone failed: {error}"))),
         Ended::Cancelled | Ended::TimedOut => {
-            let cancelled = cancel.is_cancelled();
             child.start_kill().ok();
             let _ = child.wait().await;
-            cleanup.run();
-            return if cancelled {
-                CloneProgress::Cancelled
+            Err(if cancel.is_cancelled() {
+                CloneEnd::Cancelled
             } else {
-                CloneProgress::Failed {
-                    message: "The clone took too long".into(),
-                }
-            };
+                CloneEnd::TimedOut
+            })
+        }
+    }
+}
+
+/// Clone `url`, and when `https_fallback` allows it and the SSH login was
+/// refused, once more over HTTPS: the receiving device may have no SSH key
+/// for the host but an HTTPS credential helper, or the repository may be
+/// public. Every failed attempt's leftovers are removed.
+async fn clone_repository(
+    url: &str,
+    https_fallback: bool,
+    destination: &Path,
+    cleanup: &Cleanup,
+    cancel: &CancellationToken,
+    progress: &watch::Sender<CloneProgress>,
+) -> Result<(), CloneProgress> {
+    let deadline = tokio::time::Instant::now() + CLONE_TIMEOUT;
+    let ssh_tail = match clone_attempt(url, destination, deadline, cancel, progress).await {
+        Ok(()) => return Ok(()),
+        Err(CloneEnd::Failed(tail)) => tail,
+        Err(end) => {
+            cleanup.run();
+            return Err(end.outcome());
         }
     };
-    if !status.success() {
+    cleanup.run();
+    let Some(https) = https_retry_url(url, https_fallback, &ssh_tail) else {
+        return Err(CloneEnd::Failed(ssh_tail).outcome());
+    };
+    tracing::info!(%https, "SSH login refused; cloning over HTTPS");
+    progress.send_replace(CloneProgress::Cloning {
+        stage: String::new(),
+        percent: None,
+    });
+    let retry = clone_attempt(&https, destination, deadline, cancel, progress).await;
+    if retry.is_err() {
         cleanup.run();
-        return CloneProgress::Failed {
-            message: clone_failure(&tail),
-        };
+    }
+    retry.map_err(|end| match end {
+        CloneEnd::Failed(tail) => CloneProgress::Failed {
+            message: format!(
+                "{}. Cloning over HTTPS instead also failed: {}",
+                clone_failure(&ssh_tail).trim_end_matches('.'),
+                clone_failure(&tail)
+            ),
+        },
+        end => end.outcome(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // one call site, all of it the request
+async fn run_clone(
+    repos: &Repos,
+    workspace: &WorkspaceHost,
+    device_id: &str,
+    url: &str,
+    https_fallback: bool,
+    destination: &Path,
+    subdirectory: Option<&Path>,
+    space_id: &str,
+    name: Option<String>,
+    cancel: &CancellationToken,
+    progress: &watch::Sender<CloneProgress>,
+) -> CloneProgress {
+    let cleanup = Cleanup::for_destination(destination);
+    if let Err(outcome) =
+        clone_repository(url, https_fallback, destination, &cleanup, cancel, progress).await
+    {
+        return outcome;
     }
     if cancel.is_cancelled() {
         cleanup.run();
@@ -849,6 +943,48 @@ mod tests {
             "repository 'y' not found"
         );
         assert_eq!(clone_failure(""), "git clone failed");
+    }
+
+    #[test]
+    fn only_a_refused_ssh_login_retries_over_https() {
+        let refused = "Cloning into 'app'...\ngit@github.com: Permission denied (publickey).\r\n\
+                       fatal: Could not read from remote repository.\n";
+        assert_eq!(
+            https_retry_url("git@github.com:me/app.git", true, refused).as_deref(),
+            Some("https://github.com/me/app.git")
+        );
+        assert_eq!(
+            https_retry_url(
+                "ssh://git@gitlab.com/me/app.git",
+                true,
+                "Host key verification failed.\nfatal: Could not read from remote repository."
+            )
+            .as_deref(),
+            Some("https://gitlab.com/me/app.git")
+        );
+        assert_eq!(
+            https_retry_url("git@github.com:me/app.git", false, refused),
+            None,
+            "the user picked SSH"
+        );
+        assert_eq!(
+            https_retry_url("ssh://git@host.example:2222/me/app.git", true, refused),
+            None,
+            "a custom port can't be rewritten"
+        );
+        assert_eq!(
+            https_retry_url("https://github.com/me/app.git", true, refused),
+            None
+        );
+        assert_eq!(
+            https_retry_url(
+                "git@github.com:me/app.git",
+                true,
+                "ERROR: Repository not found.\nfatal: Could not read from remote repository."
+            ),
+            None,
+            "a missing repository fails the same over HTTPS"
+        );
     }
 
     #[test]

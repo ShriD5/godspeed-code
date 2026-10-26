@@ -339,6 +339,7 @@ impl Shell {
                     "subdirectory": model.subdirectory(),
                     "spaceId": space_id,
                     "name": name,
+                    "httpsFallback": model.https_fallback(),
                 }),
                 &model.target_device_id,
                 local.as_deref(),
