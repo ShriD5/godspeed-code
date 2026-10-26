@@ -125,7 +125,7 @@ fn names_inside(pattern: &str, folder: &str) -> bool {
 }
 
 fn untracked(main: &Path) -> Result<Vec<String>, String> {
-    let output = Command::new("git")
+    let output = Command::new(crate::git_program::git_program())
         .args(["ls-files", "--others", "--directory", "-z"])
         .current_dir(main)
         .stdin(std::process::Stdio::null())

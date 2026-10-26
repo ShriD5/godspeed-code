@@ -174,6 +174,8 @@ pub const USER_LINE_HEIGHT: f32 = 22.0;
 pub const USER_COLLAPSE_CHARS: usize = 400;
 /// Vertical separation before the plain expand/collapse link.
 const USER_TOGGLE_GAP: f32 = 8.0;
+/// Between a caption over a user bubble (an agent sender) and the bubble.
+const USER_CAPTION_GAP: f32 = 6.0;
 /// User-bubble attachment thumbnails (user-attachments.tsx): 112×80 thumbs in
 /// a wrapping strip. Fixed thumbnail sizes keep load-state flips from
 /// shifting the virtualizer.
@@ -1061,6 +1063,9 @@ pub enum RowKind {
         attachments: Arc<Vec<crate::attachments::UserImageAttachment>>,
         /// Context the prompt folded in as text, lifted back out by `badges`.
         badges: Arc<Vec<crate::badges::MessageBadge>>,
+        /// The chat that sent this message through Godspeed's `send_message`,
+        /// lifted out of the routing header the receiving agent still reads.
+        sender: Option<AgentSender>,
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
@@ -1397,7 +1402,10 @@ pub fn rows_for_entry(
         // Lifted before the mention projection, so a comment body's own
         // Markdown never lands in the bubble.
         let (body, badges) = crate::badges::split(&parsed.text);
-        let body = agent_message_display(&body);
+        let (sender, body) = match agent_message_sender(&body) {
+            Some((sender, body)) => (Some(sender), body.to_owned()),
+            None => (None, body),
+        };
         // Chips stand in for their attachments: those leave the strip, and a
         // chip carries its upload's path for its progress and, for an image,
         // a click opening it.
@@ -1435,6 +1443,7 @@ pub fn rows_for_entry(
                 mentions: Arc::new(mentions),
                 attachments: Arc::new(attachments),
                 badges: Arc::new(badges),
+                sender,
                 pending,
             },
             entry_id,
@@ -2544,6 +2553,7 @@ impl HighlightStore {
                             Lang::Php => "php",
                             Lang::Sql => "sql",
                             Lang::Lua => "lua",
+                            Lang::Luau => "luau",
                             Lang::Dockerfile => "dockerfile",
                             Lang::Nix => "nix",
                             Lang::Make => "make",
@@ -3402,6 +3412,16 @@ pub struct Transcript {
     bottom_clearance: f32,
     /// Hovered rail tick (grows + shows the preview card).
     rail_hover: Option<usize>,
+    /// The rail's tick stack bounds (painted last frame): maps pointer y to
+    /// a prompt index.
+    rail_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The rail's own scroll, once its ticks outgrow the room beside the
+    /// reading column.
+    rail_scroll: gpui::ScrollHandle,
+    /// The lit tick span the rail last scrolled into view, by message id: it
+    /// follows only when what's lit changes, so scrolling the rail by hand
+    /// holds.
+    rail_followed: Option<(SharedString, SharedString)>,
     /// `(row id, entry id)` under the pointer — reveals the entry's timestamp
     /// strip (godspeed chat-view.tsx `group-hover`; the rows report hover
     /// themselves). Keyed by ROW so a row→row move within one entry can't
@@ -3497,7 +3517,8 @@ pub enum TranscriptEvent {
         title: String,
         frozen: bool,
     },
-    /// A conductor card's "Open thread".
+    /// Open a chat: an agent message's sender caption, or a conductor
+    /// card's "Open thread".
     OpenChat { chat_id: String },
     /// A conductor card's "Answer": settle the waiting item in place.
     AnswerAttention { item_id: String },
@@ -3747,6 +3768,9 @@ impl Transcript {
             rail_enabled,
             bottom_clearance: 0.0,
             rail_hover: None,
+            rail_bounds: Rc::new(Cell::new(None)),
+            rail_scroll: gpui::ScrollHandle::new(),
+            rail_followed: None,
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
@@ -3831,6 +3855,22 @@ impl Transcript {
 
     pub(crate) fn set_rail_hover(&mut self, hover: Option<usize>) {
         self.rail_hover = hover;
+    }
+
+    pub(crate) fn rail_scroll(&self) -> &gpui::ScrollHandle {
+        &self.rail_scroll
+    }
+
+    pub(crate) fn rail_followed_mut(&mut self) -> &mut Option<(SharedString, SharedString)> {
+        &mut self.rail_followed
+    }
+
+    pub(crate) fn rail_bounds(&self) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
+        &self.rail_bounds
+    }
+
+    pub(crate) fn bottom_clearance(&self) -> f32 {
+        self.bottom_clearance
     }
 
     pub(crate) fn rows(&self) -> &[Row] {
@@ -4314,7 +4354,7 @@ impl Transcript {
     /// carries the titlebar chrome inside its own box (the first row's
     /// top gap), so the hold adds nothing — adding the inset on top parked
     /// a new chat's first prompt a double-chrome ~66px low (user report).
-    fn own_send_inset(anchor_ix: usize) -> f32 {
+    pub(crate) fn own_send_inset(anchor_ix: usize) -> f32 {
         if anchor_ix == 0 {
             0.0
         } else {
@@ -6566,6 +6606,58 @@ impl Transcript {
             .into_any_element()
     }
 
+    /// `Message from [logo] Chat` over an agent-sent bubble: the sending chat's provider mark and live title
+    /// (the header's title for a chat this workspace doesn't list). A known
+    /// chat opens on click.
+    fn render_agent_sender(
+        &self,
+        row_id: &SharedString,
+        sender: &AgentSender,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chat = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == sender.chat_id.as_ref());
+        let known = chat.is_some();
+        let title: SharedString = chat
+            .and_then(|chat| chat.title.as_deref())
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map_or_else(|| sender.title.clone(), |title| single_line(title).into());
+        let mark = chat
+            .and_then(|chat| chat.config.as_ref())
+            .map(|config| crate::pickers::harness_brand_icon(config.harness))
+            .unwrap_or((crate::icons::CHAT_ROUND_LINE, None));
+        let chat_id = sender.chat_id.to_string();
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .justify_end()
+            .pb(px(USER_CAPTION_GAP))
+            .child(
+                user_caption(theme)
+                    .id(SharedString::from(format!("{row_id}-sender")))
+                    .child(div().flex_none().child("Message from"))
+                    .child(caption_label(title, Some(mark), theme.text_muted))
+                    .when(known, |el| {
+                        el.role(gpui::Role::Link)
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(theme.text))
+                            .on_click(cx.listener(move |_, _: &gpui::ClickEvent, _, cx| {
+                                cx.emit(TranscriptEvent::OpenChat {
+                                    chat_id: chat_id.clone(),
+                                });
+                            }))
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// A plain text link aligned with the message's left edge, following the
     /// continuation ellipsis when collapsed. No pill, border, or button wash.
     fn render_user_expander(
@@ -7490,6 +7582,7 @@ impl Transcript {
                 mentions,
                 attachments,
                 badges,
+                sender,
                 pending,
             } => {
                 let attachments = attachments.clone();
@@ -7501,6 +7594,9 @@ impl Transcript {
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
                 // HStack); image-only sends show no bubble at all.
                 let mut column = div().w_full().flex().flex_col();
+                if let Some(sender) = sender {
+                    column = column.child(self.render_agent_sender(&row.id, sender, &theme, cx));
+                }
                 if !attachments.is_empty() {
                     column = column.child(self.render_user_attachments(
                         &row.id,
@@ -9225,31 +9321,40 @@ impl Transcript {
 /// run when there are none), with the same selection machinery as rendered
 /// markdown — the element registers into the frame's document-ordered
 /// registry, so drags select, span into adjacent rows, and Cmd+C copies.
-/// Keep routing instructions in the stored prompt for agents, but show a
-/// concise attribution in the human transcript (including existing messages).
-fn agent_message_display(text: &str) -> String {
-    let Some(rest) = text.strip_prefix("[Message from Godspeed chat ") else {
-        return text.to_owned();
-    };
-    let Some((header, body)) = rest.split_once("]\n\n") else {
-        return text.to_owned();
-    };
-    let Some((label, id)) =
-        header.rsplit_once(". Reply to it with the Godspeed `send_message` tool, chat ")
-    else {
-        return text.to_owned();
-    };
-    let Some(id) = id.strip_suffix('.') else {
-        return text.to_owned();
-    };
-    let suffix = format!(" ({id})");
-    let name = label.strip_suffix(&suffix).unwrap_or(label);
-    format!("Message from {name}\n\n{body}")
+/// The chat an agent-to-agent message came from: its id, and its title as the
+/// sender's header recorded it (the live title wins when the chat is known).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentSender {
+    pub chat_id: SharedString,
+    pub title: SharedString,
 }
 
-/// The bubble text's runs: body text in the sans font, chips as labels in it
-/// with their padding pinned to [`crate::composer::CHIP_PAD_FAMILY`], and an
-/// agent attribution's name in bold.
+/// Split the routing header (`[Message from Godspeed chat …]`) off a message an
+/// agent sent: the agent keeps reading it in the stored prompt, while the
+/// transcript shows the sender above the bubble and only the body inside it.
+fn agent_message_sender(text: &str) -> Option<(AgentSender, &str)> {
+    let rest = text.strip_prefix("[Message from Godspeed chat ")?;
+    let (header, body) = rest.split_once("]\n\n")?;
+    let (label, id) =
+        header.rsplit_once(". Reply to it with the Godspeed `send_message` tool, chat ")?;
+    let id = id.strip_suffix('.')?;
+    // The label is `Title (short-id)`, or the short id alone when untitled.
+    let title = label
+        .strip_suffix(')')
+        .and_then(|label| label.rsplit_once(" ("))
+        .filter(|(_, short)| !short.is_empty() && id.starts_with(short))
+        .map_or(label, |(title, _)| title);
+    Some((
+        AgentSender {
+            chat_id: id.to_owned().into(),
+            title: single_line(title).into(),
+        },
+        body,
+    ))
+}
+
+/// The bubble text's runs: body text in the sans font, and chips as labels in
+/// it with their padding pinned to [`crate::composer::CHIP_PAD_FAMILY`].
 fn user_bubble_runs(
     text: &str,
     mentions: &[crate::composer::SentMentionSpan],
@@ -9291,39 +9396,6 @@ fn user_bubble_runs(
     }
     if at < text.len() {
         runs.push(body_run(text.len() - at));
-    }
-    // Attribution names are bold sans text, never Markdown/italic. Split
-    // existing runs so file-mention styling and selection offsets stay intact.
-    if let Some(rest) = text.strip_prefix("Message from ")
-        && let Some((name, _)) = rest.split_once("\n\n")
-    {
-        let bold = "Message from ".len().."Message from ".len() + name.len();
-        let mut offset = 0;
-        runs = runs
-            .into_iter()
-            .flat_map(|run| {
-                let end = offset + run.len;
-                let mut pieces = Vec::new();
-                while offset < end {
-                    let in_name = bold.contains(&offset);
-                    let next = if offset < bold.start {
-                        end.min(bold.start)
-                    } else if in_name {
-                        end.min(bold.end)
-                    } else {
-                        end
-                    };
-                    let mut piece = run.clone();
-                    piece.len = next - offset;
-                    if in_name {
-                        piece.font.weight = gpui::FontWeight::BOLD;
-                    }
-                    pieces.push(piece);
-                    offset = next;
-                }
-                pieces
-            })
-            .collect();
     }
     runs
 }
@@ -9654,18 +9726,64 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
                 )
                 .child(rule()),
         )
+        // Centered by flex, not `text_center()`: gpui registers a text line's
+        // layer at the line origin with the text's own width, so glyphs shifted
+        // by alignment paint outside it and can draw over popovers above them.
         .child(
-            div()
-                .w_full()
-                .min_w_0()
-                .truncate()
-                .text_center()
-                .text_size(crate::typography::ui_rems(13.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(theme.text_muted)
-                .child(source_title),
+            div().w_full().min_w_0().flex().justify_center().child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(crate::typography::ui_rems(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted)
+                    .child(source_title),
+            ),
         )
         .into_any_element()
+}
+
+/// `[mark] Name` in a user-message caption: a provider's brand mark (or any
+/// glyph) beside its name. A side without a mark shows its name alone.
+fn caption_label(
+    name: SharedString,
+    mark: Option<(&'static str, Option<gpui::Hsla>)>,
+    color: gpui::Hsla,
+) -> gpui::Div {
+    div()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .when_some(mark, |el, (path, tint)| {
+            el.child(
+                crate::icons::icon(path)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(tint.unwrap_or(color)),
+            )
+        })
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(name),
+        )
+}
+
+/// A muted one-line caption riding right-aligned over a user bubble: an agent
+/// message's sender.
+fn user_caption(theme: &Theme) -> gpui::Div {
+    div()
+        .min_w_0()
+        .max_w_full()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .text_size(crate::typography::ui_rems(13.0))
+        .text_color(theme.text_muted)
 }
 
 /// A passive one-line chip marking a question the agent asked — the
@@ -12492,6 +12610,47 @@ mod tests {
             id: id.into(),
             text: text.into(),
         }
+    }
+
+    fn user_entry(id: &str, text: &str) -> SessionMessageEntry {
+        SessionMessageEntry {
+            role: MessageRole::User,
+            ..assistant(id, MessageStatus::Complete, vec![text_part("t0", text)])
+        }
+    }
+
+    #[test]
+    fn agent_messages_show_their_sender_over_the_body() {
+        let id = "cd27c5c2-0000-4000-8000-000000000000";
+        let text = format!(
+            "[Message from Godspeed chat zgui prod: Windows (WING-PC) (cd27c5c2). Reply to it with the Godspeed `send_message` tool, chat {id}.]\n\nWindows lane: done."
+        );
+        let rows = rows_for_entry(&user_entry("u1", &text), false, false, &mut parse);
+        let RowKind::User {
+            text: shown,
+            sender,
+            ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert_eq!(shown.as_ref(), "Windows lane: done.");
+        assert_eq!(
+            sender.as_ref(),
+            Some(&AgentSender {
+                chat_id: id.into(),
+                // Only the trailing short id goes; a title's own parens stay.
+                title: "zgui prod: Windows (WING-PC)".into(),
+            })
+        );
+        // An untitled sender is labelled by its short id alone.
+        let untitled = format!(
+            "[Message from Godspeed chat cd27c5c2. Reply to it with the Godspeed `send_message` tool, chat {id}.]\n\nhi"
+        );
+        let (sender, body) = agent_message_sender(&untitled).unwrap();
+        assert_eq!((sender.title.as_ref(), body), ("cd27c5c2", "hi"));
+        // A typed message that merely starts alike is left alone.
+        assert!(agent_message_sender("[Message from Godspeed chat x]\n\nhi").is_none());
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;
 pub mod git_actions;
+mod git_program;
 pub mod harness_updates;
 pub(crate) mod home_index;
 mod device_settings;
@@ -45,6 +46,7 @@ pub mod profile;
 pub mod project_actions;
 pub mod project_transfer;
 pub mod registry;
+pub mod remote_terminals;
 pub mod repos;
 pub mod rpc;
 pub mod run_journal;
@@ -164,6 +166,8 @@ pub struct EngineCore {
     pub repos: Repos,
     pub workspace_files: WorkspaceFiles,
     pub terminals: Terminals,
+    /// I/O routing for terminals on other devices (direct link or relay).
+    pub remote_terminals: remote_terminals::RemoteTerminals,
     pub project_actions: ProjectActionsStore,
     pub previews: zeron_preview::PreviewService,
     pub change_requests: CheckoutChangeRequests,
@@ -329,6 +333,10 @@ impl EngineCore {
             local_device_name(&device_id),
         )
         .map_err(|e| EngineError::Other(e.to_string()))?;
+        previews.serve_streams(
+            terminals::link::SERVICE_PREFIX,
+            Arc::new(terminals::link::Service::new(terminals.clone())),
+        );
         let uploads = Uploads::from_root_with_fallback(
             profile.uploads_root(),
             legacy_uploads_root.as_deref(),
@@ -469,6 +477,7 @@ impl EngineCore {
             repos,
             workspace_files,
             terminals,
+            remote_terminals: Default::default(),
             project_actions,
             previews,
             change_requests,
@@ -620,6 +629,7 @@ impl EngineCore {
         )
         .with_auth(self.auth())
         .with_previews(self.previews.clone())
+        .with_remote_terminals(self.remote_terminals.clone())
         .with_harness_updates(self.harness_updates.clone())
         .with_agents(self.agents.clone())
         .with_telegram(self.telegram.clone())

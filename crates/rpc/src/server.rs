@@ -3,10 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
 };
@@ -307,42 +306,29 @@ async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
         }
         Ok(resp)
     };
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, reject_cross_origin).await {
+    // Keystrokes and their echoes are tiny frames: Nagle would hold each one
+    // behind the peer's delayed ACK of the previous.
+    let _ = stream.set_nodelay(true);
+    let ws = match tokio_tungstenite::accept_hdr_async_with_config(
+        stream,
+        reject_cross_origin,
+        Some(crate::ws::config()),
+    )
+    .await
+    {
         Ok(ws) => ws,
         Err(err) => {
             tracing::warn!(error = %err, "rpc: websocket handshake failed");
             return;
         }
     };
-    let (mut sink, mut ws_stream) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
 
     // Pump: socket <-> string channels. Ends when either side closes.
     let pump = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                frame = out_rx.recv() => match frame {
-                    Some(text) => {
-                        if sink.send(WsMessage::Text(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => {
-                        let _ = sink.send(WsMessage::Close(None)).await;
-                        break;
-                    }
-                },
-                message = ws_stream.next() => match message {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        if in_tx.send(text).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(_)) => {} // ping/pong/binary — ignored
-                },
-            }
+        if let Some(reason) = crate::ws::pump(ws, out_rx, in_tx).await {
+            tracing::warn!(%reason, "rpc: lost a viewport connection");
         }
     });
 

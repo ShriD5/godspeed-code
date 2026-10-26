@@ -315,6 +315,12 @@ impl NativePage {
         data: BrowserData,
         tx: Sender<NativeEvent>,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<Self, String>>, String> {
+        // A unit test has no display for WebKitGTK, and this thread would wake
+        // the test scheduler from outside it. Startup tests bring a helper.
+        #[cfg(test)]
+        if data.helper_override.is_none() {
+            return Err("Unit tests start no browser helper".into());
+        }
         let (ready, result) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("browser-startup".into())
