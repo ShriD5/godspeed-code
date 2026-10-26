@@ -39,6 +39,9 @@ pub(super) struct AnswerPopup {
     task: Option<Task<()>>,
 }
 
+/// Under the access chips: what the access mode does and doesn't guarantee.
+const ACCESS_NOTE: &str = "The main agent runs with the access mode you pick; delegating changes is guidance, not a hard limit.";
+
 impl Shell {
     // ── sidebar ─────────────────────────────────────────────────────────────
 
@@ -627,6 +630,13 @@ impl Shell {
                             },
                         ))
                     })),
+            )
+            .child(
+                div()
+                    .mt(px(8.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_faint)
+                    .child(ACCESS_NOTE),
             )
             .when_some(error, |el, error| {
                 el.child(

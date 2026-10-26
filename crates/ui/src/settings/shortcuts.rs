@@ -907,6 +907,43 @@ impl Render for ShortcutsPage {
                         cx.notify();
                     })),
             );
+        let conductor_preview = crate::settings::conductor_preview(cx);
+        let conductor_preview_row = widgets::card_row(&theme, false)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(widgets::row_title(&theme, "Conductor (preview)"))
+                    .child(widgets::meta_line(
+                        &theme,
+                        vec![
+                            div()
+                                .child("Show Conductor in the sidebar: one main chat per folder that runs sub-agents.")
+                                .into_any_element(),
+                        ],
+                    )),
+            )
+            .child(
+                widgets::toggle_switch(&theme, conductor_preview, "conductor-preview")
+                    .id("conductor-preview-toggle")
+                    .tab_index(0)
+                    .role(gpui::Role::Switch)
+                    .aria_label("Conductor (preview)")
+                    .aria_toggled(if conductor_preview {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::settings::update(SavePolicy::Immediate, cx, |settings| {
+                            settings.conductor_preview = !conductor_preview
+                        });
+                        cx.refresh_windows();
+                        cx.notify();
+                    })),
+            );
         let escape_behavior_row = widgets::card_row(&theme, false)
             .child(
                 div()
@@ -1010,7 +1047,8 @@ impl Render for ShortcutsPage {
                                             .child(compact_mode_row)
                                             .child(receipts_row)
                                             .child(compact_model_picker_row)
-                                            .child(escape_behavior_row),
+                                            .child(escape_behavior_row)
+                                            .child(conductor_preview_row),
                                     )
                                     .child(widgets::section(
                                         &theme,

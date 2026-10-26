@@ -2186,16 +2186,25 @@ impl AppState {
     /// The sidebar's active list exactly as it is drawn: [`Self::overview_chats`]
     /// narrowed to the current project filter. The jump shortcuts and their
     /// hints both count positions here, so neither can drift from the rows on
-    /// screen.
+    /// screen. `hide_conductor_mains` drops live conductors' main chats while
+    /// the sidebar's Conductor section lists them, so they don't show twice.
     pub fn sidebar_chats(
         &self,
         now: DateTime<Utc>,
         space_filter: Option<&str>,
+        hide_conductor_mains: bool,
     ) -> Vec<(ChatIndicator, &Chat)> {
         let in_filter = self.project_filter(space_filter);
+        let conductor_main = |chat: &Chat| {
+            hide_conductor_mains
+                && self
+                    .conductors
+                    .iter()
+                    .any(|c| !c.archived && c.main_chat_id == chat.id)
+        };
         self.overview_chats(now)
             .into_iter()
-            .filter(|(_, chat)| in_filter(chat))
+            .filter(|(_, chat)| in_filter(chat) && !conductor_main(chat))
             .collect()
     }
 
@@ -5233,7 +5242,7 @@ mod tests {
         // Filtering on either checkout shows the whole repository's chats.
         for filter in ["remote", "local"] {
             let mut ids: Vec<&str> = state
-                .sidebar_chats(Utc::now(), Some(filter))
+                .sidebar_chats(Utc::now(), Some(filter), false)
                 .iter()
                 .map(|(_, c)| c.id.as_str())
                 .collect();
@@ -5241,7 +5250,7 @@ mod tests {
             assert_eq!(ids, ["on-local", "on-remote"], "filter {filter}");
         }
         let other_only: Vec<&str> = state
-            .sidebar_chats(Utc::now(), Some("other"))
+            .sidebar_chats(Utc::now(), Some("other"), false)
             .iter()
             .map(|(_, c)| c.id.as_str())
             .collect();
@@ -5634,7 +5643,7 @@ mod tests {
         state.apply_chats(vec![settled, snoozed, chat("active", 0, Some(3))]);
         let listed = |at| -> Vec<String> {
             state
-                .sidebar_chats(at, None)
+                .sidebar_chats(at, None, false)
                 .into_iter()
                 .map(|(_, c)| c.id.clone())
                 .collect()
@@ -5654,7 +5663,7 @@ mod tests {
         assert_eq!(visible, ["parent"]);
         // The sidebar list and jump slots follow the same rule.
         let rows: Vec<&str> = state
-            .sidebar_chats(now, None)
+            .sidebar_chats(now, None, false)
             .into_iter()
             .map(|(_, c)| c.id.as_str())
             .collect();
@@ -5718,7 +5727,7 @@ mod tests {
 
         // The archived row is not in the active list, so no slot reaches it.
         let order: Vec<&str> = state
-            .sidebar_chats(now, None)
+            .sidebar_chats(now, None, false)
             .iter()
             .map(|(_, c)| c.id.as_str())
             .collect();
@@ -5727,11 +5736,43 @@ mod tests {
 
         // A project filter renumbers: the visible rows only.
         let filtered: Vec<&str> = state
-            .sidebar_chats(now, Some("s2"))
+            .sidebar_chats(now, Some("s2"), false)
             .iter()
             .map(|(_, c)| c.id.as_str())
             .collect();
         assert_eq!(filtered, ["b"]);
+    }
+
+    #[test]
+    fn a_live_conductor_main_chat_leaves_sessions_while_the_section_shows_it() {
+        let now = Utc::now();
+        let mut state = AppState::new();
+        state.apply_chats(vec![chat("main", 0, Some(2)), chat("plain", 1, Some(1))]);
+        let conductor = |archived| zeron_proto::Conductor {
+            id: "c1".into(),
+            name: "Acme".into(),
+            purpose: None,
+            folder: "/tmp/acme".into(),
+            device_id: "d1".into(),
+            main_chat_id: "main".into(),
+            space_ids: vec![],
+            config: None,
+            notes: String::new(),
+            archived,
+            created_at: now,
+        };
+        state.apply_conductors(vec![conductor(false)]);
+        let ids = |state: &AppState, hide| {
+            state
+                .sidebar_chats(now, None, hide)
+                .iter()
+                .map(|(_, c)| c.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&state, true), ["plain"]);
+        assert_eq!(ids(&state, false).len(), 2, "section hidden: keep the row");
+        state.apply_conductors(vec![conductor(true)]);
+        assert_eq!(ids(&state, true).len(), 2, "archived conductors aren't listed");
     }
 
     #[test]

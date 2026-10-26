@@ -871,11 +871,13 @@ impl Shell {
         let query = palette.search.read(cx).text().trim().to_lowercase();
         let can_archive = self.state.read(cx).archivable_selected_chat().is_some();
         let can_git = self.palette_git_target(cx).is_some();
+        let conductor = crate::settings::conductor_preview(cx);
         let commands = |section| {
             PaletteSection::new(
                 section,
                 commands_for(&query, Theme::of(cx).appearance.is_dark(), can_archive)
                     .into_iter()
+                    .filter(|command| conductor || *command != Command::NewConductor)
                     .chain(git_commands_for(&query, can_git))
                     .map(RowKind::Command),
             )

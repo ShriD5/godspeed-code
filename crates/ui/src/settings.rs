@@ -512,6 +512,12 @@ pub fn current(cx: &App) -> UiSettings {
 }
 
 /// Read the picker preference without cloning the full settings for each model row.
+/// Settings → General "Conductor (preview)".
+pub fn conductor_preview(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_some_and(|store| store.current.conductor_preview)
+}
+
 pub fn compact_model_picker(cx: &App) -> bool {
     cx.try_global::<SettingsStore>()
         .is_some_and(|store| store.current.compact_model_picker)
@@ -1146,6 +1152,9 @@ pub struct UiSettings {
     /// Whether bare Escape stops the active agent after contextual consumers
     /// decline it. Device-local and opt-in.
     pub escape_stops_active_agent: bool,
+    /// Settings → General "Conductor (preview)": shows the sidebar
+    /// Conductor section and its commands. Off by default.
+    pub conductor_preview: bool,
     /// The Settings section last viewed. ⌘, / Ctrl+,, the footer gear and the
     /// palette reopen it; links naming a section replace it. Files without
     /// it, or with a name this build does not know, open on General.
@@ -1297,6 +1306,7 @@ impl Default for UiSettings {
             terminal_open: false,
             keymap: KeymapConfig::default(),
             escape_stops_active_agent: false,
+            conductor_preview: false,
             settings_section: crate::shell::SettingsSection::default(),
             composer_send_behavior: ComposerSendBehavior::default(),
             skills_in_slash_menu: false,
@@ -2036,6 +2046,7 @@ impl UiSettings {
             appshot_sound_enabled,
             appshot_destination,
             escape_stops_active_agent,
+            conductor_preview,
             settings_section,
             appearance,
             git_history_columns,
@@ -3097,6 +3108,7 @@ mod tests {
                 ..KeymapConfig::default()
             },
             escape_stops_active_agent: true,
+            conductor_preview: true,
             settings_section: crate::shell::SettingsSection::Shortcuts,
             composer_send_behavior: ComposerSendBehavior::ModEnter,
             skills_in_slash_menu: true,

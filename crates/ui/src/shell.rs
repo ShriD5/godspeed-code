@@ -10008,7 +10008,10 @@ impl Shell {
             // window above this column.)
             .child(self.render_inbox_entry(theme, cx))
             .child(self.render_mission_control_entry(theme, cx))
-            .child(self.render_conductor_entries(theme, cx))
+            .children(
+                crate::settings::conductor_preview(cx)
+                    .then(|| self.render_conductor_entries(theme, cx)),
+            )
             .child(filter_row)
             .child(sidebar_lists)
             // Global connection pill (durable-by-design UI truth): appears
