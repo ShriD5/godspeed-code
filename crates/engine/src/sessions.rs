@@ -898,7 +898,13 @@ impl SessionsEngine {
         // the Done-time call below stays as the retry for a failed
         // generation).
         if !idle && let Some(titles) = self.inner.titles.get() {
-            titles.maybe_generate(chat_id, harness_id, &request.prompt, &request.cwd);
+            titles.maybe_generate(
+                chat_id,
+                harness_id,
+                &request.prompt,
+                &request.cwd,
+                self.inner.doc_host(),
+            );
         }
 
         tokio::spawn(drive_run(
@@ -3711,7 +3717,13 @@ async fn drive_run(
             if *status == DoneStatus::Completed
                 && let Some(titles) = inner.titles.get()
             {
-                titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);
+                titles.maybe_generate(
+                    &chat_id,
+                    harness_id,
+                    &user_prompt,
+                    &run_cwd,
+                    inner.doc_host(),
+                );
             }
             // A turn stopped in place: the runtime lives on, parked like a
             // completed turn. Steers it had accepted but not yet delivered
