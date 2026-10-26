@@ -35,12 +35,14 @@ final class ComposerTextView: UITextView {
         dictating = isFirstResponder && textInputMode?.primaryLanguage == "dictation"
     }
 
+    @discardableResult
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
         refreshDictation()
         return became
     }
 
+    @discardableResult
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
         refreshDictation()

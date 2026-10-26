@@ -163,7 +163,7 @@ final class DictationTests: XCTestCase {
         XCTAssertEqual(composer.textView.text, "replaced while dictating")
         XCTAssertNil(composer.pendingText)
         XCTAssertTrue(composer.canRewriteText)
-        composer.textView.resignFirstResponder()
+        _ = composer.textView.resignFirstResponder()
     }
 
     @MainActor
