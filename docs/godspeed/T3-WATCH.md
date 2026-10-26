@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-26 | Forked threads get titles from the history they inherit (`a6aca345d5`) | PR #33 |
+| 2026-10-26 | Forked threads get titles from the history they inherit (`a6aca345d5`) | PR #34 |
 | 2026-10-26 | Terminal drag selection scrolls faster the farther past the edge (`313ca2715f`) | queued (`selection_scroll_lines` in `terminal/panel.rs` tops out at 3 lines inside the grid edge) |
 | 2026-10-26 | Resumed Claude turns retry a stalled MCP registration (`572cf74275`) | queued (check the Godspeed MCP tools after resuming a Claude chat) |
 | 2026-10-26 | Parents hear when a delegated background run ends; running delegates tell the agent to end its turn (`0504c99205`, `557db6cb4e`) | queued (check a side chat finishing while its parent is parked) |
