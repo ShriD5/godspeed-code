@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust workspace (`zeron-proto`, `zeron-doc`, `zeron-rpc`, `zeron-engine`, `zeron-mcp`, `zeron-ui`), GPUI, Loro registry rows.
 
-**Spec:** `docs/superpowers/specs/2026-10-23-conductor-design.md`. Piece 1 only (rollover and learning are separate plans).
+**Spec:** `docs/design/2026-10-23-conductor-design.md`. Piece 1 only (rollover and learning are separate plans).
 
 ## Global Constraints
 
@@ -16,7 +16,7 @@
 - Depth cap: `MAX_CONDUCTOR_DEPTH = 3` levels below the main chat (main chat is depth 0).
 - Access never widens going down: a child's access mode is capped by its parent's (existing rule, kept).
 - Parents may answer **low-risk approvals only** (`ApprovalRisk::Low`); medium/high approvals and every question wait for the user.
-- Notes are capped at `MAX_NOTES_BYTES = 32 * 1024`, same as always-on `MEMORY.md`.
+- Notes are capped at `MAX_NOTES_BYTES = 12 * 1024`, so the synced row fits the registry's 16 KiB per-change budget.
 - Chats outside a conductor behave exactly as before, including the one-level child rule.
 - The existing word "project" (space) is untouched.
 - Same device: wake-ups and sub-agents run on the device holding the folder.
@@ -193,7 +193,7 @@ docs/mcp.md, CONTEXT.md              # vocabulary and tool docs
 ### Task 11: Docs and workspace check
 
 **Files:**
-- Modify: `CONTEXT.md` (Conductor vocabulary), `docs/superpowers/specs/2026-10-23-conductor-design.md` (notes live on the row), `CHANGELOG.md`
+- Modify: `CONTEXT.md` (Conductor vocabulary), `docs/design/2026-10-23-conductor-design.md` (notes live on the row), `CHANGELOG.md`
 
 - [ ] **Step 1:** Add the vocabulary and the notes-storage call to the spec.
 - [ ] **Step 2: Run** `cargo fmt --all -- --check`, `cargo clippy -p zeron-proto -p zeron-doc -p zeron-engine -p zeron-mcp -p zeron-ui -- -D warnings`, `cargo test -p zeron-proto -p zeron-doc -p zeron-engine -p zeron-mcp` → all PASS.

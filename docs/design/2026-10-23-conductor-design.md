@@ -217,6 +217,12 @@ Decided with the user:
 "Low risk" is the existing `ApprovalRisk::Low` band (`crates/proto/src/approval_risk.rs`).
 Everything else waits for the user: medium- and high-risk approvals, and every question.
 
+Hardened in review: the rule keys on the chat being answered, so any agent (a conductor member or
+not) answering a conductor sub-agent gets it; agents may only approve once (no approve-for-session
+or approve-always); a failed membership lookup refuses the approval. Conductor members can't start
+standalone chats or parent chats outside their tree, and a conductor runs at most 8 sub-agents at
+once. Parent wake-ups inside a conductor are limited to 20 a minute.
+
 Builder's calls on the details:
 - The parent is still told when a child is waiting on the user, so it doesn't stall confusingly,
   but it can't answer those items.
@@ -245,12 +251,15 @@ Existing pieces and gaps:
 - Each conductor has a notes file that the user and the main agent can both read and edit. The user
   edits it from conductor settings.
 - The notes go in front of the main agent's first prompt in each fresh session. Sub-agents get them
-  too, since review standards and release steps are exactly what they need. Capped like
-  `MEMORY.md` (32 KB).
+  too, since review standards and release steps are exactly what they need. Capped at 12 KB (see
+  below).
 - In piece 1 the notes are written by hand, by the user or the agent. Piece 3 adds learning.
 
 Decided while building piece 1: the notes live **on the synced conductor row** (a `notes` string,
-capped at 32 KB), not in a file. They then sync with the rest of the registry and need no data-dir
+capped at 12 KB), not in a file. The registry room rejects any change over 16 KiB, and a rejected
+batch wedges sync, so every conductor write is refused up front when the row it leaves behind
+(serialized, with its clocks) would not fit; names (120 bytes) and purposes (500 bytes) are capped
+for the same reason. They then sync with the rest of the registry and need no data-dir
 plumbing; the cost is that they are not a file on disk. The engine reads them through
 `GetConductorNotes` / `SetConductorNotes`, and the main agent through the `conductor_notes_read` /
 `conductor_notes_write` MCP tools.

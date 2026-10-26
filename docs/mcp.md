@@ -131,7 +131,7 @@ name (default: the local engine's device).
 | `archive_chat`     | `Mutate setChatArchived`                                  |
 | `conductor_info`   | `GetConductorMembership`, `ListConductors`, `GetConductorTree`, `WatchSpaces`/`WatchSessions` snapshots (conductor members only) |
 | `conductor_notes_read` | `GetConductorNotes` |
-| `conductor_notes_write` | `SetConductorNotes {id, notes}` (refused over 32 KB) |
+| `conductor_notes_write` | `SetConductorNotes {id, notes}` (refused over 12 KB, or when the row would exceed the 16 KiB per-change sync budget) |
 | `show_visual`      | `PublishVisual {chatId, title, script, assets}` (origin chat only; assets base64 by name, read by the MCP server from the agent's cwd) |
 
 Watch streams are the engine's only read surface (there is no one-shot "get

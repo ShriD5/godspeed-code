@@ -6,7 +6,7 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ### Added
 
-- **Conductor.** Point a conductor at a folder and talk to its one long-lived main chat. Its agent
+- **Conductor (preview, Settings → General).** Point a conductor at a folder and talk to its one long-lived main chat. Its agent
   starts, reuses and steers sub-agents in the repos inside (nested up to three levels), and they show
   up as live cards you can answer from. Agents approve only low-risk requests; questions and anything
   riskier wait for you. Project notes lead every fresh session.

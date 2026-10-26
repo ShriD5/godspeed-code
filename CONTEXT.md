@@ -28,5 +28,5 @@
 - **Depth** — A chat's distance below the main chat. `MAX_CONDUCTOR_DEPTH` (3) caps how far sub-agents nest; chats outside a conductor keep the one-level rule.
 - **Card** — A depth-1 sub-agent shown over the main chat with its status and last steps. A request waiting anywhere below it lights it (`AttentionItem.conductor`).
 - **Answer pop-up** — Settles a card's waiting approval without leaving the main chat. Agents may answer low-risk approvals only; questions and anything riskier wait for the user.
-- **Notes** — Project notes on the conductor row (up to 32 KB), edited by the user and the main agent, put in front of every fresh session of the conductor's agents.
+- **Notes** — Project notes on the conductor row (up to 12 KB, so the synced row fits the per-change budget), edited by the user and the main agent, put in front of every fresh session of the conductor's agents.
 
