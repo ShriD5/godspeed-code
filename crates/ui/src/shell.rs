@@ -4629,6 +4629,7 @@ impl Shell {
                     cx,
                 );
             }
+            TranscriptEvent::OpenChat { chat_id } => self.open_chat(chat_id.clone(), cx),
         }
     }
 
