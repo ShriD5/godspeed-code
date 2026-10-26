@@ -313,7 +313,7 @@ impl Repos {
 
     /// Run `git <args>` (optionally under `cwd`), returning trimmed stdout.
     async fn git(&self, args: &[&str], cwd: Option<&Path>) -> Result<String, EngineError> {
-        let mut cmd = tokio::process::Command::new("git");
+        let mut cmd = tokio::process::Command::new(crate::git_program::git_program());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -354,7 +354,7 @@ impl Repos {
         args: &[&str],
         cwd: Option<&Path>,
     ) -> Result<Option<String>, EngineError> {
-        let mut cmd = tokio::process::Command::new("git");
+        let mut cmd = tokio::process::Command::new(crate::git_program::git_program());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
