@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@375da0fb9a20dfdbd2eb2db99050341fc30f3a23 (2026-10-25)
+Reviewed T3 through: pingdotgg/t3code@071239804e375078dd3fae3b14704b4def57e048 (2026-10-26)
 
 ## Rules
 
@@ -23,6 +23,17 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-26 | Forked threads get titles from the history they inherit (`a6aca345d5`) | queued |
+| 2026-10-26 | Terminal drag selection scrolls faster the farther past the edge (`313ca2715f`) | queued (`selection_scroll_lines` in `terminal/panel.rs` tops out at 3 lines inside the grid edge) |
+| 2026-10-26 | Resumed Claude turns retry a stalled MCP registration (`572cf74275`) | queued (check the Godspeed MCP tools after resuming a Claude chat) |
+| 2026-10-26 | Parents hear when a delegated background run ends; running delegates tell the agent to end its turn (`0504c99205`, `557db6cb4e`) | queued (check a side chat finishing while its parent is parked) |
+| 2026-10-26 | The branch picker refreshes the current branch when it opens (`5b35402623`) | queued (check the picker after `git switch` in a terminal) |
+| 2026-10-26 | PDF attachments go to Claude as document blocks (`532023a241`); document text extraction for agents (`888a3d47d3`) | skipped (Claude reads attached PDF paths with its Read tool; inlining needs a session-wide 100-page budget) |
+| 2026-10-26 | SVG attachments (`efea68679f`); audio playback and office/archive/sqlite/notebook file previews (`34e9c56b9b`, `d69810a97a`, `73afb57097`, `9d17a02782`, `34ead566d4`) | skipped (web viewer; Godspeed sends other files as path refs) |
+| 2026-10-26 | Background compactions no longer flip threads to Working (`b6c326d12f`) | skipped (Godspeed has no idle compaction yet) |
+| 2026-10-26 | New design on by default, Settings and Usage as modals (`3816296021`, `f40c7c6435`, `c3888da8b4`, `3faeb9e6f9`) | skipped (T3's web look; Godspeed keeps its own UI) |
+| 2026-10-26 | Goals stop the running turn (`cc0b86ddf1`); T3 agent instruction cuts (`5f64c5eb29`, `3ed0688c10`) | skipped (T3's goals and orchestrator prompts) |
+| 2026-10-26 | ~200 other commits: lint rules, React effect removal, mobile/Duo, task cache, observability, thread-open payloads, queued-edit fixes, crash screens, usage banner, CI | skipped (internal/minor) |
 | 2026-10-25 | Worktree setup waits for the shell before typing, so a startup prompt cannot eat the command (`5d5b6e025c`) | PR #31 |
 | 2026-10-25 | ACP terminal commands that ignore SIGTERM are force-killed (`c4fa4629eb`) | skipped (Godspeed's ACP client offers no terminal capability) |
 | 2026-10-25 | ACP idle agent errors fail their turns (`5a969c17e7`) | queued (check an ACP agent that errors between turns) |
