@@ -125,6 +125,9 @@ fn codex_mcp_overrides(mcp: &zeron_proto::McpServer) -> Vec<(String, Value)> {
         (key("command"), mcp.command.clone().into()),
         (key("args"), json!(mcp.args)),
         (key("env"), json!(mcp.env)),
+        // `never` forbids approval prompts; explicitly approve our injected
+        // server's tools so Codex does not reject calls that need approval.
+        (key("default_tools_approval_mode"), "approve".into()),
     ]
 }
 
@@ -2731,6 +2734,10 @@ mod mcp_injection_tests {
         assert_eq!(
             overrides["mcp_servers.godspeed.env"],
             json!({ "GODSPEED_CHAT_ID": "chat-1" })
+        );
+        assert_eq!(
+            overrides["mcp_servers.godspeed.default_tools_approval_mode"],
+            "approve"
         );
     }
 }

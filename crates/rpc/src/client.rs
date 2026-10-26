@@ -4,9 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::{ClientFrame, RpcError, ServerFrame};
 
@@ -368,37 +366,21 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Dial a WebSocket RPC server (`ws://127.0.0.1:{ipc_port}`).
 pub async fn connect_ws(url: &str) -> Result<RpcClient, RpcError> {
-    let (ws, _) = tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url))
-        .await
-        .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
-        .map_err(|e| RpcError::Transport(e.to_string()))?;
-    let (mut sink, mut stream) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    let (ws, _) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        // Nagle off: terminal keystrokes are tiny frames that must not wait
+        // for the previous one's ACK.
+        tokio_tungstenite::connect_async_with_config(url, Some(crate::ws::config()), true),
+    )
+    .await
+    .map_err(|_| RpcError::Transport(format!("timed out dialing {url}")))?
+    .map_err(|e| RpcError::Transport(e.to_string()))?;
+    let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
+    let url = url.to_owned();
     tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                frame = out_rx.recv() => match frame {
-                    Some(text) => {
-                        if sink.send(WsMessage::Text(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => {
-                        let _ = sink.send(WsMessage::Close(None)).await;
-                        break;
-                    }
-                },
-                message = stream.next() => match message {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        if in_tx.send(text).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(_)) => {}
-                },
-            }
+        if let Some(reason) = crate::ws::pump(ws, out_rx, in_tx).await {
+            tracing::warn!(%reason, %url, "rpc: lost the connection");
         }
     });
     Ok(RpcClient::new(out_tx, in_rx))

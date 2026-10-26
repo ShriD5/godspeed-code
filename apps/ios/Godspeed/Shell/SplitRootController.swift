@@ -219,8 +219,17 @@ final class SplitRootController: UISplitViewController, UISplitViewControllerDel
     // MARK: Collapse / expand
 
     /// Narrowing to compact carries the open session into the tab shell; the
-    /// column lets go of its copy (one live view per session).
+    /// column lets go of its copy (one live view per session). The page
+    /// itself moves, at once: rebuilding it showed the list, then a loading
+    /// page, under iPhone Duo's fold animation.
     func splitViewController(_ svc: UISplitViewController, topColumnForCollapsingToProposedTopColumn proposed: UISplitViewController.Column) -> UISplitViewController.Column {
+        if let session = detail.viewControllers.first as? SessionViewController {
+            session.relocating = true
+            detail.setViewControllers([], animated: false)
+            tabs.adoptSession(session)
+            session.relocating = false
+            return .compact
+        }
         let chatId = currentChatId
         DispatchQueue.main.async {
             if self.detail.viewControllers.first is SessionViewController {
@@ -234,6 +243,14 @@ final class SplitRootController: UISplitViewController, UISplitViewControllerDel
     /// Widening back brings the session last open in the tab shell into the
     /// main column (or the new-session page when none was).
     func splitViewController(_ svc: UISplitViewController, displayModeForExpandingToProposedDisplayMode proposed: UISplitViewController.DisplayMode) -> UISplitViewController.DisplayMode {
+        // The session page moves back as it is (see collapsing above).
+        if let session = tabs.releaseSession() {
+            currentChatId = session.chatId
+            sidebar.currentChatId = session.chatId
+            detail.setViewControllers([session], animated: false)
+            session.relocating = false
+            return proposed
+        }
         DispatchQueue.main.async {
             let current = self.currentChatId
             self.tabs.popToFrontPage()
@@ -352,6 +369,13 @@ final class SidebarViewController: UIViewController, UISearchResultsUpdating {
             edge.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             edge.widthAnchor.constraint(equalToConstant: 1 / max(1, traitCollection.displayScale)),
         ])
+    }
+
+    /// The split wraps the sidebar in a navigation controller of its own; its
+    /// bar would sit empty above the sidebar's, pushing title and search down.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationController?.setNavigationBarHidden(true, animated: false)
     }
 
     func updateSearchResults(for searchController: UISearchController) {

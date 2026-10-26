@@ -347,6 +347,7 @@ mod tests {
                 mentions: Arc::default(),
                 attachments: Arc::default(),
                 badges: Arc::default(),
+                sender: None,
                 pending: false,
             },
             entry_id: id.to_owned().into(),
@@ -433,6 +434,7 @@ mod tests {
             mentions: Arc::default(),
             attachments: Arc::default(),
             badges: Arc::default(),
+            sender: None,
             pending: false,
         };
         find.recount(&rows);
