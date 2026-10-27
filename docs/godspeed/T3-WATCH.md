@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-27 | A thread whose worktree was deleted recovers on the next message (`0604547a3a`) | PR pending |
+| 2026-10-27 | A thread whose worktree was deleted recovers on the next message (`0604547a3a`) | PR #41 |
 | 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | queued (`files/markdown_preview.rs` shows SKILL.md frontmatter as a rule and a setext heading; mask it with spaces so task toggles keep their offsets) |
 | 2026-10-27 | ACP session notices show as notices, not reply text (`323d9611ff`) | queued (`acp/normalize.rs` drops `notice` updates; needs a notice event and row) |
 | 2026-10-27 | Steer works while a compaction runs (`ad068d7c93`) | queued (check steering during a Claude /compact) |
