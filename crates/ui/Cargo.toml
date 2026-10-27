@@ -63,6 +63,10 @@ name = "pull-request-destination-fixture"
 required-features = ["pull-request-fixture", "browser-fixture"]
 
 [[example]]
+name = "browser-annotation-fixture"
+required-features = ["appshots-fixture"]
+
+[[example]]
 name = "new-project-fixture"
 required-features = ["project-palette-fixture"]
 

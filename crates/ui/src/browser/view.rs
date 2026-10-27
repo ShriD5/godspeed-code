@@ -78,6 +78,11 @@ impl BrowserSurface {
         }
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
+        if key == "escape" && self.annotating() {
+            self.stop_annotation(cx);
+            cx.stop_propagation();
+            return;
+        }
         let primary = if cfg!(target_os = "macos") {
             mods.platform
         } else {
@@ -644,9 +649,35 @@ impl Render for BrowserSurface {
         .when(has_page, |el| {
             el.on_click(cx.listener(|this, _, _, cx| this.open_external(cx)))
         });
+        // Annotation picks an element on the page into the composer.
+        let annotating = self.annotating();
+        let can_annotate = self.can_annotate();
+        let annotate = crate::files::toolbar_button(
+            "browser-annotate",
+            if annotating {
+                "Stop annotating"
+            } else {
+                "Annotate an element"
+            },
+        )
+        .when(!can_annotate, |el| el.cursor_default().opacity(0.35))
+        .when(annotating, |el| el.bg(crate::theme::wash(0.10)))
+        .child(
+            icons::icon(icons::CURSOR_SQUARE)
+                .size(px(surface_chrome::ICON_SIZE))
+                .text_color(if annotating {
+                    theme.accent
+                } else {
+                    theme.text_muted
+                }),
+        )
+        .when(can_annotate, |el| {
+            el.on_click(cx.listener(|this, _, _, cx| this.toggle_annotation(cx)))
+        });
         let toolbar = surface_chrome::toolbar(&theme)
             .when(!external, |el| el.child(back).child(forward).child(reload))
             .child(address)
+            .when(!external, |el| el.child(annotate))
             .child(open);
 
         let body = div()

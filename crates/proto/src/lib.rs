@@ -17,6 +17,7 @@ pub mod chat_import;
 pub mod conductor;
 pub mod device_paths;
 pub mod entities;
+pub mod annotation;
 pub mod file_mentions;
 pub mod git_actions;
 pub mod invite_only;
