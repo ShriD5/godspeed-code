@@ -8,6 +8,7 @@ pub mod account_usage;
 pub mod agent;
 pub mod agents;
 pub mod approval_risk;
+pub mod agent_messages;
 pub mod attachment_mentions;
 pub mod attention;
 pub mod chat_mentions;
