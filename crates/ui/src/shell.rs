@@ -8032,6 +8032,7 @@ impl Shell {
                     match button {
                         gpui::WindowButton::Minimize => linux_caption_button(
                             "window-minimize",
+                            "Minimize",
                             icons::WINDOW_MINIMIZE,
                             false,
                             theme,
@@ -8039,18 +8040,24 @@ impl Shell {
                         )
                         .into_any_element(),
                         gpui::WindowButton::Maximize => {
-                            let (id, icon_path) = if is_maximized {
-                                ("window-restore", icons::WINDOW_RESTORE)
+                            let (id, label, icon_path) = if is_maximized {
+                                ("window-restore", "Restore", icons::WINDOW_RESTORE)
                             } else {
-                                ("window-maximize", icons::WINDOW_MAXIMIZE)
+                                ("window-maximize", "Maximize", icons::WINDOW_MAXIMIZE)
                             };
-                            linux_caption_button(id, icon_path, false, theme, |_, window, _| {
-                                window.zoom_window()
-                            })
+                            linux_caption_button(
+                                id,
+                                label,
+                                icon_path,
+                                false,
+                                theme,
+                                |_, window, _| window.zoom_window(),
+                            )
                             .into_any_element()
                         }
                         gpui::WindowButton::Close => linux_caption_button(
                             "window-close",
+                            "Close",
                             icons::CLOSE,
                             true,
                             theme,
@@ -13789,6 +13796,7 @@ fn windows_caption_button(
 /// of the drag strip's event surface (see [`window_control_button`]).
 fn linux_caption_button(
     id: &'static str,
+    label: &'static str,
     icon_path: &'static str,
     close: bool,
     theme: &Theme,
@@ -13813,6 +13821,9 @@ fn linux_caption_button(
         .rounded(px(6.0))
         .cursor_pointer()
         .hover(move |style| style.bg(hover_bg))
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tooltip(crate::settings::widgets::text_tooltip(label))
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {

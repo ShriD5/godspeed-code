@@ -8044,8 +8044,12 @@ impl Shell {
                     )
                 })
                 .child(div().max_w(px(180.0)).truncate().child(spec.name.clone()))
-                .when(long, |el| {
-                    el.tooltip(crate::settings::widgets::text_tooltip(spec.name.clone()))
+                .when(more || long, |el| {
+                    el.tooltip(crate::settings::widgets::text_tooltip(if more {
+                        SharedString::from("Show hidden folders")
+                    } else {
+                        spec.name.clone()
+                    }))
                 });
             // The open crumb is where you already are: no hover, no click.
             if !spec.current {
