@@ -16,6 +16,7 @@ export class WriteMeter {
   statements = 0;
   private pending = 0;
   private lastLogAt = Number.NEGATIVE_INFINITY;
+  private scheduled = false;
 
   constructor(
     private readonly room: string,
@@ -31,7 +32,14 @@ export class WriteMeter {
     this.total += rows;
     this.statements += 1;
     this.pending += rows;
-    if (now - this.lastLogAt >= WRITE_LOG_WINDOW_MS) this.report(now);
+    if (this.scheduled || now - this.lastLogAt < WRITE_LOG_WINDOW_MS) return;
+    // Report after the current event's synchronous writes, so one line
+    // covers the whole batch (a hibernating room rarely lives for a second).
+    this.scheduled = true;
+    queueMicrotask(() => {
+      this.scheduled = false;
+      this.report(now);
+    });
   }
 
   /** Log what was written since the last line (no-op when nothing was). */
