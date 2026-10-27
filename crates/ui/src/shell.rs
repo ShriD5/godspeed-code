@@ -2129,17 +2129,20 @@ fn exit_confirmation(ends_process: bool, confirmed: bool, running: usize) -> Opt
     (ends_process && !confirmed && running > 0).then_some(running)
 }
 
-/// Title and body of the quit confirmation for `running` live runs.
-fn exit_confirm_copy(running: usize) -> (String, &'static str) {
+/// Title and body of the quit confirmation for `running` live runs;
+/// `restart` words it for "Restart to update".
+fn exit_confirm_copy(running: usize, restart: bool) -> (String, &'static str) {
     let title = if running == 1 {
         "1 agent is running".to_owned()
     } else {
         format!("{running} agents are running")
     };
-    (
-        title,
-        "The engine runs inside Godspeed, so quitting stops them mid-turn.",
-    )
+    let body = if restart {
+        "The engine runs inside Godspeed, so restarting to update stops them mid-turn."
+    } else {
+        "The engine runs inside Godspeed, so quitting stops them mid-turn."
+    };
+    (title, body)
 }
 
 pub struct Shell {
@@ -5019,8 +5022,11 @@ impl Shell {
             // window (the Dock reopens one); elsewhere gpui quits when the
             // last window closes.
             PendingExit::CloseWindow => !cfg!(target_os = "macos") && cx.windows().len() <= 1,
-            // Both are explicit choices made in their own flows.
-            PendingExit::RuntimeChange | PendingExit::InstallUpdate(_) => false,
+            // An explicit choice made in its own flow.
+            PendingExit::RuntimeChange => false,
+            // "Restart to update" quits this process (and its embedded
+            // engine) just like Quit, so live runs must be confirmed too.
+            PendingExit::InstallUpdate(_) => true,
         };
         let running = self.state.read(cx).runs_ended_by_exit(Utc::now());
         exit_confirmation(ends_process, self.exit_confirmed, running)
@@ -5056,9 +5062,10 @@ impl Shell {
         viewport: gpui::Size<Pixels>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let (_, running) = self.exit_confirm.as_ref()?;
+        let (action, running) = self.exit_confirm.as_ref()?;
+        let restart = matches!(action, PendingExit::InstallUpdate(_));
         let theme = Theme::of(cx).clone();
-        let (title, body) = exit_confirm_copy(*running);
+        let (title, body) = exit_confirm_copy(*running, restart);
         let card = popover::dialog_card(&theme)
             .child(popover::dialog_title(&theme, &title))
             .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, body)))
@@ -5075,7 +5082,7 @@ impl Shell {
                             .on_click(cx.listener(|this, _, _, cx| this.cancel_exit(cx))),
                     )
                     .child(
-                        popover::btn_primary(&theme, "Quit")
+                        popover::btn_primary(&theme, if restart { "Restart" } else { "Quit" })
                             .id("exit-confirm-quit")
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.confirm_exit(window, cx)),
@@ -10178,6 +10185,16 @@ impl Shell {
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(tone)
             .child(div().flex_1().min_w_0().child(label));
+        if action == crate::app_update::StripAction::Restart {
+            // The whole strip restarts; the trailing word says so.
+            strip = strip.child(
+                div()
+                    .flex_none()
+                    .ml(px(Theme::SPACE_SM))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Restart"),
+            );
+        }
         if action != crate::app_update::StripAction::None {
             strip = strip
                 .cursor_pointer()
@@ -15436,8 +15453,9 @@ mod tests {
         assert_eq!(exit_confirmation(true, false, 0), None);
         assert_eq!(exit_confirmation(false, false, 3), None);
         assert_eq!(exit_confirmation(true, true, 3), None);
-        assert_eq!(exit_confirm_copy(1).0, "1 agent is running");
-        assert_eq!(exit_confirm_copy(3).0, "3 agents are running");
+        assert_eq!(exit_confirm_copy(1, false).0, "1 agent is running");
+        assert_eq!(exit_confirm_copy(3, false).0, "3 agents are running");
+        assert!(exit_confirm_copy(2, true).1.contains("restarting to update"));
     }
 
     #[test]

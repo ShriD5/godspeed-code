@@ -113,6 +113,9 @@ const deviceParam = (url: URL): string => {
   return ID_RE.test(device) ? `&device=${device}` : "";
 };
 
+/** GitHub redirects `latest/download/<asset>` to the newest release's asset. */
+const GITHUB_RELEASES_LATEST = "https://github.com/ShriD5/godspeed-code/releases/latest/download";
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -125,7 +128,8 @@ export default {
     // ── public install surface: the `curl | sh` installer and the release
     //    artifacts it downloads. Served only when a RELEASES bucket is bound.
     //    Godspeed's deployment binds none (releases live on GitHub, and
-    //    install.sh's base URL is still a placeholder), so both 404 there. ──
+    //    install.sh's base URL is still a placeholder): /install.sh 404s and
+    //    /releases/* redirects to GitHub (below). ──
     if (
       env.RELEASES &&
       url.pathname === "/install.sh" &&
@@ -161,6 +165,27 @@ export default {
         etag: object.httpEtag
       });
       return new Response(request.method === "HEAD" ? null : object.body, { headers });
+    }
+
+    // Without a bucket, /releases/<asset> bridges to GitHub Releases: apps
+    // up to 0.5.6 poll `{edge}/releases/manifest.json` and download artifacts
+    // beside it, and their updater follows HTTPS redirects. Newer apps read
+    // GitHub directly (crates/update DEFAULT_FEED_URL).
+    if (
+      !env.RELEASES &&
+      parts[0] === "releases" &&
+      parts.length === 2 &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      const asset = parts[1];
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(asset)) return json({ error: "bad request" }, 400);
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: `${GITHUB_RELEASES_LATEST}/${asset}`,
+          "cache-control": "public, max-age=60"
+        }
+      });
     }
 
     // ── WorkOS auth routes (pre-bearer: exchange/refresh/callback have no

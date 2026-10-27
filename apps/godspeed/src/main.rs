@@ -299,7 +299,7 @@ fn main() -> anyhow::Result<()> {
         }
         Some(Command::Update { check }) => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(update_cli::update(&edge_url_from_env(), check))
+            runtime.block_on(update_cli::update(zeron_update::DEFAULT_FEED_URL, check))
         }
         Some(Command::Daemon { command }) => match command {
             DaemonCommand::Install => daemon::install(&engine_config_from_env().data_dir),

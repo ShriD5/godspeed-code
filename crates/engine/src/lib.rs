@@ -1021,7 +1021,7 @@ impl Engine {
             let terminals = core.terminals.clone();
             Arc::new(move || !sessions.any_active() && !terminals.any_open())
         };
-        let updater = zeron_update::Updater::spawn(config.edge_url.clone(), Some(quiescent));
+        let updater = zeron_update::Updater::spawn(zeron_update::DEFAULT_FEED_URL.to_owned(), Some(quiescent));
         if let Some(mut token_changes) = edge.as_ref().and_then(EdgeConfig::token_changes) {
             let updater_for_tokens = updater.clone();
             let wake = tokio::spawn(async move {

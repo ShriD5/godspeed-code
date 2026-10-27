@@ -3,11 +3,17 @@
 //! (its own report-only checker, the "Check for Updates…" menu item, the
 //! sidebar update strip, and the desktop install paths).
 //!
-//! Release layout (see `.github/workflows/release.yml` and `edge/src/install.sh`):
-//! artifacts live in the `comet-native-releases` R2 bucket, served pre-auth at
-//! `{edge}/releases/*`. `manifest.json` carries the latest version plus a
-//! sha256 per artifact; `latest.txt` (version only) remains as the fallback for
-//! releases published before the manifest existed.
+//! Release feed: GitHub Releases. [`DEFAULT_FEED_URL`] is
+//! `https://github.com/ShriD5/godspeed-code/releases/latest/download`, which
+//! GitHub redirects (302, then to its asset CDN) to the newest published
+//! release's asset of that name. Each release carries `manifest.json`
+//! (written by `scripts/release-manifest.py`: the version plus a sha256 and
+//! size per artifact) next to the artifacts. Artifacts themselves are fetched
+//! from the release the manifest names (`releases/download/v<version>/<file>`),
+//! so a release published mid-download can't swap the file under the manifest.
+//! `latest.txt` (version only) remains as the fallback for feeds without a
+//! manifest. `GODSPEED_RELEASES_URL` overrides the base (self-hosting,
+//! testing); it must be HTTPS without credentials, query, or fragment.
 //!
 //! Install kinds and their update paths:
 //! - **Managed** (`~/.godspeed/app/<ver>` + `current` symlink — the curl|sh
@@ -15,8 +21,9 @@
 //!   tarball into a new versioned dir, flip the symlink, then restart the
 //!   service (daemon) or relaunch (desktop). Same flow the installer script
 //!   performs, natively.
-//! - **MacApp** (running out of an app bundle): download the app tarball, swap the
-//!   bundle directory, relaunch. Driven by the UI.
+//! - **MacApp** (running out of an app bundle): download the app tarball,
+//!   verify it (sha256, code signature, Team ID, notarization, version), swap
+//!   the bundle directory, relaunch. Driven by the UI.
 //! - **WindowsPortable** (the Windows installer or portable zip — both carry
 //!   `zeron-update.json`): swap the executable in place. Driven by the UI.
 //! - **Unmanaged** (source builds, hand-copied binaries): report only — the
@@ -47,11 +54,12 @@ pub const fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Successful checks repeat this often. The feed is a sub-kilobyte,
-/// edge-cached document, so hourly polling is free and bounds how long a
-/// long-running app can sit on a stale release.
-const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// Failed checks (offline boot, captive portal, transient edge error) back off
+/// Successful checks repeat this often (plus one shortly after launch and on
+/// window activation once due). The feed is a sub-kilobyte document on
+/// GitHub; six hours keeps a long-running app reasonably current without
+/// polling GitHub from every install all day.
+const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// Failed checks (offline boot, captive portal, transient feed error) back off
 /// through these delays, then stay at the last one.
 const CHECK_RETRY: [Duration; 4] = [
     Duration::from_secs(60),
@@ -82,7 +90,8 @@ const RELEASE_METADATA_TIMEOUT: Duration = Duration::from_secs(60);
 // Release metadata
 // ---------------------------------------------------------------------------
 
-/// `{edge}/releases/manifest.json` — written by the release workflow.
+/// `{feed}/manifest.json` — written by `scripts/release-manifest.py` and
+/// uploaded with every release.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: String,
@@ -96,6 +105,10 @@ pub struct Manifest {
 pub struct FileMeta {
     #[serde(default)]
     pub sha256: Option<String>,
+    /// Exact byte size. Optional for older manifests; when present a download
+    /// that is longer (or ends shorter) is rejected before hashing finishes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 /// Artifact-name platform pair matching the packaging scripts. Unsupported
@@ -167,8 +180,8 @@ pub fn version_newer(latest: &str, current: &str) -> bool {
 
 /// Fetch the newest release metadata: `manifest.json`, falling back to
 /// `latest.txt` (version only, no checksums) for pre-manifest releases.
-pub async fn fetch_latest(edge_url: &str) -> anyhow::Result<Manifest> {
-    let base = release_base(edge_url)?;
+pub async fn fetch_latest(feed: &str) -> anyhow::Result<Manifest> {
+    let base = release_base(feed)?;
     let client = http_client()?;
     let manifest_url = format!("{base}/manifest.json");
     match fetch_release_metadata(&client, &manifest_url).await {
@@ -235,9 +248,8 @@ async fn fetch_release_metadata_with_limits(
     let request = async {
         let response = client
             .get(url)
-            // Intermediaries must revalidate: the edge already bounds its own
-            // cache to a minute, and a proxy holding an old manifest for
-            // longer is exactly the "prompt appears late" failure.
+            // Intermediaries must revalidate: a proxy holding an old
+            // manifest is exactly the "prompt appears late" failure.
             .header(reqwest::header::CACHE_CONTROL, "no-cache")
             .send()
             .await
@@ -323,7 +335,18 @@ pub const RELEASES_PAGE: &str = "https://github.com/ShriD5/godspeed-code/release
 /// installation cannot replace itself.
 pub const LATEST_RELEASE_PAGE: &str = "https://github.com/ShriD5/godspeed-code/releases/latest";
 
-fn release_base(edge_url: &str) -> anyhow::Result<String> {
+/// The release feed every install checks unless `GODSPEED_RELEASES_URL` (or a
+/// Windows install's `zeron-update.json`) says otherwise. GitHub answers
+/// `latest/download/<asset>` with a redirect to the newest published
+/// release's asset; the update client follows it (HTTPS only, at most ten
+/// hops) to GitHub's asset CDN.
+pub const DEFAULT_FEED_URL: &str =
+    "https://github.com/ShriD5/godspeed-code/releases/latest/download";
+
+/// The feed base in effect: the env override, then a Windows install's own
+/// configuration, then `feed` (normally [`DEFAULT_FEED_URL`]; tests pass a
+/// local server).
+fn release_base(feed: &str) -> anyhow::Result<String> {
     if let Ok(url) = std::env::var("GODSPEED_RELEASES_URL")
         && !url.trim().is_empty()
     {
@@ -333,9 +356,22 @@ fn release_base(edge_url: &str) -> anyhow::Result<String> {
     if let Some(url) = windows::release_url()? {
         return Ok(url.trim_end_matches('/').to_owned());
     }
-    // Releases come from the configured edge. Godspeed's default edge is a
-    // `.invalid` placeholder, so update checks stay off until one is configured.
-    Ok(format!("{}/releases", edge_url.trim_end_matches('/')))
+    Ok(feed.trim_end_matches('/').to_owned())
+}
+
+/// Where `file` of release `version` downloads from. A GitHub
+/// `…/releases/latest/download` base is pinned to the manifest's own release
+/// (`…/releases/download/v<version>`): "latest" can move between reading the
+/// manifest and fetching the artifact, and the older artifact would then 404.
+/// `version` is validated as dotted digits before it gets here.
+fn artifact_url(base: &str, version: &str, file: &str) -> String {
+    const LATEST: &str = "/releases/latest/download";
+    match base.strip_suffix(LATEST) {
+        Some(repo) if repo.starts_with("https://github.com/") => {
+            format!("{repo}/releases/download/v{version}/{file}")
+        }
+        _ => format!("{base}/{file}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -420,19 +456,17 @@ impl InstallKind {
 
     pub async fn stage_desktop(
         &self,
-        edge_url: &str,
+        feed: &str,
         manifest: &Manifest,
         data_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
         match self {
-            Self::MacApp { .. } => stage_mac_app(edge_url, manifest, data_dir).await,
+            Self::MacApp { .. } => stage_mac_app(feed, manifest, data_dir).await,
             Self::Managed { app_root } if self.supports_desktop_update() => {
-                stage_headless(edge_url, manifest, app_root).await
+                stage_headless(feed, manifest, app_root).await
             }
             #[cfg(windows)]
-            Self::WindowsPortable { directory } => {
-                windows::stage(edge_url, manifest, directory).await
-            }
+            Self::WindowsPortable { directory } => windows::stage(feed, manifest, directory).await,
             _ => bail!("this installation does not support desktop updates"),
         }
     }
@@ -590,17 +624,20 @@ fn bundle_short_version(plist: &str) -> Option<String> {
 // Download + verify
 // ---------------------------------------------------------------------------
 
-/// Stream `{edge}/releases/<file>` to `dest`, verifying the manifest sha256 when
-/// present. Writes through a `.partial` sidecar so an interrupted download never
-/// leaves a plausible-looking artifact behind.
+/// Stream `file` of the manifest's release to `dest` (see [`artifact_url`]),
+/// verifying the manifest sha256 and size when present. Writes through a
+/// `.partial` sidecar so an interrupted or rejected download never leaves a
+/// plausible-looking artifact behind.
 pub async fn download_release_file(
-    edge_url: &str,
+    feed: &str,
     manifest: &Manifest,
     file: &str,
     dest: &Path,
 ) -> anyhow::Result<()> {
-    let url = format!("{}/{file}", release_base(edge_url)?);
-    let expected = manifest.files.get(file).and_then(|m| m.sha256.as_deref());
+    let url = artifact_url(&release_base(feed)?, &manifest.version, file);
+    let meta = manifest.files.get(file);
+    let expected = meta.and_then(|m| m.sha256.as_deref());
+    let expected_size = meta.and_then(|m| m.size);
     if expected.is_none() {
         tracing::warn!(
             file,
@@ -615,24 +652,52 @@ pub async fn download_release_file(
         .with_context(|| format!("downloading {url}"))?
         .error_for_status()
         .with_context(|| format!("downloading {url}"))?;
+    if let (Some(expected), Some(advertised)) = (expected_size, resp.content_length()) {
+        anyhow::ensure!(
+            advertised == expected,
+            "size mismatch for {file}: expected {expected} bytes, server sent {advertised}"
+        );
+    }
     let mut out = tokio::fs::File::create(&partial)
         .await
         .with_context(|| format!("creating {}", partial.display()))?;
-    let mut hasher = Sha256::new();
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("reading download stream")?;
-        hasher.update(&chunk);
-        out.write_all(&chunk).await.context("writing download")?;
-    }
-    out.flush().await.context("flushing download")?;
-    drop(out);
-    if let Some(expected) = expected {
-        let actual = format!("{:x}", hasher.finalize());
-        if !actual.eq_ignore_ascii_case(expected.trim()) {
-            tokio::fs::remove_file(&partial).await.ok();
-            bail!("checksum mismatch for {file}: expected {expected}, got {actual}");
+    let result = async {
+        let mut hasher = Sha256::new();
+        let mut written: u64 = 0;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("reading download stream")?;
+            written = written.saturating_add(chunk.len() as u64);
+            if let Some(expected) = expected_size {
+                anyhow::ensure!(
+                    written <= expected,
+                    "size mismatch for {file}: more than the expected {expected} bytes"
+                );
+            }
+            hasher.update(&chunk);
+            out.write_all(&chunk).await.context("writing download")?;
         }
+        out.flush().await.context("flushing download")?;
+        if let Some(expected) = expected_size {
+            anyhow::ensure!(
+                written == expected,
+                "size mismatch for {file}: expected {expected} bytes, got {written}"
+            );
+        }
+        if let Some(expected) = expected {
+            let actual = format!("{:x}", hasher.finalize());
+            anyhow::ensure!(
+                actual.eq_ignore_ascii_case(expected.trim()),
+                "checksum mismatch for {file}: expected {expected}, got {actual}"
+            );
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    drop(out);
+    if let Err(err) = result {
+        tokio::fs::remove_file(&partial).await.ok();
+        return Err(err);
     }
     tokio::fs::rename(&partial, dest)
         .await
@@ -687,7 +752,7 @@ async fn verify_staged_binary(binary: &Path, version: &str) -> anyhow::Result<()
 /// Download + unpack the headless tarball into `app_root/<ver>` (idempotent —
 /// an already-staged version is reused). Returns the versioned dir.
 pub async fn stage_headless(
-    edge_url: &str,
+    feed: &str,
     manifest: &Manifest,
     app_root: &Path,
 ) -> anyhow::Result<PathBuf> {
@@ -708,7 +773,7 @@ pub async fn stage_headless(
     std::fs::create_dir_all(&stage).with_context(|| format!("creating {}", stage.display()))?;
     let result = async {
         let tarball = stage.join(&file);
-        download_release_file(edge_url, manifest, &file, &tarball).await?;
+        download_release_file(feed, manifest, &file, &tarball).await?;
         let unpacked = stage.join("unpacked");
         std::fs::create_dir_all(&unpacked)?;
         // Tarball root is the versioned stage dir (see scripts/package-linux.sh);
@@ -797,7 +862,11 @@ pub fn restart_service() -> anyhow::Result<()> {
         let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
         run(
             "launchctl",
-            &["kickstart", "-k", &format!("gui/{uid}/site.shrithan.godspeed")],
+            &[
+                "kickstart",
+                "-k",
+                &format!("gui/{uid}/site.shrithan.godspeed"),
+            ],
         )
     } else {
         run(
@@ -811,12 +880,151 @@ pub fn restart_service() -> anyhow::Result<()> {
 // macOS app-bundle installs — the desktop path
 // ---------------------------------------------------------------------------
 
+/// Apple Developer Team ID official Godspeed releases are signed with. A
+/// staged update must carry the running app's Team ID; this is the fallback
+/// when the running app has none (an ad-hoc local package), so such a build
+/// still only accepts official releases.
+pub const RELEASE_TEAM_ID: &str = "QPUV967B5U";
+
+/// Developer ID Application certificate issued by Apple to `team`: Apple's
+/// anchor, the Developer ID intermediate (…6.2.6), the Developer ID leaf
+/// marker (…6.1.13), and the team in the leaf's OU.
+fn developer_id_requirement(team: &str) -> String {
+    format!(
+        "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists \
+         and certificate leaf[field.1.2.840.113635.100.6.1.13] exists \
+         and certificate leaf[subject.OU] = \"{team}\""
+    )
+}
+
+/// Apple Team IDs are ten uppercase letters or digits. Checked before a team
+/// is spliced into a code requirement.
+fn valid_team_id(team: &str) -> bool {
+    team.len() == 10
+        && team
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// `TeamIdentifier=…` from `codesign -dv` output (it prints to stderr);
+/// `not set` (ad-hoc or platform binaries) reads as `None`.
+fn parse_team_identifier(display: &str) -> Option<String> {
+    display
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("TeamIdentifier="))
+        .map(str::trim)
+        .filter(|team| !team.is_empty() && *team != "not set")
+        .map(str::to_owned)
+}
+
+/// The team a staged update must be signed by: the running app's, else
+/// [`RELEASE_TEAM_ID`]. Pure.
+fn expected_update_team(running: Option<&str>) -> &str {
+    running.unwrap_or(RELEASE_TEAM_ID)
+}
+
+/// Refuse a staged app whose signing team differs from `expected`. Pure.
+fn check_update_team(expected: &str, staged: Option<&str>) -> anyhow::Result<()> {
+    match staged {
+        Some(team) if team == expected => Ok(()),
+        Some(team) => bail!(
+            "the update is signed by team {team}, but this copy of Godspeed is signed by {expected}"
+        ),
+        None => bail!("the update has no Developer ID team (expected {expected})"),
+    }
+}
+
+/// Whether `staged` may replace the running app: strictly newer than the
+/// running version, and not older than what is already installed on disk
+/// (another updater may have got there first). Never downgrades. Pure.
+fn check_install_version(
+    staged: &str,
+    running: &str,
+    installed: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        version_newer(staged, running),
+        "refusing to install {staged:?} over {running}: not a newer version"
+    );
+    if let Some(installed) = installed {
+        anyhow::ensure!(
+            !version_newer(installed, staged),
+            "refusing to install {staged} over the already installed {installed}"
+        );
+    }
+    Ok(())
+}
+
+/// The signing team of the code at `path` (`None` when unsigned or ad-hoc).
+fn code_team_id(path: &Path) -> anyhow::Result<Option<String>> {
+    let output = std::process::Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=2"])
+        .arg(path)
+        .output()
+        .context("running codesign -dv")?;
+    // Unsigned code makes `codesign -dv` fail; that is "no team", not an error.
+    Ok(parse_team_identifier(&String::from_utf8_lossy(
+        &output.stderr,
+    )))
+}
+
+/// The running app bundle's signing team, if it runs from a signed bundle.
+fn running_app_team_id() -> Option<String> {
+    match detect_install() {
+        InstallKind::MacApp { bundle } => code_team_id(&bundle).ok().flatten(),
+        _ => None,
+    }
+}
+
+/// Gate between a downloaded bundle and anything that executes or installs
+/// it: the whole bundle's signature must be intact (`codesign --verify --deep
+/// --strict`), from a Developer ID certificate of the running app's team,
+/// and, with `notarized`, accepted by Gatekeeper as notarized (`spctl`; the
+/// ticket is stapled, so this works offline). Logs and fails otherwise.
+pub fn verify_mac_app_signature(
+    staged: &Path,
+    running_team: Option<&str>,
+    notarized: bool,
+) -> anyhow::Result<()> {
+    require_mac_app_update_platform()?;
+    let result = (|| {
+        let expected = expected_update_team(running_team);
+        anyhow::ensure!(
+            valid_team_id(expected),
+            "the running app's Team ID {expected:?} is malformed"
+        );
+        let staged_str = staged.to_string_lossy();
+        let requirement = format!("-R={}", developer_id_requirement(expected));
+        run(
+            "/usr/bin/codesign",
+            &["--verify", "--deep", "--strict", &requirement, &staged_str],
+        )
+        .context("the update's code signature is invalid or not from Godspeed's developer")?;
+        check_update_team(expected, code_team_id(staged)?.as_deref())?;
+        if notarized {
+            run(
+                "/usr/sbin/spctl",
+                &["--assess", "--type", "execute", &staged_str],
+            )
+            .context("Gatekeeper rejected the update (not notarized)")?;
+        }
+        anyhow::Ok(())
+    })();
+    if let Err(err) = &result {
+        tracing::error!(staged = %staged.display(), error = %format!("{err:#}"), "refusing update: verification failed");
+    }
+    result
+}
+
 /// Download + unpack the app tarball into `{data_dir}/updates/<ver>/Godspeed.app`
 /// (idempotent). The bundle is unpacked beside its final name and renamed in
-/// only after its binary answers with the expected version, so an interrupted
-/// unpack can never be mistaken for a staged update. Returns the staged bundle.
+/// only after it passes, in order: the manifest's sha256 and size (required),
+/// [`verify_mac_app_signature`] (signature, Team ID, notarization) — before
+/// anything from it runs — and its binary answering with the expected
+/// version. An interrupted unpack can never be mistaken for a staged update,
+/// and an older or equal release is never staged. Returns the staged bundle.
 pub async fn stage_mac_app(
-    edge_url: &str,
+    feed: &str,
     manifest: &Manifest,
     data_dir: &Path,
 ) -> anyhow::Result<PathBuf> {
@@ -827,19 +1035,39 @@ pub async fn stage_mac_app(
         parse_version(version).is_some(),
         "invalid release version {version:?}"
     );
+    anyhow::ensure!(
+        version_newer(version, current_version()),
+        "refusing to stage {version}: not newer than the running {}",
+        current_version()
+    );
+    let file = mac_app_artifact(version);
+    anyhow::ensure!(
+        manifest
+            .files
+            .get(&file)
+            .and_then(|meta| meta.sha256.as_deref())
+            .is_some_and(|sha| !sha.trim().is_empty()),
+        "the release manifest has no checksum for {file}"
+    );
+    let running_team = running_app_team_id();
     let updates = data_dir.join("updates");
     let dir = updates.join(version);
     let staged = dir.join("Godspeed.app");
     let staged_binary = staged.join("Contents/MacOS/godspeed");
-    if staged_binary.exists() && verify_staged_binary(&staged_binary, version).await.is_ok() {
+    if staged_binary.exists()
+        && verify_mac_app_signature(&staged, running_team.as_deref(), true).is_ok()
+        && verify_staged_binary(&staged_binary, version).await.is_ok()
+    {
         return Ok(staged);
     }
     prune_stale_stages(&updates, version);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let file = mac_app_artifact(version);
     let tarball = dir.join(&file);
-    download_release_file(edge_url, manifest, &file, &tarball).await?;
+    if let Err(err) = download_release_file(feed, manifest, &file, &tarball).await {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(err);
+    }
     let unpack = dir.join(".unpack");
     std::fs::create_dir_all(&unpack)?;
     let unpacked = run(
@@ -853,11 +1081,22 @@ pub async fn stage_mac_app(
     )
     .map(|()| unpack.join("Godspeed.app"));
     std::fs::remove_file(&tarball).ok();
-    let unpacked = unpacked?;
+    let unpacked = match unpacked {
+        Ok(unpacked) => unpacked,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(err);
+        }
+    };
     let unpacked_binary = unpacked.join("Contents/MacOS/godspeed");
     if !unpacked_binary.exists() {
         let _ = std::fs::remove_dir_all(&dir);
         bail!("app tarball {file} did not contain Godspeed.app");
+    }
+    // Verify the signature before executing anything from the bundle.
+    if let Err(err) = verify_mac_app_signature(&unpacked, running_team.as_deref(), true) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(err);
     }
     if let Err(err) = verify_staged_binary(&unpacked_binary, version).await {
         let _ = std::fs::remove_dir_all(&dir);
@@ -885,8 +1124,29 @@ fn prune_stale_stages(updates: &Path, keep: &str) {
 /// Swap the installed bundle for the staged one: `ditto` the staged copy next to
 /// the target (metadata-preserving, cross-volume safe), then two renames — the
 /// old bundle is restored if the second rename fails.
+///
+/// The staged bundle is re-verified first (it sat in a user-writable cache
+/// since staging): its version must be newer than the running one and not
+/// older than the installed one, and its signature and Team ID must still
+/// match the installed app's. Anything else is refused and logged.
 pub fn apply_mac_app(staged: &Path, bundle: &Path) -> anyhow::Result<()> {
     require_mac_app_update_platform()?;
+    let staged_version = std::fs::read_to_string(staged.join("Contents/Info.plist"))
+        .ok()
+        .as_deref()
+        .and_then(bundle_short_version)
+        .context("the staged update has no readable version")?;
+    let installed = installed_version(&InstallKind::MacApp {
+        bundle: bundle.to_path_buf(),
+    });
+    if let Err(err) =
+        check_install_version(&staged_version, current_version(), installed.as_deref())
+    {
+        tracing::error!(error = %format!("{err:#}"), "refusing update");
+        return Err(err);
+    }
+    let installed_team = code_team_id(bundle).ok().flatten();
+    verify_mac_app_signature(staged, installed_team.as_deref(), false)?;
     let parent = bundle
         .parent()
         .context("app bundle has no parent directory")?;
@@ -1012,7 +1272,7 @@ enum Role {
     Desktop,
 }
 
-/// Background release checker: polls `{edge}/releases` hourly on a wall-clock
+/// Background release checker: polls the release feed every six hours on a wall-clock
 /// schedule (so sleep/wake cannot stretch it), backs off on failure, and
 /// publishes [`UpdateStatus`] over a watch channel. In the engine, managed
 /// installs with `GODSPEED_AUTO_UPDATE` set stage + apply + service restart on
@@ -1020,13 +1280,16 @@ enum Role {
 /// the apply defers and re-probes every [`IDLE_RECHECK`].
 #[derive(Clone)]
 pub struct Updater {
-    edge_url: String,
+    feed: String,
     role: Arc<Role>,
     status_tx: Arc<watch::Sender<UpdateStatus>>,
     /// Wakes the loop; `forced` says whether the wake demands a check or only
     /// a fresh look at the wall clock.
     wake_tx: Arc<watch::Sender<u64>>,
     forced: Arc<AtomicBool>,
+    /// Scheduled (background) checks; off leaves only forced checks
+    /// (Settings → General "Check for updates automatically").
+    scheduled: Arc<AtomicBool>,
     /// Set by `godspeed headless`: this process is the installed service and may
     /// restart itself into a newer installed binary.
     service: Arc<AtomicBool>,
@@ -1038,17 +1301,17 @@ pub struct Updater {
 
 impl Updater {
     /// Spawn the engine's check loop (must run on a tokio runtime).
-    pub fn spawn(edge_url: String, quiescent: Option<QuiescentCheck>) -> Self {
-        Self::spawn_role(edge_url, Role::Engine { quiescent })
+    pub fn spawn(feed: String, quiescent: Option<QuiescentCheck>) -> Self {
+        Self::spawn_role(feed, Role::Engine { quiescent })
     }
 
     /// Spawn the desktop app's report-only check loop (must run on a tokio
     /// runtime).
-    pub fn spawn_desktop(edge_url: String) -> Self {
-        Self::spawn_role(edge_url, Role::Desktop)
+    pub fn spawn_desktop(feed: String) -> Self {
+        Self::spawn_role(feed, Role::Desktop)
     }
 
-    fn spawn_role(edge_url: String, role: Role) -> Self {
+    fn spawn_role(feed: String, role: Role) -> Self {
         let initial_delay = match role {
             Role::Engine { .. } => ENGINE_INITIAL_DELAY,
             Role::Desktop => DESKTOP_INITIAL_DELAY,
@@ -1057,11 +1320,12 @@ impl Updater {
         let (wake_tx, _) = watch::channel(0);
         let (shutdown_tx, _) = watch::channel(false);
         let updater = Self {
-            edge_url,
+            feed,
             role: Arc::new(role),
             status_tx: Arc::new(status_tx),
             wake_tx: Arc::new(wake_tx),
             forced: Arc::new(AtomicBool::new(false)),
+            scheduled: Arc::new(AtomicBool::new(true)),
             service: Arc::new(AtomicBool::new(false)),
             shutdown_tx: Arc::new(shutdown_tx),
             check_task: Arc::new(std::sync::Mutex::new(None)),
@@ -1077,7 +1341,7 @@ impl Updater {
     }
 
     /// Stop the check loop and wait for it to exit — a replaced runtime must
-    /// not keep polling `{edge}/releases` (or auto-applying) in the background.
+    /// not keep polling the release feed (or auto-applying) in the background.
     /// Idempotent, and callable from any clone.
     pub async fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
@@ -1103,6 +1367,19 @@ impl Updater {
             .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
     }
 
+    /// Turn scheduled checks on or off. Off, only [`Self::check_now`] and
+    /// [`Self::check`] reach the feed; turning them back on checks at once if
+    /// one is due.
+    pub fn set_scheduled_checks(&self, enabled: bool) {
+        if self.scheduled.swap(enabled, Ordering::SeqCst) != enabled && enabled {
+            self.poke();
+        }
+    }
+
+    pub fn scheduled_checks(&self) -> bool {
+        self.scheduled.load(Ordering::SeqCst)
+    }
+
     /// Re-read the wall clock now (window activation, system wake): checks
     /// only if one is due, so frequent pokes cost nothing.
     pub fn poke(&self) {
@@ -1125,7 +1402,7 @@ impl Updater {
     /// One user-requested check, awaited: publishes the result like a
     /// scheduled check and returns it.
     pub async fn check(&self) -> anyhow::Result<UpdateStatus> {
-        match fetch_latest(&self.edge_url).await {
+        match fetch_latest(&self.feed).await {
             Ok(manifest) => {
                 self.publish(manifest);
                 Ok(self.status_tx.borrow().clone())
@@ -1161,7 +1438,8 @@ impl Updater {
                 let mut superseded = SupersededRestart::default();
                 loop {
                     let forced = self.forced.swap(false, Ordering::SeqCst);
-                    if forced || schedule.due(SystemTime::now()) {
+                    let scheduled = self.scheduled.load(Ordering::SeqCst);
+                    if forced || (scheduled && schedule.due(SystemTime::now())) {
                         let ok = self.check_once().await;
                         schedule.record(SystemTime::now(), ok);
                         if ok
@@ -1176,7 +1454,13 @@ impl Updater {
                     if self.service.load(Ordering::SeqCst) {
                         superseded.poll(|| self.quiescent_now());
                     }
-                    let wait = schedule.wait(SystemTime::now());
+                    // Paused: wakes (check_now, re-enabling) still cut the
+                    // sleep short, so idle at the tick instead of spinning.
+                    let wait = if scheduled {
+                        schedule.wait(SystemTime::now())
+                    } else {
+                        SCHEDULE_TICK
+                    };
                     tokio::select! {
                         _ = tokio::time::sleep(wait) => {}
                         _ = wakes.changed() => {}
@@ -1193,9 +1477,9 @@ impl Updater {
     /// idle→restart gap to well under a second.
     async fn auto_apply_when_idle(&self) {
         if let InstallKind::Managed { app_root } = detect_install() {
-            match fetch_latest(&self.edge_url).await {
+            match fetch_latest(&self.feed).await {
                 Ok(manifest) if version_newer(&manifest.version, current_version()) => {
-                    if let Err(err) = stage_headless(&self.edge_url, &manifest, &app_root).await {
+                    if let Err(err) = stage_headless(&self.feed, &manifest, &app_root).await {
                         tracing::warn!(error = %err, "auto-update staging failed");
                         return;
                     }
@@ -1260,7 +1544,7 @@ impl Updater {
 
     /// One check; returns false on fetch failure (retry sooner).
     async fn check_once(&self) -> bool {
-        match fetch_latest(&self.edge_url).await {
+        match fetch_latest(&self.feed).await {
             Ok(manifest) => {
                 self.publish(manifest);
                 true
@@ -1293,11 +1577,11 @@ impl Updater {
                  source builds update via git"
             );
         };
-        let manifest = fetch_latest(&self.edge_url).await?;
+        let manifest = fetch_latest(&self.feed).await?;
         if !version_newer(&manifest.version, current_version()) {
             bail!("already up to date ({})", current_version());
         }
-        stage_headless(&self.edge_url, &manifest, &app_root).await?;
+        stage_headless(&self.feed, &manifest, &app_root).await?;
         if require_quiescent && !self.quiescent_now() {
             return Ok(None);
         }
@@ -1609,6 +1893,94 @@ mod tests {
     }
 
     #[test]
+    fn default_feed_is_the_github_latest_download_base() {
+        // The default must pass the same validation an override does.
+        assert_eq!(
+            validate_release_override(DEFAULT_FEED_URL).unwrap(),
+            DEFAULT_FEED_URL
+        );
+        assert_eq!(
+            release_base(&format!("{DEFAULT_FEED_URL}/")).unwrap(),
+            DEFAULT_FEED_URL
+        );
+    }
+
+    #[test]
+    fn github_artifacts_are_pinned_to_the_manifest_release() {
+        assert_eq!(
+            artifact_url(
+                DEFAULT_FEED_URL,
+                "0.5.8",
+                "godspeed-0.5.8-macos-arm64-app.tar.gz"
+            ),
+            "https://github.com/ShriD5/godspeed-code/releases/download/v0.5.8/godspeed-0.5.8-macos-arm64-app.tar.gz"
+        );
+        // Other feeds (self-hosted, tests) serve artifacts beside the manifest.
+        assert_eq!(
+            artifact_url("https://example.com/releases", "0.5.8", "a.tar.gz"),
+            "https://example.com/releases/a.tar.gz"
+        );
+        assert_eq!(
+            artifact_url("http://127.0.0.1:9/releases/latest/download", "1.0", "a"),
+            "http://127.0.0.1:9/releases/latest/download/a"
+        );
+    }
+
+    #[test]
+    fn team_identifier_is_read_from_codesign_output() {
+        let signed = "Executable=/A/Godspeed.app/Contents/MacOS/godspeed\nIdentifier=site.shrithan.godspeed\nTeamIdentifier=QPUV967B5U\n";
+        assert_eq!(parse_team_identifier(signed).as_deref(), Some("QPUV967B5U"));
+        assert_eq!(parse_team_identifier("TeamIdentifier=not set\n"), None);
+        assert_eq!(
+            parse_team_identifier("code object is not signed at all\n"),
+            None
+        );
+        assert!(valid_team_id("QPUV967B5U"));
+        assert!(!valid_team_id("QPUV967B5\""));
+        assert!(!valid_team_id("qpuv967b5u"));
+    }
+
+    #[test]
+    fn updates_from_another_team_are_refused() {
+        // The running app's team is what an update must match …
+        assert_eq!(expected_update_team(Some("ABCDE12345")), "ABCDE12345");
+        // … with official releases as the fallback for unsigned builds.
+        assert_eq!(expected_update_team(None), RELEASE_TEAM_ID);
+        assert!(check_update_team("QPUV967B5U", Some("QPUV967B5U")).is_ok());
+        let other = check_update_team("QPUV967B5U", Some("ZZZZZ99999")).unwrap_err();
+        assert!(other.to_string().contains("ZZZZZ99999"), "{other}");
+        assert!(check_update_team("QPUV967B5U", None).is_err());
+        assert!(
+            developer_id_requirement("QPUV967B5U").ends_with(r#"leaf[subject.OU] = "QPUV967B5U""#)
+        );
+    }
+
+    #[test]
+    fn installs_never_downgrade() {
+        assert!(check_install_version("0.5.8", "0.5.6", Some("0.5.6")).is_ok());
+        assert!(check_install_version("0.5.8", "0.5.6", None).is_ok());
+        // Equal or older than the running version: refused.
+        assert!(check_install_version("0.5.6", "0.5.6", None).is_err());
+        assert!(check_install_version("0.5.5", "0.5.6", None).is_err());
+        assert!(check_install_version("garbage", "0.5.6", None).is_err());
+        // Something already installed a newer version on disk: refused.
+        assert!(check_install_version("0.5.7", "0.5.6", Some("0.5.8")).is_err());
+        assert!(check_install_version("0.5.8", "0.5.6", Some("0.5.8")).is_ok());
+    }
+
+    /// Manual check against a real release: `cargo test -p zeron-update --
+    /// --ignored installed_release_passes_verification`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a notarized Godspeed.app in /Applications"]
+    fn installed_release_passes_verification() {
+        let app = Path::new("/Applications/Godspeed.app");
+        assert_eq!(code_team_id(app).unwrap().as_deref(), Some(RELEASE_TEAM_ID));
+        verify_mac_app_signature(app, Some(RELEASE_TEAM_ID), true).unwrap();
+        assert!(verify_mac_app_signature(app, Some("ZZZZZ99999"), false).is_err());
+    }
+
+    #[test]
     fn version_compare() {
         assert!(version_newer("0.1.1", "0.1.0"));
         assert!(version_newer("0.2.0", "0.1.9"));
@@ -1718,10 +2090,13 @@ mod tests {
                 .contains("not supported on windows")
         );
         assert!(
-            apply_mac_app(&data_dir.join("Godspeed.app"), &data_dir.join("Installed.app"))
-                .unwrap_err()
-                .to_string()
-                .contains("not supported on windows")
+            apply_mac_app(
+                &data_dir.join("Godspeed.app"),
+                &data_dir.join("Installed.app")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("not supported on windows")
         );
         assert!(
             restart_service()
@@ -1966,7 +2341,11 @@ mod tests {
         let root = dir.join("godspeed-pkg");
         std::fs::create_dir_all(&root).unwrap();
         let binary = root.join("godspeed");
-        std::fs::write(&binary, format!("#!/bin/sh\necho \"godspeed {reported}\"\n")).unwrap();
+        std::fs::write(
+            &binary,
+            format!("#!/bin/sh\necho \"godspeed {reported}\"\n"),
+        )
+        .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         let tarball = dir.join("pkg.tar.gz");
         run(
@@ -1995,6 +2374,7 @@ mod tests {
                 headless_artifact("9.9.9"),
                 FileMeta {
                     sha256: Some(format!("{:x}", Sha256::digest(bytes))),
+                    size: Some(bytes.len() as u64),
                 },
             )]
             .into(),

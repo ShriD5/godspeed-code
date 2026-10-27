@@ -10,8 +10,9 @@ export interface Env {
   CHAT_ROOMS: DurableObjectNamespace;
   BLOBS: R2Bucket;
   /** Release artifacts (headless tarballs, dmgs, latest.txt) served at
-   * /releases/* for the curl-install flow. Optional: unbound ⇒ /releases/*
-   * and /install.sh answer 404 (Godspeed's deployment, see DEPLOY.md). */
+   * /releases/* for the curl-install flow. Optional: unbound ⇒ /install.sh
+   * answers 404 and /releases/<asset> redirects to GitHub Releases
+   * (Godspeed's deployment, see DEPLOY.md). */
   RELEASES?: R2Bucket;
   WORKOS_CLIENT_ID: string;
   /** "workos" (verify AuthKit JWTs) or "dev" (bearer == userId, never prod). */

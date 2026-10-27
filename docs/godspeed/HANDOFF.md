@@ -133,6 +133,41 @@ Zed (recommendation: don't spoof); the feature list in `ISSUES-TRIAGE.md` "Later
 
 ## Releases
 
+In-app updates (OTA) read GitHub Releases: the app fetches
+`https://github.com/ShriD5/godspeed-code/releases/latest/download/manifest.json` on launch and
+every 6 h (Settings → General → Updates, "Check for updates automatically", on by default; "Check
+now" there and in the app menu), downloads `godspeed-<v>-macos-arm64-app.tar.gz` from the
+`v<v>` release, verifies sha256 + size, `codesign --verify --deep --strict` with a Developer ID
+requirement for the running app's Team ID (QPUV967B5U), `spctl` notarization, and the bundle's
+`--version`, then offers "Godspeed <v> is ready — Restart" in the sidebar (installs on quit
+otherwise). Never downgrades. `GODSPEED_RELEASES_URL=https://…` overrides the feed for testing.
+Apps up to 0.5.6 still poll `{edge}/releases/*`; the edge (once redeployed) answers those with
+a 302 to the same GitHub `latest/download` asset, so they can update too (their older updater
+checks sha256 + `--version` only). Until the edge is redeployed they need one manual install.
+
+Every release, in order:
+
+1. Bump `[workspace.package] version`, add the CHANGELOG entry, merge.
+2. `~/.local/share/godspeed-ops/release-macos.sh` (signs, notarizes, staples; writes
+   `target/package/manifest.json` last via `scripts/release-manifest.py`).
+3. Upload with the tag `v<version>` (the updater pins artifact downloads to that tag):
+
+   ```sh
+   cd target/package && V=<version>
+   cp godspeed-$V-macos-arm64.dmg Godspeed-macos-arm64.dmg
+   shasum -a 256 godspeed-$V-macos-arm64.dmg godspeed-$V-macos-arm64-app.tar.gz \
+     Godspeed-macos-arm64.dmg > SHA256SUMS
+   gh release create v$V --title "Godspeed Code $V" --notes-file <notes> \
+     godspeed-$V-macos-arm64.dmg godspeed-$V-macos-arm64-app.tar.gz \
+     Godspeed-macos-arm64.dmg SHA256SUMS manifest.json
+   ```
+
+   `manifest.json` and the `-app.tar.gz` are what installed apps update from; a release without
+   them is invisible to the updater (it keeps offering nothing, or the previous release).
+   Don't mark a release "latest" before all assets are uploaded (`gh release create` with files
+   uploads first, then publishes).
+
+
 - `v0.5.0` published 2026-10-18 (tag on `4d5bbfb8`): Mission Control, receipts, usage cockpit,
   tachometer, continue on another account. Never swap the bundle under a running app: it cost the
   running copy its removable-volume (Lexar) access. Always stage + swap-on-quit.
@@ -187,7 +222,7 @@ rebrand (checksum mismatch at launch) and were regenerated on this branch.
 ## Before going public
 
 - Rename the theme family still called after Zeron; replace the in-app Zeron logo SVG.
-- Sign and notarize (needs the owner's Developer ID), set up a release feed (auto-update is off).
+- Sign and notarize (done), set up a release feed (done: GitHub Releases, see Releases).
 
 ## Going public
 

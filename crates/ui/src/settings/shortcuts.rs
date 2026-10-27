@@ -91,6 +91,9 @@ pub struct ShortcutsPage {
     /// Settings → General's opt-in question timeout default.
     question_timeout: Entity<crate::settings::question_timeout::QuestionTimeoutCard>,
     worktrees: Entity<super::worktrees::WorktreeSettingsCard>,
+    /// Re-renders Settings → General's Updates row as checks and downloads
+    /// progress.
+    _app_update_observation: Option<gpui::Subscription>,
     _state: Entity<AppState>,
 }
 
@@ -148,6 +151,8 @@ impl ShortcutsPage {
                 cx.new(|cx| crate::settings::question_timeout::QuestionTimeoutCard::new(state, cx))
             },
             worktrees: cx.new(|cx| super::worktrees::WorktreeSettingsCard::new(state.clone(), cx)),
+            _app_update_observation: crate::app_update::AppUpdate::global(cx)
+                .map(|update| cx.observe(&update, |_, _, cx| cx.notify())),
             _state: state,
         }
     }
@@ -372,6 +377,77 @@ impl ShortcutsPage {
         };
         popover::rail(self, id, theme, cx)
     }
+}
+
+/// Settings → General → Updates: "Check for updates automatically" (on by
+/// default; scheduled checks, background download and install-on-quit) with
+/// the current state underneath, and "Check now".
+fn render_updates_row(theme: &Theme, cx: &mut Context<ShortcutsPage>) -> gpui::Div {
+    let enabled = crate::settings::current(cx).auto_update_enabled;
+    let current = zeron_update::current_version();
+    let detail = match crate::app_update::AppUpdate::global(cx) {
+        Some(update) => {
+            let update = update.read(cx);
+            crate::app_update::settings_detail(
+                current,
+                update.status(),
+                update.flow(),
+                chrono::Utc::now().timestamp_millis(),
+            )
+        }
+        None => format!("You're on {current}."),
+    };
+    widgets::card_row(theme, true)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(widgets::row_title(theme, "Check for updates automatically"))
+                .child(widgets::meta_line(
+                    theme,
+                    vec![div().child(detail).into_any_element()],
+                )),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(12.0))
+                .child(
+                    widgets::text_action(theme, widgets::ActionTone::Quiet, "Check now")
+                        .id("updates-check-now")
+                        .tab_index(0)
+                        .role(gpui::Role::Button)
+                        .focus_visible(|s| s.border_2().border_color(theme.accent))
+                        .on_click(|_, _, cx| crate::app_update::check_for_updates(cx)),
+                )
+                .child(
+                    widgets::toggle_switch(theme, enabled, "auto-update-enabled")
+                        .id("auto-update-enabled-toggle")
+                        .tab_index(0)
+                        .role(gpui::Role::Switch)
+                        .aria_label("Check for updates automatically")
+                        .aria_toggled(if enabled {
+                            gpui::Toggled::True
+                        } else {
+                            gpui::Toggled::False
+                        })
+                        .focus_visible(|s| s.border_2().border_color(theme.accent))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::settings::update(SavePolicy::Immediate, cx, |settings| {
+                                settings.auto_update_enabled = !enabled
+                            });
+                            if let Some(update) = crate::app_update::AppUpdate::global(cx) {
+                                update.update(cx, |update, cx| {
+                                    update.set_automatic_checks(!enabled, cx)
+                                });
+                            }
+                            cx.notify();
+                        })),
+                ),
+        )
 }
 
 impl popover::ScrollRailHost for ShortcutsPage {
@@ -1022,6 +1098,7 @@ impl Render for ShortcutsPage {
                         )),
                 )
                 .child(pull_request_destination_control);
+            let updates_row = render_updates_row(&theme, cx);
             let scrollbar = self.render_scrollbar(&theme, cx);
             return div()
                 .id("general-settings-page-host")
@@ -1056,6 +1133,13 @@ impl Render for ShortcutsPage {
                                         widgets::section_card(&theme)
                                             .mt_0()
                                             .child(pull_request_destination_row),
+                                    ))
+                                    .child(widgets::section(
+                                        &theme,
+                                        "Updates",
+                                        widgets::section_card(&theme)
+                                            .mt_0()
+                                            .child(updates_row),
                                     ))
                                     .child(self.thread_naming.clone())
                                     .child(self.usage_limits.clone())

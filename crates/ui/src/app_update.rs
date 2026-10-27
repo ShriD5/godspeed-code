@@ -11,7 +11,11 @@
 //! release downloads in the background and is verified, the strip offers
 //! "restart to apply", and a staged update the user never restarts for is
 //! installed when the app quits — so nobody stays on a stale version just
-//! because they never clicked. `GODSPEED_AUTO_UPDATE=0` keeps it report-only.
+//! because they never clicked. Settings → General "Check for updates
+//! automatically" (on by default) turns the scheduled checks, background
+//! download and install-on-quit off together; `GODSPEED_AUTO_UPDATE=0` keeps
+//! the download and install report-only regardless. "Check now" and the menu
+//! item always check.
 
 use std::path::{Path, PathBuf};
 
@@ -66,9 +70,12 @@ pub enum StripAction {
 pub struct AppUpdate {
     install: InstallKind,
     blocker: Option<UpdateBlocker>,
-    /// Background download + install on quit (`GODSPEED_AUTO_UPDATE` unset or on).
+    /// Background download + install on quit: the Settings toggle, unless
+    /// `GODSPEED_AUTO_UPDATE` turns it off.
     automatic: bool,
-    edge_url: String,
+    /// Settings → General "Check for updates automatically".
+    automatic_checks: bool,
+    feed: String,
     data_dir: PathBuf,
     checker: Updater,
     status: Option<UpdateStatus>,
@@ -89,8 +96,8 @@ impl Global for GlobalAppUpdate {}
 impl AppUpdate {
     /// Start the desktop checker. Call once at boot, after `gpui_tokio` is
     /// initialized.
-    pub fn init(edge_url: String, data_dir: PathBuf, cx: &mut App) {
-        let entity = cx.new(|cx| Self::new(edge_url, data_dir, cx));
+    pub fn init(feed: String, automatic_checks: bool, data_dir: PathBuf, cx: &mut App) {
+        let entity = cx.new(|cx| Self::new(feed, automatic_checks, data_dir, cx));
         cx.set_global(GlobalAppUpdate(entity));
     }
 
@@ -99,7 +106,12 @@ impl AppUpdate {
             .map(|global| global.0.clone())
     }
 
-    fn new(edge_url: String, data_dir: PathBuf, cx: &mut Context<Self>) -> Self {
+    fn new(
+        feed: String,
+        automatic_checks: bool,
+        data_dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let install = zeron_update::detect_install();
         let blocker = install
             .supports_desktop_update()
@@ -107,8 +119,9 @@ impl AppUpdate {
             .flatten();
         let checker = {
             let _runtime = Tokio::handle(cx).enter();
-            Updater::spawn_desktop(edge_url.clone())
+            Updater::spawn_desktop(feed.clone())
         };
+        checker.set_scheduled_checks(automatic_checks);
         let mut statuses = checker.watch();
         let status_watch = cx.spawn(async move |this, cx| {
             while statuses.changed().await.is_ok() {
@@ -125,8 +138,9 @@ impl AppUpdate {
         Self {
             install,
             blocker,
-            automatic: zeron_update::desktop_auto_update_enabled(),
-            edge_url,
+            automatic: automatic_checks && zeron_update::desktop_auto_update_enabled(),
+            automatic_checks,
+            feed,
             data_dir,
             checker,
             status: None,
@@ -166,6 +180,27 @@ impl AppUpdate {
     /// Whether this app downloads and installs updates itself right now.
     pub fn self_updating(&self) -> bool {
         self.install.supports_desktop_update() && self.blocker.is_none()
+    }
+
+    /// The last check's result (Settings → General shows when it ran).
+    pub fn status(&self) -> Option<&UpdateStatus> {
+        self.status.as_ref()
+    }
+
+    pub fn automatic_checks(&self) -> bool {
+        self.automatic_checks
+    }
+
+    /// Settings → General "Check for updates automatically": scheduled
+    /// checks, background download and install-on-quit follow it together.
+    pub fn set_automatic_checks(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.automatic_checks = enabled;
+        self.automatic = enabled && zeron_update::desktop_auto_update_enabled();
+        self.checker.set_scheduled_checks(enabled);
+        if self.automatic {
+            self.download_if_needed(cx);
+        }
+        cx.notify();
     }
 
     /// Window activation / wake: check if one is due by the wall clock.
@@ -210,7 +245,7 @@ impl AppUpdate {
         let Some(version) = self.available().map(str::to_owned) else {
             return;
         };
-        let edge_url = self.edge_url.clone();
+        let feed = self.feed.clone();
         let data_dir = self.data_dir.clone();
         let install = self.install.clone();
         self.flow = Flow::Downloading {
@@ -219,14 +254,12 @@ impl AppUpdate {
         let stage = Tokio::spawn(cx, async move {
             // Re-read the manifest so a long-lived status still downloads the
             // newest release, with that release's checksums.
-            let manifest = zeron_update::fetch_latest(&edge_url).await?;
+            let manifest = zeron_update::fetch_latest(&feed).await?;
             anyhow::ensure!(
                 zeron_update::version_newer(&manifest.version, zeron_update::current_version()),
                 "the release feed no longer offers a newer version"
             );
-            let staged = install
-                .stage_desktop(&edge_url, &manifest, &data_dir)
-                .await?;
+            let staged = install.stage_desktop(&feed, &manifest, &data_dir).await?;
             anyhow::Ok((manifest.version, staged))
         });
         self.download = Some(cx.spawn(async move |this, cx| {
@@ -239,6 +272,7 @@ impl AppUpdate {
                 this.flow = match outcome {
                     Ok((version, staged)) => {
                         tracing::info!(%version, staged = %staged.display(), "update staged");
+                        crate::toast::info(cx, ready_label(&version));
                         Flow::Ready { version, staged }
                     }
                     Err(message) => {
@@ -400,8 +434,8 @@ pub fn strip_for(
             Flow::Downloading { version } => {
                 (format!("Downloading v{version}…").into(), StripAction::None)
             }
-            Flow::Ready { .. } => (
-                "Update ready — restart to apply".into(),
+            Flow::Ready { version, .. } => (
+                format!("Godspeed {version} is ready").into(),
                 StripAction::Restart,
             ),
             Flow::Failed { message, .. } => (
@@ -426,6 +460,57 @@ pub fn strip_for(
             },
         )
     }
+}
+
+/// Settings → General's line under "Check for updates automatically": the
+/// update in flight if any, else the running version and when the last check
+/// ran. `now_ms` is epoch milliseconds. Pure.
+pub fn settings_detail(
+    current: &str,
+    status: Option<&UpdateStatus>,
+    flow: &Flow,
+    now_ms: i64,
+) -> String {
+    match flow {
+        Flow::Ready { version, .. } => {
+            return format!("Godspeed {version} is ready — restart to update.");
+        }
+        Flow::Downloading { version } => return format!("Downloading Godspeed {version}…"),
+        Flow::Failed { message, .. } => return format!("The last update failed: {message}"),
+        Flow::Installed => return "Restarting…".to_owned(),
+        Flow::Idle => {}
+    }
+    let Some(status) = status else {
+        return format!("You're on {current}.");
+    };
+    if status.update_available
+        && let Some(latest) = &status.latest_version
+    {
+        return format!("Godspeed {latest} is available. You're on {current}.");
+    }
+    match (status.checked_at, &status.error) {
+        (_, Some(_)) => format!("You're on {current}. The last check failed."),
+        (Some(at), None) => format!(
+            "You're on {current}, the newest release. Checked {}.",
+            ago(now_ms.saturating_sub(at))
+        ),
+        (None, None) => format!("You're on {current}."),
+    }
+}
+
+fn ago(elapsed_ms: i64) -> String {
+    let minutes = elapsed_ms.max(0) / 60_000;
+    match minutes {
+        0 => "just now".to_owned(),
+        1..=59 => format!("{minutes} min ago"),
+        60..=1439 => format!("{} h ago", minutes / 60),
+        _ => format!("{} d ago", minutes / 1440),
+    }
+}
+
+/// The one-time toast when an update finishes staging.
+pub fn ready_label(version: &str) -> String {
+    format!("Godspeed {version} is ready — Restart to update")
 }
 
 /// "Check for Updates…" from a menu: surface the main window, then check.
@@ -474,8 +559,15 @@ mod tests {
             staged: PathBuf::from("/tmp/Godspeed.app"),
         };
         assert_eq!(
-            strip_for(&mac_app, false, &ready, "0.2.86").1,
-            StripAction::Restart
+            strip_for(&mac_app, false, &ready, "0.2.86"),
+            (
+                SharedString::from("Godspeed 0.2.86 is ready"),
+                StripAction::Restart
+            )
+        );
+        assert_eq!(
+            ready_label("0.5.8"),
+            "Godspeed 0.5.8 is ready — Restart to update"
         );
         let failed = Flow::Failed {
             version: "0.2.86".into(),
@@ -492,6 +584,55 @@ mod tests {
         assert_eq!(
             strip_for(&mac_app, true, &Flow::Idle, "0.2.86").1,
             StripAction::Explain
+        );
+    }
+
+    #[test]
+    fn settings_detail_reports_the_flow_then_the_last_check() {
+        let now = 10 * 60 * 60 * 1000;
+        let checked = |minutes_ago: i64, latest: &str, available: bool| UpdateStatus {
+            current_version: "0.5.6".into(),
+            latest_version: Some(latest.into()),
+            update_available: available,
+            checked_at: Some(now - minutes_ago * 60_000),
+            error: None,
+        };
+        assert_eq!(
+            settings_detail("0.5.6", None, &Flow::Idle, now),
+            "You're on 0.5.6."
+        );
+        assert_eq!(
+            settings_detail("0.5.6", Some(&checked(0, "0.5.6", false)), &Flow::Idle, now),
+            "You're on 0.5.6, the newest release. Checked just now."
+        );
+        assert_eq!(
+            settings_detail(
+                "0.5.6",
+                Some(&checked(125, "0.5.6", false)),
+                &Flow::Idle,
+                now
+            ),
+            "You're on 0.5.6, the newest release. Checked 2 h ago."
+        );
+        assert_eq!(
+            settings_detail("0.5.6", Some(&checked(3, "0.5.8", true)), &Flow::Idle, now),
+            "Godspeed 0.5.8 is available. You're on 0.5.6."
+        );
+        let failed = UpdateStatus {
+            error: Some("offline".into()),
+            ..checked(3, "0.5.6", false)
+        };
+        assert_eq!(
+            settings_detail("0.5.6", Some(&failed), &Flow::Idle, now),
+            "You're on 0.5.6. The last check failed."
+        );
+        let ready = Flow::Ready {
+            version: "0.5.8".into(),
+            staged: PathBuf::from("/tmp/Godspeed.app"),
+        };
+        assert_eq!(
+            settings_detail("0.5.6", Some(&checked(3, "0.5.8", true)), &ready, now),
+            "Godspeed 0.5.8 is ready — restart to update."
         );
     }
 
