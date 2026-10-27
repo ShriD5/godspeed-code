@@ -2021,6 +2021,19 @@ pub(crate) fn subagent_doc_id(chat_id: &str, tool_use_id: &str) -> String {
     format!("{chat_id}--sub--{hex}")
 }
 
+/// Spawn gate: whether tagged traffic for `id` gets a subagent doc, and with
+/// it a unit on the badge. Only a spawn chip of THIS chat does, one this run
+/// folded or one already in the doc: those are the rows the lanes card lists.
+/// Claude also tags the agents a subagent starts with their own call ids,
+/// chips of that subagent's doc; sinks for them badged chats over an empty
+/// card (#999). Traffic for any other id stays in the run journal.
+fn is_chat_spawn(id: &str, folded: &[MessagePart], doc: &SessionDoc) -> bool {
+    folded.iter().any(|p| {
+        matches!(p, MessagePart::Tool { id: part, call, .. }
+            if part == id && call.is_subagent_spawn())
+    }) || doc.has_subagent_spawn(id)
+}
+
 /// Test-only instrumentation: how often `drive_run`'s coalesced commit branch
 /// fires. The sink-dirty regression test proves the branch ticks once per
 /// commit window instead of spinning on a deadline left in the past.
@@ -2852,6 +2865,9 @@ async fn drive_run(
     // into Streaming. Only a steer (UserMessage) legitimately REOPENS a
     // settled subagent: it announces more work is coming.
     let mut settled_subagents: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Tagged ids that failed the spawn gate ([`is_chat_spawn`]): not looked
+    // up again until a call with that id folds.
+    let mut foreign_subagents: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Live subagent sinks, parent tool-use id → transcript doc state.
     let mut subagents: std::collections::HashMap<String, SubagentSink> =
         std::collections::HashMap::new();
@@ -3197,6 +3213,14 @@ async fn drive_run(
             // would link the chip to that never-created doc (an empty tab
             // on click).
             let done_only = !sink_known && matches!(sub_event.as_ref(), AgentEvent::Done { .. });
+            let opens_sink =
+                !sink_known && !done_only && !foreign_subagents.contains(parent_tool_use_id) && {
+                    let spawn = is_chat_spawn(parent_tool_use_id, &folded, doc_ref);
+                    if !spawn {
+                        foreign_subagents.insert(parent_tool_use_id.clone());
+                    }
+                    spawn
+                };
             if chip_streaming {
                 if !sink_known && !done_only {
                     for p in folded.iter_mut() {
@@ -3225,7 +3249,7 @@ async fn drive_run(
                 }
             }
             // Open the sink lazily; an open failure degrades to chip-only.
-            if !sink_known && !done_only {
+            if opens_sink {
                 let opened = inner.doc_host().and_then(|host| match host.open(&sub_id) {
                     Ok(handle) => Some(handle.writer()),
                     Err(err) => {
@@ -3477,6 +3501,8 @@ async fn drive_run(
                     continue;
                 }
                 seen_tools.insert(id.clone());
+                // This call may be (or become) a spawn: look again.
+                foreign_subagents.remove(id);
             }
             AgentEvent::ToolResult { id, .. }
                 if !in_segment(&folded, id) && seen_tools.contains(id) =>
@@ -4764,33 +4790,151 @@ mod tests {
             assistant_message_id: "a1".into(),
         })
         .unwrap();
-        feed.send(AgentEvent::Subagent {
-            parent_tool_use_id: "tool-1".into(),
-            event: Box::new(AgentEvent::ReasoningDelta {
-                text: String::new(),
-            }),
+        // A background subagent's shape: its spawn's turn ends, and it speaks
+        // after the parent's last commit window, so its sink wakes with the
+        // parent clean, parked and past its deadline.
+        feed.send(AgentEvent::ToolCall {
+            id: "tool-1".into(),
+            call: zeron_proto::ToolCall::Unknown {
+                name: "Agent: probe".into(),
+                input: None,
+            },
         })
         .unwrap();
+        feed.send(done(DoneStatus::Completed)).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(3 * STREAM_COMMIT_MS)).await;
+        // Empty events trickling in inside one window: the first must arm it
+        // rather than commit, and no later one commits on its own.
+        for _ in 0..12 {
+            feed.send(AgentEvent::Subagent {
+                parent_tool_use_id: "tool-1".into(),
+                event: Box::new(AgentEvent::ReasoningDelta {
+                    text: String::new(),
+                }),
+            })
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         // Well past several commit windows with the stream still open: the
         // loop must idle between commits, not spin on a past deadline.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let ticks = FLUSH_TICKS.with(|t| t.get());
         assert!(
             (1..=8).contains(&ticks),
-            "commit branch fired {ticks} times in 1s for one empty subagent event"
+            "commit branch fired {ticks} times in 1s for 12 empty subagent events"
         );
         assert_eq!(
-            core.sessions.session_status(chat).map(|s| s.status),
-            Some(SessionStatus::Working),
-            "stream still open, turn still running"
+            core.sessions
+                .session_status(chat)
+                .map(|s| (s.status, s.running_subagents)),
+            Some((SessionStatus::Idle, 1)),
+            "parked, with the subagent's sink open"
         );
-        feed.send(AgentEvent::Done {
-            status: DoneStatus::Completed,
-            result: None,
-            error: None,
-            session_id: None,
-        })
-        .unwrap();
+        core.sessions.shutdown().await;
+    }
+
+    /// The badge counts what the lanes card lists: this chat's spawn chips.
+    /// In the live claude 2.1.310 shape a forked skill streams under its
+    /// Skill call, and each agent it spawns under that agent's own call, a
+    /// chip of the skill's doc (#999: a chat badged "3" over an empty card).
+    #[tokio::test]
+    async fn running_subagents_count_only_this_chats_spawn_chips() {
+        use super::*;
+        let (feed, rx) = mpsc::unbounded_channel();
+        let registry = HarnessRegistry::new();
+        registry.register(Arc::new(FeedHarness {
+            feed: Mutex::new(Some(rx)),
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let core =
+            crate::EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None)
+                .unwrap();
+        let chat = "chat-lanes";
+        core.sessions
+            .dispatch(chat, HarnessId::Mock, request(), None)
+            .await
+            .unwrap();
+        let call = |id: &str, name: &str| AgentEvent::ToolCall {
+            id: id.into(),
+            call: zeron_proto::ToolCall::Unknown {
+                name: name.into(),
+                input: None,
+            },
+        };
+        let tagged = |parent: &str, event: AgentEvent| AgentEvent::Subagent {
+            parent_tool_use_id: parent.into(),
+            event: Box::new(event),
+        };
+        for event in [
+            started(),
+            // The Skill call, then its task start re-decoding it. A frame
+            // tagged before the re-decode stays foreign until the spawn
+            // folds, and the sink opens for the frames after it.
+            call("skill-1", "Skill"),
+            tagged("skill-1", text("early")),
+            call("skill-1", "Agent: /fanout"),
+            tagged(
+                "skill-1",
+                AgentEvent::UserMessage {
+                    text: "Fan out two agents.".into(),
+                },
+            ),
+            tagged("skill-1", call("nested-1", "Agent: alpha")),
+            tagged("skill-1", call("nested-2", "Agent: bravo")),
+            tagged("nested-1", text("sleeping")),
+            tagged("nested-2", text("sleeping")),
+            // `/fanout` typed as the prompt forks with no chip at all.
+            tagged("forked-command-fanout", text("the fork, replayed")),
+            text("fanned out"),
+        ] {
+            feed.send(event).unwrap();
+        }
+        let parts_of = |doc_id: &str| -> Vec<MessagePart> {
+            core.doc_host
+                .open(doc_id)
+                .ok()
+                .and_then(|h| h.doc().read_entries().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|e| e.parts)
+                .collect()
+        };
+        let skill_doc = subagent_doc_id(chat, "skill-1");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        // The closing text commits after everything before it was routed, and
+        // the skill's doc holds the agents it spawned, as chips.
+        while !parts_of(chat)
+            .iter()
+            .any(|p| matches!(p, MessagePart::Text { text, .. } if text == "fanned out"))
+            || parts_of(&skill_doc)
+                .iter()
+                .filter(|p| matches!(p, MessagePart::Tool { call, .. } if call.is_subagent_spawn()))
+                .count()
+                < 2
+        {
+            assert!(tokio::time::Instant::now() < deadline, "the script routed");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let listed: Vec<String> = parts_of(chat)
+            .into_iter()
+            .filter_map(|p| match p {
+                MessagePart::Tool {
+                    call,
+                    subagent_ref: Some(doc),
+                    ..
+                } if call.is_subagent_spawn() => Some(doc),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(listed, [skill_doc]);
+        assert_eq!(
+            core.sessions
+                .session_status(chat)
+                .map(|s| s.running_subagents),
+            Some(1),
+            "the badge counts what the lanes card lists"
+        );
+        feed.send(done(DoneStatus::Completed)).unwrap();
         core.sessions.shutdown().await;
     }
 }

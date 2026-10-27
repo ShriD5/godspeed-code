@@ -570,28 +570,19 @@ async fn missing_binary_is_not_installed() {
     assert!(matches!(err, HarnessError::NotInstalled(_)), "{err:?}");
 }
 
-#[tokio::test]
-async fn captured_live_background_subagent_frames_replay_correctly() {
-    // Frames captured VERBATIM from claude 2.1.228 (2026-08-17): a turn that
-    // spawns a background Agent subagent — eager result while it runs, tagged
-    // subagent traffic, then the wake turn (second init, same session id,
-    // second result). Replayed through the fake-CLI transport so the whole
-    // driver path (wire parse → normalize → run loop) is exercised, not just
-    // the normalizer.
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Replay a captured frame file (`tests/fixtures/claude/<name>`) through the
+/// whole driver path (wire parse → normalize → run loop), not just the
+/// normalizer, returning everything it emitted. The fake CLI reads the prompt
+/// line, then plays the capture. A captured can_use_tool control_request is
+/// auto-allowed on stdin, which the replayer ignores.
+async fn replay_fixture(name: &str) -> Vec<AgentEvent> {
+    let frames = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("claude")
-        .join("live-2.1.228-background-subagent.jsonl");
-    let script = std::fs::read_to_string(&fixture).expect("fixture readable");
-    // A one-off cat-style fake CLI: reads the prompt line, plays the capture.
-    // The capture contains one can_use_tool control_request; the driver
-    // auto-allows it on stdin, which this replayer ignores.
-    let dir = std::env::temp_dir().join(format!("claude-replay-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("tmp dir");
-    let frames = dir.join("frames.jsonl");
-    std::fs::write(&frames, &script).expect("frames written");
-    let cli = dir.join("replay.sh");
+        .join(name);
+    let dir = tempfile::tempdir().expect("tmp dir");
+    let cli = dir.path().join("replay.sh");
     std::fs::write(
         &cli,
         format!(
@@ -600,15 +591,22 @@ async fn captured_live_background_subagent_frames_replay_correctly() {
         ),
     )
     .expect("replayer written");
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-
     let harness = ClaudeHarness::new().with_executable(&cli);
     let (controls, _steer, _token) = controls("A");
-    let events = run_to_end(&harness, request("replay"), controls).await;
+    run_to_end(&harness, request("replay"), controls).await
+}
+
+#[tokio::test]
+async fn captured_live_background_subagent_frames_replay_correctly() {
+    // Frames captured VERBATIM from claude 2.1.228 (2026-08-17): a turn that
+    // spawns a background Agent subagent — eager result while it runs, tagged
+    // subagent traffic, then the wake turn (second init, same session id,
+    // second result).
+    let events = replay_fixture("live-2.1.228-background-subagent.jsonl").await;
 
     // One SessionStarted (the wake init dedupes), two Dones (eager + wake).
     assert_eq!(
@@ -682,8 +680,134 @@ async fn captured_live_background_subagent_frames_replay_correctly() {
         )),
         "subagent Bash call arrives tagged: {events:?}"
     );
+    // A background subagent's thinking reaches the stream without being
+    // asked (captured lines 62 and 72): it becomes the subagent's reasoning.
+    let thoughts = events
+        .iter()
+        .filter(|e| {
+            matches!(e, AgentEvent::Subagent { parent_tool_use_id, event }
+                if *parent_tool_use_id == spawn_id
+                    && matches!(event.as_ref(), AgentEvent::ReasoningDelta { text } if !text.is_empty()))
+        })
+        .count();
+    assert_eq!(thoughts, 2, "{events:?}");
+}
 
-    let _ = std::fs::remove_dir_all(&dir);
+#[tokio::test]
+async fn captured_live_forked_skill_frames_replay_correctly() {
+    // Frames from claude 2.1.310 (2026-10-24): a `context: fork` skill that
+    // spawns two background agents. Each kept frame is verbatim except init
+    // (only the fields the driver reads); hook and rate-limit frames and most
+    // of the agents' own frames are cut.
+    let events = replay_fixture("live-2.1.310-forked-skill.jsonl").await;
+    let tagged = |parent: &str| {
+        events.iter().position(|e| {
+            matches!(e, AgentEvent::Subagent { parent_tool_use_id, .. } if parent_tool_use_id == parent)
+        })
+    };
+    let skill = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolCall {
+                id,
+                call: ToolCall::Unknown { name, .. },
+            } if name == "Skill" => Some(id.clone()),
+            _ => None,
+        })
+        .expect("the Skill call, as decoded from its own frame");
+    // Its task start re-decodes the chip as a spawn, ahead of all its traffic.
+    let promoted = events
+        .iter()
+        .position(|e| {
+            matches!(e, AgentEvent::ToolCall { id, call: ToolCall::Unknown { name, .. } }
+                if *id == skill && name == "Agent: /fanout-bg")
+        })
+        .expect("the forked skill re-decoded as a spawn");
+    assert!(
+        promoted < tagged(&skill).expect("skill traffic"),
+        "{events:?}"
+    );
+    // The agents the skill spawns stream tagged with their OWN call ids. Those
+    // are spawn chips of the skill's transcript, never of this feed.
+    let feed_spawns: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCall { id, call } if call.is_subagent_spawn() => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(feed_spawns, [skill.as_str()]);
+    let nested: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Subagent {
+                parent_tool_use_id,
+                event,
+            } if *parent_tool_use_id == skill => match event.as_ref() {
+                AgentEvent::ToolCall { id, call } if call.is_subagent_spawn() => Some(id.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(nested.len(), 2, "{events:?}");
+    for agent in nested {
+        assert!(tagged(agent).is_some(), "{agent} streams under its own id");
+    }
+    assert!(
+        events.iter().any(|e| matches!(e,
+            AgentEvent::Subagent { parent_tool_use_id, event }
+                if *parent_tool_use_id == skill
+                    && matches!(event.as_ref(), AgentEvent::Done { status: DoneStatus::Completed, .. })
+        )),
+        "the skill settles like any spawn: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn captured_live_forwarded_foreground_subagent_replays_in_order() {
+    // Frames from claude 2.1.310 run with CLAUDE_CODE_FORWARD_SUBAGENT_TEXT=1
+    // (2026-10-24): a foreground Agent told to write a sentence, run `echo hi`,
+    // then write another. Without the variable the CLI sends only its
+    // tool_use and tool_result blocks. Cut like the forked-skill capture, and
+    // the main thread's frames before its Agent call too; the subagent's
+    // second thought is reworded (sanitized).
+    let events = replay_fixture("live-2.1.310-foreground-subagent-forwarded.jsonl").await;
+    let spawn = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::ToolCall { id, call } if call.is_subagent_spawn() => Some(id.clone()),
+            _ => None,
+        })
+        .expect("the Agent call");
+    let shape: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Subagent {
+                parent_tool_use_id,
+                event,
+            } if *parent_tool_use_id == spawn => match event.as_ref() {
+                AgentEvent::ReasoningDelta { .. } => Some("thinking"),
+                AgentEvent::TextDelta { text } if text.starts_with("The sky is blue.") => {
+                    Some("sky")
+                }
+                AgentEvent::TextDelta { text } if text.starts_with("The grass is green.") => {
+                    Some("grass")
+                }
+                AgentEvent::ToolCall {
+                    call: ToolCall::Exec { command },
+                    ..
+                } if command == "echo hi" => Some("exec"),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        ["thinking", "sky", "exec", "thinking", "grass"],
+        "{events:?}"
+    );
 }
 
 /// Live smoke against the REAL claude CLI (2.1.x, must be installed + authed):

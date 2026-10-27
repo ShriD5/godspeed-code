@@ -165,6 +165,9 @@ pub(crate) struct ContentBlock {
     pub kind: String,
     #[serde(default)]
     pub text: String,
+    /// A `thinking` block's (summarized) text.
+    #[serde(default)]
+    pub thinking: String,
     #[serde(default)]
     pub id: String,
     #[serde(default)]

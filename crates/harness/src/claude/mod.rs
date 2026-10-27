@@ -276,6 +276,18 @@ impl ClaudeHarness {
     fn build_command(&self, exe: &PathBuf, request: &RunRequest, thinking_display: bool) -> Command {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
+        // Without it, a foreground subagent's (or forked skill's) text and
+        // thinking never reach the stream, and its tab shows tool calls only.
+        // The variable rather than `--forward-subagent-text`: a CLI older
+        // than 2.1.211 ignores it, but exits on an unknown flag. A `claude`
+        // the run starts in turn inherits it. Outside stream-json print
+        // mode the CLI ignores it "so that nested invocations keep working
+        // when it's set process-wide"
+        // (https://code.claude.com/docs/en/env-vars). A nested stream-json
+        // `claude` (an Agent SDK script, `claude -p --output-format
+        // stream-json`) forwards its own subagents' text too, which only
+        // adds tagged frames to its stream.
+        cmd.env("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT", "1");
         cmd.args(Self::launch_args(request));
         crate::apply_run_env(&mut cmd, &request.env);
         // Newer Claude models emit no readable thinking text unless a
@@ -2280,6 +2292,33 @@ mod tests {
         assert_eq!(updated["answers"]["Pick one"], json!("B"));
         // Original input is preserved alongside the answers.
         assert!(updated["questions"].is_array());
+    }
+
+    #[test]
+    fn runs_ask_the_cli_to_forward_subagent_text() {
+        let request = RunRequest {
+            mcp: None,
+            prompt: "hi".into(),
+            harness: None,
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            attachments: Vec::new(),
+            worktree: None,
+            resume: None,
+            access: None,
+            env: Default::default(),
+        };
+        let mut cmd = ClaudeHarness::new().build_command(&PathBuf::from("claude"), &request, false);
+        let value = cmd
+            .as_std_mut()
+            .get_envs()
+            .find(|(key, _)| *key == "CLAUDE_CODE_FORWARD_SUBAGENT_TEXT")
+            .and_then(|(_, value)| value.map(|v| v.to_os_string()));
+        assert_eq!(value.as_deref(), Some(std::ffi::OsStr::new("1")));
     }
 
     fn tool_request(tool: &str, input: Value) -> wire::ControlRequestBody {

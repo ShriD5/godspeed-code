@@ -767,9 +767,12 @@ pub enum AgentEvent {
     /// the spawning tool call (`parent_tool_use_id` = the parent-feed
     /// `ToolCall::id` that launched it). Never folded into the parent chat
     /// doc — the engine routes these to the subagent's own doc; the parent
-    /// keeps only the spawn chip. Additive: old consumers that don't match
-    /// this variant drop the nested traffic, which is the pre-subagent-viz
-    /// behavior.
+    /// keeps only the spawn chip. The spawn `ToolCall` must come first: the
+    /// engine opens that doc only for an id that already names one of the
+    /// chat's spawn chips ([`ToolCall::is_subagent_spawn`]), and keeps
+    /// traffic tagged with any other id in the run journal only. Additive:
+    /// old consumers that don't match this variant drop the nested traffic,
+    /// which is the pre-subagent-viz behavior.
     #[serde(rename_all = "camelCase")]
     Subagent {
         parent_tool_use_id: String,
