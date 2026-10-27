@@ -528,6 +528,12 @@ fn main() -> anyhow::Result<()> {
                 let before = first.read_with(cx, |b, _| b.page.url.clone());
                 window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("javascript:alert(1)", w, cx)))?;
                 anyhow::ensure!(first.read_with(cx, |b, _| b.page.url == before), "unsupported address navigated");
+                // A local path says where files open instead of loading a made-up host.
+                window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("/Users/me/Documents/mockup.html", w, cx)))?;
+                anyhow::ensure!(first.read_with(cx, |b, _| b.page.url == before), "local path navigated");
+                pause(cx, 300).await; capture_frame(window, &output, "browser-local-file-light", cx).await?;
+                cx.update(|cx| appearance::set_mode(appearance::AppearanceMode::Dark, cx));
+                pause(cx, 600).await; capture_frame(window, &output, "browser-local-file-dark", cx).await?;
                 window.update(cx, |shell, w, cx| shell.fixture_close_browser(first_id, w, cx))?;
                 pause(cx, 200).await;
                 anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "closed tab retained its native view");
