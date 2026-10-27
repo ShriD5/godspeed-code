@@ -66,7 +66,7 @@ impl EngineRpc {
         let agents = self
             .agents
             .as_ref()
-            .ok_or_else(|| RpcError::Failed("always-on agents are unavailable".into()))?;
+            .ok_or_else(|| RpcError::Failed("zoomies are unavailable".into()))?;
         let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
         match method {
             methods::LIST_AGENTS => RpcReply::value(&agents.list().map_err(failed)?),

@@ -74,13 +74,13 @@ Settings for new threads
 /access — pick the access mode
 /tz Area/City — your time zone for schedules
 
-Schedules (always-on agents)
+Schedules (zoomies)
 /schedule hourly <prompt>
 /schedule daily HH:MM <prompt>
 /schedule weekdays HH:MM <prompt>
 /schedule weekly mon HH:MM <prompt>
 /schedule every 30m <prompt>
-/schedules — list them with buttons
+/schedules — list your zoomies with buttons
 /pause ID · /resume ID · /runnow ID · /unschedule ID
 
 /unlink — stop this chat from driving Godspeed

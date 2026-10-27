@@ -677,8 +677,8 @@ pub enum SettingsSection {
     General,
     Appshots,
     Archived,
-    /// Always-on agents and their run inbox. (`Agents` above is the legacy
-    /// Accounts alias, so this page needs its own name.)
+    /// Always-on agents and their run inbox, labeled "Zoomies". (`Agents`
+    /// above is the legacy Accounts alias, so this page needs its own name.)
     AlwaysOn,
     /// Chats brought over from T3 Code, Claude Code, Codex and Cursor.
     Import,
@@ -764,7 +764,7 @@ impl SettingsSection {
             "general" | "conversations" => SettingsSection::General,
             "appshots" => SettingsSection::Appshots,
             "archived" => SettingsSection::Archived,
-            "always-on" => SettingsSection::AlwaysOn,
+            "always-on" | "zoomies" => SettingsSection::AlwaysOn,
             "import" => SettingsSection::Import,
             "usage" => SettingsSection::Usage,
             _ => return None,
@@ -792,7 +792,7 @@ impl SettingsSection {
             SettingsSection::General => "General",
             SettingsSection::Appshots => "Appshots",
             SettingsSection::Archived => "Archived sessions",
-            SettingsSection::AlwaysOn => "Agents",
+            SettingsSection::AlwaysOn => "Zoomies",
             SettingsSection::Import => "Import",
             SettingsSection::Usage => "Usage",
         }
@@ -19742,6 +19742,7 @@ mod settings_modal_regressions {
             ("settings/appshots", SettingsSection::Appshots),
             ("settings/archived", SettingsSection::Archived),
             ("settings/always-on", SettingsSection::AlwaysOn),
+            ("settings/zoomies", SettingsSection::AlwaysOn),
             ("settings/import", SettingsSection::Import),
             ("settings/usage", SettingsSection::Usage),
         ] {

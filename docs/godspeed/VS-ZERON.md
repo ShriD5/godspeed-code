@@ -15,7 +15,7 @@ docs.
 |---|---|---|
 | Approvals | Agents run without asking: Codex is hard-coded to never ask, Claude auto-allows | Four access modes per chat (supervised, auto-accept edits, auto, full). Approval cards show the exact command or diff. A mode an agent can't honour is refused, never silently upgraded |
 | Git | View diffs and PRs | Commit, push, pull, sync, init, publish and open PRs, with generated commit messages and PR descriptions in the repo's own style |
-| Always-on agents | None | Cron, interval, one-off, webhook and file-change triggers, a memory file per agent, an inbox. Runs on the headless engine, so a server keeps them going |
+| Zoomies (always-on agents) | None | Cron, interval, one-off, webhook and file-change triggers, a memory file per zoomie, an inbox. Runs on the headless engine, so a server keeps them going |
 | Telegram | None | Message a bot to run tasks, pick provider/model/project/access, schedule prompts and approve actions with buttons |
 | Muse Code | Not supported | Native driver over Muse's own protocol |
 | Moving in | Start from scratch | Import chats from T3 Code, Claude Code, Codex and Cursor. Claude Code and Codex chats continue their original sessions |
@@ -50,11 +50,11 @@ fast-forward-only pull, non-forced push, sync, init and publish, plus a create-P
 follows the repo's PR template. Generated text matches the repo's commit style, and a setting (on by
 default) strips agent credit lines.
 
-### Always-on agents and Telegram
+### Zoomies and Telegram
 
-Neither exists in Zeron. Agents fire on cron (with time zones), intervals, one-off times, webhooks
+Neither exists in Zeron. Zoomies fire on cron (with time zones), intervals, one-off times, webhooks
 (`POST /hooks/agents/{id}/{token}`, with payload templating) or file changes. Missed runs collapse,
-runs never overlap, an agent pauses after three failures in a row, and schedules survive restarts.
+runs never overlap, a zoomie pauses after three failures in a row, and schedules survive restarts.
 Each run is a normal chat, so diffs, terminals and approvals work as usual.
 
 The Telegram bot, modelled on [open-dots](https://github.com/Anil-matcha/open-dots), drives the same
@@ -119,4 +119,4 @@ not captured). The machine was not fully idle during the run. Method, raw data a
   includes every Zeron commit up to `3b2f7802`.
 
 If you want the hosted experience on every platform today, use Zeron. If you want approvals, git,
-always-on agents and a one-step move from T3 Code on a Mac, use Godspeed.
+zoomies and a one-step move from T3 Code on a Mac, use Godspeed.

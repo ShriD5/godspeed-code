@@ -1,5 +1,5 @@
 //! `/schedule` and friends. A schedule is an ordinary always-on agent (it
-//! shows in Settings → Agents) made with the chat's defaults; this side
+//! shows in Settings → Zoomies) made with the chat's defaults; this side
 //! only remembers which chat owns it, under a short number for commands.
 
 use chrono::{DateTime, Utc};
@@ -161,7 +161,7 @@ impl Inner {
         let resolved = self.resolve(&link.defaults)?;
         let space = resolved
             .space
-            .ok_or("Scheduled agents run in a project. Pick one with /project first.")?;
+            .ok_or("Zoomies run in a project. Pick one with /project first.")?;
         let (sandbox, auto_approve) = resolved.access.legacy();
         let draft = AgentDraft {
             name: format!("Telegram · {}", excerpt(&spec.prompt, NAME_PROMPT_CHARS)),
@@ -220,7 +220,7 @@ impl Inner {
             self.say(
                 api,
                 link.chat_id,
-                "No schedules yet. Try /schedule weekdays 09:00 Summarize yesterday's merged PRs",
+                "No zoomies yet. Try /schedule weekdays 09:00 Summarize yesterday's merged PRs",
                 None,
             )
             .await;

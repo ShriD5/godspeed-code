@@ -11,7 +11,7 @@ use super::store::LinkedChat;
 use super::{Inner, host_timezone};
 
 const PRIVATE_ONLY: &str = "I only work in private chats.";
-const UNLINKED: &str = "This bot only answers chats linked to Godspeed.\n\nIn Godspeed, open Settings → Agents → Telegram, get a link code, then send /link CODE here.";
+const UNLINKED: &str = "This bot only answers chats linked to Godspeed.\n\nIn Godspeed, open Settings → Zoomies → Telegram, get a link code, then send /link CODE here.";
 
 impl Inner {
     pub(super) async fn handle_update(self: &Arc<Self>, api: &BotApi, update: Update) {
@@ -105,7 +105,7 @@ impl Inner {
             self.say(
                 api,
                 chat,
-                "Usage: /link CODE (get one in Settings → Agents → Telegram)",
+                "Usage: /link CODE (get one in Settings → Zoomies → Telegram)",
                 None,
             )
             .await;
@@ -139,10 +139,10 @@ impl Inner {
                 }
             }
             Claim::Invalid => {
-                "That code isn't valid. Get a new one in Settings → Agents → Telegram.".into()
+                "That code isn't valid. Get a new one in Settings → Zoomies → Telegram.".into()
             }
             Claim::Expired => {
-                "That code expired. Get a new one in Settings → Agents → Telegram.".into()
+                "That code expired. Get a new one in Settings → Zoomies → Telegram.".into()
             }
         };
         self.say(api, chat, &reply, None).await;

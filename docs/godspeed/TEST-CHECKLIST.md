@@ -125,16 +125,16 @@ with the section and item so it can be fixed in one pass. "Expect" says what cor
 - [ ] Shortcuts: Cmd+[ / Cmd+] back/forward between chats, Cmd+Shift+G changes pane, Cmd+Shift+D
       settle, Cmd+B sidebar, Cmd+1–9 jump to chat. Settings → Shortcuts lists them and lets you rebind.
 
-## 12. Always-on agents (Settings → Agents)
+## 12. Zoomies (Settings → Zoomies)
 
-- [ ] Create an agent with an interval trigger (e.g. every 15 min) and Run now. Expect: a normal chat
+- [ ] Create a zoomie with an interval trigger (e.g. every 15 min) and Run now. Expect: a normal chat
       appears; the inbox shows a summary.
 - [ ] Cron trigger with your timezone shows the right next run.
 - [ ] Webhook trigger: copy the URL, `curl -X POST` JSON to it. Expect: a run whose prompt includes
       `{{body.field}}` values; a repeat with the same `Idempotency-Key` doesn't run twice.
 - [ ] File-watch trigger fires on a file change in its folder.
-- [ ] Supervised agent asking approval: inbox shows needs-approval and waits (no auto-deny).
-- [ ] Agent memory file (`~/.godspeed/agents/<id>/MEMORY.md`) is updated by the agent.
+- [ ] Supervised zoomie asking approval: inbox shows needs-approval and waits (no auto-deny).
+- [ ] Zoomie memory file (`~/.godspeed/agents/<id>/MEMORY.md`) is updated by the zoomie.
 
 ## 12b. Needs-you inbox
 
