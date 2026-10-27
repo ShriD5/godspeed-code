@@ -1078,7 +1078,10 @@ mod tests {
         {
             let via = elsewhere.path().join("chat-folder");
             std::os::unix::fs::symlink(folder.path(), &via).unwrap();
-            for path in [via.join("shots").join("before.png"), inside.clone()] {
+            // The real name is the canonical one: macOS temp dirs sit behind
+            // `/var` -> `/private/var`, itself a link.
+            let real = std::fs::canonicalize(&inside).unwrap();
+            for path in [via.join("shots").join("before.png"), real] {
                 let chunk = read_chat_image_chunk(path.to_str().unwrap(), 0, &via)
                     .unwrap_or_else(|e| panic!("{path:?}: {e}"));
                 assert_eq!(BASE64.decode(&chunk.data).unwrap(), png);
