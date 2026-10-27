@@ -3,19 +3,23 @@ import { PushOutcomes, PERSIST_EVERY_MS } from "./push-outcomes";
 import { WRITE_LOG_WINDOW_MS, WriteMeter } from "./write-meter";
 
 describe("WriteMeter", () => {
-  it("logs the first write at once, then at most one line per minute", () => {
+  it("logs the first write's event at once, then at most one line per minute", async () => {
     const lines: Array<Record<string, unknown>> = [];
     const meter = new WriteMeter("chat2 abc", (_line, fields) => lines.push(fields));
     meter.add(0, 1000);
     expect(lines).toEqual([]);
     meter.add(2, 1000);
-    expect(lines).toEqual([{ room: "chat2 abc", rows: 2, sinceLastLine: null }]);
+    meter.add(1, 1000); // same event: folded into the line
+    expect(lines).toEqual([]);
+    await Promise.resolve();
+    expect(lines).toEqual([{ room: "chat2 abc", rows: 3, sinceLastLine: null }]);
     meter.add(3, 1000 + WRITE_LOG_WINDOW_MS / 2);
     expect(lines.length).toBe(1);
     meter.add(1, 1000 + WRITE_LOG_WINDOW_MS);
+    await Promise.resolve();
     expect(lines[1]).toEqual({ room: "chat2 abc", rows: 4, sinceLastLine: 60 });
-    expect(meter.total).toBe(6);
-    expect(meter.statements).toBe(3);
+    expect(meter.total).toBe(7);
+    expect(meter.statements).toBe(4);
     meter.report();
     expect(lines.length).toBe(2);
   });
