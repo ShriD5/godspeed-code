@@ -2384,6 +2384,8 @@ pub struct Shell {
     chat_hover_resync: bool,
     /// The sidebar row whose hover card shows (or waits out its dwell).
     session_hover_card: session_hover_card::SessionHoverCard,
+    /// Draws that card in gpui's tooltip layer.
+    session_card_view: Entity<session_hover_card::SessionCardView>,
     /// Scroll position of the sidebar lists region (drives its edge fades).
     sidebar_scroll: gpui::ScrollHandle,
     /// In-flight reorder for the pinned section only.
@@ -2913,6 +2915,10 @@ impl Shell {
             chat_status_hover: None,
             chat_hover_resync: false,
             session_hover_card: Default::default(),
+            session_card_view: {
+                let shell = cx.weak_entity();
+                cx.new(|_| session_hover_card::SessionCardView::new(shell))
+            },
             sidebar_scroll: gpui::ScrollHandle::new(),
             pinned_session_drag: None,
             pinned_session_drag_generation: 0,
@@ -8911,14 +8917,7 @@ impl Shell {
             && !preview
             && rename_input.is_none()
             && self.session_hover_card.shown() == Some(id.as_str()))
-        .then(|| {
-            self.render_session_hover_card(
-                &id,
-                time_ago.clone(),
-                cx,
-            )
-        })
-        .flatten();
+        .then(|| self.render_session_hover_card(&id, time_ago.clone(), cx));
         let card_id = id.clone();
         // Hover fades over transition-colors (godspeed session-row.tsx) — both
         // the wash and the title brighten ride the same 150ms blend.
