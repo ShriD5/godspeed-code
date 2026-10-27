@@ -1537,7 +1537,10 @@ mod run_request_tests {
         )));
         let request = run_request_for(&chat, "hi".into(), Vec::new(), None);
         assert_eq!(request.access_mode(), AccessMode::FullAccess);
-        assert_eq!(request.access.as_ref().map(|a| a.mode), Some(AccessMode::FullAccess));
+        assert_eq!(
+            request.access.as_ref().map(|a| a.mode),
+            Some(AccessMode::FullAccess)
+        );
         assert_eq!(request.cwd, "/Users/dev");
         assert_eq!(request.model.as_deref(), Some("claude-opus-5-5"));
     }

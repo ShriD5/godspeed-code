@@ -148,8 +148,12 @@ fn align_with_live(next: &mut RunRequest, live: &RunRequest) {
     let live_roots = live.writable_roots();
     let roots = next.writable_roots();
     let respelled = roots.len() == live_roots.len()
-        && roots.iter().all(|r| live_roots.iter().any(|l| same_dir(r, l)))
-        && live_roots.iter().all(|l| roots.iter().any(|r| same_dir(r, l)));
+        && roots
+            .iter()
+            .all(|r| live_roots.iter().any(|l| same_dir(r, l)))
+        && live_roots
+            .iter()
+            .all(|l| roots.iter().any(|r| same_dir(r, l)));
     if live_roots.is_empty() || roots == live_roots || !(roots.is_empty() || respelled) {
         return;
     }
@@ -836,7 +840,10 @@ impl SessionsEngine {
                 h.fork_history_sent.clone(),
                 h.retiring.clone(),
                 kept,
-                (h.runtime_config.harness_id, h.runtime_config.request.clone()),
+                (
+                    h.runtime_config.harness_id,
+                    h.runtime_config.request.clone(),
+                ),
                 h.deferred_config.clone(),
             )
         });
@@ -953,7 +960,11 @@ impl SessionsEngine {
                         let text = format!(
                             "Kept the running session ({tasks} background task{}) — the new {what} applies after {}.",
                             if tasks == 1 { "" } else { "s" },
-                            if tasks == 1 { "it finishes" } else { "they finish" },
+                            if tasks == 1 {
+                                "it finishes"
+                            } else {
+                                "they finish"
+                            },
                         );
                         if let Err(err) = handle.doc().push_message(&SessionMessageEntry {
                             id: format!("{user_id}:runtime-kept"),
@@ -4519,7 +4530,11 @@ mod tests {
         super::align_with_live(&mut next, &live);
         assert_eq!(next.cwd, live.cwd);
         assert_eq!(next.writable_roots(), live.writable_roots());
-        assert_eq!(next.access_mode(), zeron_proto::AccessMode::Auto, "mode untouched");
+        assert_eq!(
+            next.access_mode(),
+            zeron_proto::AccessMode::Auto,
+            "mode untouched"
+        );
 
         // Roots the sender did name are its own.
         let mut other = request();
@@ -4544,10 +4559,19 @@ mod tests {
         let changes = super::config_changes(HarnessId::Mock, &live, HarnessId::Mock, &next);
         let joined = changes.join("; ");
         assert!(joined.contains(r#"cwd "/tmp" -> "/var""#), "{joined}");
-        assert!(joined.contains("access mode Auto -> FullAccess"), "{joined}");
-        assert!(joined.contains("model Some(\"grok-4.6\") -> Some(\"grok-5\")"), "{joined}");
+        assert!(
+            joined.contains("access mode Auto -> FullAccess"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("model Some(\"grok-4.6\") -> Some(\"grok-5\")"),
+            "{joined}"
+        );
         assert!(joined.contains("model option fastMode"), "{joined}");
-        assert!(joined.contains("env API_TOKEN changed (value redacted)"), "{joined}");
+        assert!(
+            joined.contains("env API_TOKEN changed (value redacted)"),
+            "{joined}"
+        );
         assert!(!joined.contains("s3cret"), "{joined}");
         // Spellings of one option value are no change.
         let mut respelled = request();
@@ -4557,7 +4581,9 @@ mod tests {
         let mut base = request();
         base.model_options
             .insert("fastMode".into(), serde_json::json!(true));
-        assert!(super::config_changes(HarnessId::Mock, &base, HarnessId::Mock, &respelled).is_empty());
+        assert!(
+            super::config_changes(HarnessId::Mock, &base, HarnessId::Mock, &respelled).is_empty()
+        );
     }
 
     struct IdleStartupFixture {

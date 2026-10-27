@@ -1714,7 +1714,6 @@ pub struct PushPrefs {
     pub failed: bool,
 }
 
-
 /// A config written by a client that can't express access modes (the phone's
 /// model and effort menus) keeps the chat's access mode. It used to write
 /// `accessMode: None`, silently dropping a Full access chat to the legacy
@@ -1750,7 +1749,10 @@ mod tests {
         phone.reasoning = Some(zeron_proto::ReasoningLevel::High);
         phone.access_mode = None;
         let written = keep_access_mode(Some(&existing), &phone);
-        assert_eq!(written.access_mode, Some(zeron_proto::AccessMode::FullAccess));
+        assert_eq!(
+            written.access_mode,
+            Some(zeron_proto::AccessMode::FullAccess)
+        );
         assert_eq!(written.reasoning, Some(zeron_proto::ReasoningLevel::High));
         // A changed sandbox is the caller's explicit pick.
         phone.sandbox = zeron_proto::SandboxLevel::ReadOnly;

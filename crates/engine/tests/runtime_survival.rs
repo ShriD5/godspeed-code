@@ -1169,7 +1169,11 @@ async fn a_phone_send_inherits_the_chats_access_mode() {
     phone.sandbox = SandboxLevel::WorkspaceWrite;
     phone.auto_approve = true;
     phone.access = None;
-    assert_eq!(phone.access_mode(), AccessMode::Auto, "what the host used to read");
+    assert_eq!(
+        phone.access_mode(),
+        AccessMode::Auto,
+        "what the host used to read"
+    );
     rig.core
         .doc_host
         .queue_command(
@@ -1262,7 +1266,9 @@ async fn a_restart_waits_for_background_work_to_finish() {
     assert_eq!(rig.ledger.prompts.lock().unwrap()[1].0, "full access now");
     assert_eq!(
         kept_notices(&rig),
-        ["Kept the running session (3 background tasks) — the new access mode applies after they finish."]
+        [
+            "Kept the running session (3 background tasks) — the new access mode applies after they finish."
+        ]
     );
 
     // Still busy: the same pending change is delivered again, noted once.
