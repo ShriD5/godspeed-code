@@ -1209,6 +1209,9 @@ pub struct UiSettings {
     /// Settings → General "Conductor (preview)": shows the sidebar
     /// Conductor section and its commands. Off by default.
     pub conductor_preview: bool,
+    /// Settings → General "Check for updates automatically": scheduled
+    /// release checks, background download and install-on-quit. On by default.
+    pub auto_update_enabled: bool,
     /// The Settings section last viewed. ⌘, / Ctrl+,, the footer gear and the
     /// palette reopen it; links naming a section replace it. Files without
     /// it, or with a name this build does not know, open on General.
@@ -1367,6 +1370,7 @@ impl Default for UiSettings {
             keymap: KeymapConfig::default(),
             escape_stops_active_agent: false,
             conductor_preview: false,
+            auto_update_enabled: true,
             settings_section: crate::shell::SettingsSection::default(),
             composer_send_behavior: ComposerSendBehavior::default(),
             skills_in_slash_menu: false,
@@ -2107,6 +2111,7 @@ impl UiSettings {
             appshot_destination,
             escape_stops_active_agent,
             conductor_preview,
+            auto_update_enabled,
             settings_section,
             appearance,
             git_history_columns,
@@ -3270,6 +3275,7 @@ mod tests {
             },
             escape_stops_active_agent: true,
             conductor_preview: true,
+            auto_update_enabled: false,
             settings_section: crate::shell::SettingsSection::Shortcuts,
             composer_send_behavior: ComposerSendBehavior::ModEnter,
             skills_in_slash_menu: true,

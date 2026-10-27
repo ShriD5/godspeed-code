@@ -234,7 +234,12 @@ pub fn run_app(config: UiConfig) {
         appshots::set_enabled(ui_settings.appshots_enabled);
         terminal::panel::init(cx);
         app_menus::init(cx);
-        app_update::AppUpdate::init(config.boot().edge_url, data_dir.clone(), cx);
+        app_update::AppUpdate::init(
+            zeron_update::DEFAULT_FEED_URL.to_owned(),
+            ui_settings.auto_update_enabled,
+            data_dir.clone(),
+            cx,
+        );
         cx.register_url_scheme("godspeed").detach();
 
         let state = cx.new(|cx| {
