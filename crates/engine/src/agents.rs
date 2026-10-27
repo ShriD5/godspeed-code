@@ -509,13 +509,13 @@ impl Agents {
             .iter()
             .any(|t| matches!(t, AgentTrigger::Webhook))
         {
-            return conflict("this agent has no webhook trigger".into());
+            return conflict("this zoomie has no webhook trigger".into());
         }
         if !agent.draft.enabled {
-            return conflict("agent is disabled".into());
+            return conflict("zoomie is disabled".into());
         }
         if let Some(reason) = &agent.paused_reason {
-            return conflict(format!("agent is paused: {reason}"));
+            return conflict(format!("zoomie is paused: {reason}"));
         }
         let now = inner.clock.now();
         // Senders that retry (GitHub, most queues) name each delivery; reuse
@@ -558,7 +558,7 @@ impl Inner {
     fn agent(&self, id: &str) -> Result<StoredAgent, EngineError> {
         self.store
             .agent(id)?
-            .ok_or_else(|| failed(format!("no such agent: {id}")))
+            .ok_or_else(|| failed(format!("no such zoomie: {id}")))
     }
 
     /// Anchor every timer trigger without state at `now`, so the schedule
@@ -614,13 +614,13 @@ impl Inner {
             )));
         }
         if draft.name.is_empty() {
-            return Err(failed("Give the agent a name"));
+            return Err(failed("Give the zoomie a name"));
         }
         if draft.name.chars().count() > 80 {
-            return Err(failed("Agent names are at most 80 characters"));
+            return Err(failed("Zoomie names are at most 80 characters"));
         }
         if draft.instructions.trim().is_empty() {
-            return Err(failed("Write the agent's instructions"));
+            return Err(failed("Write the zoomie's instructions"));
         }
         draft.model = draft.model.filter(|m| !m.trim().is_empty());
         if !self
@@ -637,10 +637,10 @@ impl Inner {
         let space = self
             .workspace
             .space(&draft.space_id)?
-            .ok_or_else(|| failed("Pick a workspace for the agent"))?;
+            .ok_or_else(|| failed("Pick a workspace for the zoomie"))?;
         if space.device_id != self.device_id {
             return Err(failed(
-                "The workspace must be on the device that runs the agent",
+                "The workspace must be on the device that runs the zoomie",
             ));
         }
         let mut webhooks = 0;
@@ -671,7 +671,7 @@ impl Inner {
             }
         }
         if webhooks > 1 {
-            return Err(failed("An agent has a single webhook URL"));
+            return Err(failed("A zoomie has a single webhook URL"));
         }
         Ok((draft, space.path))
     }
@@ -970,7 +970,7 @@ impl Inner {
                 })?,
         };
         if space.device_id != self.device_id {
-            return Err(failed("The agent's workspace is on another device"));
+            return Err(failed("The zoomie's workspace is on another device"));
         }
         let memory_path = self.ensure_memory(agent)?;
         let memory = std::fs::read_to_string(&memory_path).unwrap_or_default();
@@ -1107,7 +1107,7 @@ impl Inner {
                     self.finish(
                         &mut run,
                         AgentRunStatus::Failed,
-                        Some("The run never started (is the agent's harness installed?)".into()),
+                        Some("The run never started (is the zoomie's provider installed?)".into()),
                     );
                     return;
                 }
