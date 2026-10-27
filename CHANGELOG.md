@@ -2,6 +2,12 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- Always-on agents are now called Zoomies.
+
 ## 0.5.6 (2026-10-26)
 
 ### Added

@@ -35,7 +35,7 @@ the features listed below on top. If you like this app, go star Zeron.
 |---|---|---|
 | Approvals | Agents run without asking | Four access modes per chat, approval cards with the exact command or diff |
 | Git | View diffs and PRs | Commit, push, pull, sync and open PRs with generated messages |
-| Always-on agents | None | Cron, webhook and file triggers, memory, inbox, Telegram bot |
+| Zoomies (always-on agents) | None | Cron, webhook and file triggers, memory, inbox, Telegram bot |
 | Muse Code | Not supported | Native driver |
 | Moving in | Start from scratch | Import from T3 Code, Claude Code, Codex and Cursor; sessions continue |
 | Search | Chat titles | Every message, locally indexed, plus Cmd+F in a chat |
@@ -108,9 +108,10 @@ Cursor's SDK sign-in is separate from `cursor-agent login`: connect it in Settin
 - **Git actions.** Commit, push, pull, sync and open pull requests from the Changes pane or the
   command palette, with generated commit messages and PR descriptions. A setting (on by default)
   strips agent credit lines from generated text.
-- **Always-on agents.** Named prompts that fire on a cron schedule, an interval, a one-off time, a
-  webhook or a file change, with a memory file injected into each run and an inbox of results. They
-  run on the headless engine too, so a server can keep them going while your laptop sleeps.
+- **Zoomies.** Named prompts that fire on a cron schedule, an interval, a one-off time, a webhook
+  or a file change, with a memory file injected into each run and an inbox of results (Settings →
+  Zoomies). Zoomies run on the headless engine too, so a server can keep them going while your
+  laptop sleeps.
 - **Chat import.** Bring in chats from T3 Code, Claude Code, Codex and Cursor (Settings → Import or
   `godspeed import`). Imported Claude Code and Codex chats continue their original sessions; Cursor
   chats import as history.

@@ -31,7 +31,7 @@ Godspeed is a local app. By default it makes no account and syncs nothing:
 ## In scope
 
 - Anything that lets a web page, another user or a remote party reach the engine's IPC port or the
-  always-on agent webhook endpoint (`POST /hooks/agents/{id}/{token}`) without the token.
+  zoomie (always-on agent) webhook endpoint (`POST /hooks/agents/{id}/{token}`) without the token.
 - An agent action that runs without approval when the chat's access mode should have asked.
 - Credentials or tokens leaking into logs, transcripts, error messages or exported data.
 - Path traversal or code execution through chat import, file attachments, previews or markdown
