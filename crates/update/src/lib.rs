@@ -1890,6 +1890,161 @@ mod tests {
     }
 
     #[test]
+    fn default_feed_is_the_github_latest_download_base() {
+        // The default must pass the same validation an override does.
+        assert_eq!(
+            validate_release_override(DEFAULT_FEED_URL).unwrap(),
+            DEFAULT_FEED_URL
+        );
+        assert_eq!(
+            release_base(&format!("{DEFAULT_FEED_URL}/")).unwrap(),
+            DEFAULT_FEED_URL
+        );
+    }
+
+    #[test]
+    fn github_artifacts_are_pinned_to_the_manifest_release() {
+        assert_eq!(
+            artifact_url(DEFAULT_FEED_URL, "0.5.8", "godspeed-0.5.8-macos-arm64-app.tar.gz"),
+            "https://github.com/ShriD5/godspeed-code/releases/download/v0.5.8/godspeed-0.5.8-macos-arm64-app.tar.gz"
+        );
+        // Other feeds (self-hosted, tests) serve artifacts beside the manifest.
+        assert_eq!(
+            artifact_url("https://example.com/releases", "0.5.8", "a.tar.gz"),
+            "https://example.com/releases/a.tar.gz"
+        );
+        assert_eq!(
+            artifact_url("http://127.0.0.1:9/releases/latest/download", "1.0", "a"),
+            "http://127.0.0.1:9/releases/latest/download/a"
+        );
+    }
+
+    /// `scripts/release-manifest.py` generated this fixture; the updater must
+    /// parse it exactly.
+    #[test]
+    fn release_manifest_fixture_parses() {
+        let manifest: Manifest =
+            serde_json::from_str(include_str!("../tests/fixtures/manifest.json")).unwrap();
+        assert_eq!(manifest.version, "0.5.8");
+        let app = &manifest.files["godspeed-0.5.8-macos-arm64-app.tar.gz"];
+        assert_eq!(
+            app.sha256.as_deref(),
+            Some("1143295a8db6805c33411a9c293506e9d1eaa08ff25f8feccd4506982418d74b")
+        );
+        assert_eq!(app.size, Some(20));
+        assert_eq!(manifest.files.len(), 2);
+    }
+
+    /// Runs the real script (when python3 is around) and parses its output.
+    #[test]
+    fn release_manifest_script_output_parses() {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/release-manifest.py");
+        let tmp = tempfile::tempdir().unwrap();
+        let app = mac_app_artifact("7.8.9");
+        std::fs::write(tmp.path().join(&app), b"payload").unwrap();
+        std::fs::write(tmp.path().join("godspeed-7.8.8-macos-arm64.dmg"), b"old").unwrap();
+        let out = tmp.path().join("manifest.json");
+        let status = match std::process::Command::new("python3")
+            .arg("-I")
+            .arg(&script)
+            .args(["--version", "7.8.9", "--dir"])
+            .arg(tmp.path())
+            .arg("--out")
+            .arg(&out)
+            .stdout(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) => status,
+            Err(_) => return, // no python3 on this machine
+        };
+        assert!(status.success());
+        let manifest: Manifest =
+            serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        assert_eq!(manifest.version, "7.8.9");
+        assert_eq!(manifest.files.len(), 1, "only this version's artifacts");
+        assert_eq!(
+            manifest.files[&app].sha256.as_deref(),
+            Some(format!("{:x}", Sha256::digest(b"payload")).as_str())
+        );
+        assert_eq!(manifest.files[&app].size, Some(7));
+    }
+
+    #[test]
+    fn team_identifier_is_read_from_codesign_output() {
+        let signed = "Executable=/A/Godspeed.app/Contents/MacOS/godspeed\nIdentifier=site.shrithan.godspeed\nTeamIdentifier=QPUV967B5U\n";
+        assert_eq!(parse_team_identifier(signed).as_deref(), Some("QPUV967B5U"));
+        assert_eq!(parse_team_identifier("TeamIdentifier=not set\n"), None);
+        assert_eq!(parse_team_identifier("code object is not signed at all\n"), None);
+        assert!(valid_team_id("QPUV967B5U"));
+        assert!(!valid_team_id("QPUV967B5\""));
+        assert!(!valid_team_id("qpuv967b5u"));
+    }
+
+    #[test]
+    fn updates_from_another_team_are_refused() {
+        // The running app's team is what an update must match …
+        assert_eq!(expected_update_team(Some("ABCDE12345")), "ABCDE12345");
+        // … with official releases as the fallback for unsigned builds.
+        assert_eq!(expected_update_team(None), RELEASE_TEAM_ID);
+        assert!(check_update_team("QPUV967B5U", Some("QPUV967B5U")).is_ok());
+        let other = check_update_team("QPUV967B5U", Some("ZZZZZ99999")).unwrap_err();
+        assert!(other.to_string().contains("ZZZZZ99999"), "{other}");
+        assert!(check_update_team("QPUV967B5U", None).is_err());
+        assert!(developer_id_requirement("QPUV967B5U").ends_with(r#"leaf[subject.OU] = "QPUV967B5U""#));
+    }
+
+    #[test]
+    fn installs_never_downgrade() {
+        assert!(check_install_version("0.5.8", "0.5.6", Some("0.5.6")).is_ok());
+        assert!(check_install_version("0.5.8", "0.5.6", None).is_ok());
+        // Equal or older than the running version: refused.
+        assert!(check_install_version("0.5.6", "0.5.6", None).is_err());
+        assert!(check_install_version("0.5.5", "0.5.6", None).is_err());
+        assert!(check_install_version("garbage", "0.5.6", None).is_err());
+        // Something already installed a newer version on disk: refused.
+        assert!(check_install_version("0.5.7", "0.5.6", Some("0.5.8")).is_err());
+        assert!(check_install_version("0.5.8", "0.5.6", Some("0.5.8")).is_ok());
+    }
+
+    /// An ad-hoc signed bundle (what anyone can produce) must never pass.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ad_hoc_signed_bundles_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("Godspeed.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::copy("/bin/echo", app.join("Contents/MacOS/godspeed")).unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            include_str!("../../../dist/macos/Info.plist").replace("__VERSION__", "999.0.0"),
+        )
+        .unwrap();
+        run(
+            "/usr/bin/codesign",
+            &["--force", "--sign", "-", &app.to_string_lossy()],
+        )
+        .unwrap();
+        for running in [None, Some(RELEASE_TEAM_ID)] {
+            assert!(verify_mac_app_signature(&app, running, false).is_err());
+        }
+        // Tampering is caught even before the team check.
+        std::fs::write(app.join("Contents/MacOS/extra"), b"x").unwrap();
+        assert!(verify_mac_app_signature(&app, None, false).is_err());
+    }
+
+    /// Manual check against a real release: `cargo test -p zeron-update --
+    /// --ignored installed_release_passes_verification`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a notarized Godspeed.app in /Applications"]
+    fn installed_release_passes_verification() {
+        let app = Path::new("/Applications/Godspeed.app");
+        assert_eq!(code_team_id(app).unwrap().as_deref(), Some(RELEASE_TEAM_ID));
+        verify_mac_app_signature(app, Some(RELEASE_TEAM_ID), true).unwrap();
+        assert!(verify_mac_app_signature(app, Some("ZZZZZ99999"), false).is_err());
+    }
+
+    #[test]
     fn version_compare() {
         assert!(version_newer("0.1.1", "0.1.0"));
         assert!(version_newer("0.2.0", "0.1.9"));
