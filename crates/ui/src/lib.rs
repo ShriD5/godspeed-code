@@ -76,6 +76,7 @@ mod roll_text;
 pub mod running_pill;
 pub mod settings;
 pub mod shell;
+pub mod smooth_scroll;
 pub mod sound;
 pub mod speedster;
 pub mod state;

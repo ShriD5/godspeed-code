@@ -15001,7 +15001,8 @@ impl Render for Shell {
             // element at the window edges.
             .children(Self::render_linux_resize_borders(window));
         self.render_time = None;
-        root
+        // Wheel notches anywhere in the window glide (Appearance → Motion).
+        crate::smooth_scroll::smooth_scroll(root)
     }
 }
 
@@ -17104,6 +17105,7 @@ mod exit_regressions {
                     settings.pause_animations_in_background = true;
                     settings.animated_dock_icon = false;
                 });
+                settings::set_smooth_scrolling(false, cx);
                 // Any shell-owned change (sidebar width, panels) republishes
                 // the working copy; it must not revert the motion choices.
                 shell.schedule_save(cx);
@@ -17111,6 +17113,7 @@ mod exit_regressions {
                 assert_eq!(saved.reduce_motion, crate::motion::ReduceMotion::On);
                 assert!(saved.pause_animations_in_background);
                 assert!(!saved.animated_dock_icon);
+                assert!(!saved.smooth_scrolling);
             })
             .unwrap();
     }
