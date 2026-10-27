@@ -1056,23 +1056,8 @@ impl SessionHandle {
                 )?;
                 SendOutcome::Steered { message_id }
             } else {
-                let config = chat.config.as_ref();
-                let request = RunRequest {
-                    prompt: content,
-                    harness: config.map(|c| c.harness),
-                    model: config.and_then(|c| c.model.clone()),
-                    reasoning: config.and_then(|c| c.reasoning),
-                    model_options: config.map(|c| c.model_options.clone()).unwrap_or_default(),
-                    cwd: chat.cwd.clone().unwrap_or_else(|| "~".into()),
-                    sandbox: config.map_or(SandboxLevel::WorkspaceWrite, |c| c.sandbox),
-                    auto_approve: true,
-                    resume: None,
-                    attachments: refs.clone(),
-                    worktree: request.worktree.clone(),
-                    mcp: None,
-                    access: None,
-                    env: Default::default(),
-                };
+                let request =
+                    run_request_for(&chat, content, refs.clone(), request.worktree.clone());
                 self.core.queue_command(
                     &device_id,
                     SessionCommandPayload::Run {
@@ -1461,5 +1446,117 @@ impl SessionHandle {
         client.after_command(&self.core, true);
         client.kick_room(&self.core.chat_id);
         Ok(())
+    }
+}
+
+/// The Run a send from this device starts: the chat's own configuration,
+/// access mode included. It used to send `auto_approve: true` with no access
+/// mode, so the host read the legacy pair instead — a Full access chat whose
+/// stored sandbox lagged behind read as Auto, and the host replaced the live
+/// agent (and killed its background work) to "apply" that phantom change
+/// (2026-10-27). Without a config the host's legacy reading still applies.
+pub(crate) fn run_request_for(
+    chat: &zeron_proto::Chat,
+    prompt: String,
+    attachments: Vec<String>,
+    worktree: Option<WorktreeSpec>,
+) -> RunRequest {
+    let config = chat.config.as_ref();
+    let mut request = RunRequest {
+        prompt,
+        harness: config.map(|c| c.harness),
+        model: config.and_then(|c| c.model.clone()),
+        reasoning: config.and_then(|c| c.reasoning),
+        model_options: config.map(|c| c.model_options.clone()).unwrap_or_default(),
+        cwd: chat.cwd.clone().unwrap_or_else(|| "~".into()),
+        sandbox: config.map_or(SandboxLevel::WorkspaceWrite, |c| c.sandbox),
+        auto_approve: true,
+        resume: None,
+        attachments,
+        worktree,
+        mcp: None,
+        access: None,
+        env: Default::default(),
+    };
+    if let Some(config) = config {
+        request.set_access_mode(config.effective_access_mode());
+    }
+    request
+}
+
+#[cfg(test)]
+mod run_request_tests {
+    use super::run_request_for;
+    use zeron_proto::{AccessMode, Chat, ChatConfig, HarnessId, SandboxLevel};
+
+    fn chat(config: Option<ChatConfig>) -> Chat {
+        let now = chrono::Utc::now();
+        Chat {
+            id: "chat".into(),
+            device_id: "mac".into(),
+            title: None,
+            archived: false,
+            cwd: Some("/Users/dev".into()),
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: now,
+            harness_session_id: None,
+            harness_session_cwd: None,
+            space_id: Some("space".into()),
+            last_seen_at: None,
+            room_gen: Some(2),
+            parent_chat_id: None,
+            limit: None,
+            lifecycle: Default::default(),
+        }
+    }
+
+    fn config(sandbox: SandboxLevel, access_mode: Option<AccessMode>) -> ChatConfig {
+        ChatConfig {
+            harness: HarnessId::ClaudeCode,
+            model: Some("claude-opus-5-5".into()),
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox,
+            access_mode,
+        }
+    }
+
+    /// The owner's chat (2026-10-27): Full access, with the stored sandbox
+    /// still at workspace-write. The phone's send read as Auto and the host
+    /// replaced the live Claude process to cross out of bypass.
+    #[test]
+    fn a_phone_send_carries_the_chats_access_mode() {
+        let chat = chat(Some(config(
+            SandboxLevel::WorkspaceWrite,
+            Some(AccessMode::FullAccess),
+        )));
+        let request = run_request_for(&chat, "hi".into(), Vec::new(), None);
+        assert_eq!(request.access_mode(), AccessMode::FullAccess);
+        assert_eq!(
+            request.access.as_ref().map(|a| a.mode),
+            Some(AccessMode::FullAccess)
+        );
+        assert_eq!(request.cwd, "/Users/dev");
+        assert_eq!(request.model.as_deref(), Some("claude-opus-5-5"));
+    }
+
+    /// A config from before access modes reads the way the desktop reads it.
+    #[test]
+    fn a_legacy_config_reads_like_the_desktop() {
+        let chat = chat(Some(config(SandboxLevel::WorkspaceWrite, None)));
+        let request = run_request_for(&chat, "hi".into(), Vec::new(), None);
+        assert_eq!(request.access_mode(), AccessMode::AutoAcceptEdits);
+        let chat = chat_without_config();
+        let request = run_request_for(&chat, "hi".into(), Vec::new(), None);
+        assert_eq!(request.access, None, "no config: the host decides");
+    }
+
+    fn chat_without_config() -> Chat {
+        chat(None)
     }
 }

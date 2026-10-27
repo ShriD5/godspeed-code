@@ -5647,6 +5647,19 @@ impl DocHost {
                         fresh_worktree.as_ref(),
                     );
                 }
+                // A sender that names no access mode (phones before
+                // 2026-10-27) runs in the chat's own, not in whatever its
+                // legacy sandbox/auto-approve pair reads as: that pair lags a
+                // mode picked on the desktop, and the phantom change replaced
+                // the live agent and killed its background work.
+                if request.access.is_none()
+                    && let Some(mode) = self
+                        .workspace()
+                        .and_then(|ws| ws.chat_config(chat_id))
+                        .and_then(|config| config.access_mode)
+                {
+                    request.set_access_mode(mode);
+                }
                 let harness = self.harness_for_request(chat_id, &request);
                 // A row with no config renders no harness glyph (and every
                 // later dispatch falls back to the engine default), so stamp

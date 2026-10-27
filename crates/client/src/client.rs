@@ -816,7 +816,8 @@ impl Client {
     }
 
     pub fn set_session_config(&self, chat_id: &str, config: &ChatConfig) -> Result<()> {
-        self.chat_write(chat_id, |doc| doc.set_chat_config(chat_id, config))
+        let config = keep_access_mode(self.session_config(chat_id).as_ref(), config);
+        self.chat_write(chat_id, |doc| doc.set_chat_config(chat_id, &config))
     }
 
     /// Remove the chat row (the doc itself stays on the edge).
@@ -1713,9 +1714,50 @@ pub struct PushPrefs {
     pub failed: bool,
 }
 
+/// A config written by a client that can't express access modes (the phone's
+/// model and effort menus) keeps the chat's access mode. It used to write
+/// `accessMode: None`, silently dropping a Full access chat to the legacy
+/// reading of its sandbox. A changed sandbox is an explicit choice, and the
+/// legacy reading of it applies.
+pub(crate) fn keep_access_mode(existing: Option<&ChatConfig>, next: &ChatConfig) -> ChatConfig {
+    let mut next = next.clone();
+    if next.access_mode.is_none()
+        && let Some(existing) = existing
+        && existing.sandbox == next.sandbox
+    {
+        next.access_mode = existing.access_mode;
+    }
+    next
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phone_config_write_keeps_the_chats_access_mode() {
+        let existing = ChatConfig {
+            harness: zeron_proto::HarnessId::ClaudeCode,
+            model: Some("claude-opus-5-5".into()),
+            reasoning: None,
+            model_options: Default::default(),
+            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            access_mode: Some(zeron_proto::AccessMode::FullAccess),
+        };
+        // The phone changes the effort; its FFI record has no access mode.
+        let mut phone = existing.clone();
+        phone.reasoning = Some(zeron_proto::ReasoningLevel::High);
+        phone.access_mode = None;
+        let written = keep_access_mode(Some(&existing), &phone);
+        assert_eq!(
+            written.access_mode,
+            Some(zeron_proto::AccessMode::FullAccess)
+        );
+        assert_eq!(written.reasoning, Some(zeron_proto::ReasoningLevel::High));
+        // A changed sandbox is the caller's explicit pick.
+        phone.sandbox = zeron_proto::SandboxLevel::ReadOnly;
+        assert_eq!(keep_access_mode(Some(&existing), &phone).access_mode, None);
+    }
 
     #[test]
     fn demo_replica_is_local_only_and_never_queues() {
