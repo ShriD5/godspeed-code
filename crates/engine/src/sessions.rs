@@ -4883,7 +4883,7 @@ mod tests {
             tagged("skill-1", call("nested-2", "Agent: bravo")),
             tagged("nested-1", text("sleeping")),
             tagged("nested-2", text("sleeping")),
-            // `/fanout` typed as the prompt forks with no chip at all.
+            // A `forked-command-*` id no chip carries (a typed fork's, after its turn).
             tagged("forked-command-fanout", text("the fork, replayed")),
             text("fanned out"),
         ] {
@@ -4936,5 +4936,29 @@ mod tests {
         );
         feed.send(done(DoneStatus::Completed)).unwrap();
         core.sessions.shutdown().await;
+    }
+
+    fn done(status: DoneStatus) -> AgentEvent {
+        AgentEvent::Done {
+            status,
+            result: None,
+            error: None,
+            session_id: None,
+        }
+    }
+
+    fn started() -> AgentEvent {
+        AgentEvent::SessionStarted {
+            harness: HarnessId::Mock,
+            model: "m".into(),
+            tools: vec![],
+            cwd: "/tmp".into(),
+            session_id: "hs".into(),
+            assistant_message_id: "a".into(),
+        }
+    }
+
+    fn text(s: &str) -> AgentEvent {
+        AgentEvent::TextDelta { text: s.into() }
     }
 }

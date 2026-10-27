@@ -220,6 +220,36 @@ case "$first" in
   emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"completed\"}"
   ;;
 
+*scenario:typed-fork-steer-boundary*)
+  # `/probe` typed as the prompt, and a message sent while its fork runs, in
+  # the order of a live 2.1.310 run: the message is queued at once, and
+  # started only after the fork's replay and result. The fork's chip is an
+  # open tool, so the message comes `next` (exits otherwise).
+  fid=$(uuid_of "$first")
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"queued\"}"
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"started\"}"
+  emit '{"type":"system","subtype":"task_started","task_id":"t1","description":"/probe","subagent_type":"general-purpose","task_type":"local_agent","skip_transcript":true,"ambient":true,"prompt":"Probe.","is_backgrounded":false,"spawn_depth":1}'
+  read -r steer || exit 1
+  case "$steer" in *'"priority":"next"'*) ;; *) exit 9 ;; esac
+  sid=$(uuid_of "$steer")
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"queued\"}"
+  emit '{"type":"system","subtype":"task_notification","task_id":"t1","status":"completed","summary":"/probe","skip_transcript":true,"ambient":true}'
+  emit '{"type":"system","subtype":"init","model":"claude-sonnet-5-5","tools":[],"cwd":"/tmp","session_id":"sess-tfb"}'
+  emit '{"type":"user","parent_tool_use_id":"forked-command-probe","message":{"role":"user","content":[{"type":"text","text":"Probe."}]}}'
+  emit '{"type":"assistant","parent_tool_use_id":"forked-command-probe","message":{"content":[{"type":"text","text":"probed"}]}}'
+  emit '{"type":"assistant","parent_tool_use_id":null,"local_command_source":"<local-command-stdout>probed</local-command-stdout>","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"probed"}]}}'
+  emit "{\"type\":\"user\",\"parent_tool_use_id\":null,\"uuid\":\"$fid\",\"isReplay\":true,\"message\":{\"role\":\"user\",\"content\":\"/probe\"}}"
+  emit '{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"probed","errors":[],"usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-tfb"}'
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"completed\"}"
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"started\"}"
+  emit '{"type":"system","subtype":"init","model":"claude-sonnet-5-5","tools":[],"cwd":"/tmp","session_id":"sess-tfb"}'
+  emit "$steer"
+  emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"second answer"}}}'
+  emit '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"second answer","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-tfb"}'
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"completed\"}"
+  cat >/dev/null
+  ;;
+
 *scenario:stop-held*)
   # "Send now" while a turn's result is held for a queued steer: the CLI is
   # slow to answer the stop, had already begun the steer's turn, and that
@@ -281,6 +311,78 @@ case "$first" in
   emit '{"type":"result","subtype":"error_during_execution","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-ld"}'
   sleep 0.5
   emit '{"type":"result","subtype":"error_during_execution","errors":["late duplicate"],"usage":{"input_tokens":7,"output_tokens":7},"session_id":"sess-ld"}'
+  cat >/dev/null
+  ;;
+
+*scenario:stop-typed-fork*)
+  # `/probe` typed as the prompt forks with no tool call (shapes from 2.1.310).
+  # The stop is answered and no result follows, so the driver ends the turn
+  # itself (2.1.310 sends the stopped fork's result about 1 s after). The
+  # next message says which priority it was written with.
+  emit '{"type":"system","subtype":"task_started","task_id":"t1","description":"/probe","subagent_type":"general-purpose","task_type":"local_agent","skip_transcript":true,"ambient":true,"prompt":"Probe.","is_backgrounded":false,"spawn_depth":1}'
+  read -r stop || exit 1
+  case "$stop" in *'"subtype":"interrupt"'*) ;; *) exit 8 ;; esac
+  rid=$(printf '%s\n' "$stop" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
+  emit "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$rid\",\"response\":{\"still_queued\":[]}}}"
+  while read -r next; do
+    case "$next" in *'"type":"user"'*) break ;; esac
+  done
+  case "$next" in
+    *'"priority":"now"'*) priority=now ;;
+    *'"priority":"next"'*) priority=next ;;
+    *) priority=none ;;
+  esac
+  emit "{\"type\":\"stream_event\",\"parent_tool_use_id\":null,\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"priority:$priority\"}}}"
+  cat >/dev/null
+  ;;
+
+*scenario:typed-fork-replay*)
+  # The typed `/fanout` capture (claude/live-2.1.310-typed-forked-command.jsonl)
+  # in two parts, for crates/engine/tests/claude_subagents.rs: the fork's start
+  # and its agents' starts, then a hold while the fork "runs" (until the test
+  # drops `release` in the cwd, 20 s at most), then everything the CLI holds
+  # back until the fork is over.
+  frames="$(dirname "$0")/claude/live-2.1.310-typed-forked-command.jsonl"
+  head -n 3 "$frames"
+  i=0
+  while [ ! -e release ] && [ "$i" -lt 400 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  tail -n +4 "$frames"
+  cat >/dev/null
+  ;;
+
+*scenario:typed-fork-parked-steer*)
+  # A turn ends and the session parks with its process live. `/probe` then
+  # comes in as a message to that process: queued, started, and only then
+  # the fork's task start (the order of a typed prompt in 2.1.310). The fork
+  # holds until the test drops `release` in the cwd (20 s at most), then its
+  # notification, replay and result follow.
+  fid=$(uuid_of "$first")
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"started\"}"
+  emit '{"type":"system","subtype":"init","model":"claude-sonnet-5-5","tools":[],"cwd":"/tmp","session_id":"sess-tps"}'
+  emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"first answer"}}}'
+  emit '{"type":"result","subtype":"success","is_error":false,"result":"first answer","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-tps"}'
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"completed\"}"
+  read -r steer || exit 1
+  sid=$(uuid_of "$steer")
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"queued\"}"
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"started\"}"
+  emit '{"type":"system","subtype":"task_started","task_id":"t2","description":"/probe","subagent_type":"general-purpose","task_type":"local_agent","skip_transcript":true,"ambient":true,"prompt":"Probe.","is_backgrounded":false,"spawn_depth":1}'
+  i=0
+  while [ ! -e release ] && [ "$i" -lt 400 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  emit '{"type":"system","subtype":"task_notification","task_id":"t2","status":"completed","summary":"/probe","skip_transcript":true,"ambient":true}'
+  emit '{"type":"system","subtype":"init","model":"claude-sonnet-5-5","tools":[],"cwd":"/tmp","session_id":"sess-tps"}'
+  emit '{"type":"user","parent_tool_use_id":"forked-command-probe","message":{"role":"user","content":[{"type":"text","text":"Probe."}]}}'
+  emit '{"type":"assistant","parent_tool_use_id":"forked-command-probe","message":{"content":[{"type":"text","text":"probed"}]}}'
+  emit '{"type":"assistant","parent_tool_use_id":null,"local_command_source":"<local-command-stdout>probed</local-command-stdout>","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"probed"}]}}'
+  emit "{\"type\":\"user\",\"parent_tool_use_id\":null,\"uuid\":\"$sid\",\"isReplay\":true,\"message\":{\"role\":\"user\",\"content\":\"/probe\"}}"
+  emit '{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"probed","errors":[],"usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-tps"}'
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"completed\"}"
   cat >/dev/null
   ;;
 

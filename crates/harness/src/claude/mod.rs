@@ -1255,10 +1255,20 @@ async fn run_session(session: Session) {
                         error: None,
                         session_id: norm.session_id.clone(),
                     });
+                    // No result came to settle a typed fork: it ends here,
+                    // with the turn, or its chip runs on in the parked run.
+                    for ev in norm.settle_typed_fork(DoneStatus::Interrupted) {
+                        if event_tx.send(Ok(ev)).await.is_err() {
+                            break 'main;
+                        }
+                    }
                     if event_tx.send(Ok(done)).await.is_err() {
                         break 'main;
                     }
                     any_done = true;
+                    // The turn's tools ended with it, as on a normalized
+                    // Done: none may hold the next message back.
+                    open_tools.clear();
                     stop_done_at = Some(tokio::time::Instant::now());
                     active_since_stop = false;
                 }
