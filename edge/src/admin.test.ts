@@ -104,3 +104,45 @@ describe("dashboard formatting", () => {
     expect(weekOverWeek(5, 0)).toBe("new this week");
   });
 });
+
+describe("store failures", () => {
+  it("answer 503 instead of throwing", async () => {
+    const failing = {
+      ...env,
+      TELEMETRY: {
+        idFromName: () => ({}),
+        get: () => ({
+          stats: async () => {
+            throw new Error("Exceeded allowed rows written in Durable Objects free tier.");
+          },
+          storePing: async () => {
+            throw new Error("Exceeded allowed rows written in Durable Objects free tier.");
+          }
+        })
+      }
+    } as unknown as Env;
+    const cookie = `gs_admin=${await signSession(env, "owner@example.com")}`;
+    for (const path of ["/admin", "/admin/api/stats"]) {
+      const req = get(path, cookie);
+      expect((await handleAdminRoute(req, failing, new URL(req.url)))!.status).toBe(503);
+    }
+    const { handleTelemetryPing } = await import("./telemetry");
+    const day = new Date().toISOString().slice(0, 10);
+    const ping = new Request("https://edge.test/telemetry/v1/ping", {
+      method: "POST",
+      body: JSON.stringify({
+        v: 1,
+        install_id: "4f9d7c1e-2b6a-4c1d-9e3f-0a1b2c3d4e5f",
+        day,
+        app_version: "0.5.8",
+        os: "macos",
+        arch: "aarch64",
+        first_seen: day,
+        active: true
+      })
+    });
+    const res = await handleTelemetryPing(ping, failing);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("3600");
+  });
+});

@@ -118,6 +118,9 @@ const SECURITY_HEADERS = {
     "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 };
 
+const escapeHtml = (s: string): string =>
+  s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+
 const json = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), {
     status,
@@ -232,9 +235,21 @@ export const handleAdminRoute = async (
   if (!env.TELEMETRY) return api ? json({ error: "telemetry not configured" }, 503) : page("Godspeed admin", "<h1>No telemetry database bound</h1>", 503);
 
   const range = parseRange(url.searchParams.get("range"));
-  if (api) return json(await computeStats(env, range));
-  if (path !== "/admin") return json({ error: "not_found" }, 404);
-  const stats = await computeStats(env, range);
+  if (!api && path !== "/admin") return json({ error: "not_found" }, 404);
+  let stats: Awaited<ReturnType<typeof computeStats>>;
+  try {
+    stats = await computeStats(env, range);
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    return api
+      ? json({ error: "unavailable", detail }, 503)
+      : page(
+          "Godspeed admin",
+          `<h1>Telemetry store unavailable</h1><p>${escapeHtml(detail)}</p><p>On the Workers free plan this is usually the daily Durable Objects limit; it resets at 00:00 UTC.</p>`,
+          503
+        );
+  }
+  if (api) return json(stats);
   return new Response(renderDashboard(stats), {
     headers: { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS }
   });
