@@ -1239,7 +1239,7 @@ pub(crate) fn chat_title_editor(
 const SIDEBAR_GLASS_FADE_BAND: f32 = 24.0;
 
 /// Target of the sidebar's "Star on GitHub" banner (same as the landing page).
-const GITHUB_REPO_URL: &str = "https://github.com/zeronsh/comet";
+const GITHUB_REPO_URL: &str = "https://github.com/ShriD5/godspeed-code";
 
 /// New-thread controls float over the tail of a top-anchored image hero. The
 /// hero reaches below the composer, giving its lower mask room to dissolve
