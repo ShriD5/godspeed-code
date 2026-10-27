@@ -1,4 +1,4 @@
-//! Settings → Agents → Telegram: the bot token (typed or pasted into a
+//! Settings → Zoomies → Telegram: the bot token (typed or pasted into a
 //! field that never shows it), the connection, a one-time link code, the
 //! linked chats, and the defaults newly linked chats start with. Everything
 //! runs on the engine (`zeron_proto::telegram`), so a headless engine serves

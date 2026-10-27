@@ -1,8 +1,8 @@
-//! Settings → Agents: always-on agents hosted by this device's engine
-//! (`zeron_proto::agents`). Lists each agent with its status and next fire,
-//! a small create/edit form (one schedule trigger per agent here; the engine
-//! accepts more), the run inbox, whose rows open the run's chat, and the
-//! Telegram bot that fronts them (`settings::telegram`).
+//! Settings → Zoomies: always-on agents ("zoomies" in the UI) hosted by
+//! this device's engine (`zeron_proto::agents`). Lists each agent with its
+//! status and next fire, a small create/edit form (one schedule trigger per
+//! agent here; the engine accepts more), the run inbox, whose rows open the
+//! run's chat, and the Telegram bot that fronts them (`settings::telegram`).
 
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, EventEmitter, SharedString, Subscription, Task,
@@ -205,7 +205,7 @@ impl AgentsPage {
             }
             if let Ok(Err(err)) = feed.await {
                 this.update(cx, |page, cx| {
-                    page.error = Some(format!("Agents unavailable: {err}").into());
+                    page.error = Some(format!("Zoomies unavailable: {err}").into());
                     cx.notify();
                 })
                 .ok();
@@ -313,7 +313,7 @@ impl AgentsPage {
                 cx,
             ),
             instructions: input(
-                "What should this agent do each run?",
+                "What should this zoomie do each run?",
                 draft.map(|d| d.instructions.clone()).unwrap_or_default(),
                 false,
                 cx,
@@ -552,9 +552,9 @@ impl AgentsPage {
             TriggerChoice::Manual => None,
         };
         let title = if editor.id.is_some() {
-            "Edit agent"
+            "Edit zoomie"
         } else {
-            "New agent"
+            "New zoomie"
         };
         Some(
             widgets::section(
@@ -621,11 +621,11 @@ impl AgentsPage {
         if agents.is_empty() {
             return widgets::section(
                 theme,
-                "Agents",
+                "Zoomies",
                 widgets::section_card(theme).mt(px(0.0)).child(
                     widgets::card_row(theme, true).child(widgets::page_subtitle(
                         theme,
-                        "No agents yet. An agent runs a prompt in a workspace on a schedule, from a webhook or when files change, and leaves its results in the inbox below.",
+                        "No zoomies yet. A zoomie is a prompt that runs on its own: on a schedule, when a webhook fires or when a file changes. It leaves its results in the inbox below.",
                     )),
                 ),
             )
@@ -710,7 +710,7 @@ impl AgentsPage {
                     .child(
                         widgets::ghost_action(theme)
                             .id(("agent-delete", ix))
-                            .aria_label("Delete agent")
+                            .aria_label("Delete zoomie")
                             .on_click(cx.listener(move |page, _, _, cx| {
                                 page.call(methods::DELETE_AGENT, json!({ "id": delete_id }), cx);
                             }))
@@ -741,7 +741,7 @@ impl AgentsPage {
                     ),
             );
         }
-        widgets::section(theme, "Agents", card).into_any_element()
+        widgets::section(theme, "Zoomies", card).into_any_element()
     }
 
     fn render_inbox(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -853,7 +853,7 @@ impl Render for AgentsPage {
                         .size(px(14.0))
                         .text_color(theme.text),
                 )
-                .child(SharedString::from("New agent"))
+                .child(SharedString::from("New zoomie"))
         });
         let error = self
             .error
@@ -892,12 +892,12 @@ impl Render for AgentsPage {
                                                 .min_w_0()
                                                 .child(widgets::page_header(
                                                     &theme,
-                                                    "Agents",
+                                                    "Zoomies",
                                                     (count > 0).then_some(count),
                                                 ))
                                                 .child(widgets::page_subtitle(
                                                     &theme,
-                                                    "Always-on agents run on this device's engine, even headless.",
+                                                    "Zoomies run on this device's engine, even headless.",
                                                 )),
                                         )
                                         .children(new_button),
