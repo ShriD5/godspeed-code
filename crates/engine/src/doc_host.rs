@@ -6016,6 +6016,8 @@ impl DocHost {
         mut request: zeron_proto::RunRequest,
         message_id: Option<String>,
     ) -> Result<String, EngineError> {
+        self.recreate_missing_worktree(chat_id, &request.cwd)
+            .await?;
         if let Some(environments) = self.worktree_environments()
             && !request.cwd.is_empty()
         {
@@ -6038,6 +6040,55 @@ impl DocHost {
         sessions
             .dispatch(chat_id, harness, request, message_id)
             .await
+    }
+
+    /// A chat whose worktree folder was deleted outside Godspeed gets it
+    /// back on its branch before the harness starts there; otherwise the
+    /// spawn fails in a folder that no longer exists.
+    async fn recreate_missing_worktree(&self, chat_id: &str, cwd: &str) -> Result<(), EngineError> {
+        if cwd.is_empty() || zeron_proto::projectless::is_scratch_cwd(cwd) {
+            return Ok(());
+        }
+        let (Some(repos), Ok(cwd)) = (self.inner.repos.get(), crate::repos::expand_home(cwd))
+        else {
+            return Ok(());
+        };
+        let cwd = Path::new(&cwd);
+        if tokio::fs::try_exists(cwd).await.unwrap_or(true) {
+            return Ok(());
+        }
+        let record = repos.worktree_records().containing(cwd);
+        let project = self
+            .workspace()
+            .and_then(|ws| {
+                let space_id = ws.chat(chat_id).ok()??.space_id?;
+                ws.space(&space_id).ok()?
+            })
+            .and_then(|space| crate::repos::expand_home(&space.path).ok());
+        let mut repo_paths: Vec<String> = record.iter().map(|r| r.repo_path.clone()).collect();
+        repo_paths.extend(project.filter(|path| !repo_paths.contains(path)));
+        let recorded = record
+            .as_ref()
+            .map(|r| (Path::new(&r.path), r.branch.as_str()));
+        for repo_path in &repo_paths {
+            match repos
+                .recreate_missing_worktree(Path::new(repo_path), cwd, recorded)
+                .await
+            {
+                Ok(Some(root)) => {
+                    tracing::info!(chat = %chat_id, path = %root.display(), "recreated the chat's deleted worktree");
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    return Err(EngineError::Other(format!(
+                        "This chat's worktree at {} was deleted and couldn't be recreated: {err}",
+                        cwd.display()
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn materialize_worktree(

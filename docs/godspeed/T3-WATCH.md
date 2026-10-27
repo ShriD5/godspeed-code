@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@071239804e375078dd3fae3b14704b4def57e048 (2026-10-26)
+Reviewed T3 through: pingdotgg/t3code@79f6cd30c7 (2026-10-27)
 
 ## Rules
 
@@ -23,6 +23,16 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-27 | A thread whose worktree was deleted recovers on the next message (`0604547a3a`) | PR pending |
+| 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | queued (`files/markdown_preview.rs` shows SKILL.md frontmatter as a rule and a setext heading; mask it with spaces so task toggles keep their offsets) |
+| 2026-10-27 | ACP session notices show as notices, not reply text (`323d9611ff`) | queued (`acp/normalize.rs` drops `notice` updates; needs a notice event and row) |
+| 2026-10-27 | Steer works while a compaction runs (`ad068d7c93`) | queued (check steering during a Claude /compact) |
+| 2026-10-27 | Stopped runs read as muted, not errors (`f3b058cd6a`) | skipped (T3 web row styling; Godspeed run receipts already show "Stopped" in the normal tone) |
+| 2026-10-27 | Claude MCP registration timeouts keep the native session (`fe867b86c8`) | skipped (T3 error tagging; see the 2026-10-26 MCP retry row) |
+| 2026-10-27 | T3 MCP tool schemas cut by a third, 18 tools merged (`ed44f251d8`, `bc813670d9`) | skipped (T3's own orchestrator tools) |
+| 2026-10-27 | Thread state at the end of the timeline (`bd3287b640`); spoken model labels (`56695ae3ec`); new-model badges expire (`0790e3891b`); Cmd+W closes sidebar tabs (`a86c05f977`) | skipped (T3's web look and model catalog) |
+| 2026-10-27 | Warn before a second Claude/Codex account (`560ddb14d9`); Vercel fx provider (`6df241d23a`); inline charts prompt (`d2c440312e`, `c294d63b21`); PDF search (`becf853def`) | skipped (account fallback out of scope; T3 providers and viewers; Godspeed has `show_visual`) |
+| 2026-10-27 | ~120 other commits: React effect removal, mobile/Android, PR screens, evals, telemetry, cloudflared pin, settings pages, CI | skipped (internal/minor) |
 | 2026-10-26 | Forked threads get titles from the history they inherit (`a6aca345d5`) | PR #34 |
 | 2026-10-26 | Terminal drag selection scrolls faster the farther past the edge (`313ca2715f`) | queued (`selection_scroll_lines` in `terminal/panel.rs` tops out at 3 lines inside the grid edge) |
 | 2026-10-26 | Resumed Claude turns retry a stalled MCP registration (`572cf74275`) | queued (check the Godspeed MCP tools after resuming a Claude chat) |
