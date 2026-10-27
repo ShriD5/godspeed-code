@@ -6,6 +6,8 @@
  *
  * Routes:
  *   GET  /health
+ *   POST /telemetry/v1/ping           — anonymous daily usage ping (telemetry.ts)
+ *   GET  /admin, /admin/api/stats     — private dashboard, ADMIN_EMAILS only (admin.ts)
  *   POST /auth/exchange               — WorkOS code → tokens
  *   POST /auth/refresh                — WorkOS refresh → fresh tokens
  *   GET  /auth/orgs                   — caller's active org memberships
@@ -37,6 +39,7 @@
  *   GET  /chat2/:chatId/stats
  *   POST /chat2/:chatId/reset
  */
+import { handleAdminRoute } from "./admin";
 import { gateUser } from "./allowlist";
 import { authenticate } from "./auth";
 import { chatRoute } from "./chat-route";
@@ -45,12 +48,14 @@ import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
 import { SessionRoom } from "./session-room";
 import { previewRoute } from "./preview-route";
 import { PreviewRoom } from "./preview-room";
+import { TelemetryStore } from "./telemetry-store";
 import { DeviceRoom } from "./device-room";
 import { RegistryRoom } from "./registry-room";
 import { ChatRoom } from "./chat-room";
 import installSh from "./install.sh";
+import { countUpdateCheck, handleTelemetryPing } from "./telemetry";
 
-export { SessionRoom, DeviceRoom, RegistryRoom, ChatRoom, PreviewRoom };
+export { SessionRoom, DeviceRoom, RegistryRoom, ChatRoom, PreviewRoom, TelemetryStore };
 
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -117,13 +122,21 @@ const deviceParam = (url: URL): string => {
 const GITHUB_RELEASES_LATEST = "https://github.com/ShriD5/godspeed-code/releases/latest/download";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
     if (url.pathname === "/health") {
       return json({ ok: true, auth: env.AUTH_MODE === "dev" ? "dev" : "workos" });
     }
+
+    // ── anonymous usage telemetry (unauthenticated, strictly validated) and
+    //    the admin dashboard (its own browser sign-in) ──────────────────────
+    if (url.pathname === "/telemetry/v1/ping") {
+      return handleTelemetryPing(request, env);
+    }
+    const admin = await handleAdminRoute(request, env, url);
+    if (admin) return admin;
 
     // ── public install surface: the `curl | sh` installer and the release
     //    artifacts it downloads. Served only when a RELEASES bucket is bound.
@@ -179,6 +192,11 @@ export default {
     ) {
       const asset = parts[1];
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(asset)) return json({ error: "bad request" }, 400);
+      // A legacy app's update check: the only signal from installs that
+      // predate telemetry. A per-day counter, nothing about the caller.
+      if (asset === "manifest.json" && request.method === "GET" && env.TELEMETRY) {
+        ctx.waitUntil(countUpdateCheck(env).catch(() => undefined));
+      }
       return new Response(null, {
         status: 302,
         headers: {
