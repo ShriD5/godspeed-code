@@ -415,7 +415,7 @@ impl Shell {
                     this.update(cx, |shell, cx| {
                         shell.add_to_device = None;
                         if synced {
-                            shell.open_new_session(Some(new_space.clone()), cx);
+                            shell.open_new_session(Some(super::NewSessionTarget::Project(new_space.clone())), cx);
                         } else {
                             shell.show_notice(
                                 crate::toast::ToastKind::Info,
