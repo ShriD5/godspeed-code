@@ -466,9 +466,7 @@ impl InstallKind {
                 stage_headless(feed, manifest, app_root).await
             }
             #[cfg(windows)]
-            Self::WindowsPortable { directory } => {
-                windows::stage(feed, manifest, directory).await
-            }
+            Self::WindowsPortable { directory } => windows::stage(feed, manifest, directory).await,
             _ => bail!("this installation does not support desktop updates"),
         }
     }
@@ -864,7 +862,11 @@ pub fn restart_service() -> anyhow::Result<()> {
         let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
         run(
             "launchctl",
-            &["kickstart", "-k", &format!("gui/{uid}/site.shrithan.godspeed")],
+            &[
+                "kickstart",
+                "-k",
+                &format!("gui/{uid}/site.shrithan.godspeed"),
+            ],
         )
     } else {
         run(
@@ -1137,7 +1139,8 @@ pub fn apply_mac_app(staged: &Path, bundle: &Path) -> anyhow::Result<()> {
     let installed = installed_version(&InstallKind::MacApp {
         bundle: bundle.to_path_buf(),
     });
-    if let Err(err) = check_install_version(&staged_version, current_version(), installed.as_deref())
+    if let Err(err) =
+        check_install_version(&staged_version, current_version(), installed.as_deref())
     {
         tracing::error!(error = %format!("{err:#}"), "refusing update");
         return Err(err);
@@ -1905,7 +1908,11 @@ mod tests {
     #[test]
     fn github_artifacts_are_pinned_to_the_manifest_release() {
         assert_eq!(
-            artifact_url(DEFAULT_FEED_URL, "0.5.8", "godspeed-0.5.8-macos-arm64-app.tar.gz"),
+            artifact_url(
+                DEFAULT_FEED_URL,
+                "0.5.8",
+                "godspeed-0.5.8-macos-arm64-app.tar.gz"
+            ),
             "https://github.com/ShriD5/godspeed-code/releases/download/v0.5.8/godspeed-0.5.8-macos-arm64-app.tar.gz"
         );
         // Other feeds (self-hosted, tests) serve artifacts beside the manifest.
@@ -1938,7 +1945,8 @@ mod tests {
     /// Runs the real script (when python3 is around) and parses its output.
     #[test]
     fn release_manifest_script_output_parses() {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/release-manifest.py");
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/release-manifest.py");
         let tmp = tempfile::tempdir().unwrap();
         let app = mac_app_artifact("7.8.9");
         std::fs::write(tmp.path().join(&app), b"payload").unwrap();
@@ -1958,8 +1966,7 @@ mod tests {
             Err(_) => return, // no python3 on this machine
         };
         assert!(status.success());
-        let manifest: Manifest =
-            serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+        let manifest: Manifest = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
         assert_eq!(manifest.version, "7.8.9");
         assert_eq!(manifest.files.len(), 1, "only this version's artifacts");
         assert_eq!(
@@ -1974,7 +1981,10 @@ mod tests {
         let signed = "Executable=/A/Godspeed.app/Contents/MacOS/godspeed\nIdentifier=site.shrithan.godspeed\nTeamIdentifier=QPUV967B5U\n";
         assert_eq!(parse_team_identifier(signed).as_deref(), Some("QPUV967B5U"));
         assert_eq!(parse_team_identifier("TeamIdentifier=not set\n"), None);
-        assert_eq!(parse_team_identifier("code object is not signed at all\n"), None);
+        assert_eq!(
+            parse_team_identifier("code object is not signed at all\n"),
+            None
+        );
         assert!(valid_team_id("QPUV967B5U"));
         assert!(!valid_team_id("QPUV967B5\""));
         assert!(!valid_team_id("qpuv967b5u"));
@@ -1990,7 +2000,9 @@ mod tests {
         let other = check_update_team("QPUV967B5U", Some("ZZZZZ99999")).unwrap_err();
         assert!(other.to_string().contains("ZZZZZ99999"), "{other}");
         assert!(check_update_team("QPUV967B5U", None).is_err());
-        assert!(developer_id_requirement("QPUV967B5U").ends_with(r#"leaf[subject.OU] = "QPUV967B5U""#));
+        assert!(
+            developer_id_requirement("QPUV967B5U").ends_with(r#"leaf[subject.OU] = "QPUV967B5U""#)
+        );
     }
 
     #[test]
@@ -2154,10 +2166,13 @@ mod tests {
                 .contains("not supported on windows")
         );
         assert!(
-            apply_mac_app(&data_dir.join("Godspeed.app"), &data_dir.join("Installed.app"))
-                .unwrap_err()
-                .to_string()
-                .contains("not supported on windows")
+            apply_mac_app(
+                &data_dir.join("Godspeed.app"),
+                &data_dir.join("Installed.app")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("not supported on windows")
         );
         assert!(
             restart_service()
@@ -2402,7 +2417,11 @@ mod tests {
         let root = dir.join("godspeed-pkg");
         std::fs::create_dir_all(&root).unwrap();
         let binary = root.join("godspeed");
-        std::fs::write(&binary, format!("#!/bin/sh\necho \"godspeed {reported}\"\n")).unwrap();
+        std::fs::write(
+            &binary,
+            format!("#!/bin/sh\necho \"godspeed {reported}\"\n"),
+        )
+        .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         let tarball = dir.join("pkg.tar.gz");
         run(

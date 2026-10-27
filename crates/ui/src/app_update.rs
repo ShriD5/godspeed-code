@@ -259,9 +259,7 @@ impl AppUpdate {
                 zeron_update::version_newer(&manifest.version, zeron_update::current_version()),
                 "the release feed no longer offers a newer version"
             );
-            let staged = install
-                .stage_desktop(&feed, &manifest, &data_dir)
-                .await?;
+            let staged = install.stage_desktop(&feed, &manifest, &data_dir).await?;
             anyhow::Ok((manifest.version, staged))
         });
         self.download = Some(cx.spawn(async move |this, cx| {
@@ -474,7 +472,9 @@ pub fn settings_detail(
     now_ms: i64,
 ) -> String {
     match flow {
-        Flow::Ready { version, .. } => return format!("Godspeed {version} is ready — restart to update."),
+        Flow::Ready { version, .. } => {
+            return format!("Godspeed {version} is ready — restart to update.");
+        }
         Flow::Downloading { version } => return format!("Downloading Godspeed {version}…"),
         Flow::Failed { message, .. } => return format!("The last update failed: {message}"),
         Flow::Installed => return "Restarting…".to_owned(),
@@ -606,7 +606,12 @@ mod tests {
             "You're on 0.5.6, the newest release. Checked just now."
         );
         assert_eq!(
-            settings_detail("0.5.6", Some(&checked(125, "0.5.6", false)), &Flow::Idle, now),
+            settings_detail(
+                "0.5.6",
+                Some(&checked(125, "0.5.6", false)),
+                &Flow::Idle,
+                now
+            ),
             "You're on 0.5.6, the newest release. Checked 2 h ago."
         );
         assert_eq!(
