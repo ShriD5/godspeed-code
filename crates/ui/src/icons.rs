@@ -64,6 +64,9 @@ icon_assets![
     (MOON, "moon"),
     // Browser globe, drawn in the same linear weight as the toolbar family.
     (GLOBE, "globe"),
+    (CURSOR_SQUARE, "cursor-square"),
+    // The pointer alone: an annotation chip's glyph inside its well.
+    (CURSOR, "cursor"),
     (LAPTOP, "laptop"),
     (PEN_NEW_SQUARE, "pen-new-square"),
     (SORT, "sort"),

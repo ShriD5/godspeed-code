@@ -108,6 +108,7 @@ mod thread_lifecycle;
 mod thread_search;
 use side_chats::SideChatTab;
 mod tabs;
+use tabs::NewSessionTarget;
 mod voice_stage;
 mod worktree_env_ui;
 use voice_stage::VOICE_STAGE_ORB_SCALE;
@@ -454,6 +455,8 @@ pub fn cluster_clearance(
 /// (Re-)apply the whole app keymap: clears every binding, restores the composer
 /// map, then binds the customizable shortcuts from `keymap` (feature-inventory
 /// §1.4). Invalid persisted combos fall back to that shortcut's default.
+/// Everything is written in US keys and bound where the active keyboard layout
+/// types them (see [`localize_key_bindings`]); re-run on a layout switch.
 pub fn apply_keymap(
     cx: &mut App,
     keymap: &KeymapConfig,
@@ -468,7 +471,8 @@ pub fn apply_keymap(
             platform_combo(fallback)
         }
     }
-    crate::appshots::set_shortcut(&keymap.capture_appshot);
+    let equivalents = crate::settings::key_equivalents(cx);
+    crate::appshots::set_shortcut(&keymap.capture_appshot, &equivalents);
     cx.clear_key_bindings();
     // `clear_key_bindings` also removes the contextual editing actions that
     // gpui-base installed at startup. Reinitialize the component layer before
@@ -630,6 +634,72 @@ pub fn apply_keymap(
             ),
         ]
     }));
+    localize_key_bindings(cx, &equivalents);
+    crate::settings::set_bound_key_equivalents(equivalents);
+}
+
+/// Move every binding to the key the active layout types for it. Combos are
+/// written in US keys, like the macOS menus they mirror; Apple relocates
+/// those per layout (AZERTY ⌘1 is ⌘&, ⌘/ is ⌘:, ⌘[ is ⌘^) and gpui ships
+/// the same table, but `KeyBinding::new` never applies it — to Godspeed's
+/// bindings or gpui-base's editor map. Order is kept: gpui breaks ties
+/// between equally deep matches by binding order.
+fn localize_key_bindings(cx: &mut App, equivalents: &crate::settings::KeyEquivalents) {
+    if equivalents.is_empty() {
+        return;
+    }
+    let bindings: Vec<KeyBinding> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .map(|binding| localize_binding(binding, equivalents))
+        .collect();
+    cx.clear_key_bindings();
+    cx.bind_keys(bindings);
+}
+
+fn localize_binding(
+    binding: &KeyBinding,
+    equivalents: &crate::settings::KeyEquivalents,
+) -> KeyBinding {
+    let mut moved = false;
+    let source = binding
+        .keystrokes()
+        .iter()
+        .map(|keystroke| {
+            let keystroke = keystroke.inner();
+            let key = crate::settings::localize_key(&keystroke.key, equivalents);
+            moved |= key != keystroke.key.as_str();
+            Keystroke {
+                key: key.into_owned(),
+                ..keystroke.clone()
+            }
+            .unparse()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !moved {
+        return binding.clone();
+    }
+    match KeyBinding::load(
+        &source,
+        binding.action().boxed_clone(),
+        binding.predicate(),
+        false,
+        binding.action_input(),
+        &gpui::DummyKeyboardMapper,
+    ) {
+        Ok(mut localized) => {
+            if let Some(meta) = binding.meta() {
+                localized.set_meta(meta);
+            }
+            localized
+        }
+        Err(error) => {
+            tracing::warn!(%error, %source, "unbindable localized shortcut; keeping US key");
+            binding.clone()
+        }
+    }
 }
 
 /// Bind a shortcut that older keymaps may already use for another action:
@@ -2387,6 +2457,8 @@ pub struct Shell {
     chat_hover_resync: bool,
     /// The sidebar row whose hover card shows (or waits out its dwell).
     session_hover_card: session_hover_card::SessionHoverCard,
+    /// Draws that card in gpui's tooltip layer.
+    session_card_view: Entity<session_hover_card::SessionCardView>,
     /// Scroll position of the sidebar lists region (drives its edge fades).
     sidebar_scroll: gpui::ScrollHandle,
     /// In-flight reorder for the pinned section only.
@@ -2659,6 +2731,26 @@ impl Shell {
                     this.pending_workspace_command = Some(*command);
                     cx.notify();
                 }
+                ComposerEvent::AnnotationsChanged(numbers) => {
+                    let key = this.panel_key(cx);
+                    for surface in this.right_tabs.get(&key).into_iter().flatten() {
+                        if let RightSurface::Browser(id) = surface
+                            && let Some(browser) = this.browsers.get(id)
+                        {
+                            browser.read(cx).keep_markers(numbers);
+                        }
+                    }
+                }
+                ComposerEvent::AnnotationHovered(number) => {
+                    let key = this.panel_key(cx);
+                    for surface in this.right_tabs.get(&key).into_iter().flatten() {
+                        if let RightSurface::Browser(id) = surface
+                            && let Some(browser) = this.browsers.get(id)
+                        {
+                            browser.read(cx).focus_marker(*number);
+                        }
+                    }
+                }
                 ComposerEvent::NewThreadTransitionStarted => {
                     // Route observation drives the dock once selection commits.
                     cx.notify();
@@ -2916,6 +3008,10 @@ impl Shell {
             chat_status_hover: None,
             chat_hover_resync: false,
             session_hover_card: Default::default(),
+            session_card_view: {
+                let shell = cx.weak_entity();
+                cx.new(|_| session_hover_card::SessionCardView::new(shell))
+            },
             sidebar_scroll: gpui::ScrollHandle::new(),
             pinned_session_drag: None,
             pinned_session_drag_generation: 0,
@@ -4245,6 +4341,26 @@ impl Shell {
                 }
                 crate::browser::BrowserEvent::Close => {
                     this.close_right_surface(RightSurface::Browser(id), window, cx)
+                }
+                crate::browser::BrowserEvent::Annotation {
+                    annotation,
+                    marker,
+                    last,
+                } => {
+                    // Only the session that owns this tab receives its picks.
+                    if this.panel_key(cx) == owner {
+                        let annotation = annotation.clone();
+                        let last = *last;
+                        if last && let Some(browser) = this.browsers.get(&id) {
+                            browser.read(cx).release_keyboard();
+                        }
+                        let number = this.composer.update(cx, |composer, cx| {
+                            composer.add_browser_annotation(annotation, last, window, cx)
+                        });
+                        if let (Some(number), Some(browser)) = (number, this.browsers.get(&id)) {
+                            browser.read(cx).label_marker(*marker, number);
+                        }
+                    }
                 }
             }
         });
@@ -8033,6 +8149,7 @@ impl Shell {
                     match button {
                         gpui::WindowButton::Minimize => linux_caption_button(
                             "window-minimize",
+                            "Minimize",
                             icons::WINDOW_MINIMIZE,
                             false,
                             theme,
@@ -8040,18 +8157,24 @@ impl Shell {
                         )
                         .into_any_element(),
                         gpui::WindowButton::Maximize => {
-                            let (id, icon_path) = if is_maximized {
-                                ("window-restore", icons::WINDOW_RESTORE)
+                            let (id, label, icon_path) = if is_maximized {
+                                ("window-restore", "Restore", icons::WINDOW_RESTORE)
                             } else {
-                                ("window-maximize", icons::WINDOW_MAXIMIZE)
+                                ("window-maximize", "Maximize", icons::WINDOW_MAXIMIZE)
                             };
-                            linux_caption_button(id, icon_path, false, theme, |_, window, _| {
-                                window.zoom_window()
-                            })
+                            linux_caption_button(
+                                id,
+                                label,
+                                icon_path,
+                                false,
+                                theme,
+                                |_, window, _| window.zoom_window(),
+                            )
                             .into_any_element()
                         }
                         gpui::WindowButton::Close => linux_caption_button(
                             "window-close",
+                            "Close",
                             icons::CLOSE,
                             true,
                             theme,
@@ -8918,14 +9041,7 @@ impl Shell {
             && !preview
             && rename_input.is_none()
             && self.session_hover_card.shown() == Some(id.as_str()))
-        .then(|| {
-            self.render_session_hover_card(
-                &id,
-                time_ago.clone(),
-                cx,
-            )
-        })
-        .flatten();
+        .then(|| self.render_session_hover_card(&id, time_ago.clone(), cx));
         let card_id = id.clone();
         // Hover fades over transition-colors (godspeed session-row.tsx) — both
         // the wash and the title brighten ride the same 150ms blend.
@@ -10704,12 +10820,16 @@ impl Shell {
         // Settings is a toggle: while its page is up the button keeps the
         // hover wash + full-strength glyph, and a click returns to chat.
         let settings_open = matches!(self.route, Route::Settings(_));
-        let settings_tooltip: SharedString = match (settings_open, cfg!(target_os = "macos")) {
-            (false, true) => "Settings · ⌘,".into(),
-            (false, false) => "Settings · Ctrl+,".into(),
-            (true, true) => "Close settings · ⌘,".into(),
-            (true, false) => "Close settings · Ctrl+,".into(),
-        };
+        let settings_tooltip: SharedString = format!(
+            "{} · {}",
+            if settings_open {
+                "Close settings"
+            } else {
+                "Settings"
+            },
+            crate::settings::badge_combo("mod-,")
+        )
+        .into();
         let voice_trigger = self.render_voice_trigger(theme, cx);
         div()
             .w_full()
@@ -13807,6 +13927,7 @@ fn windows_caption_button(
 /// of the drag strip's event surface (see [`window_control_button`]).
 fn linux_caption_button(
     id: &'static str,
+    label: &'static str,
     icon_path: &'static str,
     close: bool,
     theme: &Theme,
@@ -13831,6 +13952,9 @@ fn linux_caption_button(
         .rounded(px(6.0))
         .cursor_pointer()
         .hover(move |style| style.bg(hover_bg))
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tooltip(crate::settings::widgets::text_tooltip(label))
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {
@@ -14326,7 +14450,10 @@ impl Render for Shell {
                         this.open_add_space_on_device(&action.device, cx);
                         return;
                     }
-                    this.open_new_session(Some(action.project_id.clone()), cx);
+                    this.open_new_session(
+                        Some(NewSessionTarget::Project(action.project_id.clone())),
+                        cx,
+                    );
                     // Stage after the composer has swapped to the new
                     // session's draft, which runs on the state observation
                     // `open_new_session` just queued. A draft already waiting
@@ -14891,7 +15018,8 @@ impl Render for Shell {
             // element at the window edges.
             .children(Self::render_linux_resize_borders(window));
         self.render_time = None;
-        root
+        // Wheel notches anywhere in the window glide (Appearance → Motion).
+        crate::smooth_scroll::smooth_scroll(root)
     }
 }
 
@@ -16995,6 +17123,7 @@ mod exit_regressions {
                     settings.pause_animations_in_background = true;
                     settings.animated_dock_icon = false;
                 });
+                settings::set_smooth_scrolling(false, cx);
                 // Any shell-owned change (sidebar width, panels) republishes
                 // the working copy; it must not revert the motion choices.
                 shell.schedule_save(cx);
@@ -17002,6 +17131,7 @@ mod exit_regressions {
                 assert_eq!(saved.reduce_motion, crate::motion::ReduceMotion::On);
                 assert!(saved.pause_animations_in_background);
                 assert!(!saved.animated_dock_icon);
+                assert!(!saved.smooth_scrolling);
             })
             .unwrap();
     }
@@ -18129,15 +18259,78 @@ mod exit_regressions {
                     state.apply_spaces(vec![space("one"), space("two")]);
                 });
                 shell.settings.space_filter = None;
-                shell.open_new_session(Some("two".into()), cx);
+                shell.open_new_session(Some(NewSessionTarget::Project("two".into())), cx);
                 let state = shell.state.read(cx);
                 assert!(state.selected_chat.is_none());
                 assert_eq!(state.selected_space.as_deref(), Some("two"));
 
                 // The explicit project wins over a standing filter.
                 shell.settings.space_filter = Some("one".into());
-                shell.open_new_session(Some("two".into()), cx);
+                shell.open_new_session(Some(NewSessionTarget::Project("two".into())), cx);
                 assert_eq!(shell.state.read(cx).selected_space.as_deref(), Some("two"));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn new_session_without_a_project_homes_the_canvas_on_that_device(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            settings::init(settings::UiSettings::default(), dir.path(), cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        window
+            .update(cx, |shell, _, cx| {
+                shell.state.update(cx, |state, cx| {
+                    state.apply_spaces(vec![zeron_proto::Space {
+                        id: "repo".into(),
+                        device_id: "local".into(),
+                        path: "/repo".into(),
+                        name: None,
+                        git_detected: false,
+                        git_checked_at: None,
+                        checkout_id: None,
+                        repository_id: None,
+                        created_at: Utc::now(),
+                    }]);
+                    state.select_space(Some("repo".into()), cx);
+                });
+                // The opt-out wins over a standing filter, which the shell
+                // then drops so the first send stays visible.
+                shell.settings.space_filter = Some("repo".into());
+                shell.open_new_session(Some(NewSessionTarget::NoProject("remote".into())), cx);
+                let state = shell.state.read(cx);
+                assert!(state.selected_chat.is_none());
+                assert!(state.no_project);
+                assert!(state.selected_space.is_none());
+                assert_eq!(state.effective_device_id().as_deref(), Some("remote"));
+                shell.on_state_changed(&shell.state.clone(), cx);
+                assert!(shell.settings.space_filter.is_none());
             })
             .unwrap();
     }
@@ -19502,6 +19695,10 @@ impl Shell {
         self.transcript
             .update(cx, |t, cx| t.fixture_open_receipt(cx));
     }
+    pub fn fixture_open_browser(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_surfaces_open(true, cx);
+        self.add_browser_surface(Some(url), window, cx);
+    }
 }
 
 #[cfg(test)]
@@ -19830,6 +20027,105 @@ mod settings_modal_regressions {
             (Route::Chat, Some("newer".into()))
         );
         assert_eq!(press(&keymap.new_session), (Route::Chat, None));
+    }
+
+    /// An AZERTY Mac types ⌘& on the key AppKit reads as ⌘1, and ⌘⇧& — which
+    /// gpui reports as a literal ⌘1 — is no shortcut there. Bound in US keys
+    /// only, Jump to session 1 answered the second and not the first.
+    #[gpui::test]
+    fn azerty_jumps_from_the_key_appkit_reads_as_cmd_1(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        init_settings_test(settings::UiSettings::default(), dir.path(), cx);
+        let window = cx.add_window(|_, cx| {
+            let mut shell = test_shell(dir.path(), cx);
+            shell.settings.sidebar_organization = SidebarOrganization::InOneList;
+            shell.state.update(cx, |state, _| {
+                state.workspace_scope = Some(WorkspaceScope::Local);
+                state.local_device_id = Some("local".into());
+                state.chats = ["older", "newer"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, id)| {
+                        serde_json::from_value(serde_json::json!({
+                            "id": id, "title": id, "deviceId": "local", "archived": false,
+                            "createdAt": Utc::now() - chrono::Duration::minutes(10 - ix as i64),
+                        }))
+                        .unwrap()
+                    })
+                    .collect();
+                state.selected_chat = Some("older".into());
+            });
+            shell
+        });
+        // `Shell::new` bound the keymap against the test platform, which has
+        // no layout table; localize it as an AZERTY Mac's `apply_keymap` does.
+        cx.run_until_parked();
+        cx.update(|cx| localize_key_bindings(cx, &settings::azerty_key_equivalents()));
+        let mut press = |combo: &str| {
+            cx.simulate_keystrokes(window.into(), &platform_combo(combo));
+            window
+                .read_with(cx, |shell, cx| shell.state.read(cx).selected_chat.clone())
+                .unwrap()
+        };
+        assert_eq!(press("mod-1"), Some("older".into()));
+        assert_eq!(press("mod-&"), Some("newer".into()));
+    }
+
+    /// Localizing moves exactly the bindings whose key the layout relocates —
+    /// Godspeed's and gpui-base's alike — and keeps the rest, in order.
+    #[gpui::test]
+    fn azerty_keymap_moves_only_relocated_keys(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        init_settings_test(settings::UiSettings::default(), dir.path(), cx);
+        let keymap = KeymapConfig::default();
+        cx.update(|cx| apply_keymap(cx, &keymap, ComposerSendBehavior::default()));
+        let azerty = settings::azerty_key_equivalents();
+        let sources = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                cx.key_bindings()
+                    .borrow()
+                    .bindings()
+                    .map(|binding| {
+                        let keys = binding
+                            .keystrokes()
+                            .iter()
+                            .map(|keystroke| keystroke.inner().unparse())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        (binding.action().name(), keys)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let before = sources(cx);
+        cx.update(|cx| localize_key_bindings(cx, &azerty));
+        let after = sources(cx);
+        assert_eq!(before.len(), after.len());
+        for ((action, us), (localized_action, localized)) in before.iter().zip(&after) {
+            assert_eq!(action, localized_action, "binding order must hold");
+            let expected = us
+                .split(' ')
+                .map(|keystroke| settings::localize_combo(keystroke, &azerty))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(localized, &expected, "{action}");
+        }
+        let bound = |action: &str| {
+            after
+                .iter()
+                .filter(|(name, _)| *name == action)
+                .map(|(_, keys)| keys.as_str())
+                .collect::<Vec<_>>()
+        };
+        let primary = platform_combo("mod");
+        // Every jump slot shares the action name: slot 1 now sits on &, and
+        // none stays on the literal 1 that AZERTY types only with Shift.
+        let jumps = bound(JumpSession(0).name());
+        assert!(jumps.contains(&format!("{primary}-&").as_str()));
+        assert!(!jumps.contains(&format!("{primary}-1").as_str()));
+        assert!(bound(OpenModelPicker.name()).contains(&format!("{primary}-:").as_str()));
+        assert!(bound(crate::browser::Back.name()).contains(&format!("{primary}-^").as_str()));
+        assert!(bound(ToggleSidebar.name()).contains(&format!("{primary}-b").as_str()));
     }
 
     #[gpui::test]

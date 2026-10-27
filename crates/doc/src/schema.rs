@@ -835,6 +835,36 @@ impl SessionDoc {
         status: Option<&str>,
         tail: Option<&str>,
     ) -> Result<bool, DocError> {
+        // Genus gate: subagent lifecycle only ever lands on a SPAWN call.
+        // Mis-keyed tagged traffic (a driver bug — claude's background shells
+        // settled through the subagent subtype, 2026-08-20) must not decorate
+        // an ordinary chip with a ref to a doc it never had.
+        let Some(part) = self.newest_tool_part(part_id).filter(is_spawn_part) else {
+            return Ok(false);
+        };
+        if let Some(r) = subagent_ref {
+            part.insert("subagentRef", r)?;
+        }
+        if let Some(s) = status {
+            part.insert("subagentStatus", s)?;
+        }
+        if let Some(t) = tail {
+            part.insert("subagentTail", t)?;
+        }
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Whether `part_id` is one of this doc's subagent SPAWN chips, the only
+    /// part a subagent doc may hang off (same lookup and gate as
+    /// [`Self::update_subagent_chip`]).
+    pub fn has_subagent_spawn(&self, part_id: &str) -> bool {
+        self.newest_tool_part(part_id)
+            .is_some_and(|part| is_spawn_part(&part))
+    }
+
+    /// The tool part with this id, searched from the NEWEST entry back.
+    fn newest_tool_part(&self, part_id: &str) -> Option<LoroMap> {
         let messages = self.doc.get_list("messages");
         for i in (0..messages.len()).rev() {
             let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
@@ -862,37 +892,11 @@ impl SessionDoc {
                     Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == part_id
                 );
                 if is_tool && id_matches {
-                    // Genus gate: subagent lifecycle only ever lands on a
-                    // SPAWN call. Mis-keyed tagged traffic (a driver bug —
-                    // claude's background shells settled through the
-                    // subagent subtype, 2026-08-20) must not decorate an
-                    // ordinary chip with a ref to a doc it never had.
-                    let is_spawn = part
-                        .get("call")
-                        .and_then(|v| match v {
-                            loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
-                            _ => None,
-                        })
-                        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
-                        .is_some_and(|c| c.is_subagent_spawn());
-                    if !is_spawn {
-                        return Ok(false);
-                    }
-                    if let Some(r) = subagent_ref {
-                        part.insert("subagentRef", r)?;
-                    }
-                    if let Some(s) = status {
-                        part.insert("subagentStatus", s)?;
-                    }
-                    if let Some(t) = tail {
-                        part.insert("subagentTail", t)?;
-                    }
-                    self.doc.commit();
-                    return Ok(true);
+                    return Some(part);
                 }
             }
         }
-        Ok(false)
+        None
     }
 
     /// Export a snapshot (persistence) — `ExportMode::Snapshot`.
@@ -901,6 +905,17 @@ impl SessionDoc {
             .export(ExportMode::Snapshot)
             .map_err(|e| DocError::Schema(e.to_string()))
     }
+}
+
+/// A tool part whose call is a subagent spawn ([`zeron_proto::ToolCall::is_subagent_spawn`]).
+fn is_spawn_part(part: &LoroMap) -> bool {
+    part.get("call")
+        .and_then(|v| match v {
+            loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
+            _ => None,
+        })
+        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
+        .is_some_and(|c| c.is_subagent_spawn())
 }
 
 fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Result<(), DocError> {
@@ -1911,6 +1926,10 @@ mod tests {
             ),
         ];
         w.sync(&parts).unwrap();
+        // The engine asks the same question before it opens a subagent doc.
+        assert!(doc.has_subagent_spawn("toolu_spawn"));
+        assert!(!doc.has_subagent_spawn("toolu_bash"));
+        assert!(!doc.has_subagent_spawn("toolu_elsewhere"));
         assert!(
             doc.update_subagent_chip(
                 "toolu_spawn",

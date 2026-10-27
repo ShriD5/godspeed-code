@@ -35,8 +35,9 @@ use std::time::{Duration, Instant};
 use gpui::{
     AnyElement, Bounds, ClipboardItem, ContentMask, Context, Entity, ListAlignment, ListOffset,
     ListScrollEvent, ListState, MouseButton, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder,
-    Pixels, Point, SharedString, StyledImage as _, StyledText, Subscription, Task, TextAlign,
-    TextRun, Window, canvas, div, img, list, point, prelude::*, px, size,
+    Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, StyledImage as _, StyledText,
+    Subscription, Task, TextAlign, TextRun, Window, canvas, div, img, list, point, prelude::*, px,
+    size,
 };
 
 use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
@@ -1069,6 +1070,16 @@ pub enum RowKind {
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
+    /// A message this chat's agent sent another chat through Godspeed's
+    /// `send_message`: one `Message to [logo] Chat` line, not the tool call.
+    SentMessage {
+        /// The recipient as the call named it (id, id prefix, or title),
+        /// resolved against the chat list at render.
+        to: SharedString,
+        /// The call hasn't returned yet.
+        pending: bool,
+        failed: bool,
+    },
     /// One top-level markdown block of a completed message.
     Markdown {
         tree: Arc<BlockTree>,
@@ -1533,6 +1544,42 @@ pub fn rows_for_entry(
                 subagent_tail,
                 ..
             } => {
+                // A message to another chat reads as one line naming the
+                // recipient, one per recipient, out of the tool fold (compact
+                // mode folds it with the rest of the work).
+                if !compact
+                    && let Some(sent) = zeron_proto::agent_messages::outgoing_messages(call)
+                {
+                    flush_group(
+                        &mut rows,
+                        &mut pending_group,
+                        &mut group_ix,
+                        group_last_part_ix,
+                    );
+                    for (message_ix, message) in sent.into_iter().enumerate() {
+                        let version = {
+                            use std::hash::{Hash, Hasher};
+                            let mut h = std::collections::hash_map::DefaultHasher::new();
+                            (&message.chat, *resolved, *is_error).hash(&mut h);
+                            h.finish()
+                        };
+                        rows.push(Row {
+                            id: format!("{}#{}.m{message_ix}", entry.id, part.id()).into(),
+                            version,
+                            turn_start: false,
+                            copy_text: None,
+                            kind: RowKind::SentMessage {
+                                to: message.chat.into(),
+                                pending: !*resolved,
+                                failed: *is_error,
+                            },
+                            entry_id: entry.id.clone().into(),
+                            timestamp: None,
+                            compact_fold: None,
+                        });
+                    }
+                    continue;
+                }
                 let item = ToolItem {
                     part_id: part.id().to_owned(),
                     call: call.clone(),
@@ -2276,6 +2323,9 @@ const TOOL_IMAGE_STRIP_HEIGHT: f32 = DETAIL_SEPARATOR + TOOL_IMAGE_HEIGHT + 2.0 
 struct ImageMenu {
     path: String,
     devices: Vec<String>,
+    /// A reply's Markdown image: its chat and type. Copy image reads it
+    /// through `ReadChatImageChunk`, under that chat's jail, like the preview.
+    chat_image: Option<(String, &'static str)>,
     position: Point<Pixels>,
     active: Option<usize>,
 }
@@ -3376,6 +3426,15 @@ pub struct Transcript {
     /// re-engaged inside the 70px band, after an own-send first overflows, and
     /// on the jump button.
     pinned: bool,
+    /// The latest wheel/touch input headed for the top of a scrollable list
+    /// and broke the pin as it arrived ([`Transcript::on_scroll_wheel`]); the
+    /// deferred decision in [`Transcript::handle_scroll`] must not re-engage
+    /// it.
+    input_escaped: bool,
+    /// The list took the wheel event in flight ([`Transcript::handle_scroll`]
+    /// runs first): a wheel the list never saw (one an overlay above it let
+    /// bubble) must not break the pin.
+    list_took_input: bool,
     /// A locally-sent prompt currently held near the viewport top while its
     /// reply grows into the empty space below it.
     own_turn: Option<OwnTurnAnchor>,
@@ -3477,6 +3536,11 @@ pub struct Transcript {
     /// In-flight ReadAttachmentChunk loads, keyed by device, path and validation
     /// policy; results land in the global attachment cache.
     attachment_loads: HashMap<crate::attachments::AttachmentKey, Task<()>>,
+    /// Local images replies name in Markdown: the open chat, the reads its
+    /// rows ask for while laying out, and the rows each image shows in.
+    reply_images: Rc<RefCell<crate::reply_images::ReplyImages>>,
+    /// In-flight ReadChatImageChunk loads (at most `reply_images::MAX_LOADS`).
+    reply_image_loads: HashMap<crate::attachments::AttachmentKey, Task<()>>,
     /// Inline `show_visual` visuals, keyed by row id.
     visuals: HashMap<SharedString, Entity<crate::visuals::VisualFrame>>,
     /// Scheduled retry wake-ups for errored sources (the 2s→15s ladder).
@@ -3752,6 +3816,8 @@ impl Transcript {
             show_jump_button: false,
             last_scroll_distance: 0.0,
             pinned,
+            input_escaped: false,
+            list_took_input: false,
             own_turn: None,
             pending_queued_turns: PendingQueuedTurns::default(),
             own_turn_kick: false,
@@ -3794,6 +3860,8 @@ impl Transcript {
             image_menu_focus: cx.focus_handle(),
             image_copy: None,
             attachment_loads: HashMap::new(),
+            reply_images: Rc::default(),
+            reply_image_loads: HashMap::new(),
             visuals: HashMap::new(),
             attachment_retries: HashMap::new(),
             blob_details: HashMap::new(),
@@ -4037,6 +4105,7 @@ impl Transcript {
         // wheel/touch input. Neither operation reads the borrowed ListState.
         self.user_collapse_scroll = None;
         self.cancel_user_hold();
+        self.list_took_input = true;
         let released_own_turn = self.own_turn.as_ref().is_some_and(|anchor| anchor.held);
         self.release_own_turn_hold();
         if self.own_turn.is_some() {
@@ -4055,6 +4124,8 @@ impl Transcript {
         cx.defer(move |cx| {
             this.update(cx, |this: &mut Transcript, cx| {
                 this.discard_pending_viewport();
+                this.list_took_input = false;
+                let escaped = std::mem::take(&mut this.input_escaped);
                 // Input owns the viewport immediately, including wheel-down
                 // after background streaming. A held turn can be stale while
                 // frame callbacks are paused; reasserting its old prompt here
@@ -4065,8 +4136,8 @@ impl Transcript {
                     this.last_scroll_distance = distance;
                     // Reaching the end preserves normal tail-follow intent
                     // without reasserting a possibly stale prompt hold.
-                    this.pinned =
-                        distance <= AT_BOTTOM_PX || Self::should_restick(distance, previous);
+                    this.pinned = !escaped
+                        && (distance <= AT_BOTTOM_PX || Self::should_restick(distance, previous));
                     this.spring.reset();
                     this.spring_last_tick = None;
                     // Re-stick only when returning to a short turn's actual
@@ -4078,7 +4149,11 @@ impl Transcript {
                                 >= Self::own_send_inset(ix) - OWN_SEND_SCROLL_SLACK_PX - 2.0
                         })
                     });
-                    if !released_own_turn && at_hold && Self::should_restick(distance, previous) {
+                    if !released_own_turn
+                        && !escaped
+                        && at_hold
+                        && Self::should_restick(distance, previous)
+                    {
                         if let Some(anchor) = this.own_turn.as_mut() {
                             anchor.held = true;
                             anchor.positioned = false;
@@ -4097,7 +4172,7 @@ impl Transcript {
                 let distance = this.distance_from_bottom();
                 let previous = this.last_scroll_distance;
                 this.last_scroll_distance = distance;
-                if distance > previous + 1.0 && distance > AT_BOTTOM_PX {
+                if escaped || (distance > previous + 1.0 && distance > AT_BOTTOM_PX) {
                     // User input moving away from the bottom breaks the pin.
                     // Content growth never lands here — it doesn't fire the
                     // scroll handler (mugen §1e: interrupt from input, not
@@ -4121,6 +4196,32 @@ impl Transcript {
             })
             .ok();
         });
+    }
+
+    /// A wheel notch headed for the top breaks the pin as it arrives, however
+    /// little it moved, as use-stick-to-bottom's wheel handler does. The
+    /// distance test in [`Self::handle_scroll`] can't see that on its own: a
+    /// smoothed notch starts and ends with sub-pixel slices, and its slices
+    /// arrive on frames, where the spring's step runs before that deferred
+    /// decision, pulling the view back and recording the distance it then
+    /// compares against. Precise (trackpad) input keeps the distance test.
+    /// Children bubble first, so the list has applied the input by now, or
+    /// never saw it.
+    fn on_scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let toward_top = matches!(event.delta, ScrollDelta::Lines(delta) if delta.y > 0.0);
+        self.input_escaped = std::mem::take(&mut self.list_took_input)
+            && toward_top
+            && self.list.max_offset_for_scrollbar().y > px(0.0);
+        if self.input_escaped {
+            self.pinned = false;
+            self.spring.reset();
+            self.spring_last_tick = None;
+        }
     }
 
     fn on_selection_mouse_move(
@@ -6317,6 +6418,27 @@ impl Transcript {
         self.image_menu.open(ImageMenu {
             path,
             devices,
+            chat_image: None,
+            position,
+            active: None,
+        });
+        window.focus(&self.image_menu_focus, cx);
+        cx.notify();
+    }
+
+    /// The image menu for an image a reply in `chat` names in Markdown, read
+    /// from `host` within that chat's folder.
+    fn open_chat_image_menu(
+        &mut self,
+        request: &crate::reply_images::ReplyImageRequest,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.image_menu.open(ImageMenu {
+            path: request.path.clone(),
+            devices: vec![request.host.clone()],
+            chat_image: Some((request.chat_id.clone(), request.mime)),
             position,
             active: None,
         });
@@ -6360,16 +6482,23 @@ impl Transcript {
             return;
         };
         let (path, devices) = (menu.path.clone(), menu.devices.clone());
+        let chat_image = menu.chat_image.clone();
         self.close_image_menu(cx);
         match action {
             0 => cx.write_to_clipboard(gpui::ClipboardItem::new_string(path)),
-            1 => self.copy_image(path, devices, cx),
+            1 => self.copy_image(path, devices, chat_image, cx),
             _ => {}
         }
     }
 
     /// Copy the original file (not the preview) from its owning device.
-    fn copy_image(&mut self, path: String, devices: Vec<String>, cx: &mut Context<Self>) {
+    fn copy_image(
+        &mut self,
+        path: String,
+        devices: Vec<String>,
+        chat_image: Option<(String, &'static str)>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
@@ -6378,11 +6507,21 @@ impl Transcript {
             let executor = cx.background_executor().clone();
             for device in &devices {
                 let target = (local.as_deref() != Some(device.as_str())).then_some(device.as_str());
-                if let Some((_, mime, bytes)) = crate::attachments::read_attachment_bytes(
-                    &engine, &executor, target, &path, None,
-                )
-                .await
-                {
+                let read = match &chat_image {
+                    Some((chat, mime)) => {
+                        crate::attachments::read_chat_image_bytes(
+                            &engine, &executor, target, chat, &path, mime,
+                        )
+                        .await
+                    }
+                    None => {
+                        crate::attachments::read_attachment_bytes(
+                            &engine, &executor, target, &path, None,
+                        )
+                        .await
+                    }
+                };
+                if let Some((_, mime, bytes)) = read {
                     let format =
                         gpui::ImageFormat::from_mime_type(&mime).unwrap_or(gpui::ImageFormat::Png);
                     // SVG is markup an agent may have written: copy the parsed,
@@ -6616,33 +6755,75 @@ impl Transcript {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let chat = self
-            .state
-            .read(cx)
-            .chats
-            .iter()
-            .find(|chat| chat.id == sender.chat_id.as_ref());
+        div()
+            .w_full()
+            .pb(px(USER_CAPTION_GAP))
+            .child(self.render_chat_caption(
+                row_id,
+                "Message from",
+                Some(sender.chat_id.as_ref()),
+                sender.title.clone(),
+                true,
+                theme,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// `{lead} [logo] Chat` over a message between chats: chat `chat_id`'s
+    /// provider mark and live title, `fallback` for one this workspace doesn't
+    /// list. A listed chat opens on click. `end` aligns it over a user bubble;
+    /// otherwise it sits over the agent's side.
+    #[allow(clippy::too_many_arguments)]
+    fn render_chat_caption(
+        &self,
+        row_id: &SharedString,
+        lead: &'static str,
+        chat_id: Option<&str>,
+        fallback: SharedString,
+        end: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let chat = chat_id.and_then(|id| {
+            self.state
+                .read(cx)
+                .chats
+                .iter()
+                .find(|chat| chat.id == id)
+        });
         let known = chat.is_some();
         let title: SharedString = chat
             .and_then(|chat| chat.title.as_deref())
             .map(str::trim)
             .filter(|title| !title.is_empty())
-            .map_or_else(|| sender.title.clone(), |title| single_line(title).into());
+            .map_or_else(
+                || {
+                    if chat.is_some() {
+                        // Listed but untitled: its short id, as the header says.
+                        chat_id.unwrap_or_default().chars().take(8).collect::<String>().into()
+                    } else {
+                        single_line(&fallback).into()
+                    }
+                },
+                |title| single_line(title).into(),
+            );
         let mark = chat
             .and_then(|chat| chat.config.as_ref())
             .map(|config| crate::pickers::harness_brand_icon(config.harness))
             .unwrap_or((crate::icons::CHAT_ROUND_LINE, None));
-        let chat_id = sender.chat_id.to_string();
+        let chat_id = chat_id.unwrap_or_default().to_owned();
         div()
             .w_full()
             .min_w_0()
             .flex()
-            .justify_end()
-            .pb(px(USER_CAPTION_GAP))
+            .when(end, |el| el.justify_end())
+            .when(!end, |el| el.justify_start())
             .child(
                 user_caption(theme)
-                    .id(SharedString::from(format!("{row_id}-sender")))
-                    .child(div().flex_none().child("Message from"))
+                    .id(SharedString::from(format!("{row_id}-chat")))
+                    .max_w(px(self.content_width * 0.8))
+                    .child(div().flex_none().child(lead))
                     .child(caption_label(title, Some(mark), theme.text_muted))
                     .when(known, |el| {
                         el.role(gpui::Role::Link)
@@ -6720,14 +6901,77 @@ impl Transcript {
             .into_any_element()
     }
 
+    /// The chat whose replies this transcript shows, for the images they
+    /// name. A subagent tab draws none: its doc isn't the chat it borrows.
+    fn reply_chat(&self, cx: &gpui::App) -> Option<crate::reply_images::ReplyChat> {
+        if self.doc_override.is_some() {
+            return None;
+        }
+        let id = self.chat_id.as_deref()?;
+        let chat = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == id)?;
+        Some(crate::reply_images::ReplyChat {
+            id: chat.id.clone(),
+            cwd: chat.cwd.clone(),
+            host: chat.device_id.clone(),
+        })
+    }
+
     /// Media wiring for settled Markdown: Mermaid fences become diagrams
-    /// once rendered and keep their source until then (or on failure).
-    /// Inline images keep their ordinary chat rendering.
+    /// once rendered and keep their source until then (or on failure), and
+    /// local images the chat's folder holds are drawn (`reply_images`).
     fn diagram_media(&mut self, cx: &Context<Self>) -> render::MediaUi {
+        self.reply_images.borrow_mut().show(self.reply_chat(cx));
         let cache = self.diagrams.clone();
+        let images = self.reply_images.clone();
         let owner = cx.weak_entity();
+        let viewer = owner.clone();
         let media = self.diagram_media.get_or_insert_with(|| render::MediaUi {
-            image: None,
+            image: Some(Rc::new(move |image, id, theme| {
+                use crate::reply_images::{ReplyImage, frame, sized};
+                // `{row}-image-{block}-{run}`: the row to remeasure on landing.
+                let row = SharedString::from(id.rsplit_once("-image-")?.0.to_owned());
+                let element = match images.borrow_mut().lookup(&image.source, row)? {
+                    ReplyImage::Loaded(loaded, request) => {
+                        let (open, menu) = (viewer.clone(), viewer.clone());
+                        sized(frame(id), &loaded.image, theme)
+                            .debug_selector(|| "reply-image".into())
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                move |event: &gpui::MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    let _ = menu.update(cx, |this, cx| {
+                                        this.open_chat_image_menu(
+                                            &request,
+                                            event.position,
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                },
+                            )
+                            .on_click(move |_, window, cx| {
+                                let preview = crate::attachments::PreviewImage::new(
+                                    loaded.name.clone(),
+                                    loaded.image.clone(),
+                                );
+                                let _ = open.update(cx, |this, cx| {
+                                    this.open_image_preview(preview, window, cx)
+                                });
+                            })
+                            .into_any_element()
+                    }
+                    ReplyImage::Loading => frame(id)
+                        .text_color(theme.text_muted)
+                        .child("Loading image…")
+                        .into_any_element(),
+                };
+                Some(element)
+            })),
             diagram: Some(Rc::new(move |code, id, _theme| {
                 let lookup = cache.borrow_mut().request(code, &id);
                 match lookup {
@@ -6812,6 +7056,66 @@ impl Transcript {
         }));
     }
 
+    /// Start the image reads this paint asked for, a few at a time: a landed
+    /// read repaints, and the repaint asks again for the rest.
+    fn ensure_reply_image_loads(&mut self, cx: &mut Context<Self>) {
+        let wanted = self.reply_images.borrow_mut().take_wanted();
+        for request in wanted {
+            if self.reply_image_loads.len() >= crate::reply_images::MAX_LOADS {
+                return;
+            }
+            if self.reply_image_loads.contains_key(&request.key)
+                || !crate::attachments::begin_load_for(&request.key)
+            {
+                continue;
+            }
+            self.spawn_reply_image_load(request, cx);
+        }
+    }
+
+    fn spawn_reply_image_load(
+        &mut self,
+        request: crate::reply_images::ReplyImageRequest,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::attachments::{read_chat_image, store_error_for, store_loaded_for};
+        let key = request.key.clone();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            store_error_for(&key);
+            return;
+        };
+        let local = self.state.read(cx).local_device_id.clone();
+        // Only the chat's host reads its folder; the relay forwards there.
+        let target =
+            (local.as_deref() != Some(request.host.as_str())).then(|| request.host.clone());
+        let claim = crate::attachments::AttachmentLoadGuard(key.clone());
+        let task = cx.spawn(async move |this, cx| {
+            let _claim = claim;
+            let loaded = read_chat_image(
+                &engine,
+                cx.background_executor(),
+                target.as_deref(),
+                &request.chat_id,
+                &request.path,
+                request.mime,
+            )
+            .await;
+            let landed = loaded.is_some();
+            match loaded {
+                Some(loaded) => store_loaded_for(&request.key, loaded.name.into(), loaded.image),
+                None => store_error_for(&request.key),
+            }
+            this.update(cx, |this, cx| {
+                this.reply_image_loads.remove(&request.key);
+                let rows = this.reply_images.borrow_mut().finish(&request.key, landed);
+                this.diagram_layout_changed(&rows, cx);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.reply_image_loads.insert(key, task);
+    }
+
     fn finish_diagram(
         &mut self,
         code: String,
@@ -6894,6 +7198,20 @@ impl Transcript {
         }
     }
 
+    /// Open an image in the shared lightbox; Escape returns focus here.
+    fn open_image_preview(
+        &mut self,
+        preview: crate::attachments::PreviewImage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.attachment_preview_return_focus = window.focused(cx);
+        preview.viewer.reset();
+        self.attachment_preview = Some(preview);
+        window.focus(&self.attachment_preview_focus, cx);
+        cx.notify();
+    }
+
     fn render_generated_image(
         &mut self,
         row_id: &SharedString,
@@ -6907,29 +7225,13 @@ impl Transcript {
         let devices = self.generated_attachment_device_ids(owner, cx);
         let state = self.attachment_state(&devices, path, Some(mime_type), cx);
         let theme = Theme::of(cx).clone();
-        let frame = div()
-            .id(SharedString::from(format!("{row_id}-generated")))
-            .w(px(512.0))
-            .max_w_full()
-            .h(px(320.0))
-            .max_h(px(420.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(12.0))
-            .overflow_hidden()
-            .bg(crate::theme::ink(0.045));
+        let frame = crate::reply_images::frame(SharedString::from(format!("{row_id}-generated")));
         match state {
             AttachmentSnapshot::Loaded(loaded) => {
-                let dimensions =
-                    crate::appshots::png_dimensions(&loaded.image.bytes).unwrap_or((512, 320));
-                let scale = (512.0 / dimensions.0 as f32)
-                    .min(420.0 / dimensions.1 as f32)
-                    .min(1.0);
                 let preview =
                     crate::attachments::PreviewImage::new(name.to_owned(), loaded.image.clone());
                 let menu_path = path.to_owned();
-                frame
+                crate::reply_images::sized(frame, &loaded.image, &theme)
                     .on_mouse_down(
                         gpui::MouseButton::Right,
                         cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -6943,36 +7245,18 @@ impl Transcript {
                             );
                         }),
                     )
-                    .w(px(dimensions.0 as f32 * scale))
-                    .h(px(dimensions.1 as f32 * scale))
-                    .role(gpui::Role::Button)
-                    .aria_label("Preview generated image")
-                    .tab_index(0)
-                    .cursor_pointer()
-                    .focus_visible(move |style| style.border_2().border_color(theme.accent))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.attachment_preview_return_focus = window.focused(cx);
-                        preview.viewer.reset();
-                        this.attachment_preview = Some(preview.clone());
-                        window.focus(&this.attachment_preview_focus, cx);
-                        cx.notify();
+                        this.open_image_preview(preview.clone(), window, cx)
                     }))
-                    .child(
-                        gpui::img(loaded.image)
-                            .size_full()
-                            // The frame's overflow clip is rectangular; round the image itself.
-                            .rounded(px(12.0))
-                            .object_fit(gpui::ObjectFit::Contain),
-                    )
                     .into_any_element()
             }
             AttachmentSnapshot::Loading => frame
                 .text_color(theme.text_muted)
-                .child("Loading generated image…")
+                .child("Loading image…")
                 .into_any_element(),
             AttachmentSnapshot::Error { .. } => frame
                 .text_color(theme.text_muted)
-                .child("Generated image unavailable")
+                .child("Image unavailable")
                 .into_any_element(),
         }
     }
@@ -7653,6 +7937,40 @@ impl Transcript {
                 }
                 column.into_any_element()
             }
+            RowKind::SentMessage {
+                to,
+                pending,
+                failed,
+            } => {
+                let chat = {
+                    let state = self.state.read(cx);
+                    let chats: Vec<(&str, Option<&str>)> = state
+                        .chats
+                        .iter()
+                        .map(|chat| (chat.id.as_str(), chat.title.as_deref()))
+                        .collect();
+                    zeron_proto::agent_messages::resolve_chat_key(to, &chats)
+                        .map(str::to_owned)
+                };
+                let lead = if *failed {
+                    "Couldn't message"
+                } else {
+                    "Message to"
+                };
+                div()
+                    .w_full()
+                    .when(*pending, |el| el.opacity(0.65))
+                    .child(self.render_chat_caption(
+                        &row.id,
+                        lead,
+                        chat.as_deref(),
+                        to.clone(),
+                        false,
+                        &theme,
+                        cx,
+                    ))
+                    .into_any_element()
+            }
             RowKind::Markdown { tree, block_ix } => {
                 let link = self.link_ui(cx);
                 let tree = self.inline_code_tree(tree, link.as_ref(), cx);
@@ -7828,8 +8146,9 @@ impl Transcript {
             RowKind::Receipt { receipt } => self.render_receipt(&row.id, receipt, &theme, cx),
             RowKind::ConductorCard { card } => self.render_conductor_card(card, &theme, cx),
         };
-        // Diagram fences this row just requested start rendering after layout.
+        // Diagram fences and images this row just requested start loading.
         self.ensure_diagram_worker(cx);
+        self.ensure_reply_image_loads(cx);
 
         // Hover-revealed metadata strip: a RESERVED 32px lane under the
         // entry's last row. Timestamp, copy action, and copied feedback only
@@ -8825,6 +9144,12 @@ impl Transcript {
             .zip(tools.iter())
             .map(
                 |(((((detail, invocation), affordance), open), fold), tool)| {
+                    // A spawn link is always `subagent_chip`'s full card row,
+                    // even under a compact fold: budgeting it at the tree
+                    // row's height clipped the last cards off the fold.
+                    if is_spawn_link(tool) {
+                        return CHIP_HEIGHT;
+                    }
                     let target = if *open {
                         base_row_height
                             + invocation.as_deref().map_or(0.0, detail_height)
@@ -9333,21 +9658,11 @@ pub struct AgentSender {
 /// agent sent: the agent keeps reading it in the stored prompt, while the
 /// transcript shows the sender above the bubble and only the body inside it.
 fn agent_message_sender(text: &str) -> Option<(AgentSender, &str)> {
-    let rest = text.strip_prefix("[Message from Godspeed chat ")?;
-    let (header, body) = rest.split_once("]\n\n")?;
-    let (label, id) =
-        header.rsplit_once(". Reply to it with the Godspeed `send_message` tool, chat ")?;
-    let id = id.strip_suffix('.')?;
-    // The label is `Title (short-id)`, or the short id alone when untitled.
-    let title = label
-        .strip_suffix(')')
-        .and_then(|label| label.rsplit_once(" ("))
-        .filter(|(_, short)| !short.is_empty() && id.starts_with(short))
-        .map_or(label, |(title, _)| title);
+    let (sender, body) = zeron_proto::agent_messages::agent_message_sender(text)?;
     Some((
         AgentSender {
-            chat_id: id.to_owned().into(),
-            title: single_line(title).into(),
+            chat_id: sender.chat_id.into(),
+            title: sender.title.into(),
         },
         body,
     ))
@@ -10718,6 +11033,7 @@ fn subagent_chip(
         })
         .child(
             div()
+                .debug_selector(|| id.to_string())
                 .id(id)
                 .when(rail, |el| el.ml(px(12.0)))
                 .h(px(CHIP_CARD_HEIGHT))
@@ -11052,6 +11368,7 @@ impl Render for Transcript {
             .on_mouse_move(cx.listener(Self::on_selection_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_selection_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_selection_mouse_up))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             // FIRST child ⇒ paints first: clears this transcript's slice of the
             // frame's markdown text-selection registry before any row's text
             // elements re-register (document paint order = selection order;
@@ -11109,6 +11426,105 @@ mod tests {
         assert!(!jump_visibility(shown, AT_BOTTOM_PX));
         assert!(!jump_visibility(false, 319.0));
         assert!(jump_visibility(false, 321.0));
+    }
+
+    #[gpui::test]
+    fn a_glided_notch_leaves_the_bottom_and_stays_where_it_lands(cx: &mut gpui::TestAppContext) {
+        struct Root(Entity<Transcript>);
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                crate::smooth_scroll::smooth_scroll(self.0.clone())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+            let state = cx.new(|_| AppState::new());
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat".into());
+                state.transcript_replayed = true;
+                state.transcript = vec![assistant(
+                    "reply",
+                    MessageStatus::Complete,
+                    vec![text_part("text", &"History.\n\n".repeat(120))],
+                )];
+                state.transcript_revision += 1;
+            });
+            cx.new(|cx| Transcript::new(state, cx))
+        });
+        transcript.update(cx, |this, cx| {
+            this.rail_enabled = false;
+            this.sync(cx);
+        });
+        let (_, cx) = cx.add_window_view(|_, _| Root(transcript.clone()));
+        // Frames at 120Hz in real time: the glide and the bottom spring both
+        // read the clock.
+        let frame = |cx: &mut gpui::VisualTestContext| {
+            std::thread::sleep(Duration::from_millis(8));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear();
+            });
+        };
+        for _ in 0..30 {
+            frame(cx);
+        }
+        let distance = |cx: &mut gpui::VisualTestContext| {
+            transcript.read_with(cx, |this, _| this.distance_from_bottom())
+        };
+        assert!(transcript.read_with(cx, |this, _| this.pinned));
+        assert!(distance(cx) <= 1.0, "{}", distance(cx));
+
+        // A wheel the list never took (an overlay above it let it bubble)
+        // leaves the pin alone.
+        transcript.update_in(cx, |this, window, cx| {
+            this.on_scroll_wheel(
+                &gpui::ScrollWheelEvent {
+                    delta: gpui::ScrollDelta::Lines(gpui::point(0.0, 3.0)),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            assert!(this.pinned, "a wheel the list never saw broke the pin");
+            // Precise input keeps the distance test it always had.
+            this.list_took_input = true;
+            this.on_scroll_wheel(
+                &gpui::ScrollWheelEvent {
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(0.5))),
+                    ..Default::default()
+                },
+                window,
+                cx,
+            );
+            assert!(
+                this.pinned && !this.input_escaped,
+                "a trackpad took the escape"
+            );
+        });
+
+        // One 3-line notch up. Its glide starts and ends with slices well
+        // under a pixel.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(200.0), px(200.0)),
+            delta: gpui::ScrollDelta::Lines(gpui::point(0.0, 3.0)),
+            ..Default::default()
+        });
+        // The glide lands within 200ms; the rest shows the view stays there.
+        for _ in 0..50 {
+            frame(cx);
+        }
+        assert!(
+            !transcript.read_with(cx, |this, _| this.pinned),
+            "scrolling up must release the bottom"
+        );
+        let landed = distance(cx);
+        assert!(
+            (landed - 60.0).abs() <= 1.0,
+            "a 3-line notch scrolls 60px, as it does without smoothing: {landed}"
+        );
     }
 
     #[gpui::test]
@@ -12620,6 +13036,58 @@ mod tests {
     }
 
     #[test]
+    fn messages_the_agent_sent_read_as_messages_not_tools() {
+        let send = |id: &str, tool: &str, input: serde_json::Value| MessagePart::Tool {
+            id: id.into(),
+            call: ToolCall::Mcp {
+                server: "godspeed".into(),
+                tool: tool.into(),
+                input: Some(input),
+            },
+            is_error: false,
+            resolved: false,
+            output: None,
+            diff: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            diff_stats: None,
+            subagent_ref: None,
+            subagent_status: None,
+            subagent_tail: None,
+        };
+        let entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![
+                tool_part("k0", "ls"),
+                send("k1", "send_message", serde_json::json!({ "chat": "Windows lane", "text": "Run it." })),
+                send(
+                    "k2",
+                    "send_messages",
+                    serde_json::json!({ "requests": [{ "chat": "a", "text": "one" }, { "chat": "b", "text": "two" }] }),
+                ),
+            ],
+        );
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        // The ordinary tool keeps its fold; each message is its own row.
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(rows[0].kind, RowKind::ToolGroup { .. }));
+        let RowKind::SentMessage { to, pending, failed } = &rows[1].kind else {
+            panic!("expected a sent message");
+        };
+        assert_eq!((to.as_ref(), *pending, *failed), ("Windows lane", true, false));
+        assert!(matches!(&rows[3].kind, RowKind::SentMessage { to, .. } if to.as_ref() == "b"));
+        // Compact mode folds the whole turn, sends included: they show when
+        // the work fold opens.
+        let compact = rows_for_entry(&entry, false, true, &mut parse);
+        assert!(compact
+            .iter()
+            .filter(|row| matches!(row.kind, RowKind::SentMessage { .. }))
+            .all(|row| row.compact_fold.as_deref() == Some("a1#work")));
+    }
+
+    #[test]
     fn agent_messages_show_their_sender_over_the_body() {
         let id = "cd27c5c2-0000-4000-8000-000000000000";
         let text = format!(
@@ -12889,6 +13357,138 @@ mod tests {
                 assert!(this.protected_attachment_keys(cx).is_empty());
                 this.refresh_protected_attachments(cx);
             });
+        });
+    }
+
+    #[gpui::test]
+    fn reply_markdown_images_draw_only_from_their_own_chat(cx: &mut gpui::TestAppContext) {
+        use crate::attachments::{
+            AttachmentKey, AttachmentSnapshot, attachment_snapshot_for, store_loaded_for,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let chat = |id: &str| zeron_proto::Chat {
+            id: id.into(),
+            device_id: "reply-host".into(),
+            title: None,
+            archived: false,
+            cwd: Some("/fixture/reply".into()),
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::DateTime::UNIX_EPOCH,
+            harness_session_id: None,
+            harness_session_cwd: None,
+            limit: None,
+            lifecycle: Default::default(),
+            parent_chat_id: None,
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+        };
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats = vec![chat("reply-chat"), chat("reply-other")];
+            state
+        });
+        let transcript = cx.new(|cx| Transcript::new(state, cx));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(64, 48)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let shown = "/fixture/reply/shots/before.png";
+        store_loaded_for(
+            &AttachmentKey::chat_image("reply-host", "reply-chat", shown, "image/png"),
+            "before.png".into(),
+            Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                bytes.into_inner(),
+            )),
+        );
+        let text = "![before](shots/before.png)\n\n![web](https://example.com/a.png)\n\n![later](later.png)";
+        let entry = assistant("a", MessageStatus::Complete, vec![text_part("t", text)]);
+        transcript.update(cx, |this, _| {
+            this.chat_id = Some("reply-chat".into());
+            this.rows = rows_for_entry(&entry, false, false, &mut parse);
+        });
+        struct RowsFixture(Entity<Transcript>);
+        impl Render for RowsFixture {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                if self.0.read(cx).attachment_preview.is_some() {
+                    return self.0.clone().into_any_element();
+                }
+                self.0.update(cx, |this, cx| {
+                    let rows: Vec<_> = (0..this.rows.len())
+                        .map(|ix| this.render_row(ix, window, cx))
+                        .collect();
+                    div().w(px(700.0)).children(rows).into_any_element()
+                })
+            }
+        }
+        let (fixture, cx) = cx.add_window_view(|_, _| RowsFixture(transcript.clone()));
+        cx.run_until_parked();
+        // The relative path resolved against the chat's folder, and its read
+        // (refused here: no engine) was for that chat.
+        assert!(matches!(
+            attachment_snapshot_for(&AttachmentKey::chat_image(
+                "reply-host",
+                "reply-chat",
+                "/fixture/reply/later.png",
+                "image/png",
+            )),
+            AttachmentSnapshot::Error { .. }
+        ));
+        let image = cx
+            .debug_bounds("reply-image")
+            .expect("the chat's own image is drawn");
+        cx.simulate_click(image.center(), gpui::Modifiers::default());
+        transcript.read_with(cx, |this, _| {
+            let preview = this
+                .attachment_preview
+                .as_ref()
+                .expect("the lightbox opens");
+            assert_eq!(preview.name.as_ref(), "before.png");
+        });
+        // Right-click offers Copy path / Copy image, reading the original
+        // through the same chat's jail.
+        transcript.update(cx, |this, _| this.attachment_preview = None);
+        fixture.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        let image = cx.debug_bounds("reply-image").expect("drawn again");
+        cx.simulate_mouse_down(
+            image.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        transcript.read_with(cx, |this, _| {
+            let menu = this.image_menu.as_open().expect("the image menu opens");
+            assert_eq!(menu.path, shown);
+            assert_eq!(menu.devices, ["reply-host"]);
+            assert_eq!(
+                menu.chat_image,
+                Some(("reply-chat".to_owned(), "image/png"))
+            );
+        });
+        // The same reply in another chat doesn't reuse the first chat's read.
+        transcript.update(cx, |this, cx| {
+            this.close_image_menu(cx);
+            this.chat_id = Some("reply-other".into());
+        });
+        fixture.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("reply-image").is_none());
+        // A subagent tab draws none.
+        transcript.update(cx, |this, cx| {
+            this.chat_id = Some("reply-chat".into());
+            this.doc_override = Some("reply-doc".into());
+            assert!(this.reply_chat(cx).is_none());
         });
     }
 
@@ -13844,6 +14444,118 @@ mod tests {
         };
         assert!(!tool_group_collapses(tools));
         assert!(is_agent_call(&tools[0].call));
+    }
+
+    #[gpui::test]
+    fn compact_spawn_fold_fits_every_card(cx: &mut gpui::TestAppContext) {
+        // User report: compact mode, four subagents launched in one turn, the
+        // work fold open — the "Called 4 tools" fold cut the fourth card off,
+        // and a fold body never scrolls to reveal it.
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        struct SpawnFold {
+            transcript: Entity<Transcript>,
+            row: Row,
+        }
+        impl Render for SpawnFold {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let RowKind::ToolGroup {
+                    tools,
+                    summary,
+                    auto_open,
+                    worked_secs,
+                    compact_shell,
+                } = &self.row.kind
+                else {
+                    unreachable!()
+                };
+                let group = self.transcript.update(cx, |this, cx| {
+                    this.render_tool_group(
+                        &self.row.id,
+                        tools,
+                        summary,
+                        *auto_open,
+                        *worked_secs,
+                        *compact_shell,
+                        &Theme::dark(),
+                        cx,
+                    )
+                });
+                div()
+                    .w(px(700.0))
+                    .child(div().debug_selector(|| "spawn-fold".into()).child(group))
+            }
+        }
+        // Each card used to come up 6px short, so the clip grew with the
+        // count: check one card, the reported four, and well past it. Regular
+        // mode's always-open spawn row must keep fitting too.
+        for (compact, count) in [true, false]
+            .into_iter()
+            .flat_map(|compact| [1, 4, 5, 12].map(|count| (compact, count)))
+        {
+            let mut parts = vec![
+                reasoning_part("r0", "planning the search"),
+                text_part("t0", "Launching searches in parallel."),
+            ];
+            parts.extend((1..=count).map(|i| agent_part(&format!("s{i}"), &format!("Search {i}"))));
+            let entry = assistant("m-spawn", MessageStatus::Streaming, parts);
+            // Compact: the open work fold mounts the compact-off rows; the
+            // spawn group is one of them, wrapped in its own fold.
+            let row = rows_for_entry(&entry, false, compact, &mut parse)
+                .into_iter()
+                .find(|row| {
+                    row.compact_fold.is_some() == compact
+                        && matches!(&row.kind, RowKind::ToolGroup { tools, .. }
+                            if tools.len() == count && tools.iter().all(is_spawn_link))
+                })
+                .expect("the spawn group has a row");
+            let state = cx.new(|_| AppState::new());
+            let transcript = cx.new(|cx| Transcript::new(state, cx));
+            transcript.update(cx, |this, _| this.compact_mode = compact);
+            let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+            cx.update(|cx| {
+                let opened = opened.clone();
+                cx.subscribe(&transcript, move |_, event: &TranscriptEvent, _| {
+                    if let TranscriptEvent::OpenSubagent { doc_id, .. } = event {
+                        opened.borrow_mut().push(doc_id.clone());
+                    }
+                })
+                .detach();
+            });
+            let row_id = row.id.clone();
+            let (_fixture, window) = cx.add_window_view(|_, _| SpawnFold {
+                transcript: transcript.clone(),
+                row,
+            });
+            window.update(|window, cx| window.draw(cx).clear());
+            // The fold's body is its last child, so the fold's bottom edge is
+            // where the body clips.
+            let fold = window.debug_bounds("spawn-fold").expect("the fold painted");
+            let cards: Vec<Bounds<Pixels>> = (0..count)
+                .map(|ix| {
+                    let selector: &'static str =
+                        Box::leak(format!("{row_id}#s{ix}").into_boxed_str());
+                    window
+                        .debug_bounds(selector)
+                        .unwrap_or_else(|| panic!("spawn card {ix} painted"))
+                })
+                .collect();
+            for (ix, card) in cards.iter().enumerate() {
+                assert!(
+                    card.bottom() <= fold.bottom(),
+                    "compact {compact}, {count} spawns: card {ix} ends at {:?}, but the fold clips at {:?}",
+                    card.bottom(),
+                    fold.bottom(),
+                );
+            }
+            // Visible means reachable: the last card still opens its subagent.
+            window.simulate_click(cards[count - 1].center(), gpui::Modifiers::default());
+            assert_eq!(opened.borrow().as_slice(), [format!("chat--sub--s{count}")]);
+        }
     }
 
     #[test]
@@ -17031,6 +17743,12 @@ impl Transcript {
 impl Transcript {
     pub fn fixture_appshots_start(&mut self, cx: &mut Context<Self>) {
         self.list.scroll_to(gpui::ListOffset::default());
+        cx.notify();
+    }
+
+    /// Click a fold's header: a compact work fold mounts its body rows.
+    pub fn fixture_toggle_fold(&mut self, row_id: &str, cx: &mut Context<Self>) {
+        self.toggle_fold(row_id.to_owned().into(), 0.0, false, cx);
         cx.notify();
     }
 

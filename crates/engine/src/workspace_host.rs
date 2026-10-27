@@ -902,6 +902,8 @@ impl WorkspaceHost {
     /// Sidebar freshness on message persist: preview = first 120 chars of the last
     /// message's text. Claims the row first so a pre-workspace chat gains one.
     pub fn note_message(&self, chat_id: &str, text: &str) {
+        // Annotation tokens carry their element as hex; previews read the label.
+        let text = zeron_proto::annotation::annotation_display(text);
         let preview: String = text.chars().take(120).collect();
         let result = self.claim_chat(chat_id, None).and_then(|_| {
             self.mutate(|doc| {

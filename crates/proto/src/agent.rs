@@ -477,6 +477,14 @@ const _: () = assert!(
     VISUAL_MAX_TOTAL_ASSET_BYTES.div_ceil(3) * 4 + VISUAL_MAX_BYTES * 6 + 64 * 1024 < 16 * 1024 * 1024
 );
 
+/// Largest image file an agent may show with `show_image` (it rides one
+/// WebSocket message, base64-encoded, like a visual's assets).
+pub const IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
+/// Longest side, in pixels, of an image the desktop decodes for a preview;
+/// `show_image` refuses larger ones rather than publish an unviewable part.
+pub const IMAGE_MAX_SIDE: u32 = 4096;
+const _: () = assert!(IMAGE_MAX_BYTES.div_ceil(3) * 4 + 64 * 1024 < 16 * 1024 * 1024);
+
 /// Whether `name` can name a visual's asset: a plain file name.
 pub fn valid_visual_asset_name(name: &str) -> bool {
     !name.is_empty()
@@ -640,7 +648,9 @@ pub enum AgentEvent {
     TextDelta {
         text: String,
     },
-    /// A generated raster asset. The engine materializes this path before publication.
+    /// A raster image in the reply: one a harness generated (the engine
+    /// materializes this path before publication) or one an agent showed with
+    /// Godspeed's `show_image` MCP tool (already stored in uploads).
     #[serde(rename_all = "camelCase")]
     GeneratedImage {
         id: String,
@@ -767,9 +777,12 @@ pub enum AgentEvent {
     /// the spawning tool call (`parent_tool_use_id` = the parent-feed
     /// `ToolCall::id` that launched it). Never folded into the parent chat
     /// doc — the engine routes these to the subagent's own doc; the parent
-    /// keeps only the spawn chip. Additive: old consumers that don't match
-    /// this variant drop the nested traffic, which is the pre-subagent-viz
-    /// behavior.
+    /// keeps only the spawn chip. The spawn `ToolCall` must come first: the
+    /// engine opens that doc only for an id that already names one of the
+    /// chat's spawn chips ([`ToolCall::is_subagent_spawn`]), and keeps
+    /// traffic tagged with any other id in the run journal only. Additive:
+    /// old consumers that don't match this variant drop the nested traffic,
+    /// which is the pre-subagent-viz behavior.
     #[serde(rename_all = "camelCase")]
     Subagent {
         parent_tool_use_id: String,

@@ -78,6 +78,11 @@ impl BrowserSurface {
         }
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
+        if key == "escape" && self.annotating() {
+            self.stop_annotation(cx);
+            cx.stop_propagation();
+            return;
+        }
         let primary = if cfg!(target_os = "macos") {
             mods.platform
         } else {
@@ -644,9 +649,35 @@ impl Render for BrowserSurface {
         .when(has_page, |el| {
             el.on_click(cx.listener(|this, _, _, cx| this.open_external(cx)))
         });
+        // Annotation picks an element on the page into the composer.
+        let annotating = self.annotating();
+        let can_annotate = self.can_annotate();
+        let annotate = crate::files::toolbar_button(
+            "browser-annotate",
+            if annotating {
+                "Stop annotating"
+            } else {
+                "Annotate an element"
+            },
+        )
+        .when(!can_annotate, |el| el.cursor_default().opacity(0.35))
+        .when(annotating, |el| el.bg(crate::theme::wash(0.10)))
+        .child(
+            icons::icon(icons::CURSOR_SQUARE)
+                .size(px(surface_chrome::ICON_SIZE))
+                .text_color(if annotating {
+                    theme.accent
+                } else {
+                    theme.text_muted
+                }),
+        )
+        .when(can_annotate, |el| {
+            el.on_click(cx.listener(|this, _, _, cx| this.toggle_annotation(cx)))
+        });
         let toolbar = surface_chrome::toolbar(&theme)
             .when(!external, |el| el.child(back).child(forward).child(reload))
             .child(address)
+            .when(!external, |el| el.child(annotate))
             .child(open);
 
         let body = div()
@@ -676,6 +707,19 @@ impl Render for BrowserSurface {
                                 (window.viewport_size().width - right_occlusion).max(mask.left());
                             mask.size.width = mask.size.width.min(right - mask.left());
                             let dragging = cx.has_active_drag();
+                            // GPUIView refuses first responder, so a click on GPUI
+                            // content leaves the keyboard with the page. AppKit
+                            // gives presses on the page to WebKit, so every press
+                            // GPUI sees is outside it: take the keyboard back on
+                            // each, as zui does on Windows.
+                            let page = native.clone();
+                            window.on_mouse_event(move |_: &gpui::MouseDownEvent, phase, _, _| {
+                                if phase == gpui::DispatchPhase::Capture
+                                    && let Some(page) = page.upgrade()
+                                {
+                                    page.borrow().focus_chrome();
+                                }
+                            });
                             window.on_present(move || {
                                 if let Some(native) = native.upgrade() {
                                     native
@@ -766,6 +810,15 @@ impl Render for BrowserSurface {
         };
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         let body = body.child(self.empty_body(&theme, cx));
+        // WebView2 eases wheel notches itself; a glide would ease them twice.
+        // (AppKit hands macOS pages their wheel directly, and `macos::PageGlide`
+        // glides it there; the Linux page applies the smooth deltas it is sent
+        // as they come.)
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        let body = body.when(
+            cfg!(windows) && self.native.is_some() && self.page.error.is_none(),
+            |body| body.child(crate::smooth_scroll::raw_wheel_region()),
+        );
 
         #[cfg(target_os = "linux")]
         let body = body.when_some(self.linux_menu(&theme, cx), |el, menu| el.child(menu));

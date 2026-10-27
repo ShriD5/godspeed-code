@@ -47,12 +47,24 @@ name = "tool-images-fixture"
 required-features = ["appshots-fixture"]
 
 [[example]]
+name = "subagent-fold-fixture"
+required-features = ["appshots-fixture", "resource-profile"]
+
+[[example]]
+name = "reply-images-fixture"
+required-features = ["appshots-fixture", "resource-profile"]
+
+[[example]]
 name = "pull-request-fixture"
 required-features = ["pull-request-fixture"]
 
 [[example]]
 name = "pull-request-destination-fixture"
 required-features = ["pull-request-fixture", "browser-fixture"]
+
+[[example]]
+name = "browser-annotation-fixture"
+required-features = ["appshots-fixture"]
 
 [[example]]
 name = "new-project-fixture"
@@ -146,6 +158,7 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSHapticFeedback", "NSBitmapImageRep", "NSImage", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
 objc2-foundation = "0.3.2"
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay", "CGEvent", "CGEventTypes"] }
 objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKNavigationDelegate", "WKNavigationAction", "WKSnapshotConfiguration"] }
 core-foundation = "0.10"
 core-graphics = { version = "0.24", features = ["elcapitan", "highsierra", "link"] }

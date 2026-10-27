@@ -38,7 +38,10 @@
 //! - Uploads (§3.7): `UploadChunk {uploadId, data, seq?}`,
 //!   `UploadCommit {uploadId, fileName}` → `{path}`,
 //!   `ReadAttachmentChunk {path, offset}` → `{name, mimeType, data, nextOffset,
-//!   done}` (path-jailed to the uploads dir + workspace-known chat cwds).
+//!   done}` (path-jailed to the uploads dir + workspace-known chat cwds),
+//!   `ReadChatImageChunk {chatId, path, offset}` → the same reply, for an image
+//!   a reply names in Markdown (jailed to that one chat's working folder, no
+//!   link followed).
 //!
 //! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
 //!
@@ -395,6 +398,45 @@ struct OpenTerminalParams {
 /// Matches the UI canvas panel key (`AppState::panel_session_key`).
 const CANVAS_TERMINAL_PREFIX: &str = "space-canvas:";
 
+/// The folder a chat with this `cwd` may show reply images from (see
+/// `chat_image_root`), as configured: the jail matches a reply's path against
+/// it raw or canonical. Fails closed: no folder of its own (a legacy
+/// projectless chat runs in home), a relative or missing folder, and any
+/// folder that is `home` or above it, or holds one of `data` (Godspeed's own
+/// dirs), are refused, comparing canonical forms. A scratch folder is
+/// resolved under `scratch_root`, never created: only a run creates it.
+fn chat_image_folder(
+    cwd: Option<&str>,
+    scratch_root: &std::path::Path,
+    home: &std::path::Path,
+    data: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, &'static str> {
+    let cwd = cwd
+        .filter(|cwd| !zeron_proto::projectless::is_home_cwd(cwd))
+        .ok_or("the chat has no working folder of its own")?;
+    let folder = if zeron_proto::projectless::is_scratch_cwd(cwd) {
+        scratch_root.join(cwd.trim().rsplit('/').next().unwrap_or_default())
+    } else {
+        std::path::PathBuf::from(crate::repos::expand_home(cwd)?)
+    };
+    if !folder.is_absolute() {
+        return Err("the chat's folder is not an absolute path");
+    }
+    let canonical =
+        std::fs::canonicalize(&folder).map_err(|_| "the chat's folder doesn't exist")?;
+    let home = std::fs::canonicalize(home).map_err(|_| "this host's home folder is unknown")?;
+    if home.starts_with(&canonical)
+        || canonical.parent().is_none()
+        || data
+            .iter()
+            .filter_map(|dir| std::fs::canonicalize(dir).ok())
+            .any(|dir| dir.starts_with(&canonical))
+    {
+        return Err("the chat works in the home folder, above it, or around Godspeed's data");
+    }
+    Ok(folder)
+}
+
 /// A cwd the user (or a project-less chat) meant as "host home", not a folder.
 fn meaningful_cwd(cwd: Option<String>) -> Option<String> {
     cwd.filter(|cwd| {
@@ -535,6 +577,15 @@ struct ReadAttachmentChunkParams {
     offset: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadChatImageChunkParams {
+    chat_id: String,
+    path: String,
+    #[serde(default)]
+    offset: u64,
+}
+
 const _: () = assert!(zeron_proto::VISUAL_MAX_BYTES == zeron_visual::MAX_SCRIPT_BYTES);
 const _: () = assert!(zeron_proto::VISUAL_MAX_ASSETS == zeron_visual::assets::MAX_ASSETS);
 const _: () = assert!(zeron_proto::VISUAL_MAX_ASSET_BYTES == zeron_visual::assets::MAX_ASSET_BYTES);
@@ -553,11 +604,24 @@ struct PublishVisualParams {
     assets: std::collections::BTreeMap<String, String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishImageParams {
+    chat_id: String,
+    /// The file name shown with the image.
+    name: String,
+    /// The image file, base64.
+    data: String,
+}
+
 fn no_turn_for_visual() -> RpcError {
-    RpcError::Failed(
-        "This chat has no running turn on this device; show_visual only works from inside a turn."
-            .into(),
-    )
+    no_turn_for("show_visual")
+}
+
+fn no_turn_for(tool: &str) -> RpcError {
+    RpcError::Failed(format!(
+        "This chat has no running turn on this device; {tool} only works from inside a turn."
+    ))
 }
 
 /// Decode and bound a visual's assets.
@@ -1024,6 +1088,37 @@ impl EngineRpc {
             }
         }
         self.file_search_root(p).await
+    }
+
+    /// The one folder a chat's reply images (`![alt](path)`) may come from:
+    /// its working folder on this host. Refused, failing closed, when the chat
+    /// runs elsewhere, has no folder of its own, or works in the home folder,
+    /// above it, or around Godspeed's own data — so a reply can never show an
+    /// image from all of home, or another chat's attachments.
+    fn chat_image_root(&self, chat_id: &str) -> Result<std::path::PathBuf, RpcError> {
+        let refused = |why: &str| RpcError::BadParams(why.into());
+        let chat = self
+            .workspace
+            .chat(chat_id)
+            .map_err(|e| RpcError::Failed(e.to_string()))?
+            .ok_or_else(|| refused("chat not found"))?;
+        if chat.device_id != self.doc_host.device_id() {
+            return Err(refused("chat belongs to another device"));
+        }
+        let home = session_home_dir().map_err(refused)?;
+        // The data dir always exists; uploads and scratch may live elsewhere.
+        let data = [
+            self.repos.data_dir().to_path_buf(),
+            self.uploads.dir().to_path_buf(),
+            self.repos.scratch_root(),
+        ];
+        chat_image_folder(
+            chat.cwd.as_deref(),
+            &self.repos.scratch_root(),
+            &home,
+            &data,
+        )
+        .map_err(refused)
     }
 
     /// Accept only a checkout already named by a local chat or contained in a
@@ -1937,6 +2032,7 @@ fn forwardable(method: &str) -> bool {
             | methods::UPLOAD_CHUNK
             | methods::UPLOAD_COMMIT
             | methods::READ_ATTACHMENT_CHUNK
+            | methods::READ_CHAT_IMAGE_CHUNK
             // Updates report/apply on the device whose binary they concern.
             | methods::UPDATE_STATUS
             | methods::APPLY_UPDATE
@@ -2557,9 +2653,19 @@ impl RpcService for EngineRpc {
                     let mut entry = entry.clone();
                     // Historical approvals belong to the source runtime; they
                     // must never block or send answers from the new composer.
+                    // So does a subagent still running there: nothing in the
+                    // fork would ever settle its copied chip, so the copy
+                    // settles the chip `failed`, like run end and the restart
+                    // sweep; the subagent's doc stays the source's.
                     for part in &mut entry.parts {
-                        if let zeron_doc::MessagePart::Input { resolved, .. } = part {
-                            *resolved = true;
+                        match part {
+                            zeron_doc::MessagePart::Input { resolved, .. } => *resolved = true,
+                            zeron_doc::MessagePart::Tool {
+                                subagent_status, ..
+                            } if *subagent_status == Some(zeron_doc::SubagentStatus::Running) => {
+                                *subagent_status = Some(zeron_doc::SubagentStatus::Failed);
+                            }
+                            _ => {}
                         }
                     }
                     target
@@ -4260,6 +4366,17 @@ impl RpcService for EngineRpc {
                 .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&chunk)
             }
+            methods::READ_CHAT_IMAGE_CHUNK => {
+                let p: ReadChatImageChunkParams = parse_params(params)?;
+                let root = self.chat_image_root(&p.chat_id)?;
+                let chunk = tokio::task::spawn_blocking(move || {
+                    crate::uploads::read_chat_image_chunk(&p.path, p.offset, &root)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::BadParams(e.to_string()))?;
+                RpcReply::value(&chunk)
+            }
             methods::PUBLISH_VISUAL => {
                 let p: PublishVisualParams = parse_params(params)?;
                 let title: String = p
@@ -4328,6 +4445,48 @@ impl RpcService for EngineRpc {
                     "title": title,
                     "checkedInteractions": report.interactions,
                     "printed": report.logs,
+                }))
+            }
+            methods::PUBLISH_IMAGE => {
+                use base64::Engine as _;
+                let p: PublishImageParams = parse_params(params)?;
+                if !self.sessions.has_run(&p.chat_id) {
+                    return Err(no_turn_for("show_image"));
+                }
+                // Bounded before decoding: base64 is 4 bytes per 3.
+                if p.data.len() > zeron_proto::IMAGE_MAX_BYTES.div_ceil(3) * 4 {
+                    return Err(RpcError::BadParams(format!(
+                        "an image is at most {} MB",
+                        zeron_proto::IMAGE_MAX_BYTES / (1024 * 1024)
+                    )));
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&p.data)
+                    .map_err(|e| RpcError::BadParams(format!("image data is not base64: {e}")))?;
+                let id = format!("img:{}", crate::new_id());
+                let uploads = self.uploads.clone();
+                let (stored_id, name) = (id.clone(), p.name);
+                let image = tokio::task::spawn_blocking(move || {
+                    uploads.store_shown_image(&stored_id, &name, &bytes)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::BadParams(e.to_string()))?;
+                let event = AgentEvent::GeneratedImage {
+                    id: id.clone(),
+                    path: image.path.clone(),
+                    name: image.name.clone(),
+                    mime_type: image.mime_type.clone(),
+                };
+                if !self.sessions.inject_event(&p.chat_id, event) {
+                    let _ = std::fs::remove_file(&image.path);
+                    return Err(no_turn_for("show_image"));
+                }
+                RpcReply::value(&serde_json::json!({
+                    "id": id,
+                    "name": image.name,
+                    "mimeType": image.mime_type,
+                    "bytes": image.size,
                 }))
             }
             methods::FETCH_TOOL_BLOB => {
@@ -5037,6 +5196,61 @@ mod tests {
                 RpcError::Capability(code) if code == expected
             ));
         }
+    }
+
+    #[test]
+    fn chat_image_folders_fail_closed() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("code").join("app");
+        let data = home.path().join(".godspeed");
+        let scratch_root = data.join("scratch");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(scratch_root.join("2026-10-25-a1b2c3d4")).unwrap();
+        let data_dirs = [
+            data.clone(),
+            data.join("orgs").join("o").join("u").join("uploads"),
+            scratch_root.clone(),
+        ];
+        let folder =
+            |cwd: Option<&str>| chat_image_folder(cwd, &scratch_root, home.path(), &data_dirs);
+        assert_eq!(
+            folder(Some(&project.to_string_lossy())),
+            Ok(project.clone())
+        );
+        assert_eq!(
+            folder(Some("~/.godspeed/scratch/2026-10-25-a1b2c3d4")),
+            Ok(scratch_root.join("2026-10-25-a1b2c3d4"))
+        );
+        let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        let missing = text(&home.path().join("gone"));
+        let home_text = text(home.path());
+        let above_home = text(home.path().parent().unwrap());
+        // `/`, or the drive (`C:\`) on Windows, where `/` isn't absolute.
+        let root = text(home.path().ancestors().last().unwrap());
+        let data_text = text(&data);
+        let scratch_text = text(&scratch_root);
+        for (cwd, why) in [
+            (None, "no working folder of its own"),
+            (Some("~"), "no working folder of its own"),
+            (Some(""), "no working folder of its own"),
+            (Some("relative/app"), "not an absolute path"),
+            (Some(missing.as_str()), "doesn't exist"),
+            (
+                Some("~/.godspeed/scratch/2026-10-25-zzzz9999"),
+                "doesn't exist",
+            ),
+            (Some(home_text.as_str()), "home folder, above it"),
+            (Some(above_home.as_str()), "home folder, above it"),
+            (Some(root.as_str()), "home folder, above it"),
+            (Some(data_text.as_str()), "around Godspeed's data"),
+            (Some(scratch_text.as_str()), "around Godspeed's data"),
+            (Some("~/.godspeed/scratch/."), "around Godspeed's data"),
+            (Some("~/.godspeed/scratch/.."), "around Godspeed's data"),
+        ] {
+            let error = folder(cwd).expect_err(&format!("{cwd:?}"));
+            assert!(error.contains(why), "{cwd:?}: {error}");
+        }
+        assert!(!scratch_root.join("2026-10-25-zzzz9999").exists());
     }
 
     #[test]
