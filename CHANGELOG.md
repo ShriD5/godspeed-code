@@ -16,7 +16,6 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 ### Changed
 
 - Always-on agents are now called **Zoomies**.
-- Cursor usage bars match the pools on Cursor's spending page. Contributed by @devnm21.
 - Caught up with Zeron through `3d2f1e64`.
 
 ### Fixed
