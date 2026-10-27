@@ -82,3 +82,34 @@ fn ad_hoc_signed_bundles_are_refused() {
     std::fs::write(app.join("Contents/MacOS/extra"), b"x").unwrap();
     assert!(verify_mac_app_signature(&app, None, false).is_err());
 }
+
+/// Live check that the updater's client follows GitHub's release redirects
+/// (github.com → release-assets.githubusercontent.com) and verifies the file:
+/// `cargo test -p zeron-update --test release -- --ignored`.
+#[test]
+#[ignore = "network: downloads SHA256SUMS of v0.5.6 from GitHub"]
+fn github_release_assets_download_through_the_redirect() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dest = tmp.path().join("SHA256SUMS");
+    let manifest = Manifest {
+        version: "0.5.6".into(),
+        ..Default::default()
+    };
+    runtime
+        .block_on(zeron_update::download_release_file(
+            zeron_update::DEFAULT_FEED_URL,
+            &manifest,
+            "SHA256SUMS",
+            &dest,
+        ))
+        .unwrap();
+    let sums = std::fs::read_to_string(dest).unwrap();
+    assert!(
+        sums.contains("godspeed-0.5.6-macos-arm64-app.tar.gz"),
+        "{sums}"
+    );
+}
