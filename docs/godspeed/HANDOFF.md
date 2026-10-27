@@ -141,6 +141,9 @@ now" there and in the app menu), downloads `godspeed-<v>-macos-arm64-app.tar.gz`
 requirement for the running app's Team ID (QPUV967B5U), `spctl` notarization, and the bundle's
 `--version`, then offers "Godspeed <v> is ready — Restart" in the sidebar (installs on quit
 otherwise). Never downgrades. `GODSPEED_RELEASES_URL=https://…` overrides the feed for testing.
+Apps up to 0.5.6 still poll `{edge}/releases/*`; the edge (once redeployed) answers those with
+a 302 to the same GitHub `latest/download` asset, so they can update too (their older updater
+checks sha256 + `--version` only). Until the edge is redeployed they need one manual install.
 
 Every release, in order:
 
