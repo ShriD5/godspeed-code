@@ -69,8 +69,8 @@ describe("chat2 room write budget", () => {
   it("coalesces a streaming turn into a few chunk writes and loses no update", async () => {
     const stub = chatRoom(crypto.randomUUID());
     // 500 updates over a simulated 30 s: the window is scaled 10x down
-    // (100 ms) so the turn takes 3 s of wall time. Two pushers keep each
-    // device under the per-device quota (300 pushes/min).
+    // (100 ms) so the turn takes 3 s of wall time. The host streams; the
+    // phone adds a few of its own in between.
     await runInDurableObject(stub, (instance: ChatRoom) => {
       instance.flushIntervalMs = 100;
     });
@@ -80,7 +80,7 @@ describe("chat2 room write budget", () => {
     const before = await chatWrites(stub);
     const sent = new Map<string, Uint8Array>();
     for (let i = 0; i < 500; i++) {
-      const pusher = i % 2 === 0 ? host : phone;
+      const pusher = i % 50 === 49 ? phone : host;
       const batchId = `b${i}`;
       sent.set(batchId, update(i));
       pusher.ws.send(encodeFrame(FRAME.push, { batchId }, update(i)));

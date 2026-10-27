@@ -63,9 +63,13 @@ export const MAX_CHECKPOINT_BYTES = 32 * 1024 * 1024;
 /** Presence beats older than this are swept before relay/stats. */
 const PRESENCE_TTL_MS = 30_000;
 /** Per-device push quota, rolling window (in-memory; resets on hibernation —
- * it exists to contain a runaway client loop, not to meter honest traffic). */
+ * it exists to contain a runaway client loop, not to meter honest traffic).
+ * A streaming host commits every 120 ms (~500 pushes/min); with coalescing a
+ * room writes at most one chunk per window whatever the push rate, so the
+ * cap sits above that. At 300 a long turn tripped it, and the client's
+ * one-batch-per-ack quota drain then waited out a window per batch. */
 const QUOTA_WINDOW_MS = 60_000;
-const QUOTA_MAX_PUSHES = 300;
+export const QUOTA_MAX_PUSHES = 1200;
 const QUOTA_MAX_BYTES = 8 * 1024 * 1024;
 /** Streaming coalescing window: at most one chunk write per window. */
 export const FLUSH_INTERVAL_MS = 1000;
