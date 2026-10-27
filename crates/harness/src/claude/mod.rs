@@ -54,6 +54,7 @@
 
 pub mod catalog;
 mod discovery;
+mod fork_tail;
 mod normalize;
 mod wire;
 
@@ -80,6 +81,7 @@ use zeron_proto::{
 use crate::process::{Child, ChildStdin, Command, Stdio};
 use crate::{Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
 use catalog::{apply_ultrathink, to_effort};
+use fork_tail::ForkTail;
 use normalize::Normalizer;
 use wire::{ControlRequestFrame, Frame, allow_response, control_response_line};
 
@@ -888,6 +890,21 @@ async fn stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<Std
     }
 }
 
+/// The Claude config root a run's transcripts land under: its own
+/// `CLAUDE_CONFIG_DIR` or `HOME` when the run sets one, else the process's.
+fn config_root(env: &std::collections::BTreeMap<String, String>) -> PathBuf {
+    if let Some(dir) = env.get("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    if let Some(home) = env.get("HOME").filter(|h| !h.is_empty()) {
+        return PathBuf::from(home).join(".claude");
+    }
+    crate::model_context::root(
+        "CLAUDE_CONFIG_DIR",
+        crate::executable::home_or_current_dir().join(".claude"),
+    )
+}
+
 struct Session {
     normalizer: Normalizer,
     title_only: bool,
@@ -983,8 +1000,19 @@ async fn run_session(session: Session) {
     // [`crate::shutdown_agent`]).
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut torn_down: Vec<i32> = Vec::new();
+    // The typed fork whose transcript is read off disk (see [`fork_tail`]).
+    let claude_root = config_root(&config.env);
+    let mut tail: Option<ForkTail> = None;
 
     'main: loop {
+        match norm.fork_to_follow() {
+            Some(fork) if tail.as_ref().is_none_or(|t| t.chip != fork.0) => {
+                tail = Some(ForkTail::new(&claude_root, fork));
+            }
+            Some(_) => {}
+            None => tail = None,
+        }
+        let tail_at = tail.as_ref().and_then(ForkTail::next_read);
         tokio::select! {
             line = stdout_lines.next_line() => match line {
                 Ok(Some(line)) => {
@@ -1162,6 +1190,17 @@ async fn run_session(session: Session) {
                 Err(e) => {
                     let _ = event_tx.send(Err(HarnessError::Io(e))).await;
                     break 'main;
+                }
+            },
+
+            // The typed fork's records, as it writes them.
+            _ = tokio::time::sleep_until(tail_at.unwrap_or_else(tokio::time::Instant::now)),
+                if tail_at.is_some() => {
+                let records = tail.as_mut().map_or_else(Vec::new, ForkTail::read);
+                for ev in records.into_iter().flat_map(|record| norm.fork_record(record)) {
+                    if event_tx.send(Ok(ev)).await.is_err() {
+                        break 'main;
+                    }
                 }
             },
 

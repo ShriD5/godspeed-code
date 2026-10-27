@@ -597,7 +597,11 @@ async fn replay_fixture(name: &str) -> Vec<AgentEvent> {
     }
     let harness = ClaudeHarness::new().with_executable(&cli);
     let (controls, _steer, _token) = controls("A");
-    run_to_end(&harness, request("replay"), controls).await
+    // Its own config root: a typed fork's transcript is looked for there.
+    let mut req = request("replay");
+    req.env
+        .insert("CLAUDE_CONFIG_DIR".into(), dir.path().display().to_string());
+    run_to_end(&harness, req, controls).await
 }
 
 #[tokio::test]

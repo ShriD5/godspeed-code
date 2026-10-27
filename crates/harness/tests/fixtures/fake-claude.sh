@@ -386,6 +386,26 @@ case "$first" in
   cat >/dev/null
   ;;
 
+*scenario:typed-fork-on-disk*)
+  # The typed `/f-slow-steps` capture (claude/live-2.1.310-typed-fork-slow-steps*.jsonl),
+  # for crates/engine/tests/claude_subagents.rs: the fork's start, its
+  # transcript written under $CLAUDE_CONFIG_DIR while stdout holds the fork
+  # back (until the test drops `release` in the cwd), then the rest.
+  frames="$(dirname "$0")/claude/live-2.1.310-typed-fork-slow-steps.jsonl"
+  session="$CLAUDE_CONFIG_DIR/projects/-p/133a2e35-c338-4601-8108-99dcb7d09af2"
+  mkdir -p "$session/subagents"
+  head -n 1 "$frames"
+  cp "$(dirname "$0")/claude/live-2.1.310-typed-fork-slow-steps-transcript.jsonl" \
+    "$session/subagents/agent-ae74593bb0c051579.jsonl"
+  i=0
+  while [ ! -e release ] && [ "$i" -lt 400 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  tail -n +2 "$frames"
+  cat >/dev/null
+  ;;
+
 *scenario:lifecycle-queued-cancelled*)
   # A queued message cancelled before any turn takes it up: the result held
   # for it was the turn's real end, released at once — no quiet timer.

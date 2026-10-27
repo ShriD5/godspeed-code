@@ -15,6 +15,31 @@ const CHAT: &str = "claude-subagents";
 /// The typed fork's chip, named after the command and the fork's task.
 const CHIP: &str = "forked-command-fanout-a4d8fe55a62c09757";
 
+/// A run of the fake CLI's `scenario`, in `dir`, with its own config root:
+/// a typed fork's transcript is looked for there.
+fn request(dir: &Path, scenario: &str) -> RunRequest {
+    RunRequest {
+        mcp: None,
+        prompt: scenario.into(),
+        harness: None,
+        model: None,
+        reasoning: None,
+        model_options: Default::default(),
+        cwd: dir.display().to_string(),
+        sandbox: SandboxLevel::ReadOnly,
+        auto_approve: false,
+        attachments: vec![],
+        worktree: None,
+        resume: None,
+        access: None,
+        env: [(
+            "CLAUDE_CONFIG_DIR".to_owned(),
+            dir.join("claude").display().to_string(),
+        )]
+        .into(),
+    }
+}
+
 fn assemble(dir: &Path) -> (EngineCore, EngineProfile) {
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness/tests/fixtures/fake-claude.sh");
@@ -89,27 +114,11 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 async fn a_typed_fork_is_a_running_row_until_its_replayed_transcript_lands() {
     let dir = tempfile::tempdir().unwrap();
     let (core, profile) = assemble(dir.path());
-    let request = RunRequest {
-        mcp: None,
-        prompt: "scenario:typed-fork-replay".into(),
-        harness: None,
-        model: None,
-        reasoning: None,
-        model_options: Default::default(),
-        cwd: dir.path().display().to_string(),
-        sandbox: SandboxLevel::ReadOnly,
-        auto_approve: false,
-        attachments: vec![],
-        worktree: None,
-        resume: None,
-        access: None,
-        env: Default::default(),
-    };
     core.sessions
         .dispatch(
             CHAT,
             HarnessId::ClaudeCode,
-            request,
+            request(dir.path(), "scenario:typed-fork-replay"),
             Some("user-prompt".into()),
         )
         .await
@@ -219,27 +228,11 @@ async fn a_typed_fork_sent_to_a_parked_session_keeps_its_chip() {
     const PROBE: &str = "forked-command-probe-t2";
     let dir = tempfile::tempdir().unwrap();
     let (core, _profile) = assemble(dir.path());
-    let request = RunRequest {
-        mcp: None,
-        prompt: "scenario:typed-fork-parked-steer".into(),
-        harness: None,
-        model: None,
-        reasoning: None,
-        model_options: Default::default(),
-        cwd: dir.path().display().to_string(),
-        sandbox: SandboxLevel::ReadOnly,
-        auto_approve: false,
-        attachments: vec![],
-        worktree: None,
-        resume: None,
-        access: None,
-        env: Default::default(),
-    };
     core.sessions
         .dispatch(
             CHAT,
             HarnessId::ClaudeCode,
-            request,
+            request(dir.path(), "scenario:typed-fork-parked-steer"),
             Some("user-prompt".into()),
         )
         .await
@@ -281,5 +274,85 @@ async fn a_typed_fork_sent_to_a_parked_session_keeps_its_chip() {
         "{tab:?}"
     );
     assert_eq!(texts(&tab, MessageRole::User).concat(), "Probe.");
+    core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_typed_forks_tab_fills_from_its_transcript_on_disk_while_the_cli_holds_it() {
+    const SLOW_CHIP: &str = "forked-command-f-slow-steps-ae74593bb0c051579";
+    let dir = tempfile::tempdir().unwrap();
+    let (core, _profile) = assemble(dir.path());
+    core.sessions
+        .dispatch(
+            CHAT,
+            HarnessId::ClaudeCode,
+            request(dir.path(), "scenario:typed-fork-on-disk"),
+            Some("user-prompt".into()),
+        )
+        .await
+        .unwrap();
+    let sub = format!("{CHAT}--sub--{SLOW_CHIP}");
+    // The fork's turn in its tab, past the prompt it opened with.
+    let steps = |tab: &[SessionMessageEntry]| -> Vec<&'static str> {
+        tab.iter()
+            .filter(|e| e.role == MessageRole::Assistant)
+            .flat_map(|e| &e.parts)
+            .map(|p| match p {
+                MessagePart::Reasoning { .. } => "thinking",
+                MessagePart::Tool { resolved: true, .. } => "step",
+                MessagePart::Text { text, .. } if text.trim() == "steps done" => "reply",
+                _ => "other",
+            })
+            .collect()
+    };
+    let read = ["thinking", "step", "thinking", "step", "step", "reply"];
+    let running = (
+        SLOW_CHIP.to_owned(),
+        Some(sub.clone()),
+        Some(SubagentStatus::Running),
+    );
+
+    // Read off disk while the CLI holds the fork back: every step, with the
+    // fork still running.
+    until("the fork's running row", || {
+        rows(&core) == [running.clone()]
+    })
+    .await;
+    until("the fork's steps in its tab", || {
+        steps(&entries(&core, &sub)) == read
+    })
+    .await;
+    assert_eq!(rows(&core), [running]);
+    assert_eq!(badge(&core), Some(1));
+
+    std::fs::write(dir.path().join("release"), "").unwrap();
+    until("the turn's end", || {
+        core.sessions
+            .session_status(CHAT)
+            .is_some_and(|s| s.status == SessionStatus::Idle)
+            && badge(&core) == Some(0)
+    })
+    .await;
+    assert_eq!(
+        rows(&core),
+        [(
+            SLOW_CHIP.to_owned(),
+            Some(sub.clone()),
+            Some(SubagentStatus::Done)
+        )]
+    );
+    // The replay brought the same records: none shows twice.
+    let tab = entries(&core, &sub);
+    assert_eq!(
+        tab.iter().map(|e| e.role).collect::<Vec<_>>(),
+        [MessageRole::User, MessageRole::Assistant],
+        "{tab:?}"
+    );
+    assert_eq!(steps(&tab), read, "{tab:?}");
+    assert!(
+        tab.iter()
+            .all(|e| e.status == Some(MessageStatus::Complete)),
+        "{tab:?}"
+    );
     core.shutdown().await;
 }

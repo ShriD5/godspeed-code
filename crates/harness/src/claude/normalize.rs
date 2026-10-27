@@ -4,7 +4,7 @@
 use serde_json::Value;
 use zeron_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, ToolCall};
 
-use super::wire::{ContentBlock, Frame};
+use super::wire::{ContentBlock, Frame, MessageFrame};
 
 /// Human-readable text for the CLI's assistant-level error codes. These arrive
 /// as a terse `error` field on an `assistant` frame — usually with NO text
@@ -210,6 +210,73 @@ fn tag(parent: &str, event: AgentEvent) -> AgentEvent {
     }
 }
 
+/// A subagent's assistant message, attributed. The 2.1.x wire streams NO
+/// tagged partial deltas (live-verified): a subagent's text and thinking
+/// arrive only as full blocks on its tagged assistant frames — emit them, in
+/// block order with the tool calls, or subagent transcripts are
+/// tool-chips-only.
+fn subagent_message(parent: &str, f: &MessageFrame) -> Vec<AgentEvent> {
+    let mut out: Vec<AgentEvent> = f
+        .message
+        .blocks()
+        .filter_map(|b: ContentBlock| match b.kind.as_str() {
+            "text" if !b.text.is_empty() => Some(tag(
+                parent,
+                AgentEvent::TextDelta {
+                    text: format!("{}\n\n", b.text.trim_end()),
+                },
+            )),
+            "thinking" if !b.thinking.trim().is_empty() => Some(tag(
+                parent,
+                AgentEvent::ReasoningDelta {
+                    text: format!("{}\n\n", b.thinking.trim_end()),
+                },
+            )),
+            "tool_use" => Some(tag(
+                parent,
+                AgentEvent::ToolCall {
+                    id: b.id.clone(),
+                    call: decode_tool_use(&b.name, &b.input),
+                },
+            )),
+            _ => None,
+        })
+        .collect();
+    if let Some(code) = &f.error {
+        out.push(tag(
+            parent,
+            AgentEvent::Error {
+                message: assistant_error_message(code, &frame_text(&f.message)),
+            },
+        ));
+    }
+    out
+}
+
+/// A subagent's tool results, attributed like its calls.
+fn subagent_results(parent: &str, f: &MessageFrame) -> Vec<AgentEvent> {
+    f.message
+        .blocks()
+        .filter(|b: &ContentBlock| b.kind == "tool_result")
+        .map(|b| {
+            tag(
+                parent,
+                AgentEvent::ToolResult {
+                    id: b.tool_use_id.clone(),
+                    is_error: b.is_error.unwrap_or(false),
+                    output: None,
+                    diff: None,
+                },
+            )
+        })
+        .collect()
+}
+
+/// An id the CLI minted, safe in a path.
+fn path_safe(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// CLI-synthesized text that rides a user frame but is NOT conversation:
 /// `<system-reminder>` context injections and the interruption marker the CLI
 /// stamps into the transcript when a turn (or a subagent) is stopped.
@@ -246,6 +313,13 @@ struct TypedFork {
     echo: Option<String>,
     /// What its notification said, kept for the turn's end.
     status: Option<DoneStatus>,
+    /// Its session, whose history holds its transcript while it runs.
+    session: String,
+    /// Uuids of the records shown from that transcript.
+    seen: std::collections::HashSet<String>,
+    /// `None` until its replay begins, then whether the replay repeated a
+    /// record `seen`.
+    replayed: Option<bool>,
 }
 
 /// Per-run normalization state.
@@ -285,6 +359,9 @@ pub(crate) struct Normalizer {
     /// replay feeds its chip only until the turn ends: a `forked-command-*`
     /// id after that stays the CLI's own, which no chip carries.
     typed_fork: Option<TypedFork>,
+    /// Typed forks' transcripts are read off disk (see `fork_tail`) until a
+    /// replay repeats none of the records read.
+    fork_transcripts: bool,
     /// Rotates at each assistant-frame close and at each steer; SessionStarted
     /// carries the first value so folds can attribute deltas from the start.
     assistant_message_id: String,
@@ -328,6 +405,7 @@ impl Normalizer {
             skill_calls: std::collections::HashMap::new(),
             agent_spawn_tools: std::collections::HashSet::new(),
             typed_fork: None,
+            fork_transcripts: true,
             assistant_message_id: new_message_id(),
             streamed_text: false,
             turn_error_shown: false,
@@ -535,6 +613,17 @@ impl Normalizer {
         };
         self.agent_tasks.remove(&fork.task);
         self.agent_spawn_tools.remove(&fork.chip);
+        // Nothing promises the replay reuses the file's uuids: when it
+        // repeated none, every record showed twice, so this run's later
+        // forks wait for their replay.
+        if !fork.seen.is_empty() && fork.replayed == Some(false) {
+            tracing::warn!(
+                target: "zeron_harness::claude",
+                chip = %fork.chip,
+                "the typed fork's replay repeated no record read off disk; no longer reading forks' transcripts"
+            );
+            self.fork_transcripts = false;
+        }
         let status = fork.status.unwrap_or(turn);
         vec![
             tag(
@@ -553,6 +642,72 @@ impl Normalizer {
                 diff: None,
             },
         ]
+    }
+
+    /// The typed fork whose transcript the driver reads off disk, as
+    /// `(chip, session, task)`, until its replay begins.
+    pub(crate) fn fork_to_follow(&self) -> Option<(&str, &str, &str)> {
+        self.typed_fork
+            .as_ref()
+            .filter(|fork| {
+                self.fork_transcripts
+                    && fork.replayed.is_none()
+                    && path_safe(&fork.session)
+                    && path_safe(&fork.task)
+            })
+            .map(|fork| {
+                (
+                    fork.chip.as_str(),
+                    fork.session.as_str(),
+                    fork.task.as_str(),
+                )
+            })
+    }
+
+    /// One record of the typed fork's transcript on disk: its messages and
+    /// tool results, as its replay shows them. Its prompt (the tab opened
+    /// with it) and the bookkeeping around them (attachments, API request
+    /// records) are not conversation. Once the replay has begun, it brings
+    /// the rest.
+    pub(crate) fn fork_record(&mut self, record: Value) -> Vec<AgentEvent> {
+        let Some(fork) = self
+            .typed_fork
+            .as_mut()
+            .filter(|fork| fork.replayed.is_none())
+        else {
+            return Vec::new();
+        };
+        let assistant = match record.get("type").and_then(Value::as_str) {
+            Some("assistant") => true,
+            Some("user") => false,
+            _ => return Vec::new(),
+        };
+        let Ok(f) = serde_json::from_value::<MessageFrame>(record) else {
+            return Vec::new();
+        };
+        let events = if assistant {
+            subagent_message(&fork.chip, &f)
+        } else {
+            subagent_results(&fork.chip, &f)
+        };
+        if !events.is_empty()
+            && let Some(uuid) = f.uuid
+        {
+            fork.seen.insert(uuid);
+        }
+        events
+    }
+
+    /// A frame of the typed fork's replay, which brings the rest of its
+    /// transcript. A record already read off disk shows nothing: the replay
+    /// repeats each one under its uuid (live-verified 2.1.310).
+    fn fork_repeat(&mut self, parent: &str, uuid: Option<&str>) -> bool {
+        let Some(fork) = self.typed_fork.as_mut().filter(|fork| fork.chip == parent) else {
+            return false;
+        };
+        let repeat = uuid.is_some_and(|uuid| fork.seen.contains(uuid));
+        fork.replayed = Some(fork.replayed == Some(true) || repeat);
+        repeat
     }
 
     /// Normalize one stdout frame into 0+ unified events. `interrupted` folds
@@ -687,6 +842,9 @@ impl Normalizer {
                         task: task.to_owned(),
                         echo: prompt.map(str::to_owned),
                         status: None,
+                        session: f.session_id.clone(),
+                        seen: std::collections::HashSet::new(),
+                        replayed: None,
                     });
                     return out;
                 }
@@ -811,47 +969,11 @@ impl Normalizer {
 
             Frame::Assistant(f) => {
                 if let Some(parent) = &f.parent_tool_use_id {
-                    let parent = self.route(parent);
-                    // Subagent content, attributed. The 2.1.x wire streams NO
-                    // tagged partial deltas (live-verified): a subagent's text
-                    // and thinking arrive only as full blocks on its tagged
-                    // assistant frames — emit them, in block order with the
-                    // tool calls, or subagent transcripts are tool-chips-only.
-                    let mut out: Vec<AgentEvent> = f
-                        .message
-                        .blocks()
-                        .filter_map(|b: ContentBlock| match b.kind.as_str() {
-                            "text" if !b.text.is_empty() => Some(tag(
-                                parent,
-                                AgentEvent::TextDelta {
-                                    text: format!("{}\n\n", b.text.trim_end()),
-                                },
-                            )),
-                            "thinking" if !b.thinking.trim().is_empty() => Some(tag(
-                                parent,
-                                AgentEvent::ReasoningDelta {
-                                    text: format!("{}\n\n", b.thinking.trim_end()),
-                                },
-                            )),
-                            "tool_use" => Some(tag(
-                                parent,
-                                AgentEvent::ToolCall {
-                                    id: b.id.clone(),
-                                    call: decode_tool_use(&b.name, &b.input),
-                                },
-                            )),
-                            _ => None,
-                        })
-                        .collect();
-                    if let Some(code) = &f.error {
-                        out.push(tag(
-                            parent,
-                            AgentEvent::Error {
-                                message: assistant_error_message(code, &frame_text(&f.message)),
-                            },
-                        ));
+                    let parent = &self.route(parent).to_owned();
+                    if self.fork_repeat(parent, f.uuid.as_deref()) {
+                        return Vec::new();
                     }
-                    return out;
+                    return subagent_message(parent, &f);
                 }
                 // Record spawn tool ids up front: `task_notification` keys on
                 // them; a task may finish before a `task_started` arrives. A
@@ -996,24 +1118,12 @@ impl Normalizer {
             Frame::User(f) => {
                 if let Some(parent) = &f.parent_tool_use_id {
                     let parent = &self.route(parent).to_owned();
+                    if self.fork_repeat(parent, f.uuid.as_deref()) {
+                        return Vec::new();
+                    }
                     // A subagent's tool results echo on the main channel too;
                     // they belong to its transcript, attributed like its calls.
-                    let mut out: Vec<AgentEvent> = f
-                        .message
-                        .blocks()
-                        .filter(|b: &ContentBlock| b.kind == "tool_result")
-                        .map(|b| {
-                            tag(
-                                parent,
-                                AgentEvent::ToolResult {
-                                    id: b.tool_use_id.clone(),
-                                    is_error: b.is_error.unwrap_or(false),
-                                    output: None,
-                                    diff: None,
-                                },
-                            )
-                        })
-                        .collect();
+                    let mut out = subagent_results(parent, &f);
                     // A tagged user frame's TEXT blocks are the parent
                     // steering its subagent (SendMessage-style follow-ups —
                     // tool results ride their own blocks, filtered above).
@@ -2311,21 +2421,147 @@ mod tests {
                 ..
             }
         ));
-        // A result line too torn to read still ends the turn, and its fork.
+    }
+
+    // `/f-slow-steps` typed as the prompt (three 20 s steps, live 2.1.310):
+    // what stdout brought, and the fork's transcript as the CLI wrote it to
+    // disk meanwhile.
+    const SLOW: &str =
+        include_str!("../../tests/fixtures/claude/live-2.1.310-typed-fork-slow-steps.jsonl");
+    const SLOW_ON_DISK: &str = include_str!(
+        "../../tests/fixtures/claude/live-2.1.310-typed-fork-slow-steps-transcript.jsonl"
+    );
+    const SLOW_CHIP: &str = "forked-command-f-slow-steps-ae74593bb0c051579";
+    /// The slow fork's tab, past the prompt it opened with.
+    const SLOW_TAB: [&str; 9] = [
+        "thinking This is the f-slow-s",
+        "call qByz",
+        "result qByz",
+        "thinking Step 1 returned \"ste",
+        "call Y4gV",
+        "result Y4gV",
+        "call E8dg",
+        "result E8dg",
+        "text steps done",
+    ];
+
+    /// The slow fork started, and its transcript's records on disk.
+    fn slow_fork() -> (Normalizer, Vec<Value>) {
         let mut norm = Normalizer::new();
-        feed_one(&mut norm, TYPED_STARTED);
-        let end = feed_one(
-            &mut norm,
-            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["#,
+        feed_one(&mut norm, SLOW.lines().next().unwrap());
+        let records = SLOW_ON_DISK
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        (norm, records)
+    }
+
+    fn slow_replay() -> impl Iterator<Item = &'static str> {
+        SLOW.lines()
+            .filter(|line| line.contains(r#""parent_tool_use_id":"forked-command-"#))
+    }
+
+    /// What `events` add to the slow fork's tab.
+    fn slow_tab(events: &[AgentEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                AgentEvent::Subagent {
+                    parent_tool_use_id,
+                    event,
+                } if parent_tool_use_id == SLOW_CHIP => match event.as_ref() {
+                    AgentEvent::ReasoningDelta { text } => format!("thinking {:.20}", text),
+                    AgentEvent::TextDelta { text } => format!("text {}", text.trim()),
+                    AgentEvent::ToolCall { id, .. } => format!("call {}", &id[id.len() - 4..]),
+                    AgentEvent::ToolResult { id, .. } => {
+                        format!("result {}", &id[id.len() - 4..])
+                    }
+                    other => format!("{other:?}"),
+                },
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_typed_forks_transcript_on_disk_shows_its_messages_and_results_only() {
+        let (mut norm, records) = slow_fork();
+        assert_eq!(
+            norm.fork_to_follow(),
+            Some((
+                SLOW_CHIP,
+                "133a2e35-c338-4601-8108-99dcb7d09af2",
+                "ae74593bb0c051579"
+            ))
         );
-        assert_eq!(end[..2], typed_settled(DoneStatus::Errored), "{end:?}");
-        assert!(matches!(
-            end[2..],
-            [AgentEvent::Done {
-                status: DoneStatus::Errored,
-                ..
-            }]
-        ));
+        // Its prompt (the tab opened with it), a date attachment and an API
+        // request record carrying message content show nothing.
+        let shown: Vec<AgentEvent> = records
+            .into_iter()
+            .flat_map(|r| norm.fork_record(r))
+            .collect();
+        assert_eq!(slow_tab(&shown), SLOW_TAB);
+        // Nor would user text: nothing steers a typed fork.
+        let text = json!({"type": "user", "uuid": "u9", "message": {"role": "user",
+            "content": [{"type": "text", "text": "Keep going."}]}});
+        assert!(norm.fork_record(text).is_empty());
+    }
+
+    #[test]
+    fn a_record_shows_once_whether_the_disk_or_the_replay_brings_it_first() {
+        // Read off disk first: the replay repeats it under its uuid.
+        let (mut norm, records) = slow_fork();
+        let mut shown: Vec<AgentEvent> = records
+            .into_iter()
+            .flat_map(|r| norm.fork_record(r))
+            .collect();
+        for frame in slow_replay() {
+            shown.extend(feed_one(&mut norm, frame));
+        }
+        assert_eq!(slow_tab(&shown), SLOW_TAB);
+        // The fork ends between two reads: what the replay brought first is
+        // not read again.
+        let (mut norm, records) = slow_fork();
+        let (before, after) = records.split_at(5);
+        let mut shown: Vec<AgentEvent> = before
+            .iter()
+            .flat_map(|r| norm.fork_record(r.clone()))
+            .collect();
+        for frame in slow_replay() {
+            shown.extend(feed_one(&mut norm, frame));
+        }
+        shown.extend(after.iter().flat_map(|r| norm.fork_record(r.clone())));
+        assert_eq!(slow_tab(&shown), SLOW_TAB);
+    }
+
+    #[test]
+    fn a_replay_that_repeats_nothing_read_off_disk_ends_the_reading() {
+        let next_fork = SLOW
+            .lines()
+            .next()
+            .unwrap()
+            .replace("ae74593bb0c051579", "a2");
+        let run = |uuids: &str| {
+            let (mut norm, records) = slow_fork();
+            records.into_iter().for_each(|r| {
+                norm.fork_record(r);
+            });
+            let replayed: Vec<AgentEvent> = slow_replay()
+                .flat_map(|f| feed_one(&mut norm, &f.replacen(r#""uuid":""#, uuids, 1)))
+                .collect();
+            feed_one(&mut norm, TURN_END);
+            feed_one(&mut norm, &next_fork);
+            (slow_tab(&replayed), norm.fork_to_follow().is_some())
+        };
+        // Repeated under the same uuids: nothing shows twice, and the next
+        // fork is read too.
+        assert_eq!(run(r#""uuid":""#), (Vec::<String>::new(), true));
+        // Under other uuids it all showed twice: the next fork fills from its
+        // replay alone.
+        assert_eq!(
+            run(r#""uuid":"x"#),
+            (SLOW_TAB.map(String::from).to_vec(), false)
+        );
     }
 
     #[test]
