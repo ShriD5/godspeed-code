@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@325384d8 (2026-10-26)
+Synced through: zeronsh/zeron@3d2f1e64 (2026-10-27)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -30,6 +30,26 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
 - Partly ported (2026-10-26): 325384d8 brought over the agent-sender caption only; its
   provider-switch seam restyle and the engine's earlier seam write (`note_provider_switch`) wait
   for provider switching from cc7da5c2.
+- Deferred 2026-10-27:
+  - ec0897fe (a session left before its message lands shows its run): needs `session_stale`
+    and `last_turn_outcome` from cc7da5c2.
+  - b8ed9d9c (switch to turn native subagents off): built on the parked-session replacement
+    by credential/binary identity (cc7da5c2, dd0c36fa), commit credit and the Cloud-era
+    providers page.
+  - 64a26d35 (questions show what was answered, close one unanswered): conflicts in ~10
+    files with Godspeed's own approval questions, MCP elicitation and OpenCode forms; worth a
+    dedicated port.
+  - 00cc2e05 (remote chats show the sync, not an outage): rewrites the connectivity captions
+    Godspeed replaced (`chat_sync_pill_caption`, StorageError) and uses Cloud presence.
+  - e16cc3e9 (provider sign-ins past the preview room's device limit): builds on
+    `run_with_wake` (iOS chain) and needs the matching edge change deployed.
+  - bf6d71aa (settings search, Cmd+F): its index covers Zeron's settings (Cloud, billing,
+    delegation, commit credit); needs a Godspeed index. 3d2f1e64 was ported without its anchor.
+  - c31124aa (Linux WPE browser): needs newer zui/gpui-component pins (b564a34, 59f8924)
+    than Godspeed's (361ff20, 701ca97); a fork bump is the owner's call.
+- Partly ported (2026-10-27): f65c5bc6 and d8a14b35 brought the shared header parser and the
+  desktop rows; their iOS/Android captions wait for inline marks and a workspace snapshot in
+  the mobile layout (Android needs cc7da5c2).
 
 A Godspeed always-on agent ("Zeron sync") runs daily, ports anything newer than the line above on a
 branch, runs the test suites, merges to main when everything passes, and otherwise leaves a pull
