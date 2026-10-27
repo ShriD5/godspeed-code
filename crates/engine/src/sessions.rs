@@ -113,6 +113,147 @@ impl RuntimeConfig {
     }
 }
 
+/// Whether two spellings name one directory: a trailing slash, or a
+/// symlink or `..` that resolves to the same place. Clients spell a chat's
+/// folder differently, and a spelling is never a reason to replace a runtime.
+fn same_dir(a: &str, b: &str) -> bool {
+    fn trim(path: &str) -> &str {
+        match path.trim_end_matches(['/', '\\']) {
+            "" if path.starts_with('/') => "/",
+            trimmed => trimmed,
+        }
+    }
+    if a == b || trim(a) == trim(b) {
+        return true;
+    }
+    if a.trim().is_empty() || b.trim().is_empty() {
+        return false;
+    }
+    matches!(
+        (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+        (Ok(a), Ok(b)) if a == b
+    )
+}
+
+/// Line `next` up with the configuration the chat's runtime runs (`live`)
+/// where it only spells it differently or leaves it out:
+/// - a folder (cwd or extra root) naming the same directory takes the
+///   runtime's spelling;
+/// - extra writable roots no sender can pick (an always-on agent's memory
+///   folder) are inherited by a send that names none.
+fn align_with_live(next: &mut RunRequest, live: &RunRequest) {
+    if next.cwd != live.cwd && same_dir(&next.cwd, &live.cwd) {
+        next.cwd = live.cwd.clone();
+    }
+    let live_roots = live.writable_roots();
+    let roots = next.writable_roots();
+    let respelled = roots.len() == live_roots.len()
+        && roots.iter().all(|r| live_roots.iter().any(|l| same_dir(r, l)))
+        && live_roots.iter().all(|l| roots.iter().any(|r| same_dir(r, l)));
+    if live_roots.is_empty() || roots == live_roots || !(roots.is_empty() || respelled) {
+        return;
+    }
+    let mode = next.access_mode();
+    next.access
+        .get_or_insert_with(|| zeron_proto::RunAccess::new(mode))
+        .writable_roots = live_roots.to_vec();
+}
+
+/// What a new run configuration changes about a live runtime's, for the
+/// log: the fields every driver's launch reads. Environment values are
+/// redacted (only the variable names show) and MCP servers show by name.
+fn config_changes(
+    live_harness: HarnessId,
+    live: &RunRequest,
+    next_harness: HarnessId,
+    next: &RunRequest,
+) -> Vec<String> {
+    let mut changes = Vec::new();
+    if live_harness != next_harness {
+        changes.push(format!("harness {live_harness:?} -> {next_harness:?}"));
+    }
+    if live.cwd != next.cwd {
+        changes.push(format!("cwd {:?} -> {:?}", live.cwd, next.cwd));
+    }
+    if live.access_mode() != next.access_mode() {
+        changes.push(format!(
+            "access mode {:?} -> {:?}",
+            live.access_mode(),
+            next.access_mode()
+        ));
+    }
+    if live.writable_roots() != next.writable_roots() {
+        changes.push(format!(
+            "writable roots {:?} -> {:?}",
+            live.writable_roots(),
+            next.writable_roots()
+        ));
+    }
+    if live.model != next.model {
+        changes.push(format!("model {:?} -> {:?}", live.model, next.model));
+    }
+    if live.reasoning != next.reasoning {
+        changes.push(format!(
+            "reasoning {:?} -> {:?}",
+            live.reasoning, next.reasoning
+        ));
+    }
+    let mut keys: Vec<&String> = live
+        .model_options
+        .keys()
+        .chain(next.model_options.keys())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        let (a, b) = (live.model_options.get(key), next.model_options.get(key));
+        let one = |v: Option<&serde_json::Value>| {
+            v.map(|v| serde_json::Map::from_iter([(key.clone(), v.clone())]))
+                .unwrap_or_default()
+        };
+        if !zeron_harness::same_model_options(&one(a), &one(b)) {
+            changes.push(format!("model option {key} {a:?} -> {b:?}"));
+        }
+    }
+    let mut env: Vec<&String> = live.env.keys().chain(next.env.keys()).collect();
+    env.sort();
+    env.dedup();
+    for key in env {
+        if live.env.get(key) != next.env.get(key) {
+            changes.push(format!("env {key} changed (value redacted)"));
+        }
+    }
+    let mcp = |r: &RunRequest| r.mcp.as_ref().map(|m| m.name.clone());
+    if live.mcp != next.mcp {
+        changes.push(format!("mcp server {:?} -> {:?}", mcp(live), mcp(next)));
+    }
+    changes
+}
+
+/// The user-facing name of what a deferred configuration changes.
+fn deferred_change_label(live: &RunRequest, next: &RunRequest) -> &'static str {
+    if live.access_mode() != next.access_mode() {
+        "access mode"
+    } else if live.cwd != next.cwd {
+        "folder"
+    } else if live.writable_roots() != next.writable_roots() {
+        "writable folders"
+    } else {
+        "settings"
+    }
+}
+
+/// Whether a request only a new process can apply is delivered to this
+/// runtime instead, under its own configuration: replacing it would kill the
+/// background work (subagents, background shells) it reports. Only the same
+/// harness, and only a runtime still taking prompts.
+fn keeps_runtime(handle: &RunHandle, harness_id: HarnessId) -> bool {
+    handle.runtime_config.harness_id == harness_id
+        && handle.steerable
+        && !handle.retiring.load(std::sync::atomic::Ordering::Acquire)
+        && handle.turn.background_live()
+}
+
 /// A run's live voice calls. They hold its idle reaper off, and each hang-up
 /// wakes the reaper to restart its window from there.
 #[derive(Default)]
@@ -177,6 +318,11 @@ struct RunHandle {
     /// is unambiguously before the stop (cancelled with it) or after it
     /// (re-dispatched to a fresh runtime — never lost).
     retiring: Arc<std::sync::atomic::AtomicBool>,
+    /// A run configuration sent while this runtime held background work,
+    /// which only a new process could apply. The runtime was kept and took
+    /// the message under its own configuration; the next send after the
+    /// work ends replaces it (see [`keeps_runtime`]).
+    deferred_config: Option<RunRequest>,
 }
 
 /// One accepted-but-unconfirmed steer: enough to re-dispatch it verbatim.
@@ -470,14 +616,38 @@ impl SessionsEngine {
         if !self.turn_in_flight(chat_id) {
             return false;
         }
+        // Compared the way dispatch will compare it.
+        let request = request.map(|(id, r)| {
+            let mut r = r.clone();
+            if let Some(live) = self.live_config_for(chat_id, id) {
+                align_with_live(&mut r, &live);
+            }
+            (id, r)
+        });
         let live = lock(&self.inner.runs).get(chat_id).map(|h| {
             (
                 h.runtime_config.harness_id,
                 h.steerable
-                    && request.is_none_or(|(id, r)| h.runtime_config.route(id, r).is_some()),
+                    && request.as_ref().is_none_or(|(id, r)| {
+                        h.runtime_config.route(*id, r).is_some() || keeps_runtime(h, *id)
+                    }),
             )
         });
         live.is_some_and(|(harness, routable)| routable && !self.steers_mid_turn(harness))
+    }
+
+    /// The configuration a send for `chat_id` on `harness_id` lines up
+    /// with: the live runtime's, else the chat's last run on that harness.
+    fn live_config_for(&self, chat_id: &str, harness_id: HarnessId) -> Option<RunRequest> {
+        let live = lock(&self.inner.runs).get(chat_id).map(|h| {
+            (h.runtime_config.harness_id == harness_id).then(|| h.runtime_config.request.clone())
+        });
+        match live {
+            Some(live) => live,
+            None => self
+                .last_request(chat_id)
+                .filter(|r| r.harness.is_none_or(|h| h == harness_id)),
+        }
     }
 
     /// Whether an accepted agent update gates the chat's live run, so a new
@@ -645,18 +815,44 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         zeron_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        // Another device's send names the same folder in its own spelling,
+        // and leaves out roots it can't pick: run it as the chat runs.
+        if let Some(live) = self.live_config_for(chat_id, harness_id) {
+            align_with_live(&mut request, &live);
+        }
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
+            let route = h.runtime_config.route(harness_id, &request);
+            // Only a new process could apply this request, but this one holds
+            // background work: it takes the message under its own
+            // configuration instead (`Some(false)`), and the change waits.
+            let kept = (route.is_none() && keeps_runtime(h, harness_id))
+                .then(|| h.turn.background_tasks());
             (
                 h.run_id.clone(),
                 h.steerable && !h.retiring.load(std::sync::atomic::Ordering::Acquire),
-                h.runtime_config.route(harness_id, &request),
+                if kept.is_some() { Some(false) } else { route },
                 h.steer_tx.clone(),
                 h.routed_steers.clone(),
                 h.fork_history_sent.clone(),
                 h.retiring.clone(),
+                kept,
+                (h.runtime_config.harness_id, h.runtime_config.request.clone()),
+                h.deferred_config.clone(),
             )
         });
-        if let Some((run_id, steerable, route, steer_tx, ledger, history_sent, retiring)) = routed {
+        if let Some((
+            run_id,
+            steerable,
+            route,
+            steer_tx,
+            ledger,
+            history_sent,
+            retiring,
+            kept,
+            (live_harness, live_request),
+            deferred,
+        )) = routed
+        {
             if idle {
                 // No prompt rides an idle start, so nothing could carry an
                 // in-place reconfiguration: only the runtime as is will do.
@@ -730,8 +926,53 @@ impl SessionsEngine {
                     }
                     lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
                 }
+                // A kept runtime records the change it still owes; any other
+                // accepted send runs as the user last asked, owing nothing.
+                if let Some(h) = lock(&self.inner.runs)
+                    .get_mut(chat_id)
+                    .filter(|h| h.run_id == run_id)
+                {
+                    h.deferred_config = kept.map(|_| request.clone());
+                }
                 let handle = self.doc_handle(chat_id)?;
                 handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+                if let Some(tasks) = kept {
+                    let changes = config_changes(live_harness, &live_request, harness_id, &request);
+                    tracing::info!(
+                        chat = %chat_id,
+                        background_tasks = tasks,
+                        changes = %changes.join("; "),
+                        "kept the live harness for its background work; the changed run configuration applies after it"
+                    );
+                    // One notice per distinct pending change, not per message.
+                    let repeated = deferred.as_ref().is_some_and(|previous| {
+                        config_changes(harness_id, previous, harness_id, &request).is_empty()
+                    });
+                    if !repeated {
+                        let what = deferred_change_label(&live_request, &request);
+                        let text = format!(
+                            "Kept the running session ({tasks} background task{}) — the new {what} applies after {}.",
+                            if tasks == 1 { "" } else { "s" },
+                            if tasks == 1 { "it finishes" } else { "they finish" },
+                        );
+                        if let Err(err) = handle.doc().push_message(&SessionMessageEntry {
+                            id: format!("{user_id}:runtime-kept"),
+                            role: MessageRole::System,
+                            parts: vec![MessagePart::Text {
+                                id: "t0".into(),
+                                text,
+                            }],
+                            created_at: now_ms(),
+                            device_id: self.inner.device_id.clone(),
+                            status: Some(MessageStatus::Complete),
+                            continuation_of: None,
+                            duration_ms: None,
+                            turn_stats: None,
+                        }) {
+                            tracing::warn!(chat = %chat_id, error = %err, "kept-runtime notice write failed");
+                        }
+                    }
+                }
                 self.note_turn_start(chat_id, &request.cwd);
                 if self.is_live(chat_id, &run_id) {
                     if bootstrap.is_some() {
@@ -764,8 +1005,11 @@ impl SessionsEngine {
                 message_id = Some(user_id);
             }
             if !same_runtime {
+                let changes = config_changes(live_harness, &live_request, harness_id, &request);
                 tracing::info!(
                     chat = %chat_id,
+                    changes = %changes.join("; "),
+                    deferred = deferred.is_some(),
                     "restarting live harness to apply changed run configuration"
                 );
             }
@@ -875,6 +1119,7 @@ impl SessionsEngine {
                 routed_steers: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 fork_history_sent: fork_history_sent.clone(),
                 retiring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                deferred_config: None,
             },
         );
         self.set_status(
