@@ -1197,6 +1197,7 @@ async fn a_phone_send_inherits_the_chats_access_mode() {
 
 /// The same folder spelled with a trailing slash or through a symlink is
 /// the same runtime.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_folder_spelled_differently_is_the_same_runtime() {
     let rig = rig();

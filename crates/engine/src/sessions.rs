@@ -4505,15 +4505,18 @@ mod tests {
         assert!(super::same_dir("/", "//"));
         assert!(!super::same_dir("/Users/dev", "/Users/dev2"));
         assert!(!super::same_dir("", "/"));
-        let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().join("real");
-        std::fs::create_dir(&real).unwrap();
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert!(super::same_dir(
-            &real.to_string_lossy(),
-            &link.to_string_lossy()
-        ));
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let real = dir.path().join("real");
+            std::fs::create_dir(&real).unwrap();
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert!(super::same_dir(
+                &real.to_string_lossy(),
+                &link.to_string_lossy()
+            ));
+        }
     }
 
     #[test]
