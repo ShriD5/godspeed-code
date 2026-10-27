@@ -829,7 +829,7 @@ impl SessionsEngine {
             // Only a new process could apply this request, but this one holds
             // background work: it takes the message under its own
             // configuration instead (`Some(false)`), and the change waits.
-            let kept = (route.is_none() && keeps_runtime(h, harness_id))
+            let kept = (!idle && route.is_none() && keeps_runtime(h, harness_id))
                 .then(|| h.turn.background_tasks());
             (
                 h.run_id.clone(),
