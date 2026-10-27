@@ -3,7 +3,7 @@
  * 100,000 rows written per day across the whole account, and every row an
  * INSERT/UPDATE/DELETE touches counts, index entries included. The meter
  * wraps a room's `SqlStorage`, sums each statement's `rowsWritten`, and logs
- * one line per room per minute while the room is writing, so `wrangler tail`
+ * at most one line per room object per minute while it writes, so `wrangler tail`
  * shows which room spends the budget.
  */
 
@@ -14,8 +14,8 @@ export class WriteMeter {
   total = 0;
   /** SQL statements that wrote at least one row. */
   statements = 0;
-  private windowRows = 0;
-  private windowStart = 0;
+  private pending = 0;
+  private lastLogAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly room: string,
@@ -23,28 +23,24 @@ export class WriteMeter {
       console.log(line, fields)
   ) {}
 
+  /** Leading-edge: the first write after a quiet minute logs at once. A
+   * hibernating room is a fresh object on nearly every wake, so a trailing
+   * window would never fill; a busy room still logs at most once a minute. */
   add(rows: number, now = Date.now()): void {
     if (rows <= 0) return;
     this.total += rows;
     this.statements += 1;
-    if (this.windowStart === 0) this.windowStart = now;
-    this.windowRows += rows;
-    if (now - this.windowStart >= WRITE_LOG_WINDOW_MS) this.report(now);
+    this.pending += rows;
+    if (now - this.lastLogAt >= WRITE_LOG_WINDOW_MS) this.report(now);
   }
 
-  /** Log and reset the current window (no-op when nothing was written). */
+  /** Log what was written since the last line (no-op when nothing was). */
   report(now = Date.now()): void {
-    if (this.windowRows > 0) {
-      this.log("do rows written", {
-        room: this.room,
-        rows: this.windowRows,
-        seconds: Math.round((now - this.windowStart) / 1000)
-      });
-    }
-    this.windowRows = 0;
-    this.windowStart = 0;
+    if (this.pending === 0) return;
+    this.log("do rows written", { room: this.room, rows: this.pending, sinceLastLine: this.lastLogAt === Number.NEGATIVE_INFINITY ? null : Math.round((now - this.lastLogAt) / 1000) });
+    this.pending = 0;
+    this.lastLogAt = now;
   }
-
   /** A `SqlStorage` that counts what it writes. */
   wrap(sql: SqlStorage): SqlStorage {
     const exec = (query: string, ...bindings: unknown[]) => {
