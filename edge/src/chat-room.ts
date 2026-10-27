@@ -13,12 +13,23 @@
  * Sidecars (`/tail`, `/diff`) are host-PUBLISHED and served verbatim: the DO
  * never materializes anything.
  *
- * Hibernation discipline: ZERO wall-clock timers; ping/pong rides the
- * auto-response pair; alarms retry accepted rows' host wakes and back up to R2.
+ * Write budget: the free plan allows 100k SQLite rows written per day for
+ * the whole account, and a streaming turn pushes several updates a second.
+ * Pushes are coalesced: the first after a quiet second is written at once,
+ * later ones wait (at most `FLUSH_INTERVAL_MS`) and land together as one
+ * chunk row. A push is acked and relayed only after its chunk commits, so an
+ * ack still means durable; a crash before the flush loses only unacked
+ * batches, which clients keep in their outbox and replay on reconnect (the
+ * batch-id dedupe makes the replay exact-once).
+ *
+ * Hibernation discipline: no timers while idle (the flush timer only runs
+ * while pushes are buffered); ping/pong rides the auto-response pair; alarms
+ * retry accepted rows' host wakes and back up to R2.
  */
 import { createBlobStore, type BlobStore } from "./blobs";
 import {
-  appendRow,
+  appendRows,
+  batchIndex,
   CHECKPOINT_BLOB,
   commitCheckpoint,
   ensureChatLog,
@@ -27,8 +38,10 @@ import {
   headSeq,
   logStats,
   MAX_ROW_BYTES,
+  rowError,
   rowsAfter,
-  setMeta
+  setMeta,
+  type NewRow
 } from "./chat-log";
 import { decodeFrame, encodeFrame, FRAME } from "./chat-frames";
 import { AUTH_USER_HEADER, type Env } from "./env";
@@ -36,6 +49,8 @@ import {
   ensureChatWakes, finishChatWake, MAX_WAKE_ATTEMPTS, PERMANENT_WAKE_REJECTIONS,
   pendingChatWake, queueChatWake, retryChatWake, validWakeRoute
 } from "./chat-wakes";
+import { PushOutcomes } from "./push-outcomes";
+import { WriteMeter } from "./write-meter";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Inbound frame budget: one pushed row (+ header slack). */
@@ -52,6 +67,10 @@ const PRESENCE_TTL_MS = 30_000;
 const QUOTA_WINDOW_MS = 60_000;
 const QUOTA_MAX_PUSHES = 300;
 const QUOTA_MAX_BYTES = 8 * 1024 * 1024;
+/** Streaming coalescing window: at most one chunk write per window. */
+export const FLUSH_INTERVAL_MS = 1000;
+/** Buffered payload that forces an early flush. */
+export const FLUSH_BYTES = 256 * 1024;
 
 interface SocketState {
   userId: string;
@@ -62,22 +81,44 @@ interface SocketState {
   hostDevice?: string;
 }
 
-interface PushOutcome {
-  ok: number;
-  rejected: number;
-  lastOkAt: number;
-}
-
 interface QuotaWindow {
   since: number;
   pushes: number;
   bytes: number;
 }
 
+/** Who is owed the outcome of a buffered push. */
+type FlushOutcome = { ok: true; seq: number; dup: boolean } | { ok: false };
+
+interface Buffered {
+  row: NewRow;
+  userId: string;
+  chatId: string;
+  hostDevice: string;
+  /** Sockets owed an ack: the pusher, plus any replay of the same batch. */
+  sockets: Array<{ ws: WebSocket; dup: boolean }>;
+  /** HTTP pushers awaiting the outcome. */
+  waiters: Array<{ resolve: (outcome: FlushOutcome) => void; dup: boolean }>;
+}
+
 export class ChatRoom implements DurableObject {
   private readonly ctx: DurableObjectState;
   private readonly env: Env;
   private readonly blobs: BlobStore;
+  /** The room's SQL, metered (rows written per minute show in the logs). */
+  private readonly sql: SqlStorage;
+  readonly meter: WriteMeter;
+  private readonly outcomes: PushOutcomes;
+  /** Accepted pushes not yet written (nor acked, nor relayed). */
+  private buffer: Buffered[] = [];
+  private bufferBytes = 0;
+  private lastFlushAt = 0;
+  private flushTimer?: ReturnType<typeof setTimeout>;
+  private flushChain: Promise<void> = Promise.resolve();
+  /** Batch-id dedupe set, valid while the head it was built at holds. */
+  private known?: { head: number; index: Map<string, number> };
+  /** Coalescing window (tests shorten it). */
+  flushIntervalMs = FLUSH_INTERVAL_MS;
   /** device → last presence beat (epoch ms). Memory-only by construction. */
   private readonly presence = new Map<string, number>();
   /** device → rolling push quota window. Memory-only. */
@@ -87,9 +128,12 @@ export class ChatRoom implements DurableObject {
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
     this.env = env;
-    ensureChatLog(ctx.storage.sql);
-    ensureChatWakes(ctx.storage.sql);
-    this.blobs = createBlobStore(ctx.storage.sql);
+    this.meter = new WriteMeter(`chat2 ${ctx.id.toString().slice(0, 12)}`);
+    this.sql = this.meter.wrap(ctx.storage.sql);
+    ensureChatLog(this.sql);
+    ensureChatWakes(this.sql);
+    this.blobs = createBlobStore(this.sql);
+    this.outcomes = new PushOutcomes((key) => getMeta(this.sql, key), (key, value) => setMeta(this.sql, key, value));
     // Runtime-answered keepalive; proves nothing about this DO's health.
     // Clients judge liveness by probe frames (same caveat as RegistryRoom).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
@@ -102,7 +146,7 @@ export class ChatRoom implements DurableObject {
     const userId = request.headers.get(AUTH_USER_HEADER);
     if (!userId) return json({ error: "unauthenticated" }, 401);
 
-    const sql = this.ctx.storage.sql;
+    const sql = this.sql;
     const owner = getMeta(sql, "owner");
 
     if (url.pathname === "/ws") {
@@ -143,7 +187,9 @@ export class ChatRoom implements DurableObject {
       }
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.byteLength > MAX_CHECKPOINT_BYTES) return json({ error: "too_large" }, 413);
+      await this.flush();
       const outcome = commitCheckpoint(sql, this.blobs, seqCovered, frontier, body, Date.now());
+      this.known = undefined;
       if (!outcome.ok) return json({ error: outcome.error }, 409);
       await this.markBackupDirty();
       return json({ ok: true, seqFloor: outcome.seqFloor, pruned: outcome.pruned });
@@ -275,21 +321,21 @@ export class ChatRoom implements DurableObject {
         this.recordPush(device, false);
         return json({ error: "quota" }, 429);
       }
-      const outcome = await this.acceptRow(device, batchId, payload, userId, chatId, hostDevice);
-      if (!outcome.ok) {
+      const error = rowError(payload);
+      if (error) {
         this.recordPush(device, false);
-        return json({ error: outcome.error }, outcome.error === "too_large" ? 413 : 400);
+        return json({ error }, error === "too_large" ? 413 : 400);
       }
+      // HTTPS pushes flush at once (no coalescing wait): the fallback
+      // transport drains its outbox one request at a time. The flush relays
+      // to every ready socket — a same-device socket would re-import its own
+      // bytes as a Loro no-op, so no exclusion needed.
+      const outcome = await new Promise<FlushOutcome>((resolve) => {
+        this.enqueue({ device, batchId, bytes: payload }, userId, chatId, hostDevice, { resolve });
+        void this.flush();
+      });
+      if (!outcome.ok) return json({ error: "unavailable" }, 503);
       this.recordPush(device, true);
-      if (!outcome.dup) {
-        // Live relay to every ready socket — a same-device socket would
-        // re-import its own bytes as a Loro no-op, so no exclusion needed.
-        for (const socket of this.ctx.getWebSockets()) {
-          const socketState = socket.deserializeAttachment() as SocketState | null;
-          if (!socketState?.ready) continue;
-          send(socket, FRAME.row, { seq: outcome.seq, device, batchId }, payload);
-        }
-      }
       return json({ batchId, seq: outcome.seq, dup: outcome.dup });
     }
 
@@ -322,10 +368,8 @@ export class ChatRoom implements DurableObject {
         presence: Object.fromEntries(this.presence),
         // The ONLY per-device attribution surface — kept from the 2026-08-05
         // incident tooling (SessionRoom's /stats pushOutcomes).
-        pushOutcomes: JSON.parse(getMeta(sql, "pushOutcomes") ?? "{}") as Record<
-          string,
-          PushOutcome
-        >,
+        pushOutcomes: this.outcomes.snapshot(),
+        bufferedRows: this.buffer.length,
         lastBackupSeq: Number(getMeta(sql, "backupSeq") ?? "0")
       });
     }
@@ -334,10 +378,14 @@ export class ChatRoom implements DurableObject {
       // Operator wipe. Recovery is host-driven: the host detects
       // `headSeq < cursor` on its next hello and re-seeds via checkpoint —
       // same shape as the registry reset recipe.
+      await this.flush();
       sql.exec("DELETE FROM rows");
+      sql.exec("DELETE FROM chunks");
       sql.exec("DELETE FROM meta");
       sql.exec("DELETE FROM blobs");
       sql.exec("DELETE FROM chat_wake");
+      this.known = undefined;
+      this.outcomes.reset();
       for (const ws of this.ctx.getWebSockets()) {
         try {
           ws.close(4410, "chat room reset");
@@ -382,19 +430,21 @@ export class ChatRoom implements DurableObject {
         this.handlePresence(ws, state, frame.header, frame.payload);
         return;
       case FRAME.probe:
-        send(ws, FRAME.probeOk, { headSeq: headSeq(this.ctx.storage.sql) });
+        send(ws, FRAME.probeOk, { headSeq: headSeq(this.sql) });
         return;
       default:
         send(ws, FRAME.error, { code: "bad_frame", message: `unexpected type ${frame.type}` });
     }
   }
 
+  /** A closing socket's buffered pushes still commit (and relay); their
+   * acks are lost with it, so the client replays them — deduped. */
   async webSocketClose(): Promise<void> {
-    /* nothing buffered; rows are written synchronously on push */
+    await this.flush();
   }
 
   async webSocketError(): Promise<void> {
-    /* ditto */
+    await this.flush();
   }
 
   private handleHello(ws: WebSocket, state: SocketState, header: Record<string, unknown>): void {
@@ -403,7 +453,7 @@ export class ChatRoom implements DurableObject {
     }
     state.ready = true;
     ws.serializeAttachment(state);
-    const sql = this.ctx.storage.sql;
+    const sql = this.sql;
     const stats = logStats(sql);
     const frontier = this.blobs.get(FRONTIER_BLOB) ?? new Uint8Array(0);
     // Metadata + frontier only — the CLIENT decides what to load next
@@ -431,7 +481,7 @@ export class ChatRoom implements DurableObject {
     }
     const after = typeof header.after === "number" && header.after >= 0 ? header.after : 0;
     const exclude = header.excludeOwn === true ? state.device : undefined;
-    const sql = this.ctx.storage.sql;
+    const sql = this.sql;
     for (const row of rowsAfter(sql, after, exclude)) {
       send(ws, FRAME.row, { seq: row.seq, device: row.device, batchId: row.batchId }, row.bytes);
     }
@@ -458,35 +508,146 @@ export class ChatRoom implements DurableObject {
       send(ws, FRAME.error, { code: "quota", message: "per-device push quota exceeded", batchId });
       return;
     }
-    const outcome = await this.acceptRow(state.device, batchId, payload, state.userId, state.chatId ?? "", state.hostDevice ?? "");
-    if (!outcome.ok) {
+    const error = rowError(payload);
+    if (error) {
       this.recordPush(state.device, false);
-      send(ws, FRAME.error, {
-        code: outcome.error,
-        message: `push rejected: ${outcome.error}`,
-        batchId
-      });
+      send(ws, FRAME.error, { code: error, message: `push rejected: ${error}`, batchId });
       return;
     }
     this.recordPush(state.device, true);
-    if (!outcome.dup) {
-      // Live relay to every OTHER ready socket — the sender has its own
-      // bytes; it gets the ack (contrast RegistryRoom, whose LWW merge means
-      // the sender must see the merged truth — here bytes are opaque and
-      // Loro convergence is the client's business).
-      for (const socket of this.ctx.getWebSockets()) {
-        if (socket === ws) continue;
-        const socketState = socket.deserializeAttachment() as SocketState | null;
-        if (!socketState?.ready) continue;
-        send(
-          socket,
-          FRAME.row,
-          { seq: outcome.seq, device: state.device, batchId },
-          payload
-        );
-      }
+    // Relay to the OTHER ready sockets and the ack both wait for the flush
+    // (contrast RegistryRoom, whose LWW merge means the sender must see the
+    // merged truth — here bytes are opaque and Loro convergence is the
+    // client's business).
+    this.enqueue(
+      { device: state.device, batchId, bytes: payload },
+      state.userId,
+      state.chatId ?? "",
+      state.hostDevice ?? "",
+      { ws }
+    );
+    const now = Date.now();
+    if (this.bufferBytes >= FLUSH_BYTES || now - this.lastFlushAt >= this.flushIntervalMs) {
+      await this.flush();
+    } else if (!this.flushTimer) {
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = undefined;
+        void this.flush();
+      }, this.lastFlushAt + this.flushIntervalMs - now);
     }
-    send(ws, FRAME.ack, { batchId, seq: outcome.seq, dup: outcome.dup });
+  }
+
+  /** Buffer one accepted push; a replay of a still-buffered batch joins it. */
+  private enqueue(
+    row: NewRow,
+    userId: string,
+    chatId: string,
+    hostDevice: string,
+    owed: { ws: WebSocket } | { resolve: (outcome: FlushOutcome) => void }
+  ): void {
+    let entry = this.buffer.find((b) => b.row.batchId === row.batchId);
+    const dup = entry !== undefined;
+    if (!entry) {
+      entry = { row, userId, chatId, hostDevice, sockets: [], waiters: [] };
+      this.buffer.push(entry);
+      this.bufferBytes += row.bytes.byteLength;
+    } else if (hostDevice && hostDevice !== row.device) {
+      // A replay can still carry the wake the original lacked.
+      Object.assign(entry, { userId, chatId, hostDevice });
+    }
+    if ("ws" in owed) entry.sockets.push({ ws: owed.ws, dup });
+    else entry.waiters.push({ resolve: owed.resolve, dup });
+  }
+
+  /** Write everything buffered (serialized: acks and relays leave in seq
+   * order even when flushes overlap). Never rejects. */
+  private flush(): Promise<void> {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    const run = this.flushChain.then(() => this.flushOnce());
+    this.flushChain = run.catch(() => {});
+    return run;
+  }
+
+  /** Buffered rows, their wake receipt, and the alarm are one SQLite storage
+   * transaction; acks go out after it, so they cannot outrun durability
+   * (the output gate holds them until the write is confirmed anyway). */
+  private async flushOnce(): Promise<void> {
+    const batch = this.buffer;
+    this.buffer = [];
+    this.bufferBytes = 0;
+    if (batch.length === 0) return;
+    this.lastFlushAt = Date.now();
+    const sql = this.sql;
+    const outcomes: Array<{ seq: number; dup: boolean }> = [];
+    let known: { head: number; index: Map<string, number> } | undefined;
+    const wake = [...batch].reverse().find((b) => b.hostDevice && b.hostDevice !== b.row.device);
+    try {
+      await this.ctx.storage.transaction(async () => {
+        const head = headSeq(sql);
+        const index = this.known?.head === head ? this.known.index : batchIndex(sql);
+        this.known = undefined; // mutated below; reinstated on commit
+        const fresh: NewRow[] = [];
+        let next = head + 1;
+        for (const entry of batch) {
+          const existing = index.get(entry.row.batchId);
+          if (existing !== undefined) {
+            outcomes.push({ seq: existing, dup: true });
+            continue;
+          }
+          index.set(entry.row.batchId, next);
+          outcomes.push({ seq: next, dup: false });
+          fresh.push(entry.row);
+          next += 1;
+        }
+        if (fresh.length > 0) {
+          appendRows(sql, fresh, Date.now());
+          this.backupDirty();
+        }
+        // Host output must not feed a wake loop. Legacy senders without a
+        // hint keep their separate nudge path; hints are authenticated
+        // routing, never permission to execute (the host still validates its
+        // document). One receipt per chat: the newest hint wins.
+        if (wake) queueChatWake(sql, wake.chatId, wake.hostDevice, wake.userId);
+        await this.scheduleAlarm();
+        known = { head: next - 1, index };
+      });
+    } catch (error) {
+      console.error("chat2 flush failed", { rows: batch.length, error: String(error) });
+      for (const entry of batch) {
+        // No ack: the pusher's outbox keeps the batch. Closing makes it
+        // reconnect and replay instead of waiting on this socket forever.
+        for (const { ws } of entry.sockets) {
+          try {
+            ws.close(1011, "storage unavailable");
+          } catch {
+            /* already gone */
+          }
+        }
+        for (const { resolve } of entry.waiters) resolve({ ok: false });
+      }
+      return;
+    }
+    this.known = known;
+    if (wake) this.ctx.waitUntil(this.flushWake());
+    const ready = this.ctx.getWebSockets().filter((socket) => {
+      const socketState = socket.deserializeAttachment() as SocketState | null;
+      return socketState?.ready === true;
+    });
+    batch.forEach((entry, i) => {
+      const { seq, dup } = outcomes[i]!;
+      const { device, batchId, bytes } = entry.row;
+      if (!dup) {
+        for (const socket of ready) {
+          if (entry.sockets.some((s) => s.ws === socket)) continue;
+          send(socket, FRAME.row, { seq, device, batchId }, bytes);
+        }
+      }
+      for (const s of entry.sockets) send(s.ws, FRAME.ack, { batchId, seq, dup: dup || s.dup });
+      for (const w of entry.waiters) w.resolve({ ok: true, seq, dup: dup || w.dup });
+    });
   }
 
   private handlePresence(
@@ -531,45 +692,12 @@ export class ChatRoom implements DurableObject {
   }
 
   private recordPush(device: string, ok: boolean): void {
-    const sql = this.ctx.storage.sql;
-    const key = device === "" ? "(unknown)" : device;
-    const outcomes = JSON.parse(getMeta(sql, "pushOutcomes") ?? "{}") as Record<
-      string,
-      PushOutcome
-    >;
-    const entry = outcomes[key] ?? { ok: 0, rejected: 0, lastOkAt: 0 };
-    if (ok) {
-      entry.ok += 1;
-      entry.lastOkAt = Date.now();
-    } else {
-      entry.rejected += 1;
-    }
-    outcomes[key] = entry;
-    setMeta(sql, "pushOutcomes", JSON.stringify(outcomes));
-  }
-
-  /** SQL rows, wake receipt, and alarm are one SQLite storage transaction.
-   * ACKs therefore cannot outrun the durable host-discovery obligation. */
-  private async acceptRow(device: string, batch: string, payload: Uint8Array, user: string, chat: string, host: string) {
-    const sql = this.ctx.storage.sql;
-    const outcome = await this.ctx.storage.transaction(async () => {
-      const result = appendRow(sql, device, batch, payload, Date.now());
-      if (!result.ok) return result;
-      if (!result.dup) this.backupDirty();
-      // Host output must not feed a wake loop. Legacy senders without a
-      // hint keep their separate nudge path; hints are authenticated routing,
-      // never permission to execute (the host still validates its document).
-      if (host && host !== device) queueChatWake(sql, chat, host, user);
-      await this.scheduleAlarm();
-      return result;
-    });
-    if (outcome.ok && host && host !== device) this.ctx.waitUntil(this.flushWake());
-    return outcome;
+    this.outcomes.record(device, ok);
   }
 
   private backupDirty(): void {
-    const sql = this.ctx.storage.sql;
-    setMeta(sql, "backupDirty", "1");
+    const sql = this.sql;
+    if (getMeta(sql, "backupDirty") !== "1") setMeta(sql, "backupDirty", "1");
     if (!getMeta(sql, "backupDue")) setMeta(sql, "backupDue", String(Date.now() + DAY_MS));
   }
 
@@ -583,7 +711,7 @@ export class ChatRoom implements DurableObject {
   /** Always called inside a storage transaction: a backup can't overwrite
    * an earlier wake alarm, including when requests interleave with retries. */
   private async scheduleAlarm(): Promise<void> {
-    const sql = this.ctx.storage.sql;
+    const sql = this.sql;
     const wake = pendingChatWake(sql);
     const backup = getMeta(sql, "backupDirty") === "1"
       ? Number(getMeta(sql, "backupDue") ?? Date.now() + DAY_MS) : Infinity;
@@ -600,7 +728,7 @@ export class ChatRoom implements DurableObject {
   }
 
   private async deliverWake(): Promise<void> {
-    const sql = this.ctx.storage.sql;
+    const sql = this.sql;
     const wake = pendingChatWake(sql);
     if (!wake) return;
     let accepted = false;
@@ -634,16 +762,17 @@ export class ChatRoom implements DurableObject {
 
   /** Wake retry + nightly backup share the DO's single durable alarm. */
   async alarm(): Promise<void> {
+    await this.flush();
     try {
-      const wake = pendingChatWake(this.ctx.storage.sql);
+      const wake = pendingChatWake(this.sql);
       if (wake && wake.next_at <= Date.now()) await this.flushWake();
-      const due = Number(getMeta(this.ctx.storage.sql, "backupDue") ?? "0");
+      const due = Number(getMeta(this.sql, "backupDue") ?? "0");
       if (due <= Date.now()) {
         try { await this.backup(); }
         catch (error) {
           // Do not exhaust the runtime's finite automatic retries or spin
           // on an expired deadline during an R2 outage.
-          setMeta(this.ctx.storage.sql, "backupDue", String(Date.now() + 60_000));
+          setMeta(this.sql, "backupDue", String(Date.now() + 60_000));
           console.warn("chat2 backup retrying", error);
         }
       }
@@ -654,7 +783,7 @@ export class ChatRoom implements DurableObject {
 
   /** Seq-monotonic backup; concurrent new rows retain their dirty flag. */
   private async backup(): Promise<void> {
-    const sql = this.ctx.storage.sql;
+    const sql = this.sql;
     if (getMeta(sql, "backupDirty") !== "1") return; // idle: stop the chain
     const head = headSeq(sql);
     if (head > Number(getMeta(sql, "backupSeq") ?? "0")) {
