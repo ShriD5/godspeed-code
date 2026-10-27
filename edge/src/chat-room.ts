@@ -526,8 +526,11 @@ export class ChatRoom implements DurableObject {
       state.hostDevice ?? "",
       { ws }
     );
+    // A push that wakes the host (a user's message from another device) never
+    // waits out the window.
+    const wakes = (state.hostDevice ?? "") !== "" && state.hostDevice !== state.device;
     const now = Date.now();
-    if (this.bufferBytes >= FLUSH_BYTES || now - this.lastFlushAt >= this.flushIntervalMs) {
+    if (wakes || this.bufferBytes >= FLUSH_BYTES || now - this.lastFlushAt >= this.flushIntervalMs) {
       await this.flush();
     } else if (!this.flushTimer) {
       this.flushTimer = setTimeout(() => {

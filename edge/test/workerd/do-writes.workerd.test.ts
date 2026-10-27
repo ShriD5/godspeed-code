@@ -24,8 +24,8 @@ interface Received {
   payload: Uint8Array;
 }
 
-async function chatSocket(stub: DurableObjectStub, device: string) {
-  const response = await stub.fetch(`https://chat/ws?device=${device}&chatId=c`, {
+async function chatSocket(stub: DurableObjectStub, device: string, hostDevice = "") {
+  const response = await stub.fetch(`https://chat/ws?device=${device}&chatId=c&hostDevice=${hostDevice}`, {
     headers: { ...H, upgrade: "websocket" }
   });
   expect(response.status).toBe(101);
@@ -152,6 +152,17 @@ describe("chat2 room write budget", () => {
     log.forEach((row, i) => expect(row.bytes).toEqual(update(i)));
     again.ws.close();
     host.ws.close();
+  });
+
+  it("never holds back a push that wakes the host", async () => {
+    const stub = chatRoom(crypto.randomUUID());
+    await runInDurableObject(stub, (instance: ChatRoom) => {
+      instance.flushIntervalMs = 60_000;
+    });
+    const phone = await chatSocket(stub, "phone", crypto.randomUUID());
+    for (let i = 0; i < 3; i++) phone.ws.send(encodeFrame(FRAME.push, { batchId: `w${i}` }, update(i)));
+    await expect.poll(() => phone.acks().length).toBe(3);
+    phone.ws.close();
   });
 
   it("writes buffered pushes when their socket closes, and replays dedupe against them", async () => {
