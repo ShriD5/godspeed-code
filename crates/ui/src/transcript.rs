@@ -2322,6 +2322,9 @@ const TOOL_IMAGE_STRIP_HEIGHT: f32 = DETAIL_SEPARATOR + TOOL_IMAGE_HEIGHT + 2.0 
 struct ImageMenu {
     path: String,
     devices: Vec<String>,
+    /// A reply's Markdown image: its chat and type. Copy image reads it
+    /// through `ReadChatImageChunk`, under that chat's jail, like the preview.
+    chat_image: Option<(String, &'static str)>,
     position: Point<Pixels>,
     active: Option<usize>,
 }
@@ -3523,6 +3526,11 @@ pub struct Transcript {
     /// In-flight ReadAttachmentChunk loads, keyed by device, path and validation
     /// policy; results land in the global attachment cache.
     attachment_loads: HashMap<crate::attachments::AttachmentKey, Task<()>>,
+    /// Local images replies name in Markdown: the open chat, the reads its
+    /// rows ask for while laying out, and the rows each image shows in.
+    reply_images: Rc<RefCell<crate::reply_images::ReplyImages>>,
+    /// In-flight ReadChatImageChunk loads (at most `reply_images::MAX_LOADS`).
+    reply_image_loads: HashMap<crate::attachments::AttachmentKey, Task<()>>,
     /// Inline `show_visual` visuals, keyed by row id.
     visuals: HashMap<SharedString, Entity<crate::visuals::VisualFrame>>,
     /// Scheduled retry wake-ups for errored sources (the 2s→15s ladder).
@@ -3840,6 +3848,8 @@ impl Transcript {
             image_menu_focus: cx.focus_handle(),
             image_copy: None,
             attachment_loads: HashMap::new(),
+            reply_images: Rc::default(),
+            reply_image_loads: HashMap::new(),
             visuals: HashMap::new(),
             attachment_retries: HashMap::new(),
             blob_details: HashMap::new(),
@@ -6363,6 +6373,27 @@ impl Transcript {
         self.image_menu.open(ImageMenu {
             path,
             devices,
+            chat_image: None,
+            position,
+            active: None,
+        });
+        window.focus(&self.image_menu_focus, cx);
+        cx.notify();
+    }
+
+    /// The image menu for an image a reply in `chat` names in Markdown, read
+    /// from `host` within that chat's folder.
+    fn open_chat_image_menu(
+        &mut self,
+        request: &crate::reply_images::ReplyImageRequest,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.image_menu.open(ImageMenu {
+            path: request.path.clone(),
+            devices: vec![request.host.clone()],
+            chat_image: Some((request.chat_id.clone(), request.mime)),
             position,
             active: None,
         });
@@ -6406,16 +6437,23 @@ impl Transcript {
             return;
         };
         let (path, devices) = (menu.path.clone(), menu.devices.clone());
+        let chat_image = menu.chat_image.clone();
         self.close_image_menu(cx);
         match action {
             0 => cx.write_to_clipboard(gpui::ClipboardItem::new_string(path)),
-            1 => self.copy_image(path, devices, cx),
+            1 => self.copy_image(path, devices, chat_image, cx),
             _ => {}
         }
     }
 
     /// Copy the original file (not the preview) from its owning device.
-    fn copy_image(&mut self, path: String, devices: Vec<String>, cx: &mut Context<Self>) {
+    fn copy_image(
+        &mut self,
+        path: String,
+        devices: Vec<String>,
+        chat_image: Option<(String, &'static str)>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
@@ -6424,11 +6462,21 @@ impl Transcript {
             let executor = cx.background_executor().clone();
             for device in &devices {
                 let target = (local.as_deref() != Some(device.as_str())).then_some(device.as_str());
-                if let Some((_, mime, bytes)) = crate::attachments::read_attachment_bytes(
-                    &engine, &executor, target, &path, None,
-                )
-                .await
-                {
+                let read = match &chat_image {
+                    Some((chat, mime)) => {
+                        crate::attachments::read_chat_image_bytes(
+                            &engine, &executor, target, chat, &path, mime,
+                        )
+                        .await
+                    }
+                    None => {
+                        crate::attachments::read_attachment_bytes(
+                            &engine, &executor, target, &path, None,
+                        )
+                        .await
+                    }
+                };
+                if let Some((_, mime, bytes)) = read {
                     let format =
                         gpui::ImageFormat::from_mime_type(&mime).unwrap_or(gpui::ImageFormat::Png);
                     // SVG is markup an agent may have written: copy the parsed,
@@ -6808,14 +6856,77 @@ impl Transcript {
             .into_any_element()
     }
 
+    /// The chat whose replies this transcript shows, for the images they
+    /// name. A subagent tab draws none: its doc isn't the chat it borrows.
+    fn reply_chat(&self, cx: &gpui::App) -> Option<crate::reply_images::ReplyChat> {
+        if self.doc_override.is_some() {
+            return None;
+        }
+        let id = self.chat_id.as_deref()?;
+        let chat = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == id)?;
+        Some(crate::reply_images::ReplyChat {
+            id: chat.id.clone(),
+            cwd: chat.cwd.clone(),
+            host: chat.device_id.clone(),
+        })
+    }
+
     /// Media wiring for settled Markdown: Mermaid fences become diagrams
-    /// once rendered and keep their source until then (or on failure).
-    /// Inline images keep their ordinary chat rendering.
+    /// once rendered and keep their source until then (or on failure), and
+    /// local images the chat's folder holds are drawn (`reply_images`).
     fn diagram_media(&mut self, cx: &Context<Self>) -> render::MediaUi {
+        self.reply_images.borrow_mut().show(self.reply_chat(cx));
         let cache = self.diagrams.clone();
+        let images = self.reply_images.clone();
         let owner = cx.weak_entity();
+        let viewer = owner.clone();
         let media = self.diagram_media.get_or_insert_with(|| render::MediaUi {
-            image: None,
+            image: Some(Rc::new(move |image, id, theme| {
+                use crate::reply_images::{ReplyImage, frame, sized};
+                // `{row}-image-{block}-{run}`: the row to remeasure on landing.
+                let row = SharedString::from(id.rsplit_once("-image-")?.0.to_owned());
+                let element = match images.borrow_mut().lookup(&image.source, row)? {
+                    ReplyImage::Loaded(loaded, request) => {
+                        let (open, menu) = (viewer.clone(), viewer.clone());
+                        sized(frame(id), &loaded.image, theme)
+                            .debug_selector(|| "reply-image".into())
+                            .on_mouse_down(
+                                gpui::MouseButton::Right,
+                                move |event: &gpui::MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    let _ = menu.update(cx, |this, cx| {
+                                        this.open_chat_image_menu(
+                                            &request,
+                                            event.position,
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                },
+                            )
+                            .on_click(move |_, window, cx| {
+                                let preview = crate::attachments::PreviewImage::new(
+                                    loaded.name.clone(),
+                                    loaded.image.clone(),
+                                );
+                                let _ = open.update(cx, |this, cx| {
+                                    this.open_image_preview(preview, window, cx)
+                                });
+                            })
+                            .into_any_element()
+                    }
+                    ReplyImage::Loading => frame(id)
+                        .text_color(theme.text_muted)
+                        .child("Loading image…")
+                        .into_any_element(),
+                };
+                Some(element)
+            })),
             diagram: Some(Rc::new(move |code, id, _theme| {
                 let lookup = cache.borrow_mut().request(code, &id);
                 match lookup {
@@ -6900,6 +7011,66 @@ impl Transcript {
         }));
     }
 
+    /// Start the image reads this paint asked for, a few at a time: a landed
+    /// read repaints, and the repaint asks again for the rest.
+    fn ensure_reply_image_loads(&mut self, cx: &mut Context<Self>) {
+        let wanted = self.reply_images.borrow_mut().take_wanted();
+        for request in wanted {
+            if self.reply_image_loads.len() >= crate::reply_images::MAX_LOADS {
+                return;
+            }
+            if self.reply_image_loads.contains_key(&request.key)
+                || !crate::attachments::begin_load_for(&request.key)
+            {
+                continue;
+            }
+            self.spawn_reply_image_load(request, cx);
+        }
+    }
+
+    fn spawn_reply_image_load(
+        &mut self,
+        request: crate::reply_images::ReplyImageRequest,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::attachments::{read_chat_image, store_error_for, store_loaded_for};
+        let key = request.key.clone();
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            store_error_for(&key);
+            return;
+        };
+        let local = self.state.read(cx).local_device_id.clone();
+        // Only the chat's host reads its folder; the relay forwards there.
+        let target =
+            (local.as_deref() != Some(request.host.as_str())).then(|| request.host.clone());
+        let claim = crate::attachments::AttachmentLoadGuard(key.clone());
+        let task = cx.spawn(async move |this, cx| {
+            let _claim = claim;
+            let loaded = read_chat_image(
+                &engine,
+                cx.background_executor(),
+                target.as_deref(),
+                &request.chat_id,
+                &request.path,
+                request.mime,
+            )
+            .await;
+            let landed = loaded.is_some();
+            match loaded {
+                Some(loaded) => store_loaded_for(&request.key, loaded.name.into(), loaded.image),
+                None => store_error_for(&request.key),
+            }
+            this.update(cx, |this, cx| {
+                this.reply_image_loads.remove(&request.key);
+                let rows = this.reply_images.borrow_mut().finish(&request.key, landed);
+                this.diagram_layout_changed(&rows, cx);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.reply_image_loads.insert(key, task);
+    }
+
     fn finish_diagram(
         &mut self,
         code: String,
@@ -6982,6 +7153,20 @@ impl Transcript {
         }
     }
 
+    /// Open an image in the shared lightbox; Escape returns focus here.
+    fn open_image_preview(
+        &mut self,
+        preview: crate::attachments::PreviewImage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.attachment_preview_return_focus = window.focused(cx);
+        preview.viewer.reset();
+        self.attachment_preview = Some(preview);
+        window.focus(&self.attachment_preview_focus, cx);
+        cx.notify();
+    }
+
     fn render_generated_image(
         &mut self,
         row_id: &SharedString,
@@ -6995,29 +7180,13 @@ impl Transcript {
         let devices = self.generated_attachment_device_ids(owner, cx);
         let state = self.attachment_state(&devices, path, Some(mime_type), cx);
         let theme = Theme::of(cx).clone();
-        let frame = div()
-            .id(SharedString::from(format!("{row_id}-generated")))
-            .w(px(512.0))
-            .max_w_full()
-            .h(px(320.0))
-            .max_h(px(420.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(12.0))
-            .overflow_hidden()
-            .bg(crate::theme::ink(0.045));
+        let frame = crate::reply_images::frame(SharedString::from(format!("{row_id}-generated")));
         match state {
             AttachmentSnapshot::Loaded(loaded) => {
-                let dimensions =
-                    crate::appshots::png_dimensions(&loaded.image.bytes).unwrap_or((512, 320));
-                let scale = (512.0 / dimensions.0 as f32)
-                    .min(420.0 / dimensions.1 as f32)
-                    .min(1.0);
                 let preview =
                     crate::attachments::PreviewImage::new(name.to_owned(), loaded.image.clone());
                 let menu_path = path.to_owned();
-                frame
+                crate::reply_images::sized(frame, &loaded.image, &theme)
                     .on_mouse_down(
                         gpui::MouseButton::Right,
                         cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -7031,36 +7200,18 @@ impl Transcript {
                             );
                         }),
                     )
-                    .w(px(dimensions.0 as f32 * scale))
-                    .h(px(dimensions.1 as f32 * scale))
-                    .role(gpui::Role::Button)
-                    .aria_label("Preview generated image")
-                    .tab_index(0)
-                    .cursor_pointer()
-                    .focus_visible(move |style| style.border_2().border_color(theme.accent))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.attachment_preview_return_focus = window.focused(cx);
-                        preview.viewer.reset();
-                        this.attachment_preview = Some(preview.clone());
-                        window.focus(&this.attachment_preview_focus, cx);
-                        cx.notify();
+                        this.open_image_preview(preview.clone(), window, cx)
                     }))
-                    .child(
-                        gpui::img(loaded.image)
-                            .size_full()
-                            // The frame's overflow clip is rectangular; round the image itself.
-                            .rounded(px(12.0))
-                            .object_fit(gpui::ObjectFit::Contain),
-                    )
                     .into_any_element()
             }
             AttachmentSnapshot::Loading => frame
                 .text_color(theme.text_muted)
-                .child("Loading generated image…")
+                .child("Loading image…")
                 .into_any_element(),
             AttachmentSnapshot::Error { .. } => frame
                 .text_color(theme.text_muted)
-                .child("Generated image unavailable")
+                .child("Image unavailable")
                 .into_any_element(),
         }
     }
@@ -7950,8 +8101,9 @@ impl Transcript {
             RowKind::Receipt { receipt } => self.render_receipt(&row.id, receipt, &theme, cx),
             RowKind::ConductorCard { card } => self.render_conductor_card(card, &theme, cx),
         };
-        // Diagram fences this row just requested start rendering after layout.
+        // Diagram fences and images this row just requested start loading.
         self.ensure_diagram_worker(cx);
+        self.ensure_reply_image_loads(cx);
 
         // Hover-revealed metadata strip: a RESERVED 32px lane under the
         // entry's last row. Timestamp, copy action, and copied feedback only
@@ -13060,6 +13212,138 @@ mod tests {
                 assert!(this.protected_attachment_keys(cx).is_empty());
                 this.refresh_protected_attachments(cx);
             });
+        });
+    }
+
+    #[gpui::test]
+    fn reply_markdown_images_draw_only_from_their_own_chat(cx: &mut gpui::TestAppContext) {
+        use crate::attachments::{
+            AttachmentKey, AttachmentSnapshot, attachment_snapshot_for, store_loaded_for,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
+        });
+        let chat = |id: &str| zeron_proto::Chat {
+            id: id.into(),
+            device_id: "reply-host".into(),
+            title: None,
+            archived: false,
+            cwd: Some("/fixture/reply".into()),
+            branch: None,
+            checkout_id: None,
+            source_context: None,
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::DateTime::UNIX_EPOCH,
+            harness_session_id: None,
+            harness_session_cwd: None,
+            limit: None,
+            lifecycle: Default::default(),
+            parent_chat_id: None,
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+        };
+        let state = cx.new(|_| {
+            let mut state = AppState::new();
+            state.chats = vec![chat("reply-chat"), chat("reply-other")];
+            state
+        });
+        let transcript = cx.new(|cx| Transcript::new(state, cx));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(64, 48)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let shown = "/fixture/reply/shots/before.png";
+        store_loaded_for(
+            &AttachmentKey::chat_image("reply-host", "reply-chat", shown, "image/png"),
+            "before.png".into(),
+            Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                bytes.into_inner(),
+            )),
+        );
+        let text = "![before](shots/before.png)\n\n![web](https://example.com/a.png)\n\n![later](later.png)";
+        let entry = assistant("a", MessageStatus::Complete, vec![text_part("t", text)]);
+        transcript.update(cx, |this, _| {
+            this.chat_id = Some("reply-chat".into());
+            this.rows = rows_for_entry(&entry, false, false, &mut parse);
+        });
+        struct RowsFixture(Entity<Transcript>);
+        impl Render for RowsFixture {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                if self.0.read(cx).attachment_preview.is_some() {
+                    return self.0.clone().into_any_element();
+                }
+                self.0.update(cx, |this, cx| {
+                    let rows: Vec<_> = (0..this.rows.len())
+                        .map(|ix| this.render_row(ix, window, cx))
+                        .collect();
+                    div().w(px(700.0)).children(rows).into_any_element()
+                })
+            }
+        }
+        let (fixture, cx) = cx.add_window_view(|_, _| RowsFixture(transcript.clone()));
+        cx.run_until_parked();
+        // The relative path resolved against the chat's folder, and its read
+        // (refused here: no engine) was for that chat.
+        assert!(matches!(
+            attachment_snapshot_for(&AttachmentKey::chat_image(
+                "reply-host",
+                "reply-chat",
+                "/fixture/reply/later.png",
+                "image/png",
+            )),
+            AttachmentSnapshot::Error { .. }
+        ));
+        let image = cx
+            .debug_bounds("reply-image")
+            .expect("the chat's own image is drawn");
+        cx.simulate_click(image.center(), gpui::Modifiers::default());
+        transcript.read_with(cx, |this, _| {
+            let preview = this
+                .attachment_preview
+                .as_ref()
+                .expect("the lightbox opens");
+            assert_eq!(preview.name.as_ref(), "before.png");
+        });
+        // Right-click offers Copy path / Copy image, reading the original
+        // through the same chat's jail.
+        transcript.update(cx, |this, _| this.attachment_preview = None);
+        fixture.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        let image = cx.debug_bounds("reply-image").expect("drawn again");
+        cx.simulate_mouse_down(
+            image.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::default(),
+        );
+        transcript.read_with(cx, |this, _| {
+            let menu = this.image_menu.as_open().expect("the image menu opens");
+            assert_eq!(menu.path, shown);
+            assert_eq!(menu.devices, ["reply-host"]);
+            assert_eq!(
+                menu.chat_image,
+                Some(("reply-chat".to_owned(), "image/png"))
+            );
+        });
+        // The same reply in another chat doesn't reuse the first chat's read.
+        transcript.update(cx, |this, cx| {
+            this.close_image_menu(cx);
+            this.chat_id = Some("reply-other".into());
+        });
+        fixture.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("reply-image").is_none());
+        // A subagent tab draws none.
+        transcript.update(cx, |this, cx| {
+            this.chat_id = Some("reply-chat".into());
+            this.doc_override = Some("reply-doc".into());
+            assert!(this.reply_chat(cx).is_none());
         });
     }
 

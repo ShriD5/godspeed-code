@@ -50,7 +50,9 @@ When a chart, table, diagram, dashboard, or 3D view would say more than prose an
 your final reply. Godspeed renders it with its own native interface and enforces its style: \
 content sits directly on the chat with no cards or boxed panels, text uses the interface font \
 and type scale, and colors are theme tokens that work on frosted glass or opaque, light or dark. \
-The reader sees the visual above that reply, so don't announce or restate it.";
+The reader sees the visual above that reply, so don't announce or restate it. To show the \
+reader an image file (a screenshot, a rendered PNG), call `show_image` with its path; don't \
+draw images through `show_visual`.";
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;

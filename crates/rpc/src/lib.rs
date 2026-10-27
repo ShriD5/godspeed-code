@@ -272,9 +272,15 @@ pub mod methods {
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";
     pub const READ_ATTACHMENT_CHUNK: &str = "ReadAttachmentChunk";
+    /// One chunk of an image an agent's reply names in Markdown
+    /// (`![alt](path)`), read only from inside that chat's working folder.
+    pub const READ_CHAT_IMAGE_CHUNK: &str = "ReadChatImageChunk";
     /// Store an agent's HTML page and show it inline in that chat's live
     /// turn (`show_visual`). Local only: the calling agent runs on this device.
     pub const PUBLISH_VISUAL: &str = "PublishVisual";
+    /// Store an image file an agent shows and fold it into that chat's live
+    /// turn as an image part (`show_image`). Local only, like `PublishVisual`.
+    pub const PUBLISH_IMAGE: &str = "PublishImage";
     /// Lazy full-tool-output fetch from the R2 sidecar by doc-resident ref
     /// (chat2-sync A3). Edge-direct from any device — never relay-forwarded.
     pub const FETCH_TOOL_BLOB: &str = "FetchToolBlob";

@@ -71,6 +71,7 @@ pub mod pull_requests;
 pub mod queue;
 pub mod rail;
 pub mod receipt;
+pub(crate) mod reply_images;
 mod roll_text;
 pub mod running_pill;
 pub mod settings;

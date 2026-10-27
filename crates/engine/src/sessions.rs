@@ -1180,14 +1180,14 @@ impl SessionsEngine {
         Ok(true)
     }
 
-    /// Fold an engine-made event (a `show_visual` page) into the chat's live
-    /// run, after whatever the harness streamed so far. Returns `false` when
-    /// the chat has no run on this device.
     /// Whether the chat has a run on this device (one `inject_event` can reach).
     pub fn has_run(&self, chat_id: &str) -> bool {
         lock(&self.inner.runs).contains_key(chat_id)
     }
 
+    /// Fold an engine-made event (a `show_visual` page, a `show_image` image)
+    /// into the chat's live run, after whatever the harness streamed so far.
+    /// Returns `false` when the chat has no run on this device.
     pub fn inject_event(&self, chat_id: &str, event: AgentEvent) -> bool {
         lock(&self.inner.runs)
             .get(chat_id)
@@ -2999,7 +2999,12 @@ async fn drive_run(
                     }
                     break SessionStatus::Idle;
                 }
-                Some(event) = engine_rx.recv() => event,
+                // Engine-made events are final: a `show_image` image is
+                // already in uploads, outside the generated-image intake root.
+                Some(event) = engine_rx.recv() => {
+                    prepared_events.push_back(event);
+                    continue;
+                }
                 next = stream.next() => match next {
                     Some(Ok(event)) => event,
                     // A stream error while PARKED is a post-turn child death —
