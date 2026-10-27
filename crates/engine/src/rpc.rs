@@ -4399,6 +4399,9 @@ mod tests {
         );
         let id = created["id"].as_str().unwrap().to_string();
         assert_eq!(created["spaceIds"].as_array().unwrap().len(), 1);
+        let drafted = created["instructions"].as_str().unwrap();
+        assert!(drafted.contains("Best practices"), "{drafted}");
+        assert!(drafted.contains("has not named a responsibility"));
         let listed = value(
             rpc.handle(methods::LIST_CONDUCTORS, serde_json::json!({}))
                 .await
@@ -4432,6 +4435,42 @@ mod tests {
                 .is_err()
         );
         assert!(forwardable(methods::CREATE_CONDUCTOR));
+        assert!(forwardable(methods::SET_CONDUCTOR_INSTRUCTIONS));
+        let updated = value(
+            rpc.handle(
+                methods::SET_CONDUCTOR_INSTRUCTIONS,
+                serde_json::json!({
+                    "id": id,
+                    "instructions": "Review only the billing repo."
+                }),
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(updated["changed"], true);
+        let listed = value(
+            rpc.handle(methods::LIST_CONDUCTORS, serde_json::json!({}))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(listed[0]["instructions"], "Review only the billing repo.");
+        // The running session is told. Drain may still be moving the row from
+        // the queue into the transcript, so look until it shows up.
+        let mut heard = String::new();
+        for _ in 0..30 {
+            let doc = core.doc_host.open("main").unwrap();
+            let queued = format!("{:?}", doc.doc().read_queue().unwrap());
+            let entries = format!("{:?}", doc.doc().read_entries().unwrap());
+            heard = format!("{queued}{entries}");
+            if heard.contains("Review only the billing repo.") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(
+            heard.contains("Review only the billing repo."),
+            "{heard}"
+        );
         core.sessions.shutdown().await;
     }
 

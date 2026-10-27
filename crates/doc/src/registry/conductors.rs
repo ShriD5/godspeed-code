@@ -34,6 +34,16 @@ fn check_notes(notes: &str) -> Result<(), DocError> {
     Ok(())
 }
 
+fn check_instructions(instructions: &str) -> Result<(), DocError> {
+    if instructions.len() > zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES {
+        return Err(DocError::Schema(format!(
+            "Instructions are over the {} KB limit",
+            zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES / 1024
+        )));
+    }
+    Ok(())
+}
+
 impl RegistryDoc {
     /// Refuse a conductor write the room would reject: a batch over
     /// [`MAX_OP_BYTES`] is refused whole and wedges sync. The check covers
@@ -90,6 +100,7 @@ Shorten the notes or the other fields and try again.",
             ));
         }
         check_notes(&conductor.notes)?;
+        check_instructions(&conductor.instructions)?;
         zeron_proto::conductor::check_conductor_text(
             Some(&conductor.name),
             conductor.purpose.as_deref(),
@@ -156,6 +167,35 @@ Shorten the notes or the other fields and try again.",
             self.write(KIND_CONDUCTORS, &patch.id, OpKind::Update, set);
         }
         Ok(true)
+    }
+
+    /// Store standing orders. `Ok(None)` when the conductor is gone,
+    /// `Ok(Some(changed))` when the row is there.
+    pub fn set_conductor_instructions(
+        &mut self,
+        id: &str,
+        instructions: &str,
+    ) -> Result<Option<bool>, DocError> {
+        let instructions = instructions.trim();
+        if instructions.is_empty() {
+            return Err(DocError::Schema(
+                "A conductor needs instructions".into(),
+            ));
+        }
+        check_instructions(instructions)?;
+        if !self.row_exists(KIND_CONDUCTORS, id) {
+            return Ok(None);
+        }
+        if self
+            .conductor(id)
+            .is_some_and(|conductor| conductor.instructions == instructions)
+        {
+            return Ok(Some(false));
+        }
+        let set = fields([("instructions", json!(instructions))]);
+        self.check_conductor_budget(id, &set)?;
+        self.write(KIND_CONDUCTORS, id, OpKind::Update, set);
+        Ok(Some(true))
     }
 
     pub fn set_conductor_notes(&mut self, id: &str, notes: &str) -> Result<bool, DocError> {

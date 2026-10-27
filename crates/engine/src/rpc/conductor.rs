@@ -13,6 +13,7 @@ pub(super) fn handles(method: &str) -> bool {
             | methods::RESCAN_CONDUCTOR
             | methods::GET_CONDUCTOR_NOTES
             | methods::SET_CONDUCTOR_NOTES
+            | methods::SET_CONDUCTOR_INSTRUCTIONS
             | methods::GET_CONDUCTOR_TREE
             | methods::GET_CONDUCTOR_MEMBERSHIP
     )
@@ -29,6 +30,13 @@ struct ConductorIdParams {
 struct SetNotesParams {
     id: String,
     notes: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetInstructionsParams {
+    id: String,
+    instructions: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +79,32 @@ impl EngineRpc {
                 let p: SetNotesParams = parse_params(params)?;
                 ws.set_conductor_notes(&p.id, &p.notes).map_err(failed)?;
                 RpcReply::value(&serde_json::json!({}))
+            }
+            methods::SET_CONDUCTOR_INSTRUCTIONS => {
+                let p: SetInstructionsParams = parse_params(params)?;
+                let conductor = ws
+                    .conductor(&p.id)
+                    .map_err(failed)?
+                    .ok_or_else(|| RpcError::Failed(format!("no such conductor: {}", p.id)))?;
+                let changed = ws
+                    .set_conductor_instructions(&p.id, &p.instructions)
+                    .map_err(failed)?;
+                if changed {
+                    let notice = zeron_proto::conductor::instructions_changed_notice(
+                        p.instructions.trim(),
+                    );
+                    if let Err(error) =
+                        self.doc_host
+                            .queue_message(&conductor.main_chat_id, &notice, Vec::new())
+                    {
+                        tracing::warn!(
+                            conductor = %p.id,
+                            error = %error,
+                            "could not tell the conductor its instructions changed"
+                        );
+                    }
+                }
+                RpcReply::value(&serde_json::json!({ "changed": changed }))
             }
             methods::GET_CONDUCTOR_TREE => {
                 let p: ConductorIdParams = parse_params(params)?;

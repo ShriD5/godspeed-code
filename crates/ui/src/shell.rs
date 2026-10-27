@@ -2345,6 +2345,8 @@ pub struct Shell {
     section_dialog: Option<sidebar_sections::SectionDialog>,
     conductor_sheet: Option<conductor_ui::ConductorSheet>,
     answer_popup: Option<conductor_ui::AnswerPopup>,
+    /// Standing orders for the open conductor, edited from the session card.
+    conductor_instructions: Option<conductor_ui::ConductorInstructionsEditor>,
     section_menu: Option<(String, Point<Pixels>)>,
     section_header_hover: Option<String>,
     section_menu_focus: FocusHandle,
@@ -2892,6 +2894,7 @@ impl Shell {
             section_dialog: None,
             conductor_sheet: None,
             answer_popup: None,
+            conductor_instructions: None,
             section_menu: None,
             section_header_hover: None,
             section_menu_focus: cx.focus_handle(),
@@ -6733,6 +6736,7 @@ impl Shell {
             || self.section_dialog.is_some()
             || self.conductor_sheet.is_some()
             || self.answer_popup.is_some()
+            || self.conductor_instructions.is_some()
             || self.section_menu.is_some()
             || self.add_space.is_some()
             || self.composer.read(cx).pickers().read(cx).is_open()
@@ -11865,6 +11869,9 @@ impl Shell {
                     el.child(div().absolute().inset_0().occlude())
                 })
                 .children(find_bar)
+                .when(has_selection && !departing_transcript, |el| {
+                    el.children(self.render_conductor_blank(cx))
+                })
                 .into_any_element()
         } else if !has_spaces && !no_project {
             // Onboarding (first boot / after the destructive wipe): no folders

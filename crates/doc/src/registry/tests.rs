@@ -2417,6 +2417,7 @@ fn conductor(id: &str, main_chat: &str) -> zeron_proto::Conductor {
         space_ids: vec!["space-1".into()],
         config: None,
         notes: String::new(),
+        instructions: String::new(),
         archived: false,
         created_at: ts(1_000),
     }
@@ -2496,6 +2497,31 @@ fn conductor_updates_notes_and_clears_purpose() {
 }
 
 #[test]
+fn conductor_instructions_round_trip_and_refuse_an_empty_or_huge_write() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_conductor(&conductor("c1", "main")).unwrap();
+    assert_eq!(
+        ws.set_conductor_instructions("c1", "  Review billing.  ")
+            .unwrap(),
+        Some(true)
+    );
+    assert_eq!(
+        ws.conductor("c1").unwrap().instructions,
+        "Review billing."
+    );
+    assert_eq!(
+        ws.set_conductor_instructions("c1", "Review billing.")
+            .unwrap(),
+        Some(false)
+    );
+    assert_eq!(ws.set_conductor_instructions("missing", "x").unwrap(), None);
+    assert!(ws.set_conductor_instructions("c1", "  ").is_err());
+    let too_big = "x".repeat(zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES + 1);
+    assert!(ws.set_conductor_instructions("c1", &too_big).is_err());
+    assert_eq!(ws.conductor("c1").unwrap().instructions, "Review billing.");
+}
+
+#[test]
 fn conductor_spaces_replace_the_list() {
     let mut ws = RegistryDoc::new("dev-a");
     ws.upsert_conductor(&conductor("c1", "main")).unwrap();
@@ -2532,6 +2558,7 @@ fn largest_conductor(device: &str) -> zeron_proto::Conductor {
             access_mode: Some(zeron_proto::AccessMode::default()),
         }),
         notes,
+        instructions: String::new(),
         archived: false,
         created_at: ts(1_000),
     }

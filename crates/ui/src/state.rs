@@ -5758,6 +5758,7 @@ mod tests {
             space_ids: vec![],
             config: None,
             notes: String::new(),
+            instructions: String::new(),
             archived,
             created_at: now,
         };

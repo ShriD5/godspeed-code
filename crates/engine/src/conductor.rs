@@ -109,7 +109,7 @@ impl WorkspaceHost {
             params.config.clone(),
             Some(folder.clone()),
         )?;
-        let conductor = Conductor {
+        let mut conductor = Conductor {
             id,
             name,
             purpose,
@@ -119,9 +119,16 @@ impl WorkspaceHost {
             space_ids,
             config: params.config,
             notes: String::new(),
+            instructions: String::new(),
             archived: false,
             created_at: Utc::now(),
         };
+        conductor.instructions = zeron_proto::conductor::draft_conductor_instructions(
+            &conductor.name,
+            conductor.purpose.as_deref(),
+            &conductor.folder,
+            &self.conductor_repos(&conductor),
+        );
         self.mutate(|doc| doc.upsert_conductor(&conductor))?;
         Ok(conductor)
     }
@@ -191,6 +198,18 @@ impl WorkspaceHost {
             self.mutate(|doc| doc.set_conductor_spaces(id, &space_ids))?;
         }
         self.conductor(id)?.ok_or_else(|| no_such_conductor(id))
+    }
+
+    /// Replace the standing orders. `Ok(true)` when the text changed.
+    pub fn set_conductor_instructions(
+        &self,
+        id: &str,
+        instructions: &str,
+    ) -> Result<bool, EngineError> {
+        match self.mutate(|doc| doc.set_conductor_instructions(id, instructions))? {
+            None => Err(no_such_conductor(id)),
+            Some(changed) => Ok(changed),
+        }
     }
 
     pub fn set_conductor_notes(&self, id: &str, notes: &str) -> Result<(), EngineError> {
@@ -554,6 +573,50 @@ mod tests {
         spawn(&host, "d2", "member").unwrap();
         spawn(&host, "d3", "d2").unwrap();
         assert!(!may("d3"), "at the cap");
+    }
+
+    #[tokio::test]
+    async fn creation_drafts_standing_orders_and_edits_replace_them() {
+        let data = tempfile::tempdir().unwrap();
+        let host = host(data.path());
+        let folder = folder_with_repos(&["api"]);
+        let mut params = params(folder.path(), "main");
+        params.purpose = Some("Review pull requests on the api repo".into());
+        let conductor = host.create_conductor(params).unwrap();
+        assert!(
+            conductor
+                .instructions
+                .contains("Review pull requests on the api repo"),
+            "{}",
+            conductor.instructions
+        );
+        assert!(conductor.instructions.contains("Best practices"));
+        assert!(conductor.instructions.len() <= zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES);
+        let prefix = conductor_prompt_prefix(&host, "main").unwrap();
+        assert!(prefix.contains("Review pull requests on the api repo"));
+        assert!(prefix.contains("Live context"));
+        assert!(
+            host.set_conductor_instructions(&conductor.id, "Review only billing.")
+                .unwrap()
+        );
+        assert_eq!(
+            host.conductor(&conductor.id).unwrap().unwrap().instructions,
+            "Review only billing."
+        );
+        assert!(
+            !host
+                .set_conductor_instructions(&conductor.id, "  Review only billing.  ")
+                .unwrap()
+        );
+        assert!(host.set_conductor_instructions(&conductor.id, "  ").is_err());
+        assert!(
+            host.set_conductor_instructions(
+                &conductor.id,
+                &"x".repeat(zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES + 1)
+            )
+            .is_err()
+        );
+        assert!(host.set_conductor_instructions("missing", "x").is_err());
     }
 
     #[tokio::test]

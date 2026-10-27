@@ -39,6 +39,16 @@ pub(super) struct AnswerPopup {
     task: Option<Task<()>>,
 }
 
+pub(super) struct ConductorInstructionsEditor {
+    conductor_id: String,
+    input: Entity<ComposerInput>,
+    error: Option<String>,
+    busy: bool,
+    focus_pending: bool,
+    task: Option<Task<()>>,
+    _events: Vec<Subscription>,
+}
+
 /// Under the access chips: what the access mode does and doesn't guarantee.
 const ACCESS_NOTE: &str = "The main agent runs with the access mode you pick; delegating changes is guidance, not a hard limit.";
 
@@ -174,7 +184,12 @@ impl Shell {
     pub(super) fn open_conductor_sheet(&mut self, cx: &mut Context<Self>) {
         self.command_palette = None;
         let name = cx.new(|cx| ComposerInput::new("Name (defaults to the folder)", cx));
-        let purpose = cx.new(|cx| ComposerInput::new("What is it for? (optional)", cx));
+        let purpose = cx.new(|cx| {
+            ComposerInput::new(
+                "What is it responsible for? e.g. Review pull requests on this repo",
+                cx,
+            )
+        });
         let events = [&name, &purpose]
             .into_iter()
             .map(|input| {
@@ -467,6 +482,184 @@ impl Shell {
         cx.notify();
     }
 
+    // ── standing orders ─────────────────────────────────────────────────────
+
+    pub(super) fn open_conductor_instructions(
+        &mut self,
+        conductor_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        let instructions = self
+            .state
+            .read(cx)
+            .conductors
+            .iter()
+            .find(|conductor| conductor.id == conductor_id)
+            .map(|conductor| conductor.instructions.clone())
+            .unwrap_or_default();
+        let input = cx.new(|cx| {
+            ComposerInput::new("Standing instructions", cx)
+                .with_viewport_height(280.0)
+                .with_tab_stop()
+        });
+        input.update(cx, |input, cx| input.set_text(instructions, cx));
+        let events = vec![cx.subscribe(&input, |this: &mut Shell, _, event, cx| {
+            if matches!(event, ComposerInputEvent::Submitted) {
+                this.save_conductor_instructions(cx);
+            } else {
+                cx.notify();
+            }
+        })];
+        self.conductor_instructions = Some(ConductorInstructionsEditor {
+            conductor_id,
+            input,
+            error: None,
+            busy: false,
+            focus_pending: true,
+            task: None,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    fn close_conductor_instructions(&mut self, cx: &mut Context<Self>) {
+        self.conductor_instructions = None;
+        cx.notify();
+    }
+
+    fn save_conductor_instructions(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.conductor_instructions.as_mut() else {
+            return;
+        };
+        if editor.busy {
+            return;
+        }
+        let text = editor.input.read(cx).text().trim().to_string();
+        if text.is_empty() {
+            editor.error = Some("Instructions can't be empty.".into());
+            cx.notify();
+            return;
+        }
+        if text.len() > zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES {
+            editor.error = Some(format!(
+                "Instructions are over the {} KB limit.",
+                zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES / 1024
+            ));
+            cx.notify();
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            editor.error = Some("The engine is not connected.".into());
+            cx.notify();
+            return;
+        };
+        let id = editor.conductor_id.clone();
+        editor.busy = true;
+        editor.error = None;
+        editor.task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(
+                    zeron_rpc::methods::SET_CONDUCTOR_INSTRUCTIONS,
+                    serde_json::json!({ "id": id, "instructions": text }),
+                )
+                .await;
+            this.update(cx, |shell, cx| {
+                match result {
+                    Ok(_) => shell.conductor_instructions = None,
+                    Err(error) => {
+                        if let Some(editor) = shell.conductor_instructions.as_mut() {
+                            editor.busy = false;
+                            editor.error = Some(error.to_string());
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// The empty main chat: what a conductor is, and what this one is for.
+    pub(super) fn render_conductor_blank(&self, cx: &App) -> Option<AnyElement> {
+        let blank = {
+            let state = self.state.read(cx);
+            let chat_id = state.selected_chat.as_deref()?;
+            conductor::conductor_blank_for(
+                chat_id,
+                state.transcript_replayed,
+                state.transcript.is_empty(),
+                &state.conductors,
+                &state.chats,
+            )?
+        };
+        let theme = Theme::of(cx);
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .pt(px(Theme::TITLEBAR_HEIGHT))
+                .pb(px(120.0))
+                .px(px(48.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(440.0))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(zeron_proto::conductor::DISPLAY_NAME)),
+                        )
+                        .child(
+                            div()
+                                .mt(px(8.0))
+                                .text_size(crate::typography::ui_rems(18.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .text_center()
+                                .child(SharedString::from(blank.name)),
+                        )
+                        .child(
+                            div()
+                                .mt(px(12.0))
+                                .text_size(crate::typography::ui_rems(13.0))
+                                .line_height(px(19.0))
+                                .text_color(theme.text_muted)
+                                .text_center()
+                                .child(SharedString::from(blank.summary)),
+                        )
+                        .child(
+                            div()
+                                .mt(px(14.0))
+                                .text_size(crate::typography::ui_rems(13.0))
+                                .line_height(px(19.0))
+                                .text_color(theme.text)
+                                .text_center()
+                                .child(SharedString::from(blank.job)),
+                        )
+                        .child(
+                            div()
+                                .mt(px(10.0))
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .line_height(px(17.0))
+                                .text_color(theme.text_faint)
+                                .text_center()
+                                .child(SharedString::from(blank.hint)),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     // ── overlays ────────────────────────────────────────────────────────────
 
     pub(super) fn render_conductor_overlays(
@@ -483,7 +676,95 @@ impl Shell {
         if let Some(overlay) = self.render_answer_popup(viewport, &theme, cx) {
             overlays.push(overlay);
         }
+        if let Some(overlay) = self.render_conductor_instructions(viewport, &theme, window, cx) {
+            overlays.push(overlay);
+        }
         overlays
+    }
+
+    fn render_conductor_instructions(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        theme: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let editor = self.conductor_instructions.as_mut()?;
+        if std::mem::take(&mut editor.focus_pending) {
+            window.focus(&editor.input.focus_handle(cx), cx);
+        }
+        let input = editor.input.clone();
+        let bytes = input.read(cx).text().trim().len();
+        let limit = zeron_proto::conductor::MAX_INSTRUCTIONS_BYTES;
+        let over = bytes > limit;
+        let busy = editor.busy;
+        let error = editor.error.clone();
+        let card = popover::dialog_card(theme)
+            .w(px(520.0))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_conductor_instructions(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(popover::dialog_title(theme, "Conductor instructions"))
+            .child(div().mt(px(8.0)).child(popover::dialog_body(
+                theme,
+                "Standing orders for this conductor. Saving tells the agent they changed.",
+            )))
+            .child(
+                div()
+                    .mt(px(14.0))
+                    .child(popover::dialog_field(input.into_any_element())),
+            )
+            .child(
+                div()
+                    .mt(px(8.0))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(if over { theme.danger } else { theme.text_faint })
+                    .child(SharedString::from(format!(
+                        "{bytes} / {limit} bytes"
+                    ))),
+            )
+            .when_some(error, |el, error| {
+                el.child(
+                    div()
+                        .mt(px(8.0))
+                        .text_size(crate::typography::ui_rems(12.0))
+                        .text_color(theme.danger)
+                        .child(SharedString::from(error)),
+                )
+            })
+            .child(
+                div()
+                    .mt(px(16.0))
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(theme, "Cancel", "conductor-instructions-cancel")
+                            .id("conductor-instructions-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_conductor_instructions(cx)
+                            })),
+                    )
+                    .child(
+                        popover::btn_primary(
+                            theme,
+                            if busy { "Saving…" } else { "Save" },
+                        )
+                        .id("conductor-instructions-save")
+                        .opacity(if busy || over || bytes == 0 { 0.5 } else { 1.0 })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.save_conductor_instructions(cx)
+                        })),
+                    ),
+            );
+        Some(popover::modal(
+            "conductor-instructions",
+            viewport,
+            card.into_any_element(),
+        ))
     }
 
     fn render_conductor_sheet(
@@ -527,7 +808,7 @@ impl Shell {
             .child(
                 div().mt(px(8.0)).child(popover::dialog_body(
                     theme,
-                    "One long-lived chat for a folder. It starts and steers sub-agents in the repos inside.",
+                    "One long-lived chat for a folder. It starts and steers sub-agents in the repos inside. What you write about its job becomes the standing instructions, filled in with how a conductor should work.",
                 )),
             )
             .child(

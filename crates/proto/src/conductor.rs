@@ -35,6 +35,12 @@ pub const MAX_NAME_BYTES: usize = 120;
 /// Longest conductor purpose line, for the same reason.
 pub const MAX_PURPOSE_BYTES: usize = 500;
 
+/// Standing orders for the main agent. Drafted at creation from the purpose
+/// and edited later. They ride the synced row next to the notes, so a full
+/// notes field and a full instructions field together may not fit the 16 KiB
+/// per-change budget; the registry refuses a write that would not.
+pub const MAX_INSTRUCTIONS_BYTES: usize = 6 * 1024;
+
 /// Why `name` / `purpose` can't go on a conductor row, if either is too long.
 pub fn check_conductor_text(name: Option<&str>, purpose: Option<&str>) -> Result<(), String> {
     if name.is_some_and(|n| n.len() > MAX_NAME_BYTES) {
@@ -79,6 +85,11 @@ pub struct Conductor {
     /// Project notes the user and the main agent both edit.
     #[serde(default)]
     pub notes: String,
+    /// Standing orders for the main agent. Drafted when the conductor is
+    /// created and edited from the chat. Empty on rows from before this
+    /// field existed; those keep the generated template.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
     #[serde(default)]
     pub archived: bool,
     pub created_at: DateTime<Utc>,
@@ -185,9 +196,171 @@ fn repo_lines(repos: &[ConductorRepo]) -> String {
         .join("\n")
 }
 
+fn live_context(conductor: &Conductor, repos: &[ConductorRepo]) -> String {
+    format!(
+        "## Live context\nFolder: {folder}\n\nRepos:\n{repos}\n\n## Notes\n<notes>\n{notes}\n</notes>\n\n",
+        folder = conductor.folder,
+        repos = repo_lines(repos),
+        notes = notes_block(&conductor.notes),
+    )
+}
+
+/// Standing orders drafted from the job the user named at creation. Repos and
+/// notes are not baked in as the only copy: they are appended as live context
+/// on every fresh session, so editing the orders does not freeze an old list.
+pub fn draft_conductor_instructions(
+    name: &str,
+    purpose: Option<&str>,
+    folder: &str,
+    repos: &[ConductorRepo],
+) -> String {
+    let job = purpose
+        .map(str::trim)
+        .filter(|purpose| !purpose.is_empty())
+        .map(|purpose| {
+            format!(
+                "The user said this conductor is responsible for:\n\n{purpose}\n\n\
+Treat that as the job. Scope every sub-agent to it. If a request sits outside it, \
+say so and ask before starting work."
+            )
+        })
+        .unwrap_or_else(|| {
+            "The user has not named a responsibility yet. Before starting work, ask what this \
+conductor should own — for example, reviewing pull requests on one repo, or carrying one \
+feature. Remember their answer in the notes, and work from that until they edit these \
+instructions."
+                .into()
+        });
+    let repo_hint = if repos.is_empty() {
+        "No git repos were in the folder when this conductor was created. The live context \
+after this prompt lists whatever is there now."
+            .to_string()
+    } else {
+        // Names are a hint, not the source of truth, and the stored orders have
+        // to fit the row budget even when the folder holds a lot of repos.
+        const SHOWN: usize = 8;
+        let names = repos
+            .iter()
+            .take(SHOWN)
+            .map(|repo| clip(&repo.name, 48))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let extra = repos.len().saturating_sub(SHOWN);
+        let more = if extra == 0 {
+            String::new()
+        } else {
+            format!(", and {extra} more")
+        };
+        format!(
+            "Repos found at creation: {names}{more}. The live context after this prompt is \
+authoritative if that list has changed."
+        )
+    };
+    let folder = clip(folder, 240);
+    let text = format!(
+        "You are the main agent of the \"{name}\" conductor in Godspeed.\n\n\
+A conductor is one long-lived chat bound to a folder. The user talks only to you. You \
+coordinate the work: you start, reuse and steer sub-agents in the repos, then report back. \
+This chat should read like a lead reporting, not a log of tool output.\n\n\
+## Responsibility\n\
+{job}\n\n\
+Folder: {folder}\n\
+{repo_hint}\n\n\
+## How you work\n\
+- Start a sub-agent in the right repo with a short title and a clear goal (Godspeed MCP \
+`create_chat`, with that repo as `project`). Say where you sent the work when you start it.\n\
+- Before starting one, call `conductor_info` and reuse a sub-agent that already owns the work \
+(match on title and goal) by sending it a message instead.\n\
+- Read but delegate changes. Answer status questions yourself from the notes and your \
+sub-agents' chats. Anything that edits code, runs builds, or touches a remote (pull request \
+comments, reviews, releases) goes to a sub-agent.\n\
+- Sub-agents may start their own sub-agents, up to {depth} levels below you.\n\
+- When a sub-agent finishes, report briefly: the verdict, the one or two things that matter, \
+and what the user can do next. No logs.\n\
+- You may approve a sub-agent's low-risk approvals. Everything else, and every question, \
+waits for the user.\n\
+- Keep the notes current with `conductor_notes_write` when you learn how the user works.\n\
+- Access never widens going down. A sub-agent gets at most the access you have.\n\n\
+## Best practices\n\
+- One owner per piece of work. Do not start a second sub-agent for something an existing one \
+already has.\n\
+- Write each goal as if the sub-agent has no other context: which repo, the outcome, the \
+constraints, and how to know it is done.\n\
+- Prefer continuing a sub-agent that already knows the area over a fresh one.\n\
+- Keep this chat short. A finished sub-agent is a verdict, not a paste of its transcript.\n\
+- If the job is reviewing pull requests: find the open ones in the repo the user named, send \
+each review to a sub-agent, and bring back a verdict (approve, comment, or request changes) \
+with the one or two findings that matter. Do not review by narrating the diff yourself.\n\
+- If you are unsure which repo a task belongs in, ask once, then remember the answer in the \
+notes.\n\
+- When these instructions change, follow the new text from that moment. The live context \
+appended after this prompt (current repos and notes) wins if it disagrees with an older \
+detail here.\n\n\
+These are your standing orders for every session of this conductor.\n",
+        depth = MAX_CONDUCTOR_DEPTH,
+    );
+    // A pathological path or purpose must not make creation fail the cap.
+    // The best-practice section sits before this cut.
+    if text.len() <= MAX_INSTRUCTIONS_BYTES {
+        text
+    } else {
+        clip(&text, MAX_INSTRUCTIONS_BYTES)
+    }
+}
+
+fn clip(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].trim_end().to_string()
+}
+
+/// What the main agent is told when its standing orders change mid-session.
+/// A fresh session already leads with the new orders; this reaches the one
+/// already running.
+pub fn instructions_changed_notice(instructions: &str) -> String {
+    format!(
+        "The conductor's instructions were edited. These are now your standing orders. Follow \
+them from here on. Do not start new work because of this notice: acknowledge in one line and \
+wait for the user.\n\n<instructions>\n{instructions}\n</instructions>\n"
+    )
+}
+
+/// A short slice of the standing orders for a sub-agent, so it knows the job
+/// without carrying the whole prompt.
+fn standing_brief(conductor: &Conductor) -> String {
+    let standing = conductor.instructions.trim();
+    if !standing.is_empty() {
+        let mut end = standing.len().min(400);
+        while end > 0 && !standing.is_char_boundary(end) {
+            end -= 1;
+        }
+        return format!(
+            "The conductor's standing orders begin:\n{}\n\n",
+            standing[..end].trim_end()
+        );
+    }
+    conductor
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .filter(|purpose| !purpose.is_empty())
+        .map(|purpose| format!("This conductor is responsible for: {purpose}\n\n"))
+        .unwrap_or_default()
+}
+
 /// Instructions put in front of the main chat's first prompt of a fresh
-/// harness session.
+/// harness session. Stored standing orders win; conductors from before that
+/// field keep the generated template.
 pub fn main_agent_instructions(conductor: &Conductor, repos: &[ConductorRepo]) -> String {
+    let standing = conductor.instructions.trim();
+    if !standing.is_empty() {
+        return format!("{standing}\n\n{}", live_context(conductor, repos));
+    }
     let purpose = conductor
         .purpose
         .as_deref()
@@ -235,8 +408,9 @@ pub fn sub_agent_instructions(conductor: &Conductor, depth: u8) -> String {
     format!(
         "You are a sub-agent of the \"{name}\" conductor, started by another agent to do one \
 piece of work. Stay on the goal you were given and finish with a short summary of the outcome. \
-{nesting}\n\n## Notes\n<notes>\n{notes}\n</notes>\n\n",
+{nesting}\n\n{brief}## Notes\n<notes>\n{notes}\n</notes>\n\n",
         name = conductor.name,
+        brief = standing_brief(conductor),
         notes = notes_block(&conductor.notes),
     )
 }
@@ -256,6 +430,7 @@ mod tests {
             space_ids: vec![],
             config: None,
             notes: "Reviews: be blunt.".into(),
+            instructions: String::new(),
             archived: false,
             created_at: Utc::now(),
         }
@@ -280,6 +455,70 @@ mod tests {
         assert!(text.contains("/code/acme/api"));
         assert!(text.contains("Reviews: be blunt."));
         assert!(text.contains("conductor_info"));
+    }
+
+    #[test]
+    fn stored_instructions_lead_and_live_context_still_follows() {
+        let repos = vec![ConductorRepo {
+            space_id: "s1".into(),
+            path: "/code/acme/api".into(),
+            name: "api".into(),
+        }];
+        let mut conductor = conductor();
+        conductor.instructions = "Review every pull request on api before merge.".into();
+        let text = main_agent_instructions(&conductor, &repos);
+        assert!(text.starts_with("Review every pull request"));
+        assert!(text.contains("/code/acme/api"));
+        assert!(text.contains("Reviews: be blunt."));
+        assert!(text.contains("Live context"));
+    }
+
+    #[test]
+    fn a_draft_carries_the_job_and_review_practice_and_fits() {
+        let repos = vec![ConductorRepo {
+            space_id: "s1".into(),
+            path: "/code/acme/api".into(),
+            name: "api".into(),
+        }];
+        let text = draft_conductor_instructions(
+            "Acme",
+            Some("Review pull requests on the api repo"),
+            "/code/acme",
+            &repos,
+        );
+        assert!(text.contains("Review pull requests on the api repo"));
+        assert!(text.contains("api"));
+        assert!(text.contains("Best practices"));
+        assert!(text.contains("request changes"));
+        assert!(text.contains("standing orders"));
+        assert!(text.len() <= MAX_INSTRUCTIONS_BYTES);
+        let unnamed = draft_conductor_instructions("Acme", None, "/code/acme", &[]);
+        assert!(unnamed.contains("has not named a responsibility"));
+        assert!(unnamed.len() <= MAX_INSTRUCTIONS_BYTES);
+        let crowded: Vec<ConductorRepo> = (0..40)
+            .map(|i| ConductorRepo {
+                space_id: format!("s{i}"),
+                path: format!("/code/{}", "n".repeat(80)),
+                name: "n".repeat(80),
+            })
+            .collect();
+        let huge = draft_conductor_instructions(
+            "Acme",
+            Some(&"Review pull requests. ".repeat(40)),
+            &format!("/code/{}", "p".repeat(400)),
+            &crowded,
+        );
+        assert!(huge.len() <= MAX_INSTRUCTIONS_BYTES, "{}", huge.len());
+        assert!(huge.contains("Best practices"), "{huge}");
+        assert!(huge.contains("and 32 more"), "{huge}");
+    }
+
+    #[test]
+    fn an_edit_notice_quotes_the_new_orders_and_asks_the_agent_to_wait() {
+        let notice = instructions_changed_notice("Review only billing.");
+        assert!(notice.contains("were edited"));
+        assert!(notice.contains("Review only billing."));
+        assert!(notice.contains("wait for the user"));
     }
 
     #[test]
