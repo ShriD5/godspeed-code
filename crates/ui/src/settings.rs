@@ -32,6 +32,7 @@ pub mod question_timeout;
 pub mod shortcuts;
 pub mod telegram;
 pub mod thread_naming;
+pub mod telemetry;
 pub mod thread_lifecycle;
 pub mod usage_limits;
 pub mod wallpaper;

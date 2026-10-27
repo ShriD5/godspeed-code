@@ -423,6 +423,10 @@ impl EngineHandle {
                     if let Some(port) = served_ipc_port {
                         engine_runtime.core().sessions.set_ipc_port(port);
                     }
+                    // The anonymous daily usage ping (docs/PRIVACY.md); never
+                    // from unit tests.
+                    #[cfg(not(test))]
+                    engine_runtime.start_telemetry(&engine_config.edge_url, true);
                     *runtime_for_boot.lock().await = Some(engine_runtime);
                     if service_for_boot.set(service).is_err() {
                         state_tx.send_replace(DeferredEngineState::Failed(
@@ -2751,6 +2755,8 @@ impl AppState {
             ));
         }
         self.watch_tasks = watch_tasks;
+        // The one-time anonymous usage stats notice (first launch only).
+        crate::settings::telemetry::show_notice_once(handle.clone(), cx);
         self.reconcile_change_request_watches(cx);
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
