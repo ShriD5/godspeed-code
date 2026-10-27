@@ -2557,9 +2557,19 @@ impl RpcService for EngineRpc {
                     let mut entry = entry.clone();
                     // Historical approvals belong to the source runtime; they
                     // must never block or send answers from the new composer.
+                    // So does a subagent still running there: nothing in the
+                    // fork would ever settle its copied chip, so the copy
+                    // settles the chip `failed`, like run end and the restart
+                    // sweep; the subagent's doc stays the source's.
                     for part in &mut entry.parts {
-                        if let zeron_doc::MessagePart::Input { resolved, .. } = part {
-                            *resolved = true;
+                        match part {
+                            zeron_doc::MessagePart::Input { resolved, .. } => *resolved = true,
+                            zeron_doc::MessagePart::Tool {
+                                subagent_status, ..
+                            } if *subagent_status == Some(zeron_doc::SubagentStatus::Running) => {
+                                *subagent_status = Some(zeron_doc::SubagentStatus::Failed);
+                            }
+                            _ => {}
                         }
                     }
                     target

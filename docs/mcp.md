@@ -98,9 +98,11 @@ lost the bind) gets no Zeron tools rather than a dead server.
 `ForkSideChat { chatId, sourceChatId, parentChatId? }` copies a chat's
 history through its latest completed response into a new chat and appends
 a `fork` part (a system entry: `sourceChatId`, `sourceTitle`) as the seam;
-the transcript draws it as "This chat was forked from <title>". `parentChatId`
-defaults to the source; a side chat's own fork button passes its parent so
-the copy lists as a sibling. The lanes card, under the session card, draws
+the transcript draws it as "This chat was forked from <title>". The copy
+settles what only the source's runtime could finish: open questions copy
+answered, and a spawn chip still `running` in the source copies `failed`
+(its `subagentRef` intact). `parentChatId` defaults to the source; a side
+chat's own fork button passes its parent so the copy lists as a sibling. The lanes card, under the session card, draws
 a chat as a main line with its **side chats** (its children: forks and
 `kind: "side"` spawns) and **subagents** (its spawn chips) branching off it,
 and opens either in the right pane.
