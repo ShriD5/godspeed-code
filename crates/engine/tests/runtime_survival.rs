@@ -22,8 +22,8 @@ use zeron_doc::{MessageStatus, SessionCommandPayload};
 use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::{Harness, HarnessError, RunControls, TurnControl};
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SessionStatus, SteeringMode,
+    AccessMode, AgentEvent, ChatConfig, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest,
+    SandboxLevel, SessionStatus, SteeringMode,
 };
 
 const CHAT: &str = "chat-runtime-survival";
@@ -40,6 +40,8 @@ struct Ledger {
     reconfigured: Mutex<Vec<Option<String>>>,
     /// The model each process was spawned with.
     spawned_models: Mutex<Vec<Option<String>>>,
+    /// The access mode each process was spawned with.
+    spawned_access: Mutex<Vec<AccessMode>>,
     /// Ends a turn whose prompt contains `wait`.
     release: tokio::sync::Notify,
 }
@@ -93,8 +95,14 @@ impl Harness for ProcessHarness {
     fn stops_turn_in_place(&self) -> bool {
         true
     }
+    /// Like Claude: everything but the folder and a crossing into or out
+    /// of Full access (a bypass launch flag) applies on the live process.
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
-        self.adopts_config && live.cwd == next.cwd
+        let bypass = |r: &RunRequest| r.access_mode() == AccessMode::FullAccess;
+        self.adopts_config
+            && live.cwd == next.cwd
+            && bypass(live) == bypass(next)
+            && live.writable_roots() == next.writable_roots()
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         Ok(vec![])
@@ -111,6 +119,11 @@ impl Harness for ProcessHarness {
             .lock()
             .unwrap()
             .push(request.model.clone());
+        ledger
+            .spawned_access
+            .lock()
+            .unwrap()
+            .push(request.access_mode());
         *ledger.turn.lock().unwrap() = Some(controls.turn.clone());
         let (tx, rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(64);
         tokio::spawn(async move {
@@ -1087,5 +1100,233 @@ async fn the_idle_reaper_spares_a_runtime_holding_background_work() {
         "the idle runtime to be reaped",
     )
     .await;
+    rig.core.sessions.shutdown().await;
+}
+
+fn with_access(mut request: RunRequest, mode: AccessMode) -> RunRequest {
+    request.set_access_mode(mode);
+    request
+}
+
+fn kept_notices(rig: &Rig) -> Vec<String> {
+    rig.core
+        .doc_host
+        .open(CHAT)
+        .unwrap()
+        .doc()
+        .read_entries()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.role == zeron_doc::MessageRole::System)
+        .flat_map(|e| e.parts)
+        .filter_map(|p| match p {
+            zeron_doc::MessagePart::Text { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The owner's chat (2026-10-27): Full access on the desktop, its stored
+/// sandbox still workspace-write. The phone sent its Run with no access mode
+/// and `auto_approve: true`, which read as Auto — out of bypass — and the
+/// host replaced the live Claude process, killing its background agents.
+/// The host now runs such a send in the chat's own mode.
+#[tokio::test]
+async fn a_phone_send_inherits_the_chats_access_mode() {
+    let rig = rig_with(true);
+    rig.core
+        .workspace
+        .create_chat(
+            CHAT,
+            None,
+            Some(&rig.core.device_id),
+            Some(ChatConfig {
+                harness: HarnessId::Mock,
+                model: Some("process-1".into()),
+                reasoning: Some(ReasoningLevel::High),
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                access_mode: Some(AccessMode::FullAccess),
+            }),
+            Some("/tmp".into()),
+        )
+        .unwrap();
+    // The desktop composer: the chat's mode, spelled out.
+    rig.core
+        .doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request: with_access(request("launch the scouts"), AccessMode::FullAccess),
+                message_id: "m-desk".into(),
+            },
+        )
+        .unwrap();
+    settle(&rig, 1).await;
+
+    // The phone (before the fix): the legacy pair only.
+    let mut phone = request("how are the scouts doing?");
+    phone.sandbox = SandboxLevel::WorkspaceWrite;
+    phone.auto_approve = true;
+    phone.access = None;
+    assert_eq!(phone.access_mode(), AccessMode::Auto, "what the host used to read");
+    rig.core
+        .doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request: phone,
+                message_id: "m-phone".into(),
+            },
+        )
+        .unwrap();
+    settle(&rig, 2).await;
+
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 1, "one process");
+    assert_eq!(rig.ledger.kills.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *rig.ledger.spawned_access.lock().unwrap(),
+        vec![AccessMode::FullAccess]
+    );
+    rig.core.sessions.shutdown().await;
+}
+
+/// The same folder spelled with a trailing slash or through a symlink is
+/// the same runtime.
+#[tokio::test]
+async fn a_folder_spelled_differently_is_the_same_runtime() {
+    let rig = rig();
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("project");
+    std::fs::create_dir(&real).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real = real.to_string_lossy().into_owned();
+
+    let mut first = request("launch the scouts");
+    first.cwd = real.clone();
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, first, None)
+        .await
+        .unwrap();
+    settle(&rig, 1).await;
+
+    for (n, cwd) in [format!("{real}/"), link.to_string_lossy().into_owned()]
+        .into_iter()
+        .enumerate()
+    {
+        let mut again = request("and again");
+        again.cwd = cwd;
+        rig.core
+            .sessions
+            .dispatch(CHAT, HarnessId::Mock, again, None)
+            .await
+            .unwrap();
+        settle(&rig, n + 2).await;
+    }
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 1, "one process");
+    assert_eq!(rig.ledger.kills.load(Ordering::SeqCst), 0);
+    rig.core.sessions.shutdown().await;
+}
+
+/// A change only a new process can apply (here: into Full access) waits
+/// while the runtime holds background work: the message reaches the live
+/// runtime under its current configuration, the transcript says so, and the
+/// next send after the work ends starts the new configuration.
+#[tokio::test]
+async fn a_restart_waits_for_background_work_to_finish() {
+    let rig = rig_with(true);
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("launch the scouts"), None)
+        .await
+        .unwrap();
+    settle(&rig, 1).await;
+    let turn = rig.ledger.turn.lock().unwrap().clone().unwrap();
+    turn.set_background(3);
+
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            with_access(request("full access now"), AccessMode::FullAccess),
+            None,
+        )
+        .await
+        .unwrap();
+    settle(&rig, 2).await;
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 1, "kept");
+    assert_eq!(rig.ledger.kills.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.ledger.prompts.lock().unwrap()[1].0, "full access now");
+    assert_eq!(
+        kept_notices(&rig),
+        ["Kept the running session (3 background tasks) — the new access mode applies after they finish."]
+    );
+
+    // Still busy: the same pending change is delivered again, noted once.
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            with_access(request("still busy?"), AccessMode::FullAccess),
+            None,
+        )
+        .await
+        .unwrap();
+    settle(&rig, 3).await;
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 1);
+    assert_eq!(kept_notices(&rig).len(), 1);
+
+    // The work ends: the next send applies the change.
+    turn.set_background(0);
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            with_access(request("done now"), AccessMode::FullAccess),
+            None,
+        )
+        .await
+        .unwrap();
+    settle(&rig, 4).await;
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 2, "applied");
+    assert_eq!(
+        *rig.ledger.spawned_access.lock().unwrap(),
+        vec![AccessMode::AutoAcceptEdits, AccessMode::FullAccess]
+    );
+    rig.core.sessions.shutdown().await;
+}
+
+/// Without background work, a change that needs a new process still gets one.
+#[tokio::test]
+async fn an_idle_runtime_restarts_for_a_change_it_cannot_adopt() {
+    let rig = rig_with(true);
+    rig.core
+        .sessions
+        .dispatch(CHAT, HarnessId::Mock, request("launch the scouts"), None)
+        .await
+        .unwrap();
+    settle(&rig, 1).await;
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            with_access(request("full access now"), AccessMode::FullAccess),
+            None,
+        )
+        .await
+        .unwrap();
+    settle(&rig, 2).await;
+    assert_eq!(rig.ledger.spawns.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *rig.ledger.spawned_access.lock().unwrap(),
+        vec![AccessMode::AutoAcceptEdits, AccessMode::FullAccess]
+    );
+    assert!(kept_notices(&rig).is_empty());
     rig.core.sessions.shutdown().await;
 }

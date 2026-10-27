@@ -4488,6 +4488,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn folder_spellings_are_the_same_directory() {
+        assert!(super::same_dir("/Users/dev", "/Users/dev/"));
+        assert!(super::same_dir("/", "//"));
+        assert!(!super::same_dir("/Users/dev", "/Users/dev2"));
+        assert!(!super::same_dir("", "/"));
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(super::same_dir(
+            &real.to_string_lossy(),
+            &link.to_string_lossy()
+        ));
+    }
+
+    #[test]
+    fn a_remote_send_lines_up_with_the_live_runtime() {
+        let mut live = request();
+        live.cwd = "/Users/dev/project".into();
+        live.access = Some(zeron_proto::RunAccess {
+            mode: zeron_proto::AccessMode::AutoAcceptEdits,
+            writable_roots: vec!["/Users/dev/.godspeed/agents/a1".into()],
+        });
+        // The phone: trailing slash, no roots, legacy access pair.
+        let mut next = request();
+        next.cwd = "/Users/dev/project/".into();
+        super::align_with_live(&mut next, &live);
+        assert_eq!(next.cwd, live.cwd);
+        assert_eq!(next.writable_roots(), live.writable_roots());
+        assert_eq!(next.access_mode(), zeron_proto::AccessMode::Auto, "mode untouched");
+
+        // Roots the sender did name are its own.
+        let mut other = request();
+        other.access = Some(zeron_proto::RunAccess {
+            mode: zeron_proto::AccessMode::Auto,
+            writable_roots: vec!["/elsewhere".into()],
+        });
+        super::align_with_live(&mut other, &live);
+        assert_eq!(other.writable_roots(), ["/elsewhere".to_string()]);
+    }
+
+    #[test]
+    fn config_changes_name_each_field_and_redact_env() {
+        let live = request();
+        let mut next = request();
+        next.cwd = "/var".into();
+        next.set_access_mode(zeron_proto::AccessMode::FullAccess);
+        next.model = Some("grok-5".into());
+        next.model_options
+            .insert("fastMode".into(), serde_json::json!(true));
+        next.env.insert("API_TOKEN".into(), "s3cret".into());
+        let changes = super::config_changes(HarnessId::Mock, &live, HarnessId::Mock, &next);
+        let joined = changes.join("; ");
+        assert!(joined.contains(r#"cwd "/tmp" -> "/var""#), "{joined}");
+        assert!(joined.contains("access mode Auto -> FullAccess"), "{joined}");
+        assert!(joined.contains("model Some(\"grok-4.6\") -> Some(\"grok-5\")"), "{joined}");
+        assert!(joined.contains("model option fastMode"), "{joined}");
+        assert!(joined.contains("env API_TOKEN changed (value redacted)"), "{joined}");
+        assert!(!joined.contains("s3cret"), "{joined}");
+        // Spellings of one option value are no change.
+        let mut respelled = request();
+        respelled
+            .model_options
+            .insert("fastMode".into(), serde_json::json!("true"));
+        let mut base = request();
+        base.model_options
+            .insert("fastMode".into(), serde_json::json!(true));
+        assert!(super::config_changes(HarnessId::Mock, &base, HarnessId::Mock, &respelled).is_empty());
+    }
+
     struct IdleStartupFixture {
         idle_calls: Arc<std::sync::atomic::AtomicUsize>,
         inference_calls: Arc<std::sync::atomic::AtomicUsize>,
