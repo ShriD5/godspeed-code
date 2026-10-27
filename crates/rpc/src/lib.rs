@@ -402,6 +402,13 @@ pub mod methods {
     /// `ChatLifecycleSettings` → `ChatLifecycleSettings`.
     pub const SET_CHAT_LIFECYCLE_SETTINGS: &str = "SetChatLifecycleSettings";
 
+    // Anonymous usage telemetry (`zeron_proto::telemetry`, docs/PRIVACY.md):
+    // this engine's once-a-day ping and its off switch. IPC only.
+    /// `{}` → `TelemetrySettings`.
+    pub const GET_TELEMETRY_SETTINGS: &str = "GetTelemetrySettings";
+    /// `TelemetrySettingsUpdate` → `TelemetrySettings`.
+    pub const SET_TELEMETRY_SETTINGS: &str = "SetTelemetrySettings";
+
     // Git write actions (ControlRpc, relay-forwardable — they run on the
     // device that owns the checkout). Params carry the checkout `cwd`.
     /// Branch, upstream, ahead/behind and remote facts for one checkout.

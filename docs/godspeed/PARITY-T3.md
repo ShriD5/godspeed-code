@@ -400,7 +400,7 @@ dictation · Appshots · wallpapers, glass and accent presets · git history lan
 file · group by device and user-named sidebar sections · always-on agents with file-watch trigger,
 memory and inbox · four-source chat import that resumes the native CLI session · Devin and Hermes
 harnesses · harness update policies · cross-device project preview · CRDT queue shared with the
-phone · zero telemetry.
+phone · anonymous, content-free usage ping with a one-click off switch (docs/PRIVACY.md).
 
 ## Biggest remaining gaps (by user impact)
 
@@ -435,7 +435,7 @@ phone · zero telemetry.
 | Always-on agents | headless engine, misfire grace, backlog collapse, skip-if-running, auto-pause after 3 failures, per-agent memory file, run inbox, file-watch trigger; T3 scheduled tasks have no memory or inbox |
 | Large paste and oversized files | folders and files past the cap go in by path (`d37cf2de`); T3 refuses past its limits |
 | Harness updates | notify or auto-when-idle policy per harness |
-| Privacy | zero telemetry; T3 users filed #4123 |
+| Privacy | one anonymous daily ping, no prompts or code, off in Settings or with `DO_NOT_TRACK=1` ([PRIVACY.md](../PRIVACY.md)); T3 users filed #4123 |
 | Visuals | agent-written Luau drawn with native elements, theme-exact, works for every harness without hosting a webview |
 | Local thread search | titles and message text from the first keystroke, no server round trip: a persisted per-engine inverted index answers a 43k-message synthetic corpus in under 4 ms per query (release; `message_index/tests.rs`). T3 needs the server and two characters |
 | Process hygiene | agent process groups recorded and reaped at engine start, scratch dirs reclaimed, bounded subscriber queues, JSON-RPC line cap |

@@ -1,3 +1,5 @@
+import type { TelemetryStore } from "./telemetry-store";
+
 export interface Env {
   SESSION_ROOMS: DurableObjectNamespace;
   DEVICE_ROOMS: DurableObjectNamespace;
@@ -29,6 +31,21 @@ export interface Env {
   ALLOWED_EMAILS?: string;
   /** Workers rate limiting binding for /auth/* (per IP). Unbound ⇒ no limit. */
   AUTH_RATE_LIMITER?: RateLimiter;
+  /** Anonymous usage telemetry (src/telemetry.ts, docs/PRIVACY.md): the one
+   * SQLite Durable Object (`telemetry-v1`) holding the pings. Unbound ⇒ the
+   * ping endpoint answers 503 and /admin has nothing to show. */
+  TELEMETRY?: DurableObjectNamespace<TelemetryStore>;
+  /** Store instance name override (tests only; production uses the
+   * default `telemetry-v1`). */
+  TELEMETRY_STORE?: string;
+  /** Per-IP limit on `POST /telemetry/v1/ping`. Unbound ⇒ no limit. */
+  TELEMETRY_RATE_LIMITER?: RateLimiter;
+  /** Admin dashboard (`/admin`) allowlist (wrangler secret): comma-separated
+   * exact emails. Unset/empty ⇒ nobody gets in. */
+  ADMIN_EMAILS?: string;
+  /** Optional GitHub token for the dashboard's stars/downloads fetch
+   * (unauthenticated calls share Cloudflare's egress rate limit). */
+  GITHUB_TOKEN?: string;
   /** APNs auth key (contents of AuthKey_XXXX.p8, wrangler secret) and its
    * key id. Unset ⇒ session notifications are decided and logged, not sent. */
   APNS_KEY_P8?: string;

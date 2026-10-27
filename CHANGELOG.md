@@ -2,6 +2,18 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Anonymous usage ping.** Once a day, on days you use it, Godspeed sends an anonymous ping:
+  version, platform, and how much you used it (chats, turns, approvals, zoomie runs, harness mix,
+  token totals, estimated spend at API prices). No prompts, code, paths, names or account details;
+  the install id is random and separate from the device id. On by default with a one-time notice;
+  turn it off in Settings → General → Privacy, or with `GODSPEED_TELEMETRY=0` or `DO_NOT_TRACK=1`.
+  Field-by-field list: [docs/PRIVACY.md](docs/PRIVACY.md).
+- A private admin dashboard on the edge (`/admin`) for the maintainers, over those pings.
+
 ## 0.5.7 (2026-10-27)
 
 ### Added

@@ -397,6 +397,9 @@ struct Inner {
     /// Told the chat whose turn just got its [`zeron_doc::TurnStats`] —
     /// the usage history indexes it. Absent in bare tests.
     turn_stats_listener: OnceLock<TurnStatsListener>,
+    /// Told the chat whose pending approval or question was just answered —
+    /// the anonymous telemetry counts them. Absent in bare tests.
+    input_listener: OnceLock<InputListener>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -416,6 +419,9 @@ pub type TurnFilesListener = Arc<
 
 /// Turn-stats hook: called with the chat whose turn was just stamped.
 pub type TurnStatsListener = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Input hook: called with the chat whose pending request was answered.
+pub type InputListener = Arc<dyn Fn(&str) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -456,6 +462,7 @@ impl SessionsEngine {
                 limit_listener: OnceLock::new(),
                 turn_files: OnceLock::new(),
                 turn_stats_listener: OnceLock::new(),
+                input_listener: OnceLock::new(),
             }),
         }
     }
@@ -540,6 +547,11 @@ impl SessionsEngine {
     /// Wire the turn-stats listener (called once at engine assembly).
     pub fn set_turn_stats_listener(&self, listener: TurnStatsListener) {
         let _ = self.inner.turn_stats_listener.set(listener);
+    }
+
+    /// Wire the answered-input listener (called once at engine assembly).
+    pub fn set_input_listener(&self, listener: InputListener) {
+        let _ = self.inner.input_listener.set(listener);
     }
 
     fn note_turn_start(&self, chat_id: &str, cwd: &str) {
@@ -1471,6 +1483,9 @@ impl SessionsEngine {
         let _ = engine_tx.send(AgentEvent::InputResolved {
             request_id: request_id.to_string(),
         });
+        if let Some(listener) = self.inner.input_listener.get() {
+            listener(chat_id);
+        }
         Ok(true)
     }
 

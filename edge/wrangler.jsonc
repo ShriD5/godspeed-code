@@ -31,7 +31,11 @@
       { "name": "DEVICE_ROOMS", "class_name": "DeviceRoom" },
       { "name": "PREVIEW_ROOMS", "class_name": "PreviewRoom" },
       { "name": "REGISTRY_ROOMS", "class_name": "RegistryRoom" },
-      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" }
+      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" },
+      // Anonymous usage telemetry: ONE instance (`telemetry-v1`) holds the
+      // daily pings (src/telemetry-store.ts, docs/PRIVACY.md). A SQLite DO,
+      // not D1: the account's free-plan D1 quota is used up.
+      { "name": "TELEMETRY", "class_name": "TelemetryStore" }
     ]
   },
   "migrations": [
@@ -51,7 +55,8 @@
       "tag": "v3",
       "new_sqlite_classes": ["ChatRoom"]
     },
-    { "tag": "v4", "new_sqlite_classes": ["PreviewRoom"] }
+    { "tag": "v4", "new_sqlite_classes": ["PreviewRoom"] },
+    { "tag": "v5", "new_sqlite_classes": ["TelemetryStore"] }
   ],
   "r2_buckets": [
     {
@@ -69,6 +74,13 @@
       "name": "AUTH_RATE_LIMITER",
       "namespace_id": "1001",
       "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      // Per-IP limit on POST /telemetry/v1/ping (src/telemetry.ts). The IP
+      // only keys the counter; it is never stored.
+      "name": "TELEMETRY_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 20, "period": 60 }
     }
   ],
   "vars": {

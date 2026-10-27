@@ -1,6 +1,6 @@
 # Deploying the Godspeed edge
 
-The edge is one Cloudflare Worker (`godspeed-edge`) with five SQLite-backed
+The edge is one Cloudflare Worker (`godspeed-edge`) with six SQLite-backed
 Durable Object classes and one R2 bucket. It runs on the Workers free plan
 (SQLite-backed Durable Objects are included there). Config: `wrangler.jsonc`,
 account `f715952f0d5650529fe9401bcca31e2e`, served on workers.dev only.
@@ -19,6 +19,10 @@ account `f715952f0d5650529fe9401bcca31e2e`, served on workers.dev only.
 | secret | `APNS_KEY_P8` | push notifications | contents of `AuthKey_XXXXXXXXXX.p8` |
 | secret | `APNS_KEY_ID` | push notifications | the key's 10-character id |
 | secret | `ALLOWED_EMAILS` | invite-only sign-in (optional) | comma-separated emails and `@domain` entries; unset ⇒ anyone who can sign in may sync |
+| Durable Object | `TelemetryStore` (binding `TELEMETRY`, migration `v5`) | anonymous usage pings, `/admin` | created by the deploy; one instance, `telemetry-v1` |
+| rate limit | `TELEMETRY_RATE_LIMITER` | per-IP limit on `POST /telemetry/v1/ping` | in `wrangler.jsonc` |
+| secret | `ADMIN_EMAILS` | who may open `/admin` | comma-separated exact emails; unset ⇒ nobody (see "Admins") |
+| secret (optional) | `GITHUB_TOKEN` | stars/downloads on `/admin` | any read-only token; without it GitHub's shared unauthenticated limit may apply |
 
 Push is optional: without the two APNs secrets the edge decides and logs
 notifications (`/registry/:org/stats`) but sends none.
@@ -72,6 +76,35 @@ node scripts/allowlist.mjs new.person@example.com | npx wrangler secret put ALLO
 The key comes from `$WORKOS_API_KEY` or `~/.config/godspeed/workos-api-key`.
 An empty list turns the gate off, so the script refuses to output one.
 Refused accounts see the invite-only message (403 `invite_only`).
+
+### Admins (the `/admin` dashboard)
+
+`https://<edge>/admin` is a private dashboard over the anonymous usage pings
+(`docs/PRIVACY.md`): installs, daily/weekly actives, spend at API prices,
+tokens, versions, platforms, harness mix, zoomie runs, update checks, GitHub
+stars and downloads, retention. `/admin/api/stats?range=7|30|90` serves the
+same numbers as JSON. Admins sign in with the same WorkOS AuthKit as the app
+(a browser flow: `/admin` → AuthKit → `/admin/callback`), and only verified
+emails in `ADMIN_EMAILS` get in; everyone else gets 403.
+
+One-time WorkOS setup: add the redirect URI
+`https://godspeed-edge.<subdomain>.workers.dev/admin/callback` in the WorkOS
+dashboard (Redirects).
+
+`scripts/admins.mjs` rebuilds the list (wrangler can't read a secret back):
+the owner, i.e. the first user in the WorkOS environment, plus every email you
+pass. Only counts are printed:
+
+```sh
+cd edge
+# Owner only:
+node scripts/admins.mjs | npx wrangler secret put ADMIN_EMAILS
+# Owner + collaborators (pass everyone each time; they sign in at /admin with these emails):
+node scripts/admins.mjs pavan@example.com devakumar@example.com | npx wrangler secret put ADMIN_EMAILS
+```
+
+Removing an email from the list locks that person out on their next request
+(sessions are re-checked against the current list). Sessions last 12 hours.
 
 Then point the apps at it: the desktop reads `GODSPEED_EDGE_URL` and
 `GODSPEED_WORKOS_CLIENT_ID` (`apps/godspeed/src/main.rs`; the baked defaults are

@@ -191,6 +191,9 @@ calls `lsof` back to back (466–753 polls over 45 s) from spawn onward. Results
 | Godspeed 0.2.0 | none |
 | Godspeed installed build | none |
 
+(Measured before Godspeed added its daily anonymous usage ping, which goes out about a minute
+after launch unless turned off; see [PRIVACY.md](../PRIVACY.md).)
+
 The source explains the timing:
 
 - At `v0.2.113`, `zeron_engine` starts `zeron_update::Updater` for every

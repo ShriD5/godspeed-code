@@ -13,6 +13,7 @@
 //! Push from anywhere with [`error`], [`success`] or [`info`]; the shell
 //! mounts [`render_toaster`] once per window.
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -89,12 +90,31 @@ impl Glide {
     }
 }
 
+/// A button on a notice toast. Clicking it runs `run` and dismisses the
+/// toast.
+#[derive(Clone)]
+pub struct ToastAction {
+    pub label: SharedString,
+    pub run: Rc<dyn Fn(&mut App)>,
+}
+
+impl ToastAction {
+    pub fn new(label: impl Into<SharedString>, run: impl Fn(&mut App) + 'static) -> Self {
+        Self {
+            label: label.into(),
+            run: Rc::new(run),
+        }
+    }
+}
+
 struct Toast {
     id: u64,
     kind: ToastKind,
     message: SharedString,
     /// Opened by the toast's "Open" action (a created pull request).
     link: Option<SharedString>,
+    /// Buttons under the message (a notice's "Turn off" / "Details").
+    actions: Vec<ToastAction>,
     created: Instant,
     /// Countdown left, and when it last resumed (`None` while paused).
     remaining: Duration,
@@ -159,6 +179,17 @@ fn push_with_link(
     message: SharedString,
     link: Option<SharedString>,
 ) {
+    push_full(cx, kind, message, link, Vec::new(), DURATION);
+}
+
+fn push_full(
+    cx: &mut App,
+    kind: ToastKind,
+    message: SharedString,
+    link: Option<SharedString>,
+    actions: Vec<ToastAction>,
+    duration: Duration,
+) {
     let message: SharedString = message.trim().to_owned().into();
     if message.is_empty() {
         return;
@@ -175,7 +206,7 @@ fn push_with_link(
         && front.message == message
         && front.link == link
     {
-        front.remaining = DURATION;
+        front.remaining = duration;
         front.resumed = (!store.hovered).then_some(now);
     } else {
         store.next_id += 1;
@@ -186,8 +217,9 @@ fn push_with_link(
             kind,
             message,
             link,
+            actions,
             created: now,
-            remaining: DURATION,
+            remaining: duration,
             resumed: (!hovered).then_some(now),
             closing: None,
             height: 0.0,
@@ -228,6 +260,17 @@ pub fn success_with_link(
     url: impl Into<SharedString>,
 ) {
     push_with_link(cx, ToastKind::Success, message.into(), Some(url.into()));
+}
+
+/// A calm notice with buttons under the message, shown for `duration`
+/// (paused, like every toast, while hovered or the window is inactive).
+pub fn notice(
+    cx: &mut App,
+    message: impl Into<SharedString>,
+    actions: Vec<ToastAction>,
+    duration: Duration,
+) {
+    push_full(cx, ToastKind::Info, message.into(), None, actions, duration);
 }
 
 /// Surface a view's pending error as a toast, once: takes it out of `slot`.
@@ -484,6 +527,7 @@ pub fn render_toaster(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         let kind = toast.kind;
         let message = toast.message.clone();
         let link = toast.link.clone();
+        let actions = toast.actions.clone();
         let content = div()
             .id(("toast-content", id as usize))
             .w_full()
@@ -496,7 +540,44 @@ pub fn render_toaster(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
             .text_size(crate::typography::ui_rems(13.0))
             .text_color(theme.text)
             .child(kind_icon(kind, &theme))
-            .child(div().flex_1().min_w_0().child(message.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(message.clone())
+                    .when(!actions.is_empty(), |body| {
+                        body.child(
+                            div()
+                                .mt(px(8.0))
+                                .flex()
+                                .flex_row()
+                                .justify_end()
+                                .gap(px(4.0))
+                                .children(actions.into_iter().enumerate().map(|(ix, action)| {
+                                    let run = action.run.clone();
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "toast-action-{id}-{ix}"
+                                        )))
+                                        .px(px(8.0))
+                                        .py(px(3.0))
+                                        .rounded(px(6.0))
+                                        .cursor_pointer()
+                                        .text_color(theme.text)
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .hover(|s| s.bg(crate::theme::wash(0.10)))
+                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation()
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            dismiss(id, cx);
+                                            run(cx);
+                                        })
+                                        .child(action.label)
+                                })),
+                        )
+                    }),
+            )
             .when_some(link, |row, url| {
                 row.child(
                     div()
@@ -676,6 +757,7 @@ mod tests {
             kind: ToastKind::Error,
             message: message.to_owned().into(),
             link: None,
+            actions: Vec::new(),
             created: now,
             remaining: DURATION,
             resumed: Some(now),
@@ -739,6 +821,37 @@ mod tests {
         let id = cx.update(|_, cx| cx.global::<ToastStore>().toasts[1].id);
         cx.update(|_, cx| dismiss(id, cx));
         cx.update(|_, cx| assert_eq!(messages(cx), ["Couldn't save"]));
+    }
+
+    #[gpui::test]
+    fn notices_carry_actions_and_their_own_duration(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let (_, cx) = cx.add_window_view(|_, _| Host);
+        let clicked = Rc::new(std::cell::Cell::new(false));
+        let flag = clicked.clone();
+        cx.update(|_, cx| {
+            notice(
+                cx,
+                crate::settings::telemetry::NOTICE,
+                vec![
+                    ToastAction::new("Turn off", move |_| flag.set(true)),
+                    ToastAction::new("Details", |_| {}),
+                ],
+                Duration::from_secs(20),
+            );
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(messages(cx), [crate::settings::telemetry::NOTICE]);
+            let store = cx.global::<ToastStore>();
+            let toast = &store.toasts[0];
+            // Longer than an ordinary toast (minus any time it already ran).
+            assert!(toast.remaining > DURATION && toast.remaining <= Duration::from_secs(20));
+            let labels: Vec<_> = toast.actions.iter().map(|a| a.label.clone()).collect();
+            assert_eq!(labels, ["Turn off", "Details"]);
+            (toast.actions[0].run.clone())(cx);
+        });
+        assert!(clicked.get());
     }
 
     #[test]

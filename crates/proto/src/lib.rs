@@ -30,6 +30,7 @@ pub mod project_transfer;
 pub mod projectless;
 pub mod sidebar_pins;
 pub mod telegram;
+pub mod telemetry;
 pub mod usage_history;
 pub mod view;
 pub mod voice;
@@ -50,6 +51,7 @@ pub use git_actions::*;
 pub use message_search::*;
 pub use preview::*;
 pub use sidebar_pins::*;
+pub use telemetry::*;
 pub use usage_history::*;
 pub use workspace::*;
 pub use worktree_env::{

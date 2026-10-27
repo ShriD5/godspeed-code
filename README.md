@@ -185,6 +185,13 @@ To run your own sync server instead, deploy `edge/` (a Cloudflare Worker with Du
 R2, see [edge/DEPLOY.md](edge/DEPLOY.md)) and set `GODSPEED_EDGE_URL` and
 `GODSPEED_WORKOS_CLIENT_ID`. An empty `GODSPEED_WORKOS_CLIENT_ID` turns sign-in off entirely.
 
+## Privacy
+
+Godspeed sends one anonymous usage ping a day (version, platform, how much you used it, token
+totals and estimated spend) so we know it's working. No prompts, code, paths, repo names or
+account details. Turn it off in Settings → General, or with `GODSPEED_TELEMETRY=0` or
+`DO_NOT_TRACK=1`. Exactly what's sent: [docs/PRIVACY.md](docs/PRIVACY.md).
+
 ## Docs
 
 - [Roadmap](docs/godspeed/ROADMAP.md)
@@ -193,6 +200,7 @@ R2, see [edge/DEPLOY.md](edge/DEPLOY.md)) and set `GODSPEED_EDGE_URL` and
 - [Parity with T3 Code](docs/godspeed/PARITY-T3.md)
 - [Architecture](ARCHITECTURE.md) (inherited from Zeron)
 - [Agent installation](crates/harness/README.md)
+- [Privacy: the anonymous usage ping](docs/PRIVACY.md)
 - [Changelog](CHANGELOG.md)
 
 ## Contributing
