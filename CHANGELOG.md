@@ -2,11 +2,28 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.5.7 (2026-10-27)
+
+### Added
+
+- **In-app updates.** Godspeed checks for new releases on launch and every few hours, downloads and
+  verifies them (checksum, Apple signature from the same team, notarization; never a downgrade), and
+  shows "Godspeed X is ready · Restart". Settings → General → Updates turns it off or checks now.
+- **Dictation on iPhone.** A mic button in the chat composer types what you say, live, using Apple's
+  on-device speech recognition. The keyboard's own dictation no longer cuts off mid-sentence.
+- Side chats are titled from the conversation they branched from (ported from T3 Code).
 
 ### Changed
 
-- Always-on agents are now called Zoomies.
+- Always-on agents are now called **Zoomies**.
+- Cursor usage bars match the pools on Cursor's spending page. Contributed by @devnm21.
+- Caught up with Zeron through `3d2f1e64`.
+
+### Fixed
+
+- Sending a message from the iPhone no longer restarts the Mac's Claude session (and kills its
+  background tasks): phone sends use the chat's access mode, and a session with background work is
+  kept until that work finishes.
 
 ## 0.5.6 (2026-10-26)
 
