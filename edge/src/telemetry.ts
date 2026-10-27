@@ -243,7 +243,14 @@ export const handleTelemetryPing = async (request: Request, env: Env, now = new 
   }
   const validated = validatePing(body, now);
   if (!validated.ok) return json({ error: validated.error }, 400);
-  await store.storePing(validated.row);
+  try {
+    await store.storePing(validated.row);
+  } catch (e) {
+    // The store can refuse writes (the Durable Objects free tier's daily
+    // row-write limit, an outage): a clean 503 makes the app retry later.
+    console.warn("telemetry store unavailable", e instanceof Error ? e.message : String(e));
+    return json({ error: "unavailable" }, 503, { "retry-after": "3600" });
+  }
   return new Response(null, { status: 204 });
 };
 
