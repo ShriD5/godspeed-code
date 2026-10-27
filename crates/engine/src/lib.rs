@@ -54,6 +54,7 @@ pub mod sessions;
 pub mod source_control;
 pub mod spaces;
 pub mod telegram;
+pub mod telemetry;
 pub mod terminals;
 pub mod text_generation;
 pub mod titles;
@@ -95,11 +96,12 @@ pub use source_control::{
 };
 pub use spaces::SpacesSync;
 pub use telegram::Telegram;
+pub use telemetry::{Telemetry, TelemetrySources};
 pub use terminals::Terminals;
 pub use text_generation::TextGenerator;
 pub use titles::TitleGenerator;
 pub use uploads::{AttachmentChunk, Uploads};
-pub use usage_history::{UsageDeps, UsageIndex, UsageLogRoots};
+pub use usage_history::{DayUsage, UsageDeps, UsageIndex, UsageLogRoots};
 pub use workspace_files::WorkspaceFiles;
 pub use worktree_env::{ProjectScope, WorktreeEnvironments};
 pub use workspace_host::{
@@ -196,6 +198,9 @@ pub struct EngineCore {
     pub message_index: MessageIndex,
     /// Tokens and estimated cost over time (Settings → Usage history).
     pub usage_history: UsageIndex,
+    /// The anonymous once-a-day usage ping (docs/PRIVACY.md). Opened with
+    /// the core; sending starts with [`EngineRuntime::start_telemetry`].
+    pub telemetry: Telemetry,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -398,9 +403,16 @@ impl EngineCore {
         // — and end any usage-limit marker: the chat is running again.
         let turn_diff = diff_sync.clone();
         let turn_limits = limit_recovery.clone();
+        let telemetry = Telemetry::open(data_dir);
+        let turn_telemetry = telemetry.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
             turn_limits.note_turn_start(chat_id);
+            turn_telemetry.note_activity(false);
+        }));
+        let input_telemetry = telemetry.clone();
+        sessions.set_input_listener(Arc::new(move |_chat_id| {
+            input_telemetry.note_activity(true);
         }));
         let limited = limit_recovery.clone();
         sessions.set_limit_listener(Arc::new(move |chat_id, signal| {
@@ -497,6 +509,7 @@ impl EngineCore {
             chat_import,
             message_index,
             usage_history,
+            telemetry,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -638,7 +651,8 @@ impl EngineCore {
         .with_chat_lifecycle(self.chat_lifecycle.clone())
         .with_chat_import(self.chat_import.clone())
         .with_message_index(self.message_index.clone())
-        .with_usage_history(self.usage_history.clone());
+        .with_usage_history(self.usage_history.clone())
+        .with_telemetry(self.telemetry.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }
@@ -668,6 +682,7 @@ impl EngineCore {
     /// snapshot.
     pub async fn shutdown(&self) {
         // First: no new agent run or resume may start against a draining engine.
+        self.telemetry.shutdown().await;
         self.telegram.shutdown().await;
         self.attention.shutdown().await;
         self.delegations.shutdown().await;
@@ -789,6 +804,43 @@ impl EngineRuntime {
     pub async fn shutdown(&self) {
         self.disconnect_edge();
         self.core.shutdown().await;
+    }
+
+    /// Start the anonymous daily usage ping to `{edge_url}/telemetry/v1/ping`
+    /// (unless it is turned off). `interactive` = the desktop app, whose
+    /// launch counts as use; the headless engine passes `false`.
+    pub fn start_telemetry(&self, edge_url: &str, interactive: bool) {
+        let core = &self.core;
+        let workspace = core.workspace.clone();
+        let device_id = core.device_id.clone();
+        let agents = core.agents.clone();
+        let sources = TelemetrySources {
+            usage: Some(core.usage_history.clone()),
+            chats_started: Some(Arc::new(move |from, to| {
+                workspace
+                    .read_chats()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|chat| chat.device_id == device_id)
+                    .filter(|chat| chat.created_at >= from && chat.created_at < to)
+                    .count() as u64
+            })),
+            zoomie_runs: Some(Arc::new(move |from, to| {
+                let filter = zeron_proto::agents::AgentRunFilter {
+                    include_archived: true,
+                    limit: Some(500),
+                    ..Default::default()
+                };
+                agents
+                    .list_runs(&filter)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|run| run.started_at)
+                    .filter(|started| *started >= from && *started < to)
+                    .count() as u64
+            })),
+        };
+        core.telemetry.start(edge_url, interactive, sources);
     }
 }
 
@@ -1089,6 +1141,7 @@ impl Engine {
             .ok_or_else(|| EngineError::Other("synced workspace profile is not ready".into()))?;
 
         let runtime = Self::assemble_runtime(&config, auth, profile).await?;
+        runtime.start_telemetry(&config.edge_url, false);
         // The desktop app or `godspeed update` may install a newer binary under
         // a running service; restart into it once no run or terminal is live.
         if let Some(updater) = runtime.core().updater() {

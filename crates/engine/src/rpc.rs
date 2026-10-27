@@ -63,6 +63,7 @@ mod limit_recovery;
 mod message_search;
 mod project_transfer;
 mod telegram;
+mod telemetry;
 mod usage_history;
 mod voice_chat;
 mod voice_remote;
@@ -832,6 +833,7 @@ pub struct EngineRpc {
     attention: Option<crate::attention::AttentionService>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
+    telemetry: Option<crate::Telemetry>,
     engine_info: EngineInfo,
 }
 
@@ -889,6 +891,7 @@ impl EngineRpc {
             attention: None,
             limit_recovery: None,
             chat_lifecycle: None,
+            telemetry: None,
             engine_info,
         }
     }
@@ -959,6 +962,12 @@ impl EngineRpc {
     /// Attach the transcript search index (`SearchMessages`).
     pub fn with_message_index(mut self, index: crate::MessageIndex) -> Self {
         self.message_index = Some(index);
+        self
+    }
+
+    /// Attach the anonymous telemetry settings (`GetTelemetrySettings`).
+    pub fn with_telemetry(mut self, telemetry: crate::Telemetry) -> Self {
+        self.telemetry = Some(telemetry);
         self
     }
 
@@ -2413,6 +2422,9 @@ impl RpcService for EngineRpc {
         }
         if chat_lifecycle::handles(method) {
             return self.chat_lifecycle_rpc(method, params);
+        }
+        if telemetry::handles(method) {
+            return self.telemetry_rpc(method, params);
         }
         if conductor::handles(method) {
             return self.conductor_rpc(method, params);

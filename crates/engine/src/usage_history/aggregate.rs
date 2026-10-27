@@ -143,6 +143,22 @@ fn amount_of(record: &UsageRecord) -> UsageAmount {
     }
 }
 
+/// Godspeed's own turns among `records`, folded for the telemetry ping
+/// (`crate::telemetry`): turns per harness, tokens and the estimated cost at
+/// list prices. Agent-log records (history outside Godspeed) are left out.
+/// Pure.
+pub(crate) fn godspeed_totals(records: &[UsageRecord]) -> super::DayUsage {
+    let mut day = super::DayUsage::default();
+    for record in records.iter().filter(|r| r.source == Source::Godspeed) {
+        let amount = amount_of(record);
+        day.turns += 1;
+        *day.by_harness.entry(record.provider.clone()).or_default() += 1;
+        day.tokens.add(&amount.tokens);
+        day.cost_usd += amount.cost_usd;
+    }
+    day
+}
+
 fn basename(path: &str) -> &str {
     let trimmed = path.trim_end_matches(['/', '\\']);
     trimmed

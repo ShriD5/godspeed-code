@@ -94,6 +94,17 @@ pub(crate) struct UsageRecord {
     pub tokens: UsageTokens,
 }
 
+/// One day of Godspeed's own turns (the telemetry ping's usage figures).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DayUsage {
+    pub turns: u64,
+    /// Finished turns per kebab-case harness id.
+    pub by_harness: std::collections::BTreeMap<String, u64>,
+    pub tokens: UsageTokens,
+    /// Estimated USD at list API prices (priced models only).
+    pub cost_usd: f64,
+}
+
 /// The agent log locations on this device.
 #[derive(Debug, Clone, Default)]
 pub struct UsageLogRoots {
@@ -221,6 +232,49 @@ impl UsageIndex {
         })
         .await
         .map_err(|e| EngineError::Other(e.to_string()))?
+    }
+
+    /// Godspeed's own turns that ended in `[from_ms, to_ms)`, after reading
+    /// any chat stamped or saved since the last pass. Agent logs are never
+    /// read for this (only the usage page does that). Blocking.
+    pub fn godspeed_between(&self, from_ms: i64, to_ms: i64) -> Result<DayUsage, EngineError> {
+        // Share the scan slot with the page's scans: wait out a running one,
+        // then catch up on chats alone.
+        let claimed = {
+            let scan = lock(&self.inner.scan);
+            let (mut scan, _) = self
+                .inner
+                .scan_done
+                .wait_timeout_while(scan, Duration::from_secs(30), |s| s.running)
+                .unwrap_or_else(PoisonError::into_inner);
+            if scan.running {
+                false
+            } else {
+                scan.running = true;
+                true
+            }
+        };
+        if claimed {
+            let scanned = match &self.inner.deps {
+                Some(deps) => self.scan_chats(deps),
+                None => Ok(()),
+            };
+            let mut scan = lock(&self.inner.scan);
+            scan.running = false;
+            self.inner.scan_done.notify_all();
+            drop(scan);
+            if let Err(err) = scanned {
+                tracing::debug!(error = %err, "usage history chat scan failed");
+            }
+        }
+        let records = self.with_conn(|conn| store::records_between(conn, from_ms, to_ms))?;
+        Ok(aggregate::godspeed_totals(&records))
+    }
+
+    /// Insert records directly (tests of consumers like telemetry).
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(&self, records: &[UsageRecord]) {
+        self.with_conn(|conn| store::upsert(conn, records)).unwrap();
     }
 
     fn with_conn<T>(

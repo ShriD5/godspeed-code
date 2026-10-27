@@ -757,3 +757,50 @@ fn the_index_answers_from_logs_and_turns_together() {
         .unwrap();
     assert!(!fallback.time_zone.is_empty());
 }
+
+#[test]
+fn godspeed_between_counts_only_godspeed_turns_in_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = UsageIndex::open(dir.path(), UsageLogRoots::default(), None);
+    let mut opus = record(
+        Source::Godspeed,
+        "gs:a:1",
+        ms(2026, 10, 26, 9, 0),
+        "claude-code",
+        "claude-opus-5-5",
+    );
+    opus.tokens = tokens(1_000_000, 100_000, 0, 0);
+    let codex = record(
+        Source::Godspeed,
+        "gs:b:1",
+        ms(2026, 10, 26, 23, 59),
+        "codex",
+        "no-such-model",
+    );
+    // A Claude Code log line (history outside Godspeed) and a turn the next
+    // day are both left out.
+    let log = record(
+        Source::ClaudeLog,
+        "claude:m:r",
+        ms(2026, 10, 26, 10, 0),
+        "claude-code",
+        "claude-opus-5-5",
+    );
+    let tomorrow = record(
+        Source::Godspeed,
+        "gs:a:2",
+        ms(2026, 10, 27, 0, 0),
+        "claude-code",
+        "claude-opus-5-5",
+    );
+    index.insert_for_test(&[opus, codex, log, tomorrow]);
+    let day = index
+        .godspeed_between(ms(2026, 10, 26, 0, 0), ms(2026, 10, 27, 0, 0))
+        .unwrap();
+    assert_eq!(day.turns, 2);
+    assert_eq!(day.by_harness.get("claude-code"), Some(&1));
+    assert_eq!(day.by_harness.get("codex"), Some(&1));
+    assert_eq!(day.tokens, tokens(1_001_000, 100_100, 0, 0));
+    // 1M input at $4 + 100K output at $20; the unknown model is unpriced.
+    assert!((day.cost_usd - 6.0).abs() < 1e-9, "{}", day.cost_usd);
+}
