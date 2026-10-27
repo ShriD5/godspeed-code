@@ -330,6 +330,17 @@ pub fn comment_strip_height(count: usize) -> f32 {
     STRIP_PAD_TOP + crate::badges::BADGE_HEIGHT
 }
 
+pub const CITATION_ROW_HEIGHT: f32 = 28.0;
+pub const CITATION_ROW_GAP: f32 = 6.0;
+
+/// Height the quote strip adds for `count` staged passages (0 when empty).
+pub fn citation_strip_height(count: usize) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    STRIP_PAD_TOP + count as f32 * CITATION_ROW_HEIGHT + (count - 1) as f32 * CITATION_ROW_GAP
+}
+
 /// Compact↔expanded flip morph (round 9): the flip used to snap between the
 /// two pill layouts. The original has no height transition (its shell carries
 /// only `transition-colors`), so this is a native nicety: ONE committed flip
@@ -6404,7 +6415,7 @@ impl Composer {
                     && composer_has_content(
                         this.input.read(cx).text(),
                         this.staged().len() + this.staged_appshots().len(),
-                        this.staged_comments(cx).len(),
+                        this.draft_context_count(cx),
                     )
                 {
                     this.on_submit(cx);
@@ -6698,12 +6709,12 @@ impl Composer {
     }
 
     /// Whether the draft holds anything a close would lose: text, staged
-    /// attachments or appshots, or staged review comments.
+    /// attachments or appshots, staged review comments, or a quoted passage.
     pub(crate) fn has_draft(&self, cx: &App) -> bool {
         composer_has_content(
             self.input.read(cx).text(),
             self.staged().len() + self.staged_appshots().len(),
-            self.staged_comments(cx).len(),
+            self.draft_context_count(cx),
         )
     }
 
@@ -7068,6 +7079,7 @@ impl Composer {
         self.appshots.remove(chat_id);
         self.state.update(cx, |state, _| {
             state.purge_review_comments(chat_id);
+            state.purge_citations(chat_id);
         });
     }
 
@@ -7077,6 +7089,23 @@ impl Composer {
             .read(cx)
             .review_comments(&self.current_key)
             .to_vec()
+    }
+
+    fn staged_citations(&self, cx: &App) -> Vec<crate::citations::Citation> {
+        self.state.read(cx).citations(&self.current_key).to_vec()
+    }
+
+    /// Review comments and quoted passages both count as sendable context.
+    fn draft_context_count(&self, cx: &App) -> usize {
+        self.staged_comments(cx).len() + self.staged_citations(cx).len()
+    }
+
+    fn remove_citation(&mut self, id: &str, cx: &mut Context<Self>) {
+        let key = self.current_key.clone();
+        self.state.update(cx, |state, cx| {
+            state.remove_citation(&key, id);
+            cx.notify();
+        });
     }
 
     fn render_comments_chip(&self, theme: &Theme, cx: &App) -> Option<gpui::Div> {
@@ -7102,6 +7131,78 @@ impl Composer {
                     theme,
                 )),
         )
+    }
+
+    /// Quoted passages sitting above the input. Each row is the selection the
+    /// next message is about, and the close control drops that one quote.
+    fn render_citations(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let staged = self.staged_citations(cx);
+        if staged.is_empty() {
+            return None;
+        }
+        let mut strip = div()
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(CITATION_ROW_GAP))
+            .px(px(STRIP_PAD_X))
+            .pt(px(STRIP_PAD_TOP));
+        for citation in staged {
+            let id = citation.id.clone();
+            let preview = crate::citations::preview(&citation.quote);
+            let remove_id = id.clone();
+            strip = strip.child(
+                div()
+                    .w_full()
+                    .h(px(CITATION_ROW_HEIGHT))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(crate::theme::ink(0.06))
+                    .child(
+                        crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted.opacity(0.7)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .text_color(theme.text)
+                            .child(preview),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("composer-citation-remove-{id}")))
+                            .flex_none()
+                            .size(px(16.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.remove_citation(&remove_id, cx);
+                            }))
+                            .tooltip(|_, cx| {
+                                cx.new(|_| AppshotActionTooltip(SharedString::from("Remove quote")))
+                                    .into()
+                            })
+                            .child(
+                                crate::icons::icon(crate::icons::CLOSE)
+                                    .size(px(12.0))
+                                    .text_color(theme.text_muted),
+                            ),
+                    ),
+            );
+        }
+        Some(strip)
     }
 
     /// The staged-thumbnail strip (attachment-ui.tsx AttachmentStrip):
@@ -8534,6 +8635,15 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
+        if self.state.read(cx).composer_focus_pending() {
+            self.focus_pending = true;
+            let state = self.state.clone();
+            cx.defer(move |cx| {
+                state.update(cx, |state, _| {
+                    state.take_composer_focus();
+                });
+            });
+        }
         {
             let state = self.state.read(cx);
             // AppState also notifies at clock-only transitions, so a run that
@@ -8821,7 +8931,7 @@ impl Composer {
             || composer_has_content(
                 self.input.read(cx).text(),
                 self.staged().len() + self.staged_appshots().len(),
-                self.staged_comments(cx).len(),
+                self.draft_context_count(cx),
             );
         send_button_mode(self.run_live(cx), has_text)
     }
@@ -8886,7 +8996,7 @@ impl Composer {
         let no_content = !composer_has_content(
             &text,
             self.staged().len() + self.staged_appshots().len(),
-            self.staged_comments(cx).len(),
+            self.draft_context_count(cx),
         );
         match self.button_mode(cx) {
             // Enter never stops a run: Stop mode implies an empty composer,
@@ -8919,7 +9029,7 @@ impl Composer {
         let has_content = composer_has_content(
             self.input.read(cx).text(),
             self.staged().len() + self.staged_appshots().len(),
-            self.staged_comments(cx).len(),
+            self.draft_context_count(cx),
         );
         match modified_submit_target(has_content) {
             ModifiedSubmitTarget::SubmitContent => self.on_submit(cx),
@@ -9065,12 +9175,13 @@ impl Composer {
         // restoring the folded prompt would paste the comment block into the
         // input as literal text.
         let key = self.current_key.clone();
-        let comments = self.state.update(cx, |state, cx| {
-            let taken = state.take_review_comments(&key);
-            if !taken.is_empty() {
+        let (comments, citations) = self.state.update(cx, |state, cx| {
+            let comments = state.take_review_comments(&key);
+            let citations = state.take_citations(&key);
+            if !comments.is_empty() || !citations.is_empty() {
                 cx.notify();
             }
-            taken
+            (comments, citations)
         });
         let typed = text.clone();
         // A chip for an attachment that is no longer staged must not leave as a link.
@@ -9080,6 +9191,7 @@ impl Composer {
             .collect();
         let text = zeron_proto::attachment_mentions::demote_unattached_mentions(&text, &attached);
         let text = crate::comments::with_comments(&text, &comments);
+        let text = crate::citations::with_citations(&text, &citations);
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().timestamp_millis();
@@ -9729,6 +9841,9 @@ impl Composer {
                         }
                         for comment in &comments {
                             s.add_review_comment(&restore_key, comment.clone());
+                        }
+                        for citation in &citations {
+                            s.add_citation(&restore_key, citation.clone());
                         }
                         cx.notify();
                     });
@@ -11288,7 +11403,7 @@ impl Render for Composer {
             && !composer_has_content(
                 self.input.read(cx).text(),
                 self.staged().len() + self.staged_appshots().len(),
-                self.staged_comments(cx).len(),
+                self.draft_context_count(cx),
             );
         // The checklist tray stacks above the queue (or directly above the
         // composer), one step narrower than what follows it.
@@ -11358,6 +11473,7 @@ impl Render for Composer {
         let appshot_count = self.staged_appshots().len();
         let strip_h = attachment_strip_height(staged_count, strip_width_hint);
         let comment_strip_h = comment_strip_height(self.staged_comments(cx).len());
+        let citation_strip_h = citation_strip_height(self.staged_citations(cx).len());
         let base_height = if self.dock_frame.is_some() {
             dock_layout.height(dock_amount)
         } else if expanded {
@@ -11365,9 +11481,13 @@ impl Render for Composer {
         } else {
             COMPACT_TOTAL_HEIGHT
         };
-        let target_height =
-            base_height + strip_h + appshot_strip_height(appshot_count) + comment_strip_h;
-        dock_layout.extra_height = strip_h + appshot_strip_height(appshot_count) + comment_strip_h;
+        let target_height = base_height
+            + strip_h
+            + appshot_strip_height(appshot_count)
+            + comment_strip_h
+            + citation_strip_h;
+        dock_layout.extra_height =
+            strip_h + appshot_strip_height(appshot_count) + comment_strip_h + citation_strip_h;
         let dock_owns_layout = self.dock_frame.is_some_and(|frame| frame.active)
             || dock_height_changed
             || self.dock_reflow.active();
@@ -11456,6 +11576,7 @@ impl Render for Composer {
             - strip_h
             - appshot_strip_height(appshot_count)
             - comment_strip_h
+            - citation_strip_h
             - PILL_BORDER_V
             - ACTIONS_ROW_HEIGHT)
             .max(if route_to_single_line {
@@ -11614,6 +11735,7 @@ impl Render for Composer {
         // the input inside the pill in both modes.
         let strip = self.render_attachment_strip(&theme, cx);
         let appshot_strip = self.render_appshot_strip(&theme, window, cx);
+        let citations_strip = self.render_citations(&theme, cx);
         let comments_chip = self.render_comments_chip(&theme, cx);
 
         let pill_border = theme.composer_surface_border();
@@ -11721,6 +11843,7 @@ impl Render for Composer {
                 .relative()
                 .flex()
                 .flex_col()
+                .children(citations_strip)
                 .children(comments_chip)
                 .children(appshot_strip)
                 .children(strip)
@@ -11792,6 +11915,7 @@ impl Render for Composer {
                 .flex()
                 .flex_col()
                 .justify_end()
+                .children(citations_strip)
                 .children(comments_chip)
                 .children(appshot_strip)
                 .children(strip)

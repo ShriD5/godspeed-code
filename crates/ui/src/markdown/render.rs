@@ -1870,6 +1870,40 @@ pub(crate) fn selection_test_position(needle: &str) -> gpui::Point<gpui::Pixels>
     })
 }
 
+/// Window point at the start of a settled selection, for the Ask chip.
+/// Reads the previous paint's registry, which is what a render pass can see.
+pub(crate) fn selection_ask_origin() -> Option<gpui::Point<gpui::Pixels>> {
+    let (surface, spans) = super::selection::settled_spans()?;
+    REGISTRY.with(|registry| {
+        let registry = registry.borrow();
+        for span in spans {
+            if span.range.is_empty() {
+                continue;
+            }
+            let Some(entry) = registry
+                .iter()
+                .find(|entry| entry.surface == surface && entry.key.as_ref() == span.key.as_str())
+            else {
+                continue;
+            };
+            let range = entry.offsets.as_ref().map_or_else(
+                || span.range.clone(),
+                |offsets| offsets.displayed_range(span.range.clone()),
+            );
+            if let Some(rect) = range_rects(&entry.layout, &range, 0.0, 0.0)
+                .into_iter()
+                .next()
+            {
+                return Some(rect.origin);
+            }
+            if let Some(position) = entry.layout.position_for_index(range.start) {
+                return Some(position);
+            }
+        }
+        None
+    })
+}
+
 #[cfg(test)]
 pub(super) fn selection_test_snapshot(
     key: &str,

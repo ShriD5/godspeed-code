@@ -4182,6 +4182,79 @@ impl Transcript {
         }
     }
 
+    /// Ask, parked just above a settled selection. Clicking it quotes that
+    /// passage into this chat's composer and moves the caret there.
+    fn render_cite_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.doc_override.is_some() {
+            return None;
+        }
+        if crate::markdown::selection::anchor_surface() != cx.entity_id().as_u64() {
+            return None;
+        }
+        let quote = crate::markdown::selection::selected_text()?;
+        if quote.trim().is_empty() {
+            return None;
+        }
+        let origin = crate::markdown::render::selection_ask_origin()?;
+        let theme = Theme::of(cx).clone();
+        let key = self.chat_id.clone().unwrap_or_default();
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .position(point(origin.x, origin.y - px(6.0)))
+                    .anchor(gpui::Anchor::BottomLeft)
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(
+                        div()
+                            .id("transcript-cite-ask")
+                            .occlude()
+                            .h(px(28.0))
+                            .px(px(10.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(theme.composer_surface_border())
+                            .bg(theme.composer_surface_bg())
+                            .shadow_lg()
+                            .cursor_pointer()
+                            .text_size(px(12.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .hover(|style| style.bg(crate::theme::ink(0.08)))
+                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.cite_selection(key.clone(), quote.clone(), cx);
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                                    .size(px(13.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child("Ask"),
+                    ),
+            )
+            .priority(2)
+            .into_any_element(),
+        )
+    }
+
+    fn cite_selection(&mut self, key: String, quote: String, cx: &mut Context<Self>) {
+        crate::markdown::selection::clear();
+        self.state.update(cx, |state, cx| {
+            if state.stage_citation(&key, crate::citations::Citation::new(quote)) {
+                cx.notify();
+            }
+        });
+        cx.notify();
+    }
+
     fn stop_selection_scroll(&mut self) {
         self.selection_drag_position = None;
         self.selection_scroll_task = None;
@@ -11063,6 +11136,7 @@ impl Render for Transcript {
             .child(content)
             .child(rail);
         let root = root.children(self.render_image_menu(cx));
+        let root = root.children(self.render_cite_button(cx));
         // Full-size viewer for a clicked user-bubble thumbnail
         // (AttachmentPreviewDialog: bare lightbox, click closes).
         if let Some(preview) = self.attachment_preview.clone() {
