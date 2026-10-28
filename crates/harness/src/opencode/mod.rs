@@ -687,6 +687,12 @@ impl Server {
             cmd.env("OPENCODE_CONFIG_CONTENT", content);
         }
         crate::compose_child_path(&mut cmd, exe);
+        // One server serves every chat: the shared build slots still apply.
+        crate::build_env::apply(
+            cmd.as_std_mut(),
+            cwd.map(std::path::Path::new),
+            &Default::default(),
+        );
         crate::process::owned::configure(&mut cmd);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
