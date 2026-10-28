@@ -299,6 +299,22 @@ pub fn wash_range(surface: u64, key: &str) -> Option<Range<usize>> {
         .map(|s| s.range.clone())
 }
 
+/// Drop a settled or in-progress selection.
+pub fn clear() {
+    *state().lock().unwrap() = None;
+}
+
+/// A selection whose drag has ended: its surface, then its spans. `None`
+/// while the pointer is still down or the selection is empty.
+pub fn settled_spans() -> Option<(u64, Vec<Span>)> {
+    let guard = state().lock().unwrap();
+    let selection = guard.as_ref().filter(|selection| !selection.dragging)?;
+    if selection.spans.iter().all(|span| span.range.is_empty()) {
+        return None;
+    }
+    Some((selection.surface, selection.spans.clone()))
+}
+
 /// The full selected text (Cmd+C), spans joined in document order.
 pub fn selected_text() -> Option<String> {
     let guard = state().lock().unwrap();
@@ -457,6 +473,18 @@ mod tests {
         begin_with_span("p1", "hello world", 6..11);
         assert_eq!(wash_range(0, "p1"), Some(6..11));
         assert_eq!(end_drag("p1").as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn a_settled_selection_can_be_cleared() {
+        let _state = test_state_lock();
+        begin_with_span("p1", "hello world", 0..5);
+        end_active_drag();
+        assert_eq!(settled_spans().map(|(_, spans)| spans.len()), Some(1));
+        assert_eq!(selected_text().as_deref(), Some("hello"));
+        clear();
+        assert!(settled_spans().is_none());
+        assert!(selected_text().is_none());
     }
 
     #[test]

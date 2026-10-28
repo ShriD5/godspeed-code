@@ -27,6 +27,7 @@ use gpui::{App, Context, Entity, Task};
 use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
+use crate::citations::Citation;
 use crate::comments::ReviewComment;
 use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
@@ -875,6 +876,10 @@ pub struct AppState {
     transfers: HashMap<String, (u64, u64)>,
     /// Written by the changes pane, read by the composer.
     review_comments: HashMap<String, Vec<ReviewComment>>,
+    /// Passages quoted from the transcript, folded into the next prompt.
+    citations: HashMap<String, Vec<Citation>>,
+    /// The transcript asked the composer to take the keyboard (an Ask click).
+    composer_focus: bool,
     /// File surfaces whose editor-backed comments currently cite a buffer
     /// revision that has not reached disk yet. A chat remains blocked until
     /// every surface waiting on a workspace write has finished or cancelled.
@@ -997,6 +1002,8 @@ impl AppState {
             upload_progress: None,
             transfers: HashMap::new(),
             review_comments: HashMap::new(),
+            citations: HashMap::new(),
+            composer_focus: false,
             review_comment_flushes: HashMap::new(),
             local_device_id: None,
             harness_updates: Vec::new(),
@@ -1154,6 +1161,63 @@ impl AppState {
     pub fn purge_review_comments(&mut self, key: &str) {
         self.review_comment_flushes.remove(key);
         self.review_comments.remove(key);
+    }
+
+    pub fn citations(&self, key: &str) -> &[Citation] {
+        self.citations
+            .get(key)
+            .map(|citations| citations.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Stage a quote on `key`. An empty quote is ignored. A quote already
+    /// staged is left as it is. Either way the composer is asked to focus,
+    /// because the click meant "reply to this".
+    pub fn stage_citation(&mut self, key: &str, citation: Citation) -> bool {
+        if citation.quote.is_empty() {
+            return false;
+        }
+        let list = self.citations.entry(key.to_string()).or_default();
+        if !list.iter().any(|existing| existing.quote == citation.quote) {
+            list.push(citation);
+        }
+        self.composer_focus = true;
+        true
+    }
+
+    pub fn add_citation(&mut self, key: &str, citation: Citation) {
+        if citation.quote.is_empty() {
+            return;
+        }
+        self.citations
+            .entry(key.to_string())
+            .or_default()
+            .push(citation);
+    }
+
+    pub fn remove_citation(&mut self, key: &str, id: &str) {
+        if let Some(list) = self.citations.get_mut(key) {
+            list.retain(|citation| citation.id != id);
+            if list.is_empty() {
+                self.citations.remove(key);
+            }
+        }
+    }
+
+    pub fn take_citations(&mut self, key: &str) -> Vec<Citation> {
+        self.citations.remove(key).unwrap_or_default()
+    }
+
+    pub fn purge_citations(&mut self, key: &str) {
+        self.citations.remove(key);
+    }
+
+    pub fn composer_focus_pending(&self) -> bool {
+        self.composer_focus
+    }
+
+    pub fn take_composer_focus(&mut self) -> bool {
+        std::mem::take(&mut self.composer_focus)
     }
 
     pub fn begin_review_comment_flush(&mut self, key: &str, source: u64) {
