@@ -1331,6 +1331,9 @@ pub struct ChangeRequestDetail {
     /// reviews are the viewer's. Absent from older engines.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub viewer_login: Option<String>,
+    /// The serving engine's watch on this pull request, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch: Option<crate::pull_request_actions::PullRequestWatch>,
 }
 
 impl ChangeRequestDetail {
