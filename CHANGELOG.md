@@ -47,6 +47,39 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   `-linux-aarch64.tar.gz` with sha256 files and a `manifest-linux.json`, built by GitHub Actions.
   Linux installs update from that manifest; a release whose Linux build isn't uploaded yet is
   skipped instead of downloaded unverified.
+- **Sub-agents in their own worktree.** MCP `create_chat` and `create_chats` take `worktree`:
+  `"new"` starts the chat in a fresh git worktree on its own branch, off the parent's branch or a
+  named `base`, set up like the app's worktrees (copied .env files, ports, setup commands);
+  `"parent"` (the default) shares the parent's checkout; or name an existing worktree by folder or
+  branch. Conductor caps still apply, and a refused chat leaves no worktree behind. A side chat on
+  its own branch shows it on the parent's card (ported from T3 Code).
+- **Worktree cleanup and storage.** Settings → General → Worktrees can delete worktrees whose
+  branch is merged, or that sat untouched for 7, 14 or 30 days (both off by default), running their
+  teardown commands. Worktrees with uncommitted changes, unpushed commits or a running chat are
+  always kept. A storage list shows every Godspeed worktree with its size on disk, branch, last
+  activity, state and chat, with "Delete now" and "Delete all eligible" (ported from T3 Code).
+- **Select several sessions at once.** Cmd-click or Shift-click sidebar rows (Cmd+A in the sidebar
+  takes them all, Esc lets go) and settle, snooze, mark read or unread, pin, archive or delete them
+  together from the bar at the foot of the sidebar. Cmd+Z undoes a whole batch (ported from T3 Code).
+- **Prompt recall and stash.** Up in an empty composer brings back the prompts you sent in that chat
+  (Down goes forward again). Cmd+S sets the draft aside, attachments included, and the "Stashed"
+  chip brings it back or deletes it; stashes stay on this Mac across restarts. Rebind it in
+  Settings → Shortcuts (ported from T3 Code).
+- **Dock badge** with the number of chats waiting on an approval or an answer. Turn it off in
+  Settings → Appearance → "Show badge on Dock icon".
+
+### Changed
+
+- **Parallel agents share build slots.** Agents and terminals run their cargo and make builds
+  through one shared jobserver, so three or four agents building at once no longer start a rustc
+  per core each (in testing, peak rustc processes went from 24 to 9 and memory from 4.7 GB to
+  2.0 GB). Your own `CARGO_BUILD_JOBS`, `MAKEFLAGS` or `build.jobs` still win. sccache is used
+  when it's installed. Settings → General → Builds shows the slots.
+
+### Fixed
+
+- A chat whose worktree folder was deleted gets it recreated before its next turn, instead of
+  failing.
 
 ## 0.5.8 (2026-10-28)
 
@@ -59,17 +92,6 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   turn it off in Settings → General → Privacy, or with `GODSPEED_TELEMETRY=0` or `DO_NOT_TRACK=1`.
   Field-by-field list: [docs/PRIVACY.md](docs/PRIVACY.md).
 - A private admin dashboard on the edge (`/admin`) for the maintainers, over those pings.
-- **Sub-agents in their own worktree.** MCP `create_chat` and `create_chats` take `worktree`:
-  `"new"` starts the chat in a fresh git worktree on its own branch, off the parent's branch or a
-  named `base`, set up like the app's worktrees (copied .env files, ports, setup commands);
-  `"parent"` (the default) shares the parent's checkout; or name an existing worktree by folder or
-  branch. Conductor caps still apply, and a refused chat leaves no worktree behind. A side chat on
-  its own branch shows it on the parent's card (ported from T3 Code).
-- **Worktree cleanup and storage.** Settings → General → Worktrees can delete worktrees whose
-  branch is merged, or that sat untouched for 7, 14 or 30 days (both off by default), running their
-  teardown commands. Worktrees with uncommitted changes, unpushed commits or a running chat are
-  always kept. A storage list shows every Godspeed worktree with its size on disk, branch, last
-  activity, state and chat, with "Delete now" and "Delete all eligible" (ported from T3 Code).
 - **Agents drive the preview browser.** In-chat agents get ten `preview_*` tools (open, navigate,
   snapshot with element refs, screenshot they can see, click, type, scroll, read-only eval, console,
   wait) on their chat's own preview tab, to check the UI they build. Local dev servers open freely;
@@ -79,15 +101,6 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   or type a schedule in plain English ("weekdays at 6pm", "every 30 min", "tomorrow 9am"), see the
   next run live, and send. "Run this on a schedule…" turns any chat into a zoomie, the sidebar has a
   Zoomies section, and the palette has "New zoomie…".
-- **Select several sessions at once.** Cmd-click or Shift-click sidebar rows (Cmd+A in the sidebar
-  takes them all, Esc lets go) and settle, snooze, mark read or unread, pin, archive or delete them
-  together from the bar at the foot of the sidebar. Cmd+Z undoes a whole batch (ported from T3 Code).
-- **Prompt recall and stash.** Up in an empty composer brings back the prompts you sent in that chat
-  (Down goes forward again). Cmd+S sets the draft aside, attachments included, and the "Stashed"
-  chip brings it back or deletes it; stashes stay on this Mac across restarts. Rebind it in
-  Settings → Shortcuts (ported from T3 Code).
-- **Dock badge** with the number of chats waiting on an approval or an answer. Turn it off in
-  Settings → Appearance → "Show badge on Dock icon".
 
 ### Fixed
 
