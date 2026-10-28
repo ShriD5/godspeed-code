@@ -13946,6 +13946,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeron-remote"
+version = "0.5.8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "zeron-rpc"
 version = "0.5.8"
 dependencies = [
@@ -14125,6 +14135,7 @@ dependencies = [
  "zeron-markdown",
  "zeron-orb",
  "zeron-proto",
+ "zeron-remote",
  "zeron-rpc",
  "zeron-syntax",
  "zeron-theme",

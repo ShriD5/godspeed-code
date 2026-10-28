@@ -25,6 +25,7 @@ pub mod archived;
 pub mod build_slots;
 pub mod composer;
 pub mod devices;
+pub mod servers;
 pub mod files;
 pub mod harnesses;
 pub mod import;

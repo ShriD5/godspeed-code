@@ -20,6 +20,20 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   never wake it, and wakes are capped per PR per hour. Optional per-PR "auto-merge when green"
   turns on GitHub auto-merge once checks pass and the PR is approved; nothing is ever approved for
   you.
+- **Run on a server.** Settings → Devices → "Run on a server…" installs the headless engine on a
+  Linux machine over your own SSH (keys, agent and `~/.ssh/config`; never a password), or on a
+  Tailscale machine picked from a list. It checks the connection (with clear host-key and auth
+  errors), downloads the release for the server's arch from GitHub and verifies its sha256,
+  installs into `~/.godspeed/app` without sudo, signs the server into your workspace (you sign in
+  in the browser and paste the code) and starts it as a `systemd --user` service with lingering
+  (or a `nohup` supervisor plus `@reboot` cron). The server then shows up as a device to start
+  chats on, so agents keep running with the laptop closed. Saved servers show Online, version and
+  uptime, with Update, Stop, Start and Uninstall; re-running setup or checking status never
+  restarts a running engine. `godspeed login --stdin-code [--org ID]` is the sign-in it drives.
+- **Linux release builds.** Every `v*` release gets `godspeed-<v>-linux-x86_64.tar.gz` and
+  `-linux-aarch64.tar.gz` with sha256 files and a `manifest-linux.json`, built by GitHub Actions.
+  Linux installs update from that manifest; a release whose Linux build isn't uploaded yet is
+  skipped instead of downloaded unverified.
 
 ## 0.5.8 (2026-10-28)
 

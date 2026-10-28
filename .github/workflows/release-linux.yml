@@ -1,0 +1,173 @@
+name: Linux release
+
+# Builds the Linux tarballs (`scripts/package-linux.sh`) for a `v*` release and
+# uploads them, with sha256 files and `manifest-linux.json`, to that GitHub
+# release. The macOS assets and `manifest.json` are uploaded from the Mac
+# (docs/godspeed/HANDOFF.md "Releases"); this job never touches them, so the
+# two can finish in any order. Linux installs read `manifest-linux.json`
+# (crates/update `fetch_latest`), and the "Run on a server" wizard installs
+# from the same assets.
+#
+# Pull requests that change this workflow or the packaging script run a fast
+# debug x86_64 package as a smoke test and upload nothing.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and upload (for example v0.5.9)
+        required: true
+  pull_request:
+    paths:
+      - '.github/workflows/release-linux.yml'
+      - 'scripts/package-linux.sh'
+      - 'scripts/release-manifest.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-linux-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"arch":"x86_64","runner":"ubuntu-24.04"}]' || '[{"arch":"x86_64","runner":"ubuntu-24.04"},{"arch":"aarch64","runner":"ubuntu-24.04-arm"}]') }}
+    runs-on: ${{ matrix.runner }}
+    # Cold release builds (thin LTO) on hosted runners take 30-60 minutes.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Release tag matches the workspace version
+        if: github.event_name != 'pull_request'
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match the workspace version $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Workspace version (smoke)
+        if: github.event_name == 'pull_request'
+        run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')" >> "$GITHUB_ENV"
+
+      # x86_64 reuses the .deb cache main's UI tests save (same package list).
+      - name: Restore apt packages
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/apt-debs/*.deb
+          key: apt-debs-v1-${{ matrix.arch == 'x86_64' && 'gpui' || 'gpui-aarch64' }}-${{ hashFiles('scripts/ci/apt-install.sh') }}
+
+      # Same build dependencies as the Linux UI tests (one binary serves the
+      # desktop app and `godspeed headless`).
+      - name: Install system packages
+        run: >-
+          bash scripts/ci/apt-install.sh
+          libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+          libx11-dev libxcb1-dev libx11-xcb-dev
+          libfontconfig1-dev libfreetype-dev libasound2-dev
+          libvulkan-dev pkg-config cmake libwebkit2gtk-4.1-dev libjson-glib-dev
+
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # The smoke build reuses the dev-profile cache that main's UI tests seed.
+      - name: Smoke build settings
+        if: github.event_name == 'pull_request'
+        run: echo "CARGO_PROFILE_DEV_DEBUG=0" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: github.event_name == 'pull_request'
+        with:
+          prefix-key: ci-linux-v1
+          shared-key: ui
+          add-job-id-key: false
+          save-if: false
+
+      - name: Package
+        env:
+          PROFILE: ${{ github.event_name == 'pull_request' && 'debug' || 'release' }}
+        run: scripts/package-linux.sh
+
+      - name: Checksum and smoke-test the tarball
+        run: |
+          file="godspeed-$VERSION-linux-${{ matrix.arch }}.tar.gz"
+          cd target/package
+          test -f "$file" || { echo "missing $file (uname -m: $(uname -m))" >&2; exit 1; }
+          sha256sum "$file" > "$file.sha256"
+          cat "$file.sha256"
+          smoke="$(mktemp -d)"
+          tar -xzf "$file" -C "$smoke" --strip-components=1
+          reported="$("$smoke/godspeed" --version)"
+          echo "$reported"
+          [ "$reported" = "godspeed $VERSION" ] || { echo "unexpected --version output" >&2; exit 1; }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            target/package/godspeed-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz
+            target/package/godspeed-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 30 }}
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: linux-*
+          path: dist
+          merge-multiple: true
+
+      # The Mac creates the release (signing and notarizing take a while). A tag
+      # pushed before that waits here instead of creating a competing release.
+      - name: Wait for the GitHub release
+        run: |
+          for attempt in $(seq 1 120); do
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              exit 0
+            fi
+            echo "release $TAG not created yet (attempt $attempt); waiting"
+            sleep 60
+          done
+          echo "release $TAG was never created; rerun this workflow (workflow_dispatch) after creating it" >&2
+          exit 1
+
+      - name: Write manifest-linux.json
+        run: |
+          version="${TAG#v}"
+          ls -l dist
+          python3 scripts/release-manifest.py --version "$version" --dir dist \
+            --out dist/manifest-linux.json dist/godspeed-"$version"-linux-*.tar.gz
+          cat dist/manifest-linux.json
+
+      # Only this job's own files: never manifest.json or the macOS assets.
+      - name: Upload to the release
+        run: |
+          gh release upload "$TAG" --clobber \
+            dist/godspeed-*-linux-*.tar.gz dist/godspeed-*-linux-*.tar.gz.sha256 \
+            dist/manifest-linux.json
