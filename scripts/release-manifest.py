@@ -18,6 +18,10 @@ artifacts it lists. Shape:
       }
     }
 
+Linux tarballs are not in `manifest.json`: the Linux release workflow
+(.github/workflows/release-linux.yml) writes `manifest-linux.json` with this
+script (`--out <dir>/manifest-linux.json`), which Linux installs read first.
+
 Without FILE arguments every `godspeed-<version>-*` artifact in --dir is listed
 (the dmg and the `-app.tar.gz` the updater installs). The version defaults to
 `[workspace.package] version` in Cargo.toml; the release tag must be
@@ -81,13 +85,16 @@ def main() -> None:
     files = args.files or sorted(args.dir.glob(f"godspeed-{version}-*"))
     files = [f for f in files if f.name != "manifest.json"]
     manifest = build_manifest(version, files)
+    out = args.out or (args.dir / "manifest.json")
+    # `manifest.json` is the macOS feed; per-platform feeds such as
+    # `manifest-linux.json` (written by .github/workflows/release-linux.yml)
+    # list only their own tarballs.
     app_tarballs = [name for name in manifest["files"] if name.endswith("-app.tar.gz")]
-    if not app_tarballs:
+    if out.name == "manifest.json" and not app_tarballs:
         print(
             "release-manifest: warning: no -app.tar.gz listed; macOS apps can't update",
             file=sys.stderr,
         )
-    out = args.out or (args.dir / "manifest.json")
     out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(f"release-manifest: wrote {out} ({version}, {len(manifest['files'])} files)")
 

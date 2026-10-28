@@ -166,6 +166,22 @@ Every release, in order:
    them is invisible to the updater (it keeps offering nothing, or the previous release).
    Don't mark a release "latest" before all assets are uploaded (`gh release create` with files
    uploads first, then publishes).
+4. Linux assets arrive on their own: `gh release create v$V` creates the tag, the tag push runs
+   `.github/workflows/release-linux.yml`, which builds `godspeed-$V-linux-x86_64.tar.gz` and
+   `godspeed-$V-linux-aarch64.tar.gz` (`scripts/package-linux.sh`, Ubuntu 24.04 runners, so
+   glibc 2.39+), waits until the release exists, and uploads both tarballs, a `.sha256` for each
+   and `manifest-linux.json` with `GITHUB_TOKEN` (no other secrets). Takes 30–60 min after the tag.
+   If it failed or the release was created later than 2 h after the tag, rerun it from Actions →
+   "Linux release" → Run workflow with the tag.
+
+   Two manifests, one per uploader, so neither clobbers the other: `manifest.json` (written on the
+   Mac, macOS files only, unchanged) and `manifest-linux.json` (written by the Linux job). Linux
+   installs read `manifest-linux.json` first and fall back to `manifest.json`
+   (`zeron_update::fetch_latest`); a manifest that lists files but not this platform's tarball is
+   treated as "not published yet" and never downloaded unverified, so a Linux server waits out
+   the gap between the Mac upload and the Linux job. Headless engines on servers update
+   themselves from it when idle (no live runs or terminals), and "Run on a server" installs from
+   the same assets after checking the sha256.
 
 
 - `v0.5.0` published 2026-10-18 (tag on `4d5bbfb8`): Mission Control, receipts, usage cockpit,

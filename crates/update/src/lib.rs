@@ -178,11 +178,49 @@ pub fn version_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-/// Fetch the newest release metadata: `manifest.json`, falling back to
-/// `latest.txt` (version only, no checksums) for pre-manifest releases.
+/// The per-platform release manifest some platforms read before the shared
+/// `manifest.json`: the Linux release workflow uploads `manifest-linux.json`
+/// beside the macOS-only `manifest.json` (written on the Mac), so neither
+/// upload ever overwrites the other's entries.
+pub fn platform_manifest_name(os: &str) -> Option<&'static str> {
+    match os {
+        "linux" => Some("manifest-linux.json"),
+        _ => None,
+    }
+}
+
+/// Fetch the newest release metadata for this platform: the platform's own
+/// manifest when it has one ([`platform_manifest_name`]), then
+/// `manifest.json`, then `latest.txt` (version only, no checksums) for
+/// pre-manifest releases.
 pub async fn fetch_latest(feed: &str) -> anyhow::Result<Manifest> {
+    fetch_latest_for(feed, std::env::consts::OS).await
+}
+
+/// [`fetch_latest`] for another platform's installs — the "Run on a server"
+/// setup on a Mac reads the Linux feed this way.
+pub async fn fetch_latest_for(feed: &str, os: &str) -> anyhow::Result<Manifest> {
     let base = release_base(feed)?;
     let client = http_client()?;
+    if let Some(name) = platform_manifest_name(os) {
+        let url = format!("{base}/{name}");
+        match fetch_release_metadata(&client, &url).await {
+            Ok(response) if response.status.is_success() => {
+                let manifest: Manifest = serde_json::from_slice(&response.body)
+                    .with_context(|| format!("parsing {name}"))?;
+                if manifest.version.trim().is_empty() {
+                    bail!("{name} has an empty version");
+                }
+                return Ok(manifest);
+            }
+            Ok(response) => {
+                tracing::debug!(status = %response.status, name, "platform manifest unavailable; trying manifest.json")
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, name, "platform manifest fetch failed; trying manifest.json")
+            }
+        }
+    }
     let manifest_url = format!("{base}/manifest.json");
     match fetch_release_metadata(&client, &manifest_url).await {
         Ok(response) if response.status.is_success() => {
@@ -636,6 +674,14 @@ pub async fn download_release_file(
 ) -> anyhow::Result<()> {
     let url = artifact_url(&release_base(feed)?, &manifest.version, file);
     let meta = manifest.files.get(file);
+    // A manifest that lists files but not this one describes a release whose
+    // artifact for this platform is not published (yet): the Linux tarballs
+    // land after the Mac uploads `manifest.json`. Never fetch it unverified.
+    anyhow::ensure!(
+        manifest.files.is_empty() || meta.is_some(),
+        "release {} has no {file} yet",
+        manifest.version
+    );
     let expected = meta.and_then(|m| m.sha256.as_deref());
     let expected_size = meta.and_then(|m| m.size);
     if expected.is_none() {
@@ -2318,6 +2364,107 @@ mod tests {
             }
         });
         (base, server)
+    }
+
+    /// Serve a fixed body per path (404 otherwise), forever.
+    async fn serve_paths(
+        routes: Vec<(&'static str, Vec<u8>)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let routes = std::sync::Arc::new(routes);
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let routes = routes.clone();
+                tokio::spawn(async move {
+                    let mut request = vec![0; 4096];
+                    let n = socket.read(&mut request).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&request[..n]).to_string();
+                    let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let body = routes
+                        .iter()
+                        .find(|(route, _)| *route == path)
+                        .map(|(_, body)| body.clone());
+                    let response = match body {
+                        Some(body) => {
+                            let mut out = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            )
+                            .into_bytes();
+                            out.extend_from_slice(&body);
+                            out
+                        }
+                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+                    };
+                    let _ = socket.write_all(&response).await;
+                });
+            }
+        });
+        (base, server)
+    }
+
+    #[tokio::test]
+    async fn linux_reads_its_own_manifest_and_falls_back_to_the_shared_one() {
+        let linux = br#"{"version":"9.9.9","files":{"godspeed-9.9.9-linux-x86_64.tar.gz":{"sha256":"aa","size":1}}}"#;
+        let shared = br#"{"version":"9.9.8","files":{"godspeed-9.9.8-macos-arm64-app.tar.gz":{"sha256":"bb"}}}"#;
+        let (base, server) = serve_paths(vec![
+            ("/manifest-linux.json", linux.to_vec()),
+            ("/manifest.json", shared.to_vec()),
+        ])
+        .await;
+        let manifest = fetch_latest_for(&base, "linux").await.unwrap();
+        assert_eq!(manifest.version, "9.9.9");
+        assert!(
+            manifest
+                .files
+                .contains_key("godspeed-9.9.9-linux-x86_64.tar.gz")
+        );
+        // macOS never reads the Linux feed.
+        assert_eq!(
+            fetch_latest_for(&base, "macos").await.unwrap().version,
+            "9.9.8"
+        );
+        server.abort();
+
+        // A release whose Linux job has not uploaded yet: Linux falls back to
+        // manifest.json, which lists no Linux tarball.
+        let (base, server) = serve_paths(vec![("/manifest.json", shared.to_vec())]).await;
+        let manifest = fetch_latest_for(&base, "linux").await.unwrap();
+        assert_eq!(manifest.version, "9.9.8");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_manifest_without_this_platforms_file_is_never_downloaded_unverified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            version: "9.9.9".into(),
+            files: [(
+                "godspeed-9.9.9-macos-arm64-app.tar.gz".to_string(),
+                FileMeta::default(),
+            )]
+            .into(),
+        };
+        let error = download_release_file(
+            "http://127.0.0.1:1",
+            &manifest,
+            "godspeed-9.9.9-linux-x86_64.tar.gz",
+            &tmp.path().join("out"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("has no godspeed-9.9.9-linux-x86_64.tar.gz yet"),
+            "{error:#}"
+        );
+        assert!(!tmp.path().join("out.partial").exists());
     }
 
     #[tokio::test]
