@@ -255,6 +255,15 @@ pub mod methods {
     pub const GET_CHANGE_REQUEST: &str = "GetChangeRequest";
     pub const POST_CHANGE_REQUEST_COMMENT: &str = "PostChangeRequestComment";
     pub const GET_CHANGE_REQUEST_DIFF: &str = "GetChangeRequestDiff";
+    /// One explicit review / thread / merge / state write on a pull request
+    /// (`zeron_proto::pull_request_actions::ChangeRequestAction`).
+    pub const PERFORM_CHANGE_REQUEST_ACTION: &str = "PerformChangeRequestAction";
+    /// The repository's allowed merge methods and the PR's auto-merge state.
+    pub const GET_CHANGE_REQUEST_MERGE_OPTIONS: &str = "GetChangeRequestMergeOptions";
+    /// Pull request watches on this engine (checks, reviews, conflicts).
+    pub const LIST_PULL_REQUEST_WATCHES: &str = "ListPullRequestWatches";
+    /// Turn one pull request's watch (and its auto-merge toggle) on or off.
+    pub const SET_PULL_REQUEST_WATCH: &str = "SetPullRequestWatch";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
     /// Permanently restore one chat-owned checkout to its current HEAD and
     /// remove only its untracked, non-ignored paths.
