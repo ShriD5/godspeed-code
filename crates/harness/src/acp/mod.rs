@@ -4513,6 +4513,65 @@ async fn run_session(session: Session) {
         };
     }
 
+    // The agent is gone: its stdout hit EOF, or it exited and the drain
+    // window closed. A prompt response written before the exit is already
+    // resolved by the reader, but the select can reach the exit first (both
+    // are ready at once when the response and EOF land in one read). Settle
+    // the turn with that response, an error answer (a quota or context
+    // error) included, so only a prompt the agent never answered falls
+    // through to the crash-message bookkeeping below (stderr tail intact).
+    macro_rules! settle_turn_at_exit {
+        () => {
+            if let Some(mut fut) = turn.take()
+                && let Ok(res) = tokio::time::timeout(Duration::from_millis(50), &mut fut).await
+                && !res
+                    .as_ref()
+                    .is_err_and(crate::jsonrpc::is_transport_failure)
+            {
+                let (prev, _next) = rotate(&mut assistant_message_id);
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::AssistantMessageCompleted {
+                        assistant_message_id: prev,
+                    },
+                )
+                .await;
+                if let Some(usage) = usage_from_response(&res) {
+                    let _ = send(&event_tx, usage).await;
+                }
+                let (status, mut error) = stop_outcome(&res, interrupted);
+                if !interrupted
+                    && auth_method.is_some()
+                    && res.as_ref().is_err_and(is_auth_required)
+                {
+                    error = Some(not_signed_in(agent_name));
+                }
+                done_current = true;
+                if interrupted {
+                    done_after_interrupt = true;
+                }
+                // Same limit vocabulary as a turn settled while the agent lives.
+                if status == DoneStatus::Errored
+                    && let Some(limit) = error
+                        .as_deref()
+                        .and_then(|text| crate::limits::event_from_text(text, chrono::Utc::now()))
+                {
+                    let _ = send(&event_tx, limit).await;
+                }
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::Done {
+                        status,
+                        result: None,
+                        error,
+                        session_id: Some(session_id.clone()),
+                    },
+                )
+                .await;
+            }
+        };
+    }
+
     let mut child_exit = None;
     let mut exit_drain_deadline = None;
     'main: loop {
@@ -4538,7 +4597,10 @@ async fn run_session(session: Session) {
                 exit_drain_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(200));
             },
             _ = tokio::time::sleep_until(exit_drain_deadline.unwrap_or_else(tokio::time::Instant::now)),
-                if exit_drain_deadline.is_some() => break 'main,
+                if exit_drain_deadline.is_some() => {
+                settle_turn_at_exit!();
+                break 'main;
+            },
 
             res = async { turn.as_mut().expect("guarded by if").await }, if turn.is_some() => {
                 turn = None;
@@ -4883,41 +4945,9 @@ async fn run_session(session: Session) {
                 Some(Incoming::Eof) | None => {
                     // The turn ends via a request RESPONSE, which races EOF
                     // through a different channel than notifications: an agent
-                    // exiting right after its final response must read as a
-                    // clean finish, not a crash. The response (if any) is
-                    // already resolved by the reader before it sends Eof.
-                    // Only a RESOLVED response is a clean finish; a request
-                    // failed by the reader's EOF cleanup falls through to the
-                    // crash-message bookkeeping below (stderr tail intact).
-                    if let Some(mut fut) = turn.take()
-                        && let Ok(res @ Ok(_)) =
-                            tokio::time::timeout(Duration::from_millis(50), &mut fut).await
-                    {
-                        let (prev, _next) = rotate(&mut assistant_message_id);
-                        let _ = send(
-                            &event_tx,
-                            AgentEvent::AssistantMessageCompleted { assistant_message_id: prev },
-                        )
-                        .await;
-                        if let Some(usage) = usage_from_response(&res) {
-                            let _ = send(&event_tx, usage).await;
-                        }
-                        let (status, error) = stop_outcome(&res, interrupted);
-                        done_current = true;
-                        if interrupted {
-                            done_after_interrupt = true;
-                        }
-                        let _ = send(
-                            &event_tx,
-                            AgentEvent::Done {
-                                status,
-                                result: None,
-                                error,
-                                session_id: Some(session_id.clone()),
-                            },
-                        )
-                        .await;
-                    }
+                    // exiting right after its final response must end the turn
+                    // with that response, not read as a crash.
+                    settle_turn_at_exit!();
                     break 'main;
                 }
             },
