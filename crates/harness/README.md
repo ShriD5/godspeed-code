@@ -100,7 +100,9 @@ Registry content is untrusted data (`acp_registry.rs`):
 - Registry entries Godspeed already drives natively (Claude, Codex, Cursor, Devin,
   Grok, Antigravity, OpenCode, Pi) are not offered a second time.
 
-Checked on 2026-10-28 against the live registry on macOS arm64:
+Routes for the agents Godspeed promises, as the live registry listed them on 2026-10-28
+(the live install + `initialize` check is `tests/acp_registry_live.rs`; its last result
+is recorded below the table):
 
 | Agent | Route | Notes |
 | --- | --- | --- |
