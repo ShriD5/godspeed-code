@@ -175,6 +175,12 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+# No debuginfo for dependencies: workspace crates keep full debug info, but
+# deps skip it. Measured on `cargo build -p zeron-harness --lib` (fresh
+# target, 4 jobs): ~15% less CPU time, ~16% lower peak rustc memory, 25%
+# smaller target dir. Matters most when several agents build at once.
+# (macOS already defaults dev builds to split-debuginfo = "unpacked".)
+debug = false
 
 # Scenes rasterize in software every frame the camera moves.
 [profile.dev.package.zeron-visual]
