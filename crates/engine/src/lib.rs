@@ -68,6 +68,7 @@ pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
 pub mod workspace_search;
+pub mod worktree_cleanup;
 pub mod worktree_env;
 mod worktree_settings;
 
@@ -195,6 +196,8 @@ pub struct EngineCore {
     pub limit_recovery: limit_recovery::LimitRecoveryService,
     /// Snooze wake and opt-in auto-settle for the chats hosted here.
     pub chat_lifecycle: chat_lifecycle::ChatLifecycleService,
+    /// Storage listing and the opt-in sweep of merged or untouched worktrees.
+    pub worktree_cleanup: worktree_cleanup::WorktreeCleanupService,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -489,6 +492,17 @@ impl EngineCore {
         limit_recovery.start();
         let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());
         chat_lifecycle.start();
+        let worktree_cleanup = worktree_cleanup::WorktreeCleanupService::open(
+            data_dir,
+            repos.clone(),
+            workspace.clone(),
+            worktree_env::WorktreeEnvironments::new(
+                repos.clone(),
+                terminals.clone(),
+                project_actions.clone(),
+            ),
+        );
+        worktree_cleanup.start();
         let delegations = delegation::DelegationNotifications::start(
             data_dir,
             workspace.clone(),
@@ -520,6 +534,7 @@ impl EngineCore {
             delegations,
             limit_recovery,
             chat_lifecycle,
+            worktree_cleanup,
             device_id,
             local_import,
             chat_import,
@@ -667,6 +682,7 @@ impl EngineCore {
         .with_pr_watch(self.pr_watch.clone())
         .with_limit_recovery(self.limit_recovery.clone())
         .with_chat_lifecycle(self.chat_lifecycle.clone())
+        .with_worktree_cleanup(self.worktree_cleanup.clone())
         .with_chat_import(self.chat_import.clone())
         .with_message_index(self.message_index.clone())
         .with_usage_history(self.usage_history.clone())
@@ -710,6 +726,7 @@ impl EngineCore {
         self.agents.shutdown().await;
         self.limit_recovery.shutdown().await;
         self.chat_lifecycle.shutdown().await;
+        self.worktree_cleanup.shutdown().await;
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally

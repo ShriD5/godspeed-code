@@ -58,6 +58,7 @@ mod agents;
 mod attention;
 mod pull_requests;
 mod chat_lifecycle;
+mod worktree_cleanup;
 mod conductor;
 mod git_actions;
 mod limit_recovery;
@@ -837,6 +838,7 @@ pub struct EngineRpc {
     pr_watch: Option<crate::pr_watch::PrWatchService>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
+    worktree_cleanup: Option<crate::worktree_cleanup::WorktreeCleanupService>,
     telemetry: Option<crate::Telemetry>,
     /// Shared by every clone: the window attached as the preview driver.
     preview_driver: crate::preview_driver::PreviewDriverHub,
@@ -899,6 +901,7 @@ impl EngineRpc {
             pr_watch: None,
             limit_recovery: None,
             chat_lifecycle: None,
+            worktree_cleanup: None,
             telemetry: None,
             preview_driver: Default::default(),
             build_slots: None,
@@ -992,6 +995,14 @@ impl EngineRpc {
         lifecycle: crate::chat_lifecycle::ChatLifecycleService,
     ) -> Self {
         self.chat_lifecycle = Some(lifecycle);
+        self
+    }
+
+    pub fn with_worktree_cleanup(
+        mut self,
+        cleanup: crate::worktree_cleanup::WorktreeCleanupService,
+    ) -> Self {
+        self.worktree_cleanup = Some(cleanup);
         self
     }
 
@@ -1567,20 +1578,7 @@ impl EngineRpc {
             .collect();
         let repos: Vec<String> = match repo_path {
             Some(path) => vec![path],
-            None => {
-                let device = self.workspace.device_id().to_string();
-                let mut paths: Vec<String> = self
-                    .workspace
-                    .read_spaces()
-                    .map_err(failed)?
-                    .into_iter()
-                    .filter(|space| space.device_id == device && space.git_detected)
-                    .map(|space| space.path)
-                    .collect();
-                paths.sort();
-                paths.dedup();
-                paths
-            }
+            None => crate::worktree_cleanup::local_repo_paths(&self.workspace).map_err(failed)?,
         };
         let mut orphans: Vec<zeron_proto::OrphanWorktree> = Vec::new();
         for repo in repos {
@@ -1934,6 +1932,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         // queueing, verification, and the relayed response itself.
         methods::APPLY_HARNESS_UPDATE => Duration::from_secs(20 * 60),
         methods::CREATE_WORKTREE => Duration::from_secs(120),
+        // Sizes walk whole checkouts; a clean runs every teardown.
+        methods::LIST_WORKTREE_STORAGE | methods::CLEAN_WORKTREES => Duration::from_secs(10 * 60),
         // A thread write checks ownership first; each `gh` call may take 60 s.
         methods::PERFORM_CHANGE_REQUEST_ACTION => Duration::from_secs(150),
         // Allow the adapter discovery budget plus relay and shutdown overhead.
@@ -2029,6 +2029,11 @@ fn forwardable(method: &str) -> bool {
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
             | methods::LIST_ORPHAN_WORKTREES
+            | methods::LIST_WORKTREE_STORAGE
+            | methods::CLEAN_WORKTREES
+            | methods::GET_WORKTREE_CLEANUP_SETTINGS
+            | methods::SET_WORKTREE_CLEANUP_SETTINGS
+            | methods::RESOLVE_WORKTREE
             // Project Actions live in the owning engine's private profile store.
             | methods::LIST_PROJECT_ACTIONS
             | methods::UPSERT_PROJECT_ACTION
@@ -2454,6 +2459,9 @@ impl RpcService for EngineRpc {
         }
         if chat_lifecycle::handles(method) {
             return self.chat_lifecycle_rpc(method, params);
+        }
+        if worktree_cleanup::handles(method) {
+            return self.worktree_cleanup_rpc(method, params).await;
         }
         if build_slots::handles(method) {
             return self.build_slots_rpc(method, params);

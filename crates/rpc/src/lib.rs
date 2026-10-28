@@ -218,6 +218,19 @@ pub mod methods {
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     /// `{repoPath?}` → `OrphanWorktree[]`: Godspeed worktrees no chat uses.
     pub const LIST_ORPHAN_WORKTREES: &str = "ListOrphanWorktrees";
+    /// `ListWorktreeStorageParams` → `WorktreeStorageEntry[]`: every Godspeed
+    /// worktree on the device with size, activity and cleanup verdict.
+    pub const LIST_WORKTREE_STORAGE: &str = "ListWorktreeStorage";
+    /// `CleanWorktreesParams` → `WorktreeCleanupReport`: delete every
+    /// eligible worktree now (decided afresh; changes are never lost).
+    pub const CLEAN_WORKTREES: &str = "CleanWorktrees";
+    /// `{}` → `WorktreeCleanupSettings`.
+    pub const GET_WORKTREE_CLEANUP_SETTINGS: &str = "GetWorktreeCleanupSettings";
+    /// `WorktreeCleanupSettings` → `WorktreeCleanupSettings`.
+    pub const SET_WORKTREE_CLEANUP_SETTINGS: &str = "SetWorktreeCleanupSettings";
+    /// `{repoPath, target}` → `ResolvedWorktree`: the checkout of the
+    /// repository at a path or on a branch (MCP `create_chat` `worktree`).
+    pub const RESOLVE_WORKTREE: &str = "ResolveWorktree";
     // Worktree environments: per-project config on the owning engine, and
     // per-worktree ports and sleep state on the device holding the worktree.
     /// `{spaceId}` → `WorktreeEnvironmentSnapshot`.
