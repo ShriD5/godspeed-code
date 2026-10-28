@@ -33,7 +33,7 @@ use zeron_proto::{
 
 use crate::EngineError;
 use crate::device_settings;
-use crate::repos::{Repos, canonical_lenient, dir_size_on_disk};
+use crate::repos::{Repos, canonical_through_existing, dir_size_on_disk};
 use crate::workspace_host::WorkspaceHost;
 use crate::worktree_env::WorktreeEnvironments;
 
@@ -224,11 +224,11 @@ impl WorktreeCleanupService {
         let settings = self.settings();
         let wanted: HashSet<PathBuf> = paths
             .iter()
-            .map(|p| canonical_lenient(Path::new(p)))
+            .map(|p| canonical_through_existing(Path::new(p)))
             .collect();
         let mut report = WorktreeCleanupReport::default();
         for g in self.gather(None, false).await? {
-            if !wanted.is_empty() && !wanted.contains(&canonical_lenient(Path::new(&g.entry.path)))
+            if !wanted.is_empty() && !wanted.contains(&canonical_through_existing(Path::new(&g.entry.path)))
             {
                 continue;
             }
@@ -251,7 +251,7 @@ impl WorktreeCleanupService {
                 .await
             {
                 Ok(teardown_error) => {
-                    lock(&self.inner.sizes).remove(&canonical_lenient(&path));
+                    lock(&self.inner.sizes).remove(&canonical_through_existing(&path));
                     report.deleted.push(DeletedWorktree {
                         path: g.entry.path,
                         branch: g.entry.branch,
@@ -290,7 +290,7 @@ impl WorktreeCleanupService {
             .collect();
         let chat_dirs: Vec<(PathBuf, &Chat)> = chats
             .iter()
-            .filter_map(|chat| Some((canonical_lenient(Path::new(chat.cwd.as_deref()?)), chat)))
+            .filter_map(|chat| Some((canonical_through_existing(Path::new(chat.cwd.as_deref()?)), chat)))
             .collect();
         let repos = match repo_path {
             Some(path) => vec![path],
@@ -310,7 +310,7 @@ impl WorktreeCleanupService {
             let defaults = inner.repos.default_branch_refs(&repo).await;
             for worktree in worktrees {
                 let path = PathBuf::from(&worktree.path);
-                let canonical = canonical_lenient(&path);
+                let canonical = canonical_through_existing(&path);
                 // Two projects of one repository list its worktrees twice.
                 if !seen.insert(canonical.clone()) {
                     continue;

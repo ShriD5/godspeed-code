@@ -175,6 +175,10 @@ pub const USER_LINE_HEIGHT: f32 = 22.0;
 pub const USER_COLLAPSE_CHARS: usize = 400;
 /// Vertical separation before the plain expand/collapse link.
 const USER_TOGGLE_GAP: f32 = 8.0;
+/// Lines a folded bubble's bottom fade spans.
+const USER_FOLD_FADE_LINES: f32 = 1.5;
+/// Lines a folded prompt's Markdown lays out past the fold, under its fade.
+const USER_FOLD_OVERDRAW_LINES: usize = 2;
 /// Between a caption over a user bubble (an agent sender) and the bubble.
 const USER_CAPTION_GAP: f32 = 6.0;
 /// User-bubble attachment thumbnails (user-attachments.tsx): 112×80 thumbs in
@@ -1059,6 +1063,10 @@ pub enum RowKind {
         /// once per entry change in [`rows_for_entry`] (rows are cached by
         /// fingerprint), never per frame. Empty for ordinary prompts.
         mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
+        /// `text` parsed as Markdown, when it uses any and carries no chips
+        /// (their pills paint over `text`'s own layout). `None` shows `text`
+        /// as typed.
+        markdown: Option<UserMarkdown>,
         /// Image refs parsed out of the message text (message-attachments.ts):
         /// thumbnails load from the owning device via ReadAttachmentChunk.
         attachments: Arc<Vec<crate::attachments::UserImageAttachment>>,
@@ -1444,6 +1452,15 @@ pub fn rows_for_entry(
                     .iter()
                     .any(|chip| crate::attachments::chip_names_attachment(chip, &att.path))
         });
+        let markdown = mentions
+            .is_empty()
+            .then(|| crate::markdown::parse_message(&text))
+            .filter(|tree| !plain_markdown(tree))
+            .map(|tree| UserMarkdown {
+                folded: folded_markdown(&tree, USER_COLLAPSED_LINES + USER_FOLD_OVERDRAW_LINES)
+                    .map(Arc::new),
+                full: Arc::new(tree),
+            });
         let copy_text = (!text.trim().is_empty()).then(|| SharedString::from(text.clone()));
         return vec![Row {
             id: entry.id.clone().into(),
@@ -1452,6 +1469,7 @@ pub fn rows_for_entry(
             kind: RowKind::User {
                 text: text.into(),
                 mentions: Arc::new(mentions),
+                markdown,
                 attachments: Arc::new(attachments),
                 badges: Arc::new(badges),
                 sender,
@@ -1547,8 +1565,7 @@ pub fn rows_for_entry(
                 // A message to another chat reads as one line naming the
                 // recipient, one per recipient, out of the tool fold (compact
                 // mode folds it with the rest of the work).
-                if !compact
-                    && let Some(sent) = zeron_proto::agent_messages::outgoing_messages(call)
+                if !compact && let Some(sent) = zeron_proto::agent_messages::outgoing_messages(call)
                 {
                     flush_group(
                         &mut rows,
@@ -3481,6 +3498,12 @@ pub struct Transcript {
     /// follows only when what's lit changes, so scrolling the rail by hand
     /// holds.
     rail_followed: Option<(SharedString, SharedString)>,
+    /// The rail's ticks paired with their rows, kept until the transcript,
+    /// its echoes or its rows change: rebuilding them walks every entry, too
+    /// much for each scroll frame of a long chat.
+    rail_ticks: Option<crate::rail::RailTicks>,
+    /// Bumped whenever `rows` is replaced.
+    rows_revision: u64,
     /// `(row id, entry id)` under the pointer — reveals the entry's timestamp
     /// strip (godspeed chat-view.tsx `group-hover`; the rows report hover
     /// themselves). Keyed by ROW so a row→row move within one entry can't
@@ -3837,6 +3860,8 @@ impl Transcript {
             rail_bounds: Rc::new(Cell::new(None)),
             rail_scroll: gpui::ScrollHandle::new(),
             rail_followed: None,
+            rail_ticks: None,
+            rows_revision: 0,
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
@@ -3931,6 +3956,14 @@ impl Transcript {
 
     pub(crate) fn rail_followed_mut(&mut self) -> &mut Option<(SharedString, SharedString)> {
         &mut self.rail_followed
+    }
+
+    pub(crate) fn rail_ticks_mut(&mut self) -> &mut Option<crate::rail::RailTicks> {
+        &mut self.rail_ticks
+    }
+
+    pub(crate) fn rows_revision(&self) -> u64 {
+        self.rows_revision
     }
 
     pub(crate) fn rail_bounds(&self) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
@@ -5081,6 +5114,7 @@ impl Transcript {
             }
             self.chat_id = selected;
             self.rows.clear();
+            self.rows_revision = self.rows_revision.wrapping_add(1);
             self.tool_images.clear(cx);
             self.row_cache.clear();
             self.live_parsers.clear();
@@ -5502,6 +5536,7 @@ impl Transcript {
         match diff_rows(&self.rows, &new_rows) {
             None => {
                 self.rows = new_rows;
+                self.rows_revision = self.rows_revision.wrapping_add(1);
                 self.refresh_protected_attachments(cx);
                 self.release_departed_tool_images(cx);
                 self.reconcile_own_turn_prompt();
@@ -5520,7 +5555,11 @@ impl Transcript {
                 // changed (the tail), this is O(changed rows) per commit, never
                 // O(reply).
                 for row in &self.rows[old_range.clone()] {
-                    self.render_cache.borrow_mut().invalidate_row(&row.id);
+                    let mut cache = self.render_cache.borrow_mut();
+                    cache.invalidate_row(&row.id);
+                    if matches!(row.kind, RowKind::User { .. }) {
+                        cache.invalidate_row(&user_markdown_key(&row.id));
+                    }
                 }
                 if old_range.len() == count {
                     // In-place content change, same row count — notably the
@@ -5541,6 +5580,7 @@ impl Transcript {
             }
         }
         self.rows = new_rows;
+        self.rows_revision = self.rows_revision.wrapping_add(1);
         if old_last != self.rows.len().checked_sub(1) {
             if let Some(ix) = old_last.filter(|&ix| ix < self.rows.len()) {
                 // Bottom chrome moves to the new tail too.
@@ -6678,13 +6718,16 @@ impl Transcript {
     /// flex item it answers intrinsic-width probes with the truncated layout,
     /// collapsing the bubble to min-content width (one character per line).
     /// A plain height clip preserves the original bubble width calculation and
-    /// never feeds measured layout back into the virtualized list.
+    /// never feeds measured layout back into the virtualized list. The clip's
+    /// bottom fades out rather than cutting: Markdown's block gaps and code
+    /// washes don't sit on the line grid, so a hard edge would slice a line.
     fn render_user_body(
         &mut self,
         row_id: &SharedString,
         row_ix: usize,
         text: SharedString,
         mentions: Arc<Vec<crate::composer::SentMentionSpan>>,
+        markdown: Option<UserMarkdown>,
         theme: &Theme,
         window: &Window,
         cx: &mut Context<Self>,
@@ -6694,10 +6737,7 @@ impl Transcript {
         let expanded = fold.open.unwrap_or(false);
         let line_height =
             f32::from(crate::typography::ui_rems(USER_LINE_HEIGHT).to_pixels(window.rem_size()));
-        let collapsed_text_h = USER_COLLAPSED_LINES as f32 * line_height;
-        // Include the continuation line in the resize endpoints so removing
-        // it on expansion does not make the bubble jump by a line.
-        let collapsed_h = collapsed_text_h + line_height;
+        let collapsed_h = USER_COLLAPSED_LINES as f32 * line_height;
         let measured_h = self
             .user_heights
             .entry(row_id.clone())
@@ -6705,13 +6745,30 @@ impl Transcript {
             .clone();
         let measured = measured_h.get();
         let collapsible = text.lines().count() > USER_COLLAPSED_LINES
-            || (measured > 0.0 && measured > collapsed_text_h + 0.5)
+            || (measured > 0.0 && measured > collapsed_h + 0.5)
             || (measured == 0.0 && user_message_needs_collapse(&text));
         let full_h = measured_h.get().max(collapsed_h);
         if let Some(fold) = self.user_folds.get_mut(row_id) {
             // Wrapping can change with the window width while expanded.
             fold.user_expansion_height = (full_h - collapsed_h).max(0.0);
         }
+
+        // Height motion uses the same ease-out curve as sidebars, tool folds,
+        // and pane transitions, with duration scaled to travel distance. The
+        // full text remains laid out behind the clip; only the viewport over it
+        // changes, so glyph wrapping never shifts.
+        let duration_ms = fold
+            .duration_ms
+            .max(user_resize_duration_ms(full_h - collapsed_h));
+        let animating = collapsible
+            && fold.epoch > 0
+            && fold
+                .toggled_at
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(duration_ms + 200))
+            && !motion::reduced_motion(cx);
+        // At rest folded, a long prompt's Markdown lays out only what fills
+        // the fold; motion and the open bubble need all of it.
+        let folded = collapsible && !expanded && !animating;
 
         let hold_key = row_id.clone();
         let hold_height = measured_h.clone();
@@ -6754,50 +6811,65 @@ impl Transcript {
                     this.cancel_user_hold();
                 }))
             })
-            .child(user_bubble_text(
-                row_id,
-                text,
-                mentions,
-                theme,
-                measured_h.clone(),
-                cx.entity_id(),
-                chip_overlays,
-                Rc::new(cx.listener(|this, path: &SharedString, window, cx| {
-                    this.open_chip_image(path, window, cx);
-                })),
-            ));
-        // Height motion uses the same ease-out curve as sidebars, tool folds,
-        // and pane transitions, with duration scaled to travel distance. The
-        // full text remains laid out behind the clip; only the viewport over it
-        // changes, so glyph wrapping never shifts.
-        let duration_ms = fold
-            .duration_ms
-            .max(user_resize_duration_ms(full_h - collapsed_h));
-        let animating = collapsible
-            && fold.epoch > 0
-            && fold
-                .toggled_at
-                .is_some_and(|at| at.elapsed() < Duration::from_millis(duration_ms + 200))
-            && !motion::reduced_motion(cx);
-        let ellipsis = || div().h(px(line_height)).child("...");
+            .child(match markdown {
+                Some(UserMarkdown {
+                    folded: Some(part), ..
+                }) if folded => {
+                    // The part is shorter than the prompt: its height isn't
+                    // the one the fold animates to.
+                    self.render_user_markdown(row_id, &part, None, theme, window, cx)
+                }
+                Some(UserMarkdown { full, .. }) => self.render_user_markdown(
+                    row_id,
+                    &full,
+                    Some(measured_h.clone()),
+                    theme,
+                    window,
+                    cx,
+                ),
+                None => user_bubble_text(
+                    row_id,
+                    text,
+                    mentions,
+                    theme,
+                    measured_h.clone(),
+                    cx.entity_id(),
+                    chip_overlays,
+                    Rc::new(cx.listener(|this, path: &SharedString, window, cx| {
+                        this.open_chip_image(path, window, cx);
+                    })),
+                ),
+            });
+        // The fade covers the last line and a half, so the clip never shows
+        // a sliced glyph row. It rides a collapse down; an expansion reveals
+        // from a plain edge.
+        let fade = |clip: gpui::AnyElement| {
+            crate::edge_fade::edge_faded(line_height * USER_FOLD_FADE_LINES, false, true, clip)
+                .compose_vertical()
+                .into_any_element()
+        };
         let body: AnyElement = if animating {
             let from = fold.from;
             let to = if expanded { full_h } else { collapsed_h };
             let resize = user_resize_spec(full_h - collapsed_h);
-            let ellipsis_h = if expanded { 0.0 } else { line_height };
-            div()
-                .child(div().overflow_hidden().child(body).with_animation(
+            let clip = div()
+                .overflow_hidden()
+                .child(body)
+                .with_animation(
                     SharedString::from(format!("{row_id}-user-resize-{}", fold.epoch)),
                     resize.animation(),
-                    move |el, t| el.h(px((motion::lerp(from, to, t) - ellipsis_h).max(0.0))),
-                ))
-                .when(!expanded, |el| el.child(ellipsis()))
-                .into_any_element()
+                    move |el, t| el.h(px(motion::lerp(from, to, t).max(0.0))),
+                )
+                .into_any_element();
+            if expanded { clip } else { fade(clip) }
         } else if collapsible && !expanded {
-            div()
-                .child(div().h(px(collapsed_text_h)).overflow_hidden().child(body))
-                .child(ellipsis())
-                .into_any_element()
+            fade(
+                div()
+                    .h(px(collapsed_h))
+                    .overflow_hidden()
+                    .child(body)
+                    .into_any_element(),
+            )
         } else {
             body.into_any_element()
         };
@@ -6818,7 +6890,83 @@ impl Transcript {
             .into_any_element()
     }
 
-    /// `Message from [logo] Chat` over an agent-sent bubble: the sending chat's provider mark and live title
+    /// The chat's checkout, which tells a workspace-file link from a web one.
+    fn workspace_root(&self, cx: &gpui::App) -> Option<SharedString> {
+        let state = self.state.read(cx);
+        self.chat_id
+            .as_deref()
+            .and_then(|chat_id| state.chats.iter().find(|chat| chat.id == chat_id))
+            .or_else(|| state.selected_chat_row())
+            .and_then(|chat| chat.cwd.as_deref())
+            .map(SharedString::from)
+    }
+
+    /// A prompt's Markdown, rendered like a reply's at the bubble's size: its
+    /// own selection keys, links and fences. The canvas behind it records the
+    /// full height for the fold, as [`user_bubble_text`] does for plain text.
+    fn render_user_markdown(
+        &mut self,
+        row_id: &SharedString,
+        tree: &Arc<BlockTree>,
+        measured_h: Option<Rc<Cell<f32>>>,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row_key = user_markdown_key(row_id);
+        // Kept across frames like a reply's blocks; replacing the row drops it.
+        self.rendered_rows.insert(row_key.clone());
+        let link = self.link_ui(cx);
+        let tree = self.inline_code_tree(tree, link.as_ref(), cx);
+        let code = tree
+            .blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, top)| self.code_uis_for(&row_key, &top.block, ix, cx))
+            .flatten()
+            .collect::<HashMap<_, _>>();
+        let opts = RenderOptions {
+            tasks: None,
+            media: None,
+            row_key: row_key.clone(),
+            veil: None,
+            cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
+            now: Instant::now(),
+            copy: Some(self.copy_ui_for(&row_key, cx)),
+            link,
+            workspace_root: self.workspace_root(cx),
+            code: (!code.is_empty()).then_some(code),
+            math: crate::settings::math_style(cx),
+        };
+        let highlight = self.code_highlight_for(&row_key, &tree, None, cx);
+        let entity_id = cx.entity_id();
+        div()
+            .relative()
+            .when_some(measured_h, |el, measured_h| {
+                el.child(
+                    canvas(
+                        move |bounds, _, _| bounds.size.height,
+                        move |_, height, _, cx| {
+                            // Passive geometry cache, like the plain bubble's.
+                            let height = f32::from(height);
+                            if (measured_h.get() - height).abs() > 0.5 {
+                                measured_h.set(height);
+                                cx.notify(entity_id);
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            })
+            .child(render::render_tree(&tree, &opts, theme, window, &|ix| {
+                highlight.get(&ix).cloned().flatten()
+            }))
+            .into_any_element()
+    }
+
+    /// `Message from [logo] Chat` over an agent-sent bubble, in the switch
+    /// seam's caption style: the sending chat's provider mark and live title
     /// (the header's title for a chat this workspace doesn't list). A known
     /// chat opens on click.
     fn render_agent_sender(
@@ -6858,33 +7006,8 @@ impl Transcript {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let chat = chat_id.and_then(|id| {
-            self.state
-                .read(cx)
-                .chats
-                .iter()
-                .find(|chat| chat.id == id)
-        });
-        let known = chat.is_some();
-        let title: SharedString = chat
-            .and_then(|chat| chat.title.as_deref())
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .map_or_else(
-                || {
-                    if chat.is_some() {
-                        // Listed but untitled: its short id, as the header says.
-                        chat_id.unwrap_or_default().chars().take(8).collect::<String>().into()
-                    } else {
-                        single_line(&fallback).into()
-                    }
-                },
-                |title| single_line(title).into(),
-            );
-        let mark = chat
-            .and_then(|chat| chat.config.as_ref())
-            .map(|config| crate::pickers::harness_brand_icon(config.harness))
-            .unwrap_or((crate::icons::CHAT_ROUND_LINE, None));
+        let ChatIdentity { title, mark, known } =
+            chat_identity(self.state.read(cx), chat_id, &fallback);
         let chat_id = chat_id.unwrap_or_default().to_owned();
         div()
             .w_full()
@@ -6913,7 +7036,7 @@ impl Transcript {
     }
 
     /// A plain text link aligned with the message's left edge, following the
-    /// continuation ellipsis when collapsed. No pill, border, or button wash.
+    /// folded text. No pill, border, or button wash.
     fn render_user_expander(
         &mut self,
         row_id: &SharedString,
@@ -7894,15 +8017,7 @@ impl Transcript {
         };
         self.rendered_rows.insert(row.id.clone());
         let theme = Theme::of(cx).clone();
-        let workspace_root = {
-            let state = self.state.read(cx);
-            self.chat_id
-                .as_deref()
-                .and_then(|chat_id| state.chats.iter().find(|chat| chat.id == chat_id))
-                .or_else(|| state.selected_chat_row())
-                .and_then(|chat| chat.cwd.as_deref())
-                .map(SharedString::from)
-        };
+        let workspace_root = self.workspace_root(cx);
         // The viewport spans the full window (under the titlebar): the first
         // row's gap adds the titlebar's height so a top-scrolled transcript
         // rests below the chrome it fades under. The right pane already pads
@@ -7937,6 +8052,7 @@ impl Transcript {
             RowKind::User {
                 text,
                 mentions,
+                markdown,
                 attachments,
                 badges,
                 sender,
@@ -7946,6 +8062,7 @@ impl Transcript {
                 let badges = badges.clone();
                 let text = text.clone();
                 let mentions = mentions.clone();
+                let markdown = markdown.clone();
                 let pending = *pending;
                 // Attachment thumbnails ride ABOVE the bubble, right-aligned
                 // (chat-view.tsx RowView: UserAttachmentStrip then the text
@@ -8003,7 +8120,7 @@ impl Transcript {
                                 .text_color(theme.text)
                                 .when(pending, |el| el.opacity(0.65))
                                 .child(self.render_user_body(
-                                    &row.id, ix, text, mentions, &theme, window, cx,
+                                    &row.id, ix, text, mentions, markdown, &theme, window, cx,
                                 )),
                         ),
                     );
@@ -8022,8 +8139,7 @@ impl Transcript {
                         .iter()
                         .map(|chat| (chat.id.as_str(), chat.title.as_deref()))
                         .collect();
-                    zeron_proto::agent_messages::resolve_chat_key(to, &chats)
-                        .map(str::to_owned)
+                    zeron_proto::agent_messages::resolve_chat_key(to, &chats).map(str::to_owned)
                 };
                 let lead = if *failed {
                     "Couldn't message"
@@ -9727,10 +9843,56 @@ pub struct AgentSender {
     pub title: SharedString,
 }
 
+/// How a chat between chats shows: chat `chat_id`'s live title and provider
+/// mark when this workspace lists it, else `fallback` (the title its header
+/// recorded).
+pub(crate) struct ChatIdentity {
+    pub title: SharedString,
+    pub mark: (&'static str, Option<gpui::Hsla>),
+    /// Whether the chat is listed, so it can open.
+    pub known: bool,
+}
+
+pub(crate) fn chat_identity(
+    state: &AppState,
+    chat_id: Option<&str>,
+    fallback: &str,
+) -> ChatIdentity {
+    let chat = chat_id.and_then(|id| state.chats.iter().find(|chat| chat.id == id));
+    let title: SharedString = chat
+        .and_then(|chat| chat.title.as_deref())
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map_or_else(
+            || {
+                if chat.is_some() {
+                    // Listed but untitled: its short id, as the header says.
+                    chat_id
+                        .unwrap_or_default()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
+                        .into()
+                } else {
+                    single_line(fallback).into()
+                }
+            },
+            |title| single_line(title).into(),
+        );
+    ChatIdentity {
+        title,
+        mark: chat
+            .and_then(|chat| chat.config.as_ref())
+            .map(|config| crate::pickers::harness_brand_icon(config.harness))
+            .unwrap_or((crate::icons::CHAT_ROUND_LINE, None)),
+        known: chat.is_some(),
+    }
+}
+
 /// Split the routing header (`[Message from Godspeed chat …]`) off a message an
 /// agent sent: the agent keeps reading it in the stored prompt, while the
 /// transcript shows the sender above the bubble and only the body inside it.
-fn agent_message_sender(text: &str) -> Option<(AgentSender, &str)> {
+pub(crate) fn agent_message_sender(text: &str) -> Option<(AgentSender, &str)> {
     let (sender, body) = zeron_proto::agent_messages::agent_message_sender(text)?;
     Some((
         AgentSender {
@@ -9739,6 +9901,126 @@ fn agent_message_sender(text: &str) -> Option<(AgentSender, &str)> {
         },
         body,
     ))
+}
+
+/// A prompt's Markdown, and for one too long to fold whole, the leading part
+/// that fills the fold.
+#[derive(Clone)]
+pub struct UserMarkdown {
+    pub full: Arc<BlockTree>,
+    pub folded: Option<Arc<BlockTree>>,
+}
+
+/// The leading part of `tree` that fills `lines` lines: whole blocks, then
+/// the first items of a list, rows of a table or lines of a fence. Counts
+/// source lines, which never outnumber the lines they wrap to, so the part
+/// is never shorter than the fold. `None` when the whole tree is that short.
+fn folded_markdown(tree: &BlockTree, lines: usize) -> Option<BlockTree> {
+    fn take(block: &Block, budget: &mut usize) -> Option<Block> {
+        if *budget == 0 {
+            return None;
+        }
+        let spend =
+            |budget: &mut usize, lines: usize| *budget = budget.saturating_sub(lines.max(1));
+        let runs_lines = |runs: &[InlineRun]| {
+            1 + runs
+                .iter()
+                .map(|r| r.text.matches('\n').count())
+                .sum::<usize>()
+        };
+        Some(match block {
+            Block::Paragraph { runs } | Block::Heading { runs, .. } => {
+                spend(budget, runs_lines(runs));
+                block.clone()
+            }
+            Block::CodeBlock { language, code } => {
+                // The fence's header takes a line of its own.
+                spend(budget, 1);
+                let kept: Vec<&str> = code.lines().take((*budget).max(1)).collect();
+                spend(budget, kept.len());
+                Block::CodeBlock {
+                    language: language.clone(),
+                    code: kept.join("\n"),
+                }
+            }
+            Block::Table {
+                header,
+                rows,
+                align,
+            } => {
+                spend(budget, 1);
+                let kept = rows.len().min((*budget).max(1));
+                spend(budget, kept);
+                Block::Table {
+                    header: header.clone(),
+                    rows: rows[..kept].to_vec(),
+                    align: align.clone(),
+                }
+            }
+            Block::BlockQuote { children } => Block::BlockQuote {
+                children: children
+                    .iter()
+                    .map_while(|child| take(child, budget))
+                    .collect(),
+            },
+            Block::List {
+                ordered_start,
+                items,
+            } => Block::List {
+                ordered_start: *ordered_start,
+                items: items
+                    .iter()
+                    .map_while(|item| {
+                        let kept: Vec<Block> =
+                            item.iter().map_while(|child| take(child, budget)).collect();
+                        (!kept.is_empty()).then_some(kept)
+                    })
+                    .collect(),
+            },
+            Block::Math { .. } => {
+                spend(budget, 2);
+                block.clone()
+            }
+            Block::Rule => {
+                spend(budget, 1);
+                block.clone()
+            }
+        })
+    }
+    let mut budget = lines;
+    let blocks: Vec<Arc<crate::markdown::parser::TopBlock>> = tree
+        .blocks
+        .iter()
+        .map_while(|top| {
+            let block = take(&top.block, &mut budget)?;
+            Some(Arc::new(crate::markdown::parser::TopBlock {
+                range: top.range.clone(),
+                block,
+            }))
+        })
+        .collect();
+    // Something left out: the last block cut short, or blocks after it.
+    let whole = blocks.len() == tree.blocks.len()
+        && blocks
+            .iter()
+            .zip(&tree.blocks)
+            .all(|(part, top)| part.block == top.block);
+    (!whole).then_some(BlockTree { blocks })
+}
+
+/// The render key of a user row's Markdown: its selection, element ids and
+/// cached flattening, apart from the row's own.
+fn user_markdown_key(row_id: &str) -> SharedString {
+    format!("{row_id}:u").into()
+}
+
+/// Whether a prompt's Markdown is only unstyled paragraphs: it reads the same
+/// as typed, so the bubble keeps its plain text.
+fn plain_markdown(tree: &BlockTree) -> bool {
+    tree.blocks.iter().all(|top| match &top.block {
+        Block::Paragraph { runs } => runs.iter().all(|run| run.style == InlineStyle::default()),
+        _ => false,
+    })
 }
 
 /// The bubble text's runs: body text in the sans font, and chips as labels in
@@ -10133,7 +10415,7 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
 
 /// `[mark] Name` in a user-message caption: a provider's brand mark (or any
 /// glyph) beside its name. A side without a mark shows its name alone.
-fn caption_label(
+pub(crate) fn caption_label(
     name: SharedString,
     mark: Option<(&'static str, Option<gpui::Hsla>)>,
     color: gpui::Hsla,
@@ -13135,7 +13417,11 @@ mod tests {
             MessageStatus::Complete,
             vec![
                 tool_part("k0", "ls"),
-                send("k1", "send_message", serde_json::json!({ "chat": "Windows lane", "text": "Run it." })),
+                send(
+                    "k1",
+                    "send_message",
+                    serde_json::json!({ "chat": "Windows lane", "text": "Run it." }),
+                ),
                 send(
                     "k2",
                     "send_messages",
@@ -13147,18 +13433,28 @@ mod tests {
         // The ordinary tool keeps its fold; each message is its own row.
         assert_eq!(rows.len(), 4);
         assert!(matches!(rows[0].kind, RowKind::ToolGroup { .. }));
-        let RowKind::SentMessage { to, pending, failed } = &rows[1].kind else {
+        let RowKind::SentMessage {
+            to,
+            pending,
+            failed,
+        } = &rows[1].kind
+        else {
             panic!("expected a sent message");
         };
-        assert_eq!((to.as_ref(), *pending, *failed), ("Windows lane", true, false));
+        assert_eq!(
+            (to.as_ref(), *pending, *failed),
+            ("Windows lane", true, false)
+        );
         assert!(matches!(&rows[3].kind, RowKind::SentMessage { to, .. } if to.as_ref() == "b"));
         // Compact mode folds the whole turn, sends included: they show when
         // the work fold opens.
         let compact = rows_for_entry(&entry, false, true, &mut parse);
-        assert!(compact
-            .iter()
-            .filter(|row| matches!(row.kind, RowKind::SentMessage { .. }))
-            .all(|row| row.compact_fold.as_deref() == Some("a1#work")));
+        assert!(
+            compact
+                .iter()
+                .filter(|row| matches!(row.kind, RowKind::SentMessage { .. }))
+                .all(|row| row.compact_fold.as_deref() == Some("a1#work"))
+        );
     }
 
     #[test]
@@ -13193,6 +13489,73 @@ mod tests {
         assert_eq!((sender.title.as_ref(), body), ("cd27c5c2", "hi"));
         // A typed message that merely starts alike is left alone.
         assert!(agent_message_sender("[Message from Godspeed chat x]\n\nhi").is_none());
+    }
+
+    #[test]
+    fn prompts_written_in_markdown_render_it() {
+        let markdown = |text: &str| {
+            let rows = rows_for_entry(&user_entry("u1", text), false, false, &mut parse);
+            let RowKind::User { markdown, .. } = &rows[0].kind else {
+                panic!("expected a user row");
+            };
+            markdown.clone()
+        };
+        let tree = markdown("Keep **this**\nand `that`\n\n- one\n- two")
+            .unwrap()
+            .full;
+        assert_eq!(tree.blocks.len(), 2);
+        // Typed newlines stay line breaks.
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("expected a paragraph");
+        };
+        assert!(runs.iter().any(|run| run.text.contains('\n')));
+        // Prose reads the same as typed, so it keeps the plain bubble.
+        assert!(markdown("just a question\n\nand another").is_none());
+        // Chips paint over the plain text's layout, so a prompt with one
+        // stays plain.
+        let link = zeron_proto::attachment_mentions::attachment_mention_link(1, Some("notes.md"));
+        assert!(markdown(&format!("**read** {link}")).is_none());
+        // An agent's message renders its body, under the sender caption.
+        let routed = "[Message from Godspeed chat cd27c5c2. Reply to it with the Godspeed `send_message` tool, chat cd27c5c2-0000-4000-8000-000000000000.]\n\nRun `cargo test`.";
+        assert!(markdown(routed).is_some());
+    }
+
+    #[test]
+    fn long_prompts_fold_to_their_leading_markdown() {
+        let markdown = |text: &str| {
+            let rows = rows_for_entry(&user_entry("u1", text), false, false, &mut parse);
+            let RowKind::User { markdown, .. } = &rows[0].kind else {
+                panic!("expected a user row");
+            };
+            markdown.clone().unwrap()
+        };
+        let lines = USER_COLLAPSED_LINES + USER_FOLD_OVERDRAW_LINES;
+        // A prompt that fits whole folds to itself.
+        assert!(markdown("**short**\n\n- one\n- two").folded.is_none());
+        // A long report keeps its heading and the items that fill the fold.
+        let report: String = (1..=240).map(|i| format!("{i}. **case {i}**\n")).collect();
+        let report = markdown(&format!("## Sweep\n\n{report}"));
+        let folded = report.folded.unwrap();
+        assert_eq!(folded.blocks.len(), 2);
+        let Block::List { items, .. } = &folded.blocks[1].block else {
+            panic!("expected the list");
+        };
+        assert_eq!(items.len(), lines - 1);
+        let Block::List { items: all, .. } = &report.full.blocks[1].block else {
+            panic!("expected the list");
+        };
+        // A prefix: each kept item is the item it was.
+        assert_eq!(items[..], all[..items.len()]);
+        // A long fence keeps its first lines; blocks after the fold go.
+        let fence: String = (1..=50).map(|i| format!("line {i}\n")).collect();
+        let fenced = markdown(&format!("Run:\n\n```\n{fence}```\n\nthen **this**"));
+        let folded = fenced.folded.unwrap();
+        assert_eq!(folded.blocks.len(), 2);
+        let Block::CodeBlock { code, .. } = &folded.blocks[1].block else {
+            panic!("expected the fence");
+        };
+        assert_eq!(code.lines().count(), lines - 2);
+        assert!(code.starts_with("line 1\nline 2"));
     }
 
     #[test]
@@ -16504,7 +16867,7 @@ mod tests {
                     this.toggle_user_fold(
                         "prompt".into(),
                         0,
-                        USER_LINE_HEIGHT * (USER_COLLAPSED_LINES + 1) as f32,
+                        USER_LINE_HEIGHT * USER_COLLAPSED_LINES as f32,
                         full_h,
                         true,
                     );

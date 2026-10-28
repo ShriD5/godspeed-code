@@ -2226,7 +2226,8 @@ async fn run_command_output_env(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .env("NO_COLOR", "1");
+        .env("NO_COLOR", "1")
+        .env("CLAUDE_CODE_ENTRYPOINT", "godspeed");
     for (key, value) in env {
         command.env(*key, *value);
     }

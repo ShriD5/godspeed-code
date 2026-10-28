@@ -3,17 +3,20 @@ use std::ops::{Deref, DerefMut};
 
 use crate::process::{Child as ProcessChild, Command};
 
+/// A private process group, and none of the markers a Claude Code session
+/// leaves in its children's environment. Every Claude Godspeed starts,
+/// directly or through an adapter, reports Godspeed as its entrypoint.
 pub(crate) fn configure(command: &mut Command) {
     #[cfg(unix)]
     command.process_group(0);
     for key in [
         "CLAUDECODE",
-        "CLAUDE_CODE_ENTRYPOINT",
         "CLAUDE_CODE_SSE_PORT",
         "CLAUDE_AGENT_SDK_VERSION",
     ] {
         command.env_remove(key);
     }
+    command.env("CLAUDE_CODE_ENTRYPOINT", "godspeed");
 }
 
 pub(crate) struct Child {
@@ -123,9 +126,16 @@ mod tests {
             vec![
                 "CLAUDECODE",
                 "CLAUDE_AGENT_SDK_VERSION",
-                "CLAUDE_CODE_ENTRYPOINT",
                 "CLAUDE_CODE_SSE_PORT"
             ]
+        );
+        assert_eq!(
+            command
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == "CLAUDE_CODE_ENTRYPOINT")
+                .and_then(|(_, value)| value),
+            Some(std::ffi::OsStr::new("godspeed"))
         );
     }
 }
