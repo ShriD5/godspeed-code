@@ -19808,9 +19808,76 @@ impl Shell {
         self.transcript
             .update(cx, |t, cx| t.fixture_open_receipt(cx));
     }
-    pub fn fixture_open_browser(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn fixture_open_browser(
+        &mut self,
+        url: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.set_surfaces_open(true, cx);
         self.add_browser_surface(Some(url), window, cx);
+    }
+    /// Plan windows for this device: Settings → Usage meters and the
+    /// composer's tachometer read this cache.
+    pub fn fixture_demo_accounts(
+        &mut self,
+        snapshot: zeron_proto::AgentAccountsSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let mut cache = std::collections::HashMap::new();
+        cache.insert(None, snapshot);
+        cx.set_global(crate::settings::accounts::AccountsSnapshotCache(cache));
+        cx.notify();
+    }
+    /// Settings → Usage with a history the engine would have sent.
+    pub fn fixture_demo_usage(
+        &mut self,
+        history: zeron_proto::UsageHistory,
+        cx: &mut Context<Self>,
+    ) {
+        if self.usage_page.is_none() {
+            let state = self.state.clone();
+            self.usage_page = Some(cx.new(|cx| crate::usage_cockpit::UsagePage::new(state, cx)));
+        }
+        if let Some(page) = self.usage_page.clone() {
+            let view = page.read(cx).fixture_history();
+            view.update(cx, |view, cx| view.fixture_set_data(history, cx));
+        }
+        self.open_settings(SettingsSection::Usage, cx);
+    }
+    /// Settings → Import with what a scan of this Mac would have found.
+    pub fn fixture_demo_import(
+        &mut self,
+        previews: Vec<zeron_proto::chat_import::ChatImportPreview>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.import_page.is_none() {
+            let state = self.state.clone();
+            self.import_page = Some(cx.new(|cx| ImportPage::new(state, cx)));
+        }
+        if let Some(page) = self.import_page.clone() {
+            page.update(cx, |page, cx| page.fixture_previews(previews, cx));
+        }
+        self.open_settings(SettingsSection::Import, cx);
+    }
+    pub fn fixture_demo_close_settings(&mut self, cx: &mut Context<Self>) {
+        self.close_settings(cx);
+    }
+    /// The composer's access-mode menu, as a click on its chip opens it.
+    pub fn fixture_demo_access_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.update(cx, |composer, cx| {
+            composer.fixture_open_picker(crate::pickers::PickerKind::Access, window, cx)
+        });
+    }
+    /// Hide the session card again.
+    pub fn fixture_demo_hide_session_info(&mut self, cx: &mut Context<Self>) {
+        self.settings.session_info_hidden = true;
+        self.session_info_overlay = false;
+        cx.notify();
+    }
+    /// Close the right pane (preview, pull request) before the next beat.
+    pub fn fixture_demo_close_pane(&mut self, cx: &mut Context<Self>) {
+        self.set_surfaces_open(false, cx);
     }
     /// Open a session as a sidebar click would.
     pub fn fixture_demo_open_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {

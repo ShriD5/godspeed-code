@@ -872,3 +872,52 @@ fn checkbox(theme: &Theme, checked: bool) -> gpui::Div {
             }
         })
 }
+
+/// The demo recording drives the dialog without an engine: the listing the
+/// engine would send, then a clone in progress.
+#[cfg(feature = "demo-fixture")]
+impl Shell {
+    pub fn fixture_demo_add_to_device(
+        &mut self,
+        space_id: &str,
+        device_id: &str,
+        files: Vec<(String, u64)>,
+        cloning: Option<(String, u8)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.add_to_device.is_none() {
+            self.open_add_to_device(space_id.to_string(), device_id.to_string(), cx);
+        }
+        let Some(dialog) = self.add_to_device.as_mut() else {
+            return;
+        };
+        if !matches!(dialog.model.listing, Listing::Ready(_)) {
+            dialog.model.accept_listing(Ok(IgnoredFileListing {
+                files: files
+                    .into_iter()
+                    .map(|(path, size)| zeron_proto::project_transfer::IgnoredFile { path, size })
+                    .collect(),
+                truncated: false,
+                remote_url: Some("git@github.com:fieldnotes-app/fieldnotes.git".into()),
+                subdirectory: String::new(),
+                repository_name: "fieldnotes".into(),
+            }));
+            dialog.destination_filled = true;
+            dialog
+                .destination
+                .update(cx, |input, cx| input.set_text("~/code/fieldnotes", cx));
+        }
+        if let Some((stage, percent)) = cloning {
+            dialog.model.phase = TransferPhase::Cloning {
+                stage,
+                percent: Some(percent),
+            };
+        }
+        cx.notify();
+    }
+
+    pub fn fixture_demo_close_add_to_device(&mut self, cx: &mut Context<Self>) {
+        self.add_to_device = None;
+        cx.notify();
+    }
+}
