@@ -34,6 +34,7 @@ mod composer_markdown;
 pub mod conductor;
 mod context_usage;
 mod dictation;
+pub mod dock_badge;
 pub mod edge_fade;
 pub mod rounded_clip;
 pub mod file_icons;
@@ -278,6 +279,7 @@ pub fn run_app(config: UiConfig) {
         .detach();
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
         speedster::init(state.clone(), cx);
+        dock_badge::init(state.clone(), cx);
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).

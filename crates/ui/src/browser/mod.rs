@@ -324,7 +324,13 @@ impl BrowserSurface {
             native.set_shortcuts(
                 crate::settings::ShortcutId::ALL
                     .iter()
-                    .filter(|id| **id != crate::settings::ShortcutId::SaveFile)
+                    .filter(|id| {
+                        !matches!(
+                            **id,
+                            crate::settings::ShortcutId::SaveFile
+                                | crate::settings::ShortcutId::StashPrompt
+                        )
+                    })
                     .map(|id| crate::settings::platform_combo(keymap.get(*id)))
                     .collect(),
             );

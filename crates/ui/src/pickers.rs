@@ -1117,6 +1117,7 @@ impl Pickers {
             | ComposerInputEvent::PastedLongText(_)
             | ComposerInputEvent::OpenAttachment(_)
             | ComposerInputEvent::AnnotationHovered(_)
+            | ComposerInputEvent::RecallStep { .. }
             | ComposerInputEvent::CursorMoved
             | ComposerInputEvent::ViewportChanged
             | ComposerInputEvent::MentionNavigate(_)

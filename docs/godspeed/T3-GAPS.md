@@ -15,23 +15,21 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 1. ~~**Agents drive the in-app browser**~~ Done in #57 (`preview_*` MCP tools; recording and appearance still missing).
 2. ~~**PR review and merge from the app**: approve / request changes, reply and resolve threads, merge, auto-merge, mark ready.~~ Done (see Done).
 3. ~~**PR watch that wakes the chat** on failed checks, new review comments and merge conflicts.~~ Done (see Done).
-4. **Sidebar multi-select with bulk actions** (settle, snooze, pin, archive, delete many chats at once).
+4. ~~**Sidebar multi-select with bulk actions**~~ Done in #55.
 5. **Sub-agents in their own worktree** from MCP `create_chat` (the engine supports it; the tool always passes no worktree).
 6. **Remote machines over SSH / Tailscale**: install and run the engine on a server (ROADMAP "Next" 1).
 7. **Worktree cleanup policies and a storage page** (auto-delete merged/old worktrees, "Delete now", disk use).
 8. **More agents via the ACP registry** (Factory Droid, Copilot CLI, Kimi, Gemini CLI) and **several instances of one agent** (accounts, binaries, custom models).
-9. **Composer prompt recall (↑) and prompt stash (⌘S).**
-10. **Dock badge for chats awaiting input**, plus iPhone Live Activities per running agent.
+9. ~~**Composer prompt recall (↑) and prompt stash (⌘S).**~~ Done in #55.
+10. ~~**Dock badge for chats awaiting input**~~ (done in #55), plus iPhone Live Activities per running agent.
 
-Spot-checked against Godspeed's code on 2026-10-28: items 2, 4, 5, 9 and 10 (badge) have no implementation today.
+Spot-checked against Godspeed's code on 2026-10-28: item 5 has no implementation today.
 
 ## Desktop app
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
-| Sidebar | Select several threads and settle, snooze, pin, or delete them together | `apps/web/src/components/Sidebar.tsx` (bulk "Failed to snooze threads", "Failed to delete threads") | MISSING: one thread at a time in `crates/ui/src/shell/spaces.rs` and `shell.rs` | high |
 | Worktrees | Cleanup policies: delete merged, settled, unchanged, or deleted-thread worktrees; "Delete now" | `apps/web/src/components/settings/WorktreesSettings.tsx`; `packages/contracts/src/settings.ts` (`WorktreeCleanupRules`) | PARTIAL: orphan worktree listing and dirty-removal guard (`crates/ui/src/settings/orphan_worktrees.rs`, engine `repos.rs`); no policies, no delete-now | high |
-| Desktop | Show a dock badge with the count of threads that need attention | `apps/desktop/src/ipc/methods/notificationBadge.ts` (`app.setBadgeCount`, cleared on focus) | MISSING: no dock or taskbar badge; `crates/ui/src/badges.rs` is message pills, not a badge | med |
 | Desktop | Process list with resource use; stop or force-kill a process | `apps/web/src/components/settings/ProcessSignalActions.tsx`; `DiagnosticsSettings.tsx` | MISSING: no process view or signal actions in `crates/ui` | med |
 | Desktop | Diagnostics page: logs, connection diagnosis, copy trace ID | `apps/web/src/components/settings/DiagnosticsSettings.tsx` ("Copy trace ID") | MISSING: only the connection health dot (`shell.rs`); no logs view | med |
 | Desktop | Open a prompt link: new thread pre-filled with prompt, repo and model | `apps/web/src/components/CommandPalette.tsx` ("Copy prompt link", "...with repo and model"); `apps/desktop/src/app/DesktopLinuxUrlHandler.ts` | MISSING: `godspeed://open/chat/...` opens existing chats only (`crates/ui/src/links.rs`) | med |
@@ -63,8 +61,6 @@ Spot-checked against Godspeed's code on 2026-10-28: items 2, 4, 5, 9 and 10 (bad
 | Sidebar | Compact idle threads before the prompt cache expires | `packages/contracts/src/settings.ts` (`idleCompaction`); `settingsSearch.ts` ("Compact idle threads") | MISSING (T3-WATCH lists it as queued) | med |
 | Sidebar | Unsent-draft rows in the sidebar, with open and discard | `apps/web/src/components/sidebar/SidebarDraftBlock.tsx` | MISSING: drafts persist per chat but never appear as sidebar rows | low |
 | Sidebar | Copy a thread's branch name or relative path (Copy submenu) | `apps/web/src/components/Sidebar.tsx` ("Branch copied", "Path copied") | PARTIAL: Copy submenu has Path, Godspeed link, harness link, harness session ID (`shell.rs` `render_chat_copy_submenu`); no branch, no relative path | low |
-| Composer | Stash the current prompt and bring it back (Cmd+S, stash menu) | `apps/web/src/components/chat/ComposerStashMenu.tsx`; `packages/shared/src/keybindings.ts` (`composer.stash`) | MISSING: only staged attachments are stashed (`crates/ui/src/composer.rs`); Cmd+S is Save File | med |
-| Composer | Recall earlier prompts with ArrowUp | `apps/web/src/components/chat/composerPromptHistory.ts` | MISSING: composer "history" is undo only (`crates/ui/src/composer.rs`) | med |
 | Composer | Send in background, or send and open a new thread | `packages/shared/src/keybindings.ts` (`composer.sendBackground`, `composer.sendAndNewThread`) | MISSING | low |
 | Composer | Default setting: a follow-up queues or steers the running turn | `packages/contracts/src/settings.ts` (`followUpBehavior`); `settingsSearch.ts` ("Follow-up behavior") | MISSING: chosen per message, no default setting | low |
 | Composer | Send shortcut modes (Enter / Mod+Enter multiline / Mod+Enter) | `packages/contracts/src/settings.ts` (`sendShortcut`) | PARTIAL: Enter or Mod+Enter (`settings.rs` `ComposerSendBehavior`) | low |
@@ -226,3 +222,6 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 | Agents drive the in-app browser: open, navigate, snapshot, screenshot, click, type, scroll, eval, console, wait (`preview_*` MCP tools, macOS). Recording and set-appearance remain open. | #57 |
 | PR review and merge from the PR pane: approve / request changes / comment, reply to and resolve / unresolve threads, merge (allowed methods, head-pinned, confirmed), enable / disable auto-merge, ready for review, close / reopen (`crates/engine/src/source_control_actions.rs`, `crates/ui/src/pull_request_actions.rs`) | #56 |
 | PR watch that wakes the chat on failed checks (with the failing log tail), new review comments and merge conflicts; Needs-you items; per-PR opt-in, on by default for PRs a chat opened; dedupe, hourly wake cap, backoff, idle pause; optional auto-merge when green and approved (`crates/engine/src/pr_watch.rs`) | #56 |
+| Sidebar multi-select with bulk settle, snooze, read/unread, pin, archive, delete; one undo per batch | #55 |
+| Composer prompt recall (↑/↓ through sent prompts) and per-chat prompt stash (⌘S, Stashed chip) | #55 |
+| Dock badge with the number of chats waiting on an approval or answer | #55 |
