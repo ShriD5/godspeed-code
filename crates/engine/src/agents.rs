@@ -29,6 +29,15 @@ mod prompt;
 mod schedule;
 mod store;
 
+/// Preview a trigger's first fire after `now` with the engine's own
+/// validation (see [`schedule::preview_next_fire`]).
+pub fn preview_next_fire(
+    trigger: &zeron_proto::agents::AgentTrigger,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+    schedule::preview_next_fire(trigger, now)
+}
+
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
