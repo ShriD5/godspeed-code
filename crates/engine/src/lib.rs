@@ -20,6 +20,7 @@ pub mod agent_accounts;
 pub mod agents;
 pub mod attention;
 pub mod auth;
+pub mod build_slots;
 mod change_request_store;
 pub mod change_requests;
 pub mod chat2_host;
@@ -98,6 +99,7 @@ pub use source_control::{
 };
 pub use spaces::SpacesSync;
 pub use telegram::Telegram;
+pub use build_slots::BuildSlots;
 pub use telemetry::{Telemetry, TelemetrySources};
 pub use terminals::Terminals;
 pub use text_generation::TextGenerator;
@@ -205,6 +207,10 @@ pub struct EngineCore {
     /// The anonymous once-a-day usage ping (docs/PRIVACY.md). Opened with
     /// the core; sending starts with [`EngineRuntime::start_telemetry`].
     pub telemetry: Telemetry,
+    /// The jobserver shared by every agent and terminal this engine starts
+    /// (Settings → General → Builds). Opened with the core; the pool starts
+    /// with [`EngineRuntime::start_build_slots`].
+    pub build_slots: BuildSlots,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -408,6 +414,7 @@ impl EngineCore {
         let turn_diff = diff_sync.clone();
         let turn_limits = limit_recovery.clone();
         let telemetry = Telemetry::open(data_dir);
+        let build_slots = BuildSlots::open(data_dir);
         let turn_telemetry = telemetry.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
@@ -519,6 +526,7 @@ impl EngineCore {
             message_index,
             usage_history,
             telemetry,
+            build_slots,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -662,7 +670,8 @@ impl EngineCore {
         .with_chat_import(self.chat_import.clone())
         .with_message_index(self.message_index.clone())
         .with_usage_history(self.usage_history.clone())
-        .with_telemetry(self.telemetry.clone());
+        .with_telemetry(self.telemetry.clone())
+        .with_build_slots(self.build_slots.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }
@@ -693,6 +702,7 @@ impl EngineCore {
     pub async fn shutdown(&self) {
         // First: no new agent run or resume may start against a draining engine.
         self.telemetry.shutdown().await;
+        self.build_slots.shutdown().await;
         self.telegram.shutdown().await;
         self.attention.shutdown().await;
         self.pr_watch.shutdown().await;
@@ -815,6 +825,12 @@ impl EngineRuntime {
     pub async fn shutdown(&self) {
         self.disconnect_edge();
         self.core.shutdown().await;
+    }
+
+    /// Start the shared build-slot pool (unless turned off) and its leak
+    /// checks. Never from unit tests: it publishes process-wide state.
+    pub fn start_build_slots(&self) {
+        self.core.build_slots.start();
     }
 
     /// Start the anonymous daily usage ping to `{edge_url}/telemetry/v1/ping`
@@ -1153,6 +1169,7 @@ impl Engine {
 
         let runtime = Self::assemble_runtime(&config, auth, profile).await?;
         runtime.start_telemetry(&config.edge_url, false);
+        runtime.start_build_slots();
         // The desktop app or `godspeed update` may install a newer binary under
         // a running service; restart into it once no run or terminal is live.
         if let Some(updater) = runtime.core().updater() {

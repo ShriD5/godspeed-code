@@ -291,7 +291,7 @@ impl ClaudeHarness {
         // adds tagged frames to its stream.
         cmd.env("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT", "1");
         cmd.args(Self::launch_args(request));
-        crate::apply_run_env(&mut cmd, &request.env);
+        crate::apply_run_env(&mut cmd, &request.env, crate::run_cwd(&request));
         // Newer Claude models emit no readable thinking text unless a
         // summary is asked for (raw reasoning stays provider-private). A CLI
         // without the flag exits on it, so it rides only where supported.

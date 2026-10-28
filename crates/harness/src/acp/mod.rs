@@ -1704,7 +1704,11 @@ impl AcpHarness {
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
         self.configure_adapter_environment(&mut cmd, &exe);
-        crate::apply_run_env(&mut cmd, env);
+        crate::apply_run_env(
+            &mut cmd,
+            env,
+            cwd.filter(|c| !c.is_empty()).map(std::path::Path::new),
+        );
         if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
             cmd.current_dir(cwd);
         }
