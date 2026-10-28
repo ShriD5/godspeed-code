@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@3d2f1e64 (2026-10-27)
+Synced through: zeronsh/zeron@8b7afb30 (2026-10-28)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -47,6 +47,15 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     delegation, commit credit); needs a Godspeed index. 3d2f1e64 was ported without its anchor.
   - c31124aa (Linux WPE browser): needs newer zui/gpui-component pins (b564a34, 59f8924)
     than Godspeed's (361ff20, 701ca97); a fork bump is the owner's call.
+- Deferred 2026-10-28:
+  - 1295d577 (access modes and plan mode for every agent): Godspeed already ships its own
+    access modes (`RunAccess` with writable roots, an extra `Auto` mode, the legacy
+    sandbox/auto_approve pair, `crate::approval`) and already answers Muse's staged
+    `approval/updated`. Upstream's parallel design (`access`/`plan` on ChatConfig and
+    RunRequest, `Harness::access_modes`/`supports_plan`) conflicts in 55 files. Plan mode
+    (Claude `plan`, Codex `plan` collaboration mode, OpenCode `plan` agent) and the MCP
+    create_chat access cap are the parts Godspeed lacks; worth a dedicated port onto
+    Godspeed's model.
 - Partly ported (2026-10-27): f65c5bc6 and d8a14b35 brought the shared header parser and the
   desktop rows; their iOS/Android captions wait for inline marks and a workspace snapshot in
   the mobile layout (Android needs cc7da5c2).
