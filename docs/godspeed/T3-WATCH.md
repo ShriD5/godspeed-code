@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@071239804e375078dd3fae3b14704b4def57e048 (2026-10-26)
+Reviewed T3 through: pingdotgg/t3code@48a292364a (2026-10-28)
 
 ## Rules
 
@@ -23,6 +23,18 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-28 | Regenerate a thread's title from the sidebar, kept on the thread's lasting subject (`5c9358acaa`, `9bd2a4c688`; T3-GAPS row) | PR #TBD |
+| 2026-10-28 | See and stop the dev servers a thread started (`a27ec88bfa`) | queued (Godspeed stops a worktree's terminals and dev servers together in `worktree_env_ui.rs`; no per-chat list) |
+| 2026-10-28 | Open a tool call's diff in the diff panel (`441a4ebd65`) | queued (check the transcript's edit rows against the Changes pane) |
+| 2026-10-28 | Pending approvals show on their timeline row (`1f8530ec3c`) | queued (check where `approval_view.rs` draws the card relative to its tool row) |
+| 2026-10-28 | Agent questions stay answerable after a server restart (`867112cda0`) | queued (check an awaiting-input chat after an engine restart) |
+| 2026-10-28 | Threads settle as soon as a watched PR merges (`2a738273e7`); custom snooze options (`93a9e079b1`, `c3858bf1f7`) | queued (with the T3-GAPS auto-settle-on-merge row; snooze times are fixed in `thread_lifecycle.rs`) |
+| 2026-10-28 | Codex recovers after its app-server is killed, retries capacity errors, drops stale usage limits (`b88da91397`, `740de0e642`, `c3f5e363e5`) | queued (with the 2026-10-25 Codex pending-requests row) |
+| 2026-10-28 | Parallel worktree launches no longer fail on the shared `.git/config` lock (`3b22620a5c`) | skipped (`Repos::worktree_lock` already serializes worktree creation per git common dir) |
+| 2026-10-28 | F6 between workspace areas (`2525252c96`); mark PR files viewed (`ff424802ed`) | skipped here (already T3-GAPS rows) |
+| 2026-10-28 | Linked environments, @-mention a machine, cross-machine thread links (`4005759adf`, `cb988502aa`, `594f1ce2eb`, `5e9d56416f`, `4ab7084aa7`, `0affd28db2`, `c2fbf0a524`) | skipped (T3 Connect and remote machines; see the T3-GAPS devices rows) |
+| 2026-10-28 | Boring sidebar project folders and multi-project filter (`4e4d4ba395`, `001d16e969`, `80fcb7f58f`, `c38b265adc`); Claude `--settings` merge (`8d94203c17`) | skipped (T3's sidebar layout; Godspeed takes no user Claude launch args) |
+| 2026-10-28 | ~110 other commits: mobile/Android, relay tunnels, desktop packaging, GitCafe/Forgejo, chip and sidebar styling, compaction row copy, queued-message authors, perf, CI | skipped (internal/minor) |
 | 2026-10-26 | Forked threads get titles from the history they inherit (`a6aca345d5`) | PR #34 |
 | 2026-10-26 | Terminal drag selection scrolls faster the farther past the edge (`313ca2715f`) | queued (`selection_scroll_lines` in `terminal/panel.rs` tops out at 3 lines inside the grid edge) |
 | 2026-10-26 | Resumed Claude turns retry a stalled MCP registration (`572cf74275`) | queued (check the Godspeed MCP tools after resuming a Claude chat) |

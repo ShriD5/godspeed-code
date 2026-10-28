@@ -60,9 +60,11 @@ Spot-checked against Godspeed's code on 2026-10-28: items 2, 4, 5, 9 and 10 (bad
 | Appearance | Diff color scheme | `settingsSearch.ts` ("Diff colors") | MISSING: diff colors come from the theme | low |
 | Appearance | Separate prompt font | `settingsSearch.ts` ("Prompt font", "Separate fonts") | PARTIAL: UI, code and terminal fonts (`settings/appearance.rs`) | low |
 | Appearance | Time format (relative or absolute, 12 or 24 hour); font smoothing; environment-identification badge | `apps/web/src/timestampFormat.ts`; `settingsSearch.ts` ("Time format", "Font smoothing", "Environment identification") | MISSING | low |
-| Sidebar | Regenerate a thread's title on demand | `apps/web/src/components/Sidebar.tsx` ("Failed to regenerate thread title") | MISSING: manual rename only (no regenerate RPC in `crates/engine/src/titles.rs` or `crates/proto`) | med |
 | Sidebar | Auto-settle a thread when its PR merges; keep threads that have an open PR | `settingsSearch.ts` ("Auto-settle merged threads", "Keep threads with a PR"); `packages/contracts/src/settings.ts` (`sidebarAutoSettleOnMerge`) | PARTIAL: auto-settle after 1 day, 3 days or 1 week idle only (`crates/ui/src/settings/thread_lifecycle.rs`); no merged-PR trigger, no keep-PR rule | med |
 | Sidebar | Compact idle threads before the prompt cache expires | `packages/contracts/src/settings.ts` (`idleCompaction`); `settingsSearch.ts` ("Compact idle threads") | MISSING (T3-WATCH lists it as queued) | med |
+| Chat | See and stop the dev servers a thread started | `a27ec88bfa` (T3 2026-10-28) | PARTIAL: a worktree's terminals and dev servers stop together (`crates/ui/src/shell/worktree_env_ui.rs`); no per-chat list | med |
+| Chat | Open a tool call's diff in the diff panel | `441a4ebd65` (T3 2026-10-28) | MISSING: no open-in-diff-panel action on tool rows | low |
+| Sidebar | Choose your own snooze options | `93a9e079b1`, `c3858bf1f7` (T3 2026-10-28) | MISSING: fixed snooze times (`crates/ui/src/shell/thread_lifecycle.rs`) | low |
 | Sidebar | Unsent-draft rows in the sidebar, with open and discard | `apps/web/src/components/sidebar/SidebarDraftBlock.tsx` | MISSING: drafts persist per chat but never appear as sidebar rows | low |
 | Sidebar | Copy a thread's branch name or relative path (Copy submenu) | `apps/web/src/components/Sidebar.tsx` ("Branch copied", "Path copied") | PARTIAL: Copy submenu has Path, Godspeed link, harness link, harness session ID (`shell.rs` `render_chat_copy_submenu`); no branch, no relative path | low |
 | Composer | Stash the current prompt and bring it back (Cmd+S, stash menu) | `apps/web/src/components/chat/ComposerStashMenu.tsx`; `packages/shared/src/keybindings.ts` (`composer.stash`) | MISSING: only staged attachments are stashed (`crates/ui/src/composer.rs`); Cmd+S is Save File | med |
@@ -232,3 +234,4 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 | Feature | Godspeed PR |
 |---|---|
 | Agents drive the in-app browser: open, navigate, snapshot, screenshot, click, type, scroll, eval, console, wait (`preview_*` MCP tools, macOS). Recording and set-appearance remain open. | #57 |
+| Regenerate a thread's title on demand (chat menu → Regenerate title) | #TBD |
