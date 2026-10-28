@@ -1,4 +1,6 @@
 //! Native PR inspection and explicit comment submission.
+#[path = "pull_request_actions.rs"]
+mod actions;
 #[path = "pull_request_code.rs"]
 mod code;
 #[path = "pull_request_handoff.rs"]
@@ -470,6 +472,8 @@ pub struct PullRequestDetailPage {
     image_previous_focus: Option<gpui::FocusHandle>,
     /// The image that failed to load, offered in the browser instead.
     image_failed: Option<String>,
+    /// Review, merge and watch controls (`pull_request_actions.rs`).
+    actions: actions::ActionsState,
 }
 
 impl PullRequestDetailPage {
@@ -558,6 +562,7 @@ impl PullRequestDetailPage {
             image_cached: None,
             image_previous_focus: None,
             image_failed: None,
+            actions: actions::ActionsState::new(cx),
         };
         cx.on_release(|page: &mut Self, _| {
             crate::markdown::render::clear_selection_surface(&page.selection_prefix);
@@ -610,6 +615,7 @@ impl PullRequestDetailPage {
         }
         if let Some(snapshot) = cached.filter(|_| !stale) {
             page.fetched = Some(snapshot.fetched);
+            page.adopt_watch(&snapshot.detail);
             page.detail = Some(snapshot.detail);
             page.body = Some(snapshot.body);
             page.activity_bodies = snapshot.activity;
@@ -917,6 +923,7 @@ impl PullRequestDetailPage {
                         page.body = Some(snapshot.body.clone());
                         page.activity_bodies = snapshot.activity.clone();
                         page.detail = Some(snapshot.detail.clone());
+                        page.adopt_watch(&snapshot.detail);
                         page.cache.borrow_mut().put(page.target.clone(), page.url.clone(), snapshot);
                     }
                     Err(error) => page.error = Some(error),
@@ -1952,6 +1959,7 @@ impl Render for PullRequestDetailPage {
                         column = column
                             .child(assessment_card)
                             .child(checks.mt(px(CARD_GAP)))
+                            .child(self.actions_card(detail, &theme, cx))
                             .child(self.handoff_card(detail, &theme, cx));
                         let description = div()
                             .p(px(16.0))
@@ -2244,7 +2252,22 @@ impl Render for PullRequestDetailPage {
                                                         cx.weak_entity(),
                                                     ))
                                                 },
-                                            )),
+                                            ))
+                                            // Reply and resolve sit under a
+                                            // thread's last comment.
+                                            .children(
+                                                inline_thread(detail, index)
+                                                    .filter(|review| {
+                                                        review.comments.last().is_some_and(
+                                                            |last| last.id == comment.id,
+                                                        ) && !review.id.is_empty()
+                                                    })
+                                                    .map(|review| {
+                                                        self.thread_controls(
+                                                            review, index, &theme, cx,
+                                                        )
+                                                    }),
+                                            ),
                                     ),
                             );
                         }
