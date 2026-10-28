@@ -112,6 +112,7 @@ zeron-engine.workspace = true
 zeron-harness.workspace = true
 zeron-rpc.workspace = true
 zeron-update.workspace = true
+zeron-remote.workspace = true
 zeron-syntax.workspace = true
 zeron-theme.workspace = true
 zeron-visual.workspace = true
