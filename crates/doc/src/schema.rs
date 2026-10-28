@@ -1632,6 +1632,7 @@ mod tests {
         let writer = SegmentWriter::begin(&doc, "a", "owner", 1).unwrap();
         writer.finish(&parts, MessageStatus::Complete).unwrap();
         let stats = TurnStats {
+            instance: None,
             model: Some("claude-opus-5-5".into()),
             wait_ms: Some(2_000),
             ..Default::default()
@@ -1646,6 +1647,7 @@ mod tests {
         // The diff lands later and keeps what was stamped first.
         assert!(doc.set_turn_files("a", files.clone()).unwrap());
         let expected = TurnStats {
+            instance: None,
             files: Some(files),
             ..stats
         };

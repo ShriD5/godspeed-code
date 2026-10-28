@@ -286,6 +286,13 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: None,
             manual_command: "",
         },
+        // Registry agents update from Settings → Providers → More agents.
+        HarnessId::Acp(_) => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Manual,
+            update_args: None,
+            manual_command: "Update it in Settings → Providers → More agents",
+        },
     }
 }
 
@@ -421,7 +428,10 @@ impl HarnessUpdateCoordinator {
         let order: Vec<_> = registry
             .descriptors()
             .into_iter()
-            .filter(|descriptor| descriptor.id != HarnessId::Mock)
+            // Registry agents update from "More agents", not by probing.
+            .filter(|descriptor| {
+                descriptor.id != HarnessId::Mock && descriptor.id.acp_agent().is_none()
+            })
             .map(|descriptor| descriptor.id)
             .collect();
         let enabled = registry.enabled_set();

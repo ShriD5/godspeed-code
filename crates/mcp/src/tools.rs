@@ -1148,6 +1148,7 @@ impl Tools {
             );
         }
         let config = ChatConfig {
+            instance: None,
             harness,
             model: args.model.clone(),
             reasoning,
@@ -1832,6 +1833,7 @@ impl Tools {
                     .or_else(|| space.map(|s| s.path.clone()))
                     .unwrap_or_else(|| "~".into());
                 let request = RunRequest {
+                    instance: None,
                     mcp: None,
                     prompt: text,
                     harness: Some(harness),

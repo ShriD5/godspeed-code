@@ -245,6 +245,7 @@ fn rig_full(adopts_config: bool, turn_boundary: bool) -> Rig {
 
 fn request(prompt: &str) -> RunRequest {
     RunRequest {
+        instance: None,
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),
@@ -1141,6 +1142,7 @@ async fn a_phone_send_inherits_the_chats_access_mode() {
             None,
             Some(&rig.core.device_id),
             Some(ChatConfig {
+                instance: None,
                 harness: HarnessId::Mock,
                 model: Some("process-1".into()),
                 reasoning: Some(ReasoningLevel::High),

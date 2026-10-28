@@ -112,6 +112,7 @@ async fn steering_never_aborts_a_running_tool() {
         .set_chat_config(
             CHAT,
             &ChatConfig {
+                instance: None,
                 harness: id,
                 model: model.clone(),
                 reasoning: None,
@@ -136,6 +137,7 @@ async fn steering_never_aborts_a_running_tool() {
             SessionCommandPayload::Run {
                 message_id: "call".into(),
                 request: RunRequest {
+                    instance: None,
                     mcp: Some(McpServer {
                         name: "slow".into(),
                         command: "python3".into(),

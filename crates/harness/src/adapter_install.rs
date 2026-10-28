@@ -479,6 +479,16 @@ fn npm_install_plan(
     cache_dir: &Path,
     platform: crate::executable::Platform,
 ) -> Result<(PathBuf, Vec<OsString>), HarnessError> {
+    npm_spec_install_plan(npm, &pin.spec(), cache_dir, platform, false)
+}
+
+fn npm_spec_install_plan(
+    npm: &Path,
+    spec: &str,
+    cache_dir: &Path,
+    platform: crate::executable::Platform,
+    ignore_scripts: bool,
+) -> Result<(PathBuf, Vec<OsString>), HarnessError> {
     let (program, mut args) = if platform == crate::executable::Platform::Windows {
         let node = node_sibling_for_npm(npm, platform).ok_or_else(|| {
             HarnessError::NotInstalled(format!(
@@ -506,8 +516,27 @@ fn npm_install_plan(
         .map(OsString::from),
     );
     args.push(cache_dir.as_os_str().to_owned());
-    args.push(OsString::from(pin.spec()));
+    if ignore_scripts {
+        args.push(OsString::from("--ignore-scripts"));
+    }
+    args.push(OsString::from(spec));
     Ok((program, args))
+}
+
+/// Install the exact `name@version` into `dir` (its own npm prefix) with the
+/// managed cache — the ACP registry's npm route. `ignore_scripts` keeps every
+/// lifecycle script from running.
+pub(crate) async fn npm_install_exact(
+    npm: &Path,
+    name: &str,
+    version: &str,
+    dir: &Path,
+    cache_dir: &Path,
+    display_name: &str,
+    ignore_scripts: bool,
+) -> Result<(), HarnessError> {
+    let spec = format!("{name}@{version}");
+    run_npm_install(npm, &spec, dir, cache_dir, display_name, ignore_scripts).await
 }
 
 async fn install_into(
@@ -517,6 +546,17 @@ async fn install_into(
     cache_dir: &Path,
     display_name: &str,
 ) -> Result<(), HarnessError> {
+    run_npm_install(npm, &pin.spec(), tmp_dir, cache_dir, display_name, false).await
+}
+
+async fn run_npm_install(
+    npm: &Path,
+    spec: &str,
+    tmp_dir: &Path,
+    cache_dir: &Path,
+    display_name: &str,
+    ignore_scripts: bool,
+) -> Result<(), HarnessError> {
     let _ = std::fs::remove_dir_all(tmp_dir);
     std::fs::create_dir_all(tmp_dir)?;
     std::fs::create_dir_all(cache_dir)?;
@@ -524,12 +564,18 @@ async fn install_into(
     std::fs::write(tmp_dir.join("package.json"), "{\"private\":true}\n")?;
     tracing::info!(
         target: "zeron_harness::adapter_install",
-        package = %pin.spec(),
+        package = %spec,
         dir = %tmp_dir.display(),
         "installing ACP adapter"
     );
     let (program, args) =
-        npm_install_plan(npm, pin, cache_dir, crate::executable::Platform::current())?;
+        npm_spec_install_plan(
+            npm,
+            spec,
+            cache_dir,
+            crate::executable::Platform::current(),
+            ignore_scripts,
+        )?;
     let mut cmd = crate::process::Command::new(&program);
     cmd.args(args)
         .current_dir(tmp_dir)
@@ -564,7 +610,7 @@ async fn install_into(
                 return Err(HarnessError::Install(format!(
                     "npm install of the {display_name} adapter ({}) timed out after {} minutes — \
                  check your network and npm registry configuration",
-                    pin.spec(),
+                    spec,
                     INSTALL_TIMEOUT.as_secs() / 60
                 )));
             }
@@ -589,12 +635,12 @@ async fn install_into(
             "npm install of the {display_name} adapter ({}) failed silently ({exit}); \
              npm's own cache or config is likely broken — try `npm cache verify` \
              or reinstalling node/npm",
-            pin.spec()
+            spec
         )
     } else {
         format!(
             "npm install of the {display_name} adapter ({}) failed ({exit}): {tail}",
-            pin.spec()
+            spec
         )
     }))
 }

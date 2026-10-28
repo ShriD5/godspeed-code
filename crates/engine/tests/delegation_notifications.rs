@@ -115,6 +115,7 @@ fn assemble(path: &std::path::Path, harness: Arc<TestHarness>) -> EngineCore {
 
 fn request(prompt: &str) -> RunRequest {
     RunRequest {
+        instance: None,
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),

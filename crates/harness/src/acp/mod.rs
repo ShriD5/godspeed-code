@@ -1255,11 +1255,74 @@ pub struct AcpHarness {
     models_cache: crate::catalog::Catalog,
     workspace_commands: crate::skills::CommandDiscovery,
     devin_models: std::sync::Arc<devin_models::Catalog>,
+    /// A registry-installed agent's launch (program + its ACP arguments),
+    /// used unless an explicit executable overrides it.
+    registry_launch: Option<(PathBuf, Vec<String>)>,
+    /// Environment every process of this agent gets (the registry entry's
+    /// own env, then a provider instance's), beneath a run's own env.
+    base_env: std::collections::BTreeMap<String, String>,
+}
+
+/// A registry-installed ACP agent, as [`AcpHarness::registry_agent`] launches it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryAgentLaunch {
+    pub id: zeron_proto::AcpAgentId,
+    pub name: String,
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+fn leak(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
+}
+
+fn registry_spec(launch: &RegistryAgentLaunch) -> AcpAgentSpec {
+    let display_name = leak(launch.name.clone());
+    let executable = leak(
+        launch
+            .program
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| launch.id.as_str().to_string()),
+    );
+    AcpAgentSpec {
+        id: HarnessId::Acp(launch.id),
+        display_name,
+        executable,
+        env_override: "",
+        args: &[],
+        npm_package: None,
+        archive: None,
+        extra_paths: Vec::new,
+        cli_executable: executable,
+        cli_extra_paths: Vec::new,
+        install_hint: leak(format!(
+            "{display_name} is not installed; install it from Settings → Providers → More agents"
+        )),
+        // Discovered from the agent's own session (`models` / config options).
+        models: Vec::new,
+        steering_mode: SteeringMode::TurnBoundary,
+        reasoning_levels: &[],
+        prompt_transform: identity_transform,
+        effort_values: default_effort_values,
+        ladder_extras: &[],
+        prompt_complete_extension: false,
+        prompt_stall: None,
+        stall_hint: "The agent process is likely wedged.",
+        effort_in_model_id: false,
+        auth_method: None,
+        skill_dirs: Vec::new,
+        hidden_commands: &[],
+        drops_unstarted_cancelled_prompt: false,
+    }
 }
 
 impl AcpHarness {
     fn with_spec(spec: AcpAgentSpec) -> Self {
         Self {
+            registry_launch: None,
+            base_env: Default::default(),
             spec,
             executable: None,
             sessions_root: None,
@@ -1290,6 +1353,24 @@ impl AcpHarness {
     /// Hermes Agent (`hermes acp`) — Nous Research's native ACP server.
     pub fn hermes() -> Self {
         Self::with_spec(hermes_spec())
+    }
+
+    /// An agent installed from the ACP registry, driven by the generic ACP
+    /// driver: no curated catalog, turn-boundary steering, models and modes
+    /// discovered from its own session.
+    pub fn registry_agent(launch: RegistryAgentLaunch) -> Self {
+        let mut harness = Self::with_spec(registry_spec(&launch));
+        harness.base_env = launch.env;
+        harness.registry_launch = Some((launch.program, launch.args));
+        harness
+    }
+
+    /// Environment applied to every process of this agent (discovery,
+    /// sign-in and runs), beneath each run's own env — a provider instance's
+    /// config dir and extra variables.
+    pub fn with_env(mut self, env: std::collections::BTreeMap<String, String>) -> Self {
+        self.base_env.extend(env);
+        self
     }
 
     /// google antigravity over its acp server (`agy_acp_server`).
@@ -1390,6 +1471,9 @@ impl AcpHarness {
         }
         if let Some(home) = gemini_home {
             cmd.env("GEMINI_HOME", home);
+        }
+        for (name, value) in &self.base_env {
+            cmd.env(name, value);
         }
         if let Some(browser) = browser {
             cmd.env("BROWSER", browser);
@@ -1557,7 +1641,12 @@ impl AcpHarness {
             return crate::executable::validate_native_override(p)
                 .map(|program| Launch::Program(program, spec_args));
         }
-        if let Some(p) = std::env::var_os(self.spec.env_override)
+        if let Some((program, args)) = &self.registry_launch {
+            return Ok(Launch::Program(program.clone(), args.clone()));
+        }
+        if let Some(p) = (!self.spec.env_override.is_empty())
+            .then(|| std::env::var_os(self.spec.env_override))
+            .flatten()
             && !p.is_empty()
         {
             return crate::executable::validate_native_override(&PathBuf::from(p))
@@ -1602,6 +1691,14 @@ impl AcpHarness {
         block_on_install: bool,
     ) -> Result<(PathBuf, Vec<String>), HarnessError> {
         match self.resolve_launch()? {
+            Launch::Program(program, args)
+                if self.executable.is_none() && self.registry_launch.is_some() =>
+            {
+                let (program, mut launch_args) =
+                    crate::adapter_install::launch_for_entry(&program)?;
+                launch_args.extend(args);
+                Ok((program, launch_args))
+            }
             Launch::Program(program, args) => Ok((program, args)),
             Launch::Managed {
                 pin,
@@ -1704,6 +1801,9 @@ impl AcpHarness {
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
         self.configure_adapter_environment(&mut cmd, &exe);
+        for (name, value) in &self.base_env {
+            cmd.env(name, value);
+        }
         crate::apply_run_env(
             &mut cmd,
             env,
@@ -1713,7 +1813,10 @@ impl AcpHarness {
             cmd.current_dir(cwd);
         }
         if self.spec.id == HarnessId::Antigravity {
-            cmd.env("GEMINI_HOME", antigravity_paths::home()?);
+            // A provider instance's config dir relocates GEMINI_HOME.
+            if !env.contains_key("GEMINI_HOME") && !self.base_env.contains_key("GEMINI_HOME") {
+                cmd.env("GEMINI_HOME", antigravity_paths::home()?);
+            }
             match noop_browser() {
                 Ok(browser) => {
                     cmd.env("BROWSER", browser);
@@ -2202,6 +2305,9 @@ impl Harness for AcpHarness {
         if let Some(p) = &self.executable {
             return crate::executable::validate_native_override(p).is_ok();
         }
+        if let Some((program, _)) = &self.registry_launch {
+            return program.is_file();
+        }
         if let Some(p) = std::env::var_os(self.spec.env_override)
             && !p.is_empty()
         {
@@ -2218,6 +2324,9 @@ impl Harness for AcpHarness {
     }
 
     fn executable_path(&self) -> Option<PathBuf> {
+        if let Some((program, _)) = &self.registry_launch {
+            return Some(self.executable.clone().unwrap_or_else(|| program.clone()));
+        }
         if self.spec.id == HarnessId::Antigravity {
             return match self.resolve_launch().ok()? {
                 Launch::Program(program, _) => Some(program),

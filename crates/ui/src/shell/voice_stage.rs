@@ -48,6 +48,7 @@ impl Shell {
             .chat_config()
             .filter(|config| config.harness == HarnessId::Codex)
             .unwrap_or_else(|| ChatConfig {
+                instance: None,
                 harness: HarnessId::Codex,
                 model: None,
                 reasoning: None,

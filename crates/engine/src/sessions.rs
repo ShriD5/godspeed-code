@@ -94,7 +94,9 @@ impl RuntimeConfig {
     }
 
     fn can_route(&self, harness_id: HarnessId, request: &RunRequest) -> bool {
-        self.harness_id == harness_id && self.harness.same_runtime(&self.request, request)
+        self.harness_id == harness_id
+            && self.request.instance == request.instance
+            && self.harness.same_runtime(&self.request, request)
     }
 
     /// How `request` reaches this runtime: `Some(false)` as is, `Some(true)`
@@ -104,6 +106,7 @@ impl RuntimeConfig {
         if self.can_route(harness_id, request) {
             Some(false)
         } else if self.harness_id == harness_id
+            && self.request.instance == request.instance
             && self.harness.reconfigures_in_place(&self.request, request)
         {
             Some(true)
@@ -175,6 +178,12 @@ fn config_changes(
     let mut changes = Vec::new();
     if live_harness != next_harness {
         changes.push(format!("harness {live_harness:?} -> {next_harness:?}"));
+    }
+    if live.instance != next.instance {
+        changes.push(format!(
+            "instance {:?} -> {:?}",
+            live.instance, next.instance
+        ));
     }
     if live.cwd != next.cwd {
         changes.push(format!("cwd {:?} -> {:?}", live.cwd, next.cwd));
@@ -1052,7 +1061,10 @@ impl SessionsEngine {
             tracing::info!(chat = %chat_id, "message cancelled by a later Stop: not dispatched");
             return Ok(String::new());
         }
-        let harness = self.inner.registry.resolve(harness_id)?;
+        let harness = self
+            .inner
+            .registry
+            .resolve_instance(harness_id, request.instance.as_deref())?;
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
         if !idle {
@@ -1613,6 +1625,7 @@ impl SessionsEngine {
                     .or_else(|| {
                         let (_, cwd) = sessions.inner.journal_harness_session(&chat_id)?;
                         Some(RunRequest {
+                            instance: None,
                             mcp: None,
                             prompt: String::new(),
                             harness: None,
@@ -2590,6 +2603,7 @@ fn usage_covers_turn(harness: HarnessId) -> bool {
             | HarnessId::Grok
             | HarnessId::Hermes
             | HarnessId::Antigravity
+            | HarnessId::Acp(_)
             | HarnessId::Mock
     )
 }
@@ -2654,7 +2668,20 @@ fn stamp_turn_stats(
         .get(chat_id)
         .map(|known| known.session_id.clone())
         .filter(|id| !id.is_empty());
+    let instance = config
+        .as_ref()
+        .filter(|c| c.harness == facts.harness)
+        .and_then(|c| c.instance.as_deref())
+        .map(|id| {
+            inner
+                .registry
+                .provider_instances()
+                .get(facts.harness, id)
+                .map(|instance| instance.name)
+                .unwrap_or_else(|| id.to_string())
+        });
     let stats = zeron_doc::TurnStats {
+        instance,
         harness: wire_name(&facts.harness),
         model: receipt_model(picked, facts.session_model, facts.request_model),
         effort: effort.as_ref().and_then(wire_name),
@@ -2850,6 +2877,7 @@ async fn drive_run(
     // re-injects the stored resume id). Option so the retry branch (inside
     // the event loop) can take ownership.
     let mut retry_request = Some(RunRequest {
+        instance: None,
         resume: None,
         ..request.clone()
     });
@@ -4556,6 +4584,7 @@ mod tests {
 
     fn request() -> RunRequest {
         RunRequest {
+            instance: None,
             mcp: None,
             prompt: "first".into(),
             harness: None,

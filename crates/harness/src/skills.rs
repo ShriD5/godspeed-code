@@ -123,6 +123,8 @@ fn project_dirs(harness: HarnessId) -> &'static [&'static str] {
         HarnessId::Antigravity => &[".agents/skills", ".gemini/skills"],
         HarnessId::Codex => &[".agents/skills", ".codex/skills"],
         HarnessId::Mock => &[],
+        // Registry agents follow the cross-agent convention.
+        HarnessId::Acp(_) => &[".agents/skills"],
     }
 }
 

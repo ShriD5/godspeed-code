@@ -65,6 +65,7 @@ fn register(core: &EngineCore, id: &str, path: &Path) {
             Some(&space),
             None,
             Some(ChatConfig {
+                instance: None,
                 harness: HarnessId::Mock,
                 model: None,
                 reasoning: None,

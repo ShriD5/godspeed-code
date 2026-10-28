@@ -161,6 +161,11 @@ impl Space {
 #[serde(rename_all = "camelCase")]
 pub struct ChatConfig {
     pub harness: HarnessId,
+    /// The provider instance this chat runs on (see
+    /// [`crate::provider_instance`]). `None` — every chat from before
+    /// instances — is the provider's default instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
     pub model: Option<String>,
     pub reasoning: Option<ReasoningLevel>,
     #[serde(default)]

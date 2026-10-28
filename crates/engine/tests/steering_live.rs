@@ -73,6 +73,7 @@ async fn rapid_steers_preserve_children_context_and_held_queue() {
         .set_chat_config(
             "audit",
             &ChatConfig {
+                instance: None,
                 harness: id,
                 model: model.clone(),
                 reasoning: None,

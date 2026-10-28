@@ -19,6 +19,7 @@ const CHIP: &str = "forked-command-fanout-a4d8fe55a62c09757";
 /// a typed fork's transcript is looked for there.
 fn request(dir: &Path, scenario: &str) -> RunRequest {
     RunRequest {
+        instance: None,
         mcp: None,
         prompt: scenario.into(),
         harness: None,

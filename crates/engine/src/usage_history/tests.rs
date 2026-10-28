@@ -332,6 +332,7 @@ fn stamped_turns_become_records_timed_from_their_prompt() {
     let mut last_segment = entry("a2", MessageRole::Assistant, t0 + 21_000);
     last_segment.duration_ms = Some(9_000);
     last_segment.turn_stats = Some(TurnStats {
+        instance: None,
         harness: Some("claude-code".into()),
         model: Some("claude-opus-5-5".into()),
         usage: Some(TurnUsage {
@@ -345,6 +346,7 @@ fn stamped_turns_become_records_timed_from_their_prompt() {
     });
     let mut no_usage = entry("b1", MessageRole::Assistant, t0 + 70_000);
     no_usage.turn_stats = Some(TurnStats {
+        instance: None,
         harness: Some("cursor".into()),
         ..Default::default()
     });

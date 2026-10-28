@@ -192,6 +192,7 @@ fn send(core: &EngineCore, world: &World, prompt: &str) {
             CHAT,
             SessionCommandPayload::Run {
                 request: RunRequest {
+                    instance: None,
                     prompt: prompt.into(),
                     harness: Some(HarnessId::Mock),
                     model: None,

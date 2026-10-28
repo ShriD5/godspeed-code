@@ -5211,6 +5211,16 @@ impl DocHost {
             .unwrap_or(self.inner.config.default_harness)
     }
 
+    /// The provider instance a chat's config records for `harness` — `None`
+    /// (the default instance) for chats from before instances, or when the
+    /// request switched the chat to another harness.
+    pub(crate) fn instance_for(&self, chat_id: &str, harness: HarnessId) -> Option<String> {
+        self.workspace()
+            .and_then(|ws| ws.chat_config(chat_id))
+            .filter(|config| config.harness == harness)
+            .and_then(|config| config.instance)
+    }
+
     /// The harness a request dispatches on: the request's own pick when it
     /// carries one (rides the command plane, immune to registry-row races),
     /// else [`Self::harness_for`].
@@ -5670,6 +5680,7 @@ impl DocHost {
                     && ws.chat_config(chat_id).is_none()
                 {
                     let config = zeron_proto::ChatConfig {
+                        instance: None,
                         harness,
                         model: request.model.clone(),
                         reasoning: request.reasoning,
@@ -6029,6 +6040,9 @@ impl DocHost {
         mut request: zeron_proto::RunRequest,
         message_id: Option<String>,
     ) -> Result<String, EngineError> {
+        if request.instance.is_none() {
+            request.instance = self.instance_for(chat_id, harness);
+        }
         self.recreate_missing_worktree(chat_id, &request.cwd)
             .await?;
         if let Some(environments) = self.worktree_environments()
@@ -6248,6 +6262,7 @@ impl DocHost {
         let config = chat.config;
         let access = config.as_ref().map(|c| c.effective_access_mode());
         let mut request = zeron_proto::RunRequest {
+            instance: None,
             mcp: None,
             prompt: prompt.to_string(),
             harness: config.as_ref().map(|c| c.harness),

@@ -1737,6 +1737,7 @@ mod tests {
     #[test]
     fn a_phone_config_write_keeps_the_chats_access_mode() {
         let existing = ChatConfig {
+            instance: None,
             harness: zeron_proto::HarnessId::ClaudeCode,
             model: Some("claude-opus-5-5".into()),
             reasoning: None,
