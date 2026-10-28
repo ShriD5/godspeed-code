@@ -1,4 +1,4 @@
-# Conductor memory: remember accurately, stay fresh
+# Conductor and Zoomie memory: remember accurately, stay fresh
 
 Status: draft for review, 2026-10-28.
 
@@ -6,6 +6,11 @@ Builds on the conductor design (`docs/design/2026-10-23-conductor-design.md`) an
 instructions (PR #44, `feat/conductor-instructions`). It **revises piece 3** of the conductor design
 (learning into notes) and **builds the main agent's half of piece 2** (rollover, §9a). Sub-agent
 rollover is unchanged.
+
+**One memory engine, two users (decided with the user).** The memory described here is a shared
+engine piece. Conductors and Zoomies (always-on agents) both use it. Zoomies replace their free-text
+`MEMORY.md` with it. Most of this document is written from the conductor's side. §11 covers what
+changes for Zoomies.
 
 In this document:
 - **standing orders** are the conductor's instructions from PR #44, owned by the user;
@@ -82,6 +87,9 @@ September 2026; findings about them come from press, reviews, HN and GitHub issu
   especially about the user, ask first.
 - **The user can read, edit, delete and undo** anything in memory, and the agent never overwrites
   their edits.
+- **Zoomies get the same memory.** Each run checks what changed since the last run, so a scheduled
+  run never acts as if it has never seen an instruction before. That is the top complaint about
+  OpenAI Dots.
 - **Creating a conductor is its first wake-up.** "Everything" becomes a grounded remit built from
   the repo, docs, git history and the user's chats in that folder. This fixes the problem raised on
   PR #44.
@@ -330,6 +338,58 @@ make the conductor more accurate but not fresher.
   usage, and wake-up and re-check usage should show up there. (The budget shape is the builder's
   call.)
 
+### 11. Zoomies use the same memory engine
+
+Today each Zoomie has `{data_dir}/agents/{id}/MEMORY.md`. It is injected into every run's prompt
+(capped at 32 KB, `crates/engine/src/agents/prompt.rs`), and the agent edits the file in place. That
+means its writes aren't sourced, checked, faded or shown, and the user can't tell what changed. With
+the shared engine:
+
+**Same as conductors**
+- The same store, entry schema, rules for what may enter memory (§1), check-before-use (§3),
+  fading by last-confirmed time (§4), history and undo (§8), and loaded index (§9).
+- **Writes go through Godspeed's memory tools, not in-place file edits.** Every write is
+  attributable and shows as a "Remembered" line in the run's chat.
+- **The Zoomie's instructions play the role of standing orders.** They are already user-owned, and
+  the agent never edits them.
+- **A memory view for each Zoomie**, in Settings → Zoomies, next to the Zoomie's instructions.
+
+**Different for Zoomies**
+- **Every run is a wake-up.** Each Zoomie keeps its own "last seen" bookmark, updated at the end of
+  each run. The next run starts by comparing against it: what changed in its folder, what changed in
+  memory, and any edits to its instructions since the last run. Runs are already fresh chats and
+  unattended, so the re-check happens inside the run. There's no main chat to protect, so no separate
+  job is needed.
+- **Running while the user is away is the point.** §5's "nothing runs while the user is away"
+  doesn't apply. The re-check is part of the run the user scheduled, and its usage counts toward
+  that run.
+- **No fresh-session restart** (§9a). Every run already starts fresh.
+- **Guesses about the user can't be asked mid-run.** They're saved as guesses and queued as a
+  question in the Zoomie's inbox, and in Telegram if it's connected. They stay guesses until the user
+  answers, and the run never waits on them.
+- **No "while you were away" note.** What changed shapes the run. If it matters, it goes in the run's
+  result in the inbox.
+
+**Moving existing Zoomies over.** Existing `MEMORY.md` content is imported as agent-sourced guesses,
+unconfirmed, and the original file is kept in history. The user can confirm entries in the memory
+view, or let them be confirmed by evidence or fade. (My call; the exact import is the builder's
+call.)
+
+**No sharing between memories.** A Zoomie's memory and a conductor's memory stay separate, even over
+the same folder, and so do two Zoomies' memories. Scoping memory hard avoids the bleed users dislike
+elsewhere. Sharing project facts between them could come later. (My call.)
+
+## Shipping order
+
+1. **The shared memory engine.** This covers the store, entry schema, tools, check-before-use,
+   fading and history, plus a memory view component both features can use.
+2. **Conductors on the engine.** Saving visibly, wake-up, creation as first wake-up, notes changes
+   and the fresh-session restart (§1–§10).
+3. **Zoomies on the engine** (§11), including migrating existing `MEMORY.md` files.
+
+Each step is usable by itself. (My call. Zoomies are smaller, so the builder may swap steps 2 and 3
+to prove the engine on Zoomies first.)
+
 ## Constraints
 
 - **Memory can't live on the synced conductor row.** The registry room refuses any change over
@@ -352,6 +412,7 @@ make the conductor more accurate but not fresher.
 - Older memories count for less.
 - The main agent restarts on a fresh session, rebuilt from memory, after a real gap or when its
   context is nearly full (§9a).
+- Zoomies and conductors share the new memory engine (§11).
 
 ## My calls (please check)
 
@@ -369,11 +430,15 @@ make the conductor more accurate but not fresher.
 - Creation lands immediately and drafts as the first turn. A user's edit beats the draft.
 - Entries the user stated or edited never expire on a timer.
 - Off-device: "Remembered" lines are read-only, and guesses can be answered by replying.
+- Zoomies: every run is a wake-up. Guesses queue in the inbox or Telegram. Existing `MEMORY.md`
+  is imported as unconfirmed guesses. No memory is shared between Zoomies and conductors.
+- Shipping order: shared engine, then conductors, then Zoomies.
 
 ## Left to the builder
 
-- **Storage.** A file per conductor in the data dir (as Zoomies use `agents/{id}/MEMORY.md`), a
-  small database, or a separate sync room. It has to meet the constraints above. A git-backed
+- **Storage.** One store for conductor and Zoomie memory, keyed by owner. That could be a file per
+  owner in the data dir (Zoomies use `agents/{id}/MEMORY.md` today), a small database, or a separate
+  sync room. It has to meet the constraints above. A git-backed
   directory gets history for free.
 - **The entry schema.** At minimum: text, kind, source (with a citation), seen or guess, created,
   last confirmed, and superseded-by.
@@ -396,3 +461,7 @@ make the conductor more accurate but not fresher.
 - **Re-anchoring.** On a bug a long conductor chat has been stuck on, compare the conductor with a
   fresh chat given only the bug report. The conductor should be no slower.
 - **The user rarely has to correct memory**, and guess questions are few enough that they get read.
+- **Zoomie instruction change.** Edit a Zoomie's instructions between two scheduled runs. The next
+  run follows the new instructions and says so. This is the Dots failure, turned into a test.
+- **Stale Zoomie memory.** Change the repo so an imported `MEMORY.md` fact is wrong. The next run
+  corrects it rather than acting on it.
