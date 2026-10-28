@@ -34,7 +34,16 @@ enum Command {
     /// Run the engine without a UI (local-only unless a saved session enables sync).
     Headless,
     /// Sign in and enable sync on the next engine start.
-    Login,
+    Login {
+        /// Machine-driven sign-in ("Run on a server"): print the sign-in URL as
+        /// `godspeed-login: url <url>`, read the pasted code from stdin (no
+        /// terminal needed) and report `godspeed-login: …` lines.
+        #[arg(long)]
+        stdin_code: bool,
+        /// Workspace (organization id) to select after signing in.
+        #[arg(long, value_name = "ORG_ID")]
+        org: Option<String>,
+    },
     /// Remove the saved session and return to local-only on the next start.
     Logout,
     /// Show workspace mode, optional auth, and engine status.
@@ -249,9 +258,13 @@ fn main() -> anyhow::Result<()> {
                 engine.run().await
             })
         }
-        Some(Command::Login) => {
+        Some(Command::Login { stdin_code, org }) => {
             let runtime = tokio::runtime::Runtime::new()?;
-            runtime.block_on(auth_cli::login(engine_config_from_env()))
+            if stdin_code {
+                runtime.block_on(auth_cli::login_stdin_code(engine_config_from_env(), org))
+            } else {
+                runtime.block_on(auth_cli::login(engine_config_from_env(), org))
+            }
         }
         Some(Command::Logout) => {
             let runtime = tokio::runtime::Runtime::new()?;
@@ -404,7 +417,9 @@ async fn sync_cli(ipc_port: u16) -> anyhow::Result<()> {
     let client = zeron_rpc::connect_ws(&format!("ws://127.0.0.1:{ipc_port}"))
         .await
         .map_err(|e| {
-            anyhow::anyhow!("no engine listening on 127.0.0.1:{ipc_port} ({e}) — is godspeed running?")
+            anyhow::anyhow!(
+                "no engine listening on 127.0.0.1:{ipc_port} ({e}) — is godspeed running?"
+            )
         })?;
     let status = client
         .call(zeron_rpc::methods::SYNC_STATUS, serde_json::json!({}))

@@ -1,0 +1,19 @@
+[package]
+name = "zeron-remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# "Run on a server": SSH target parsing, Tailscale peer discovery, the remote
+# install / service / status scripts and the `ssh` runner the Settings →
+# Devices wizard drives. Plain std processes, no GPUI and no async runtime, so
+# every piece is unit-testable with a fake `ssh` on PATH.
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
