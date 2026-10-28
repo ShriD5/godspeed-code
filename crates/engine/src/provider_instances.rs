@@ -408,6 +408,15 @@ mod tests {
     use super::*;
     use zeron_proto::ProviderInstanceEnvVar;
 
+    /// An absolute path on every platform (`C:\\…` on Windows).
+    fn abs(rel: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\{}", rel.replace('/', "\\"))
+        } else {
+            format!("/{rel}")
+        }
+    }
+
     fn var(key: &str, value: Option<&str>, secret: bool) -> ProviderInstanceEnvVar {
         ProviderInstanceEnvVar {
             key: key.into(),
@@ -421,8 +430,8 @@ mod tests {
             id: "work".into(),
             harness: HarnessId::ClaudeCode,
             name: " Work ".into(),
-            binary_path: Some("/opt/claude-work/bin/claude".into()),
-            config_dir: Some("/tmp/claude-work".into()),
+            binary_path: Some(abs("opt/claude-work/bin/claude")),
+            config_dir: Some(abs("tmp/claude-work")),
             env: vec![
                 var("ANTHROPIC_BASE_URL", Some("https://proxy.example/v1"), false),
                 var("ANTHROPIC_AUTH_TOKEN", Some("sk-ant-supersecret-123"), false),
@@ -462,9 +471,9 @@ mod tests {
         let resolved = store.resolve(HarnessId::ClaudeCode, "work").unwrap();
         assert_eq!(
             resolved.executable,
-            Some(PathBuf::from("/opt/claude-work/bin/claude"))
+            Some(PathBuf::from(abs("opt/claude-work/bin/claude")))
         );
-        assert_eq!(resolved.env["CLAUDE_CONFIG_DIR"], "/tmp/claude-work");
+        assert_eq!(resolved.env["CLAUDE_CONFIG_DIR"], abs("tmp/claude-work"));
         assert_eq!(resolved.env["ANTHROPIC_AUTH_TOKEN"], "sk-ant-supersecret-123");
         assert_eq!(resolved.env["ANTHROPIC_BASE_URL"], "https://proxy.example/v1");
         assert!(store.resolve(HarnessId::Codex, "work").is_none());
@@ -497,20 +506,17 @@ mod tests {
         assert!(ProviderInstances::load(dir.path(), Arc::new(MemorySecrets::default()))
             .list()
             .is_empty());
-        std::fs::write(
-            dir.path().join("provider-instances.json"),
-            r#"{"version":1,"instances":[
-                {"id":"ok","harness":"codex","name":"OK","configDir":"/tmp/codex-ok"},
-                {"id":"Bad Id","harness":"codex","name":"Bad"},
-                {"id":"ok","harness":"codex","name":"Duplicate"}
-            ]}"#,
-        )
-        .unwrap();
+        let file = serde_json::json!({"version": 1, "instances": [
+            {"id": "ok", "harness": "codex", "name": "OK", "configDir": abs("tmp/codex-ok")},
+            {"id": "Bad Id", "harness": "codex", "name": "Bad"},
+            {"id": "ok", "harness": "codex", "name": "Duplicate"},
+        ]});
+        std::fs::write(dir.path().join("provider-instances.json"), file.to_string()).unwrap();
         let store = ProviderInstances::load(dir.path(), Arc::new(MemorySecrets::default()));
         assert_eq!(store.list().len(), 1);
         assert_eq!(
             store.resolve(HarnessId::Codex, "ok").unwrap().env["CODEX_HOME"],
-            "/tmp/codex-ok"
+            abs("tmp/codex-ok")
         );
     }
 

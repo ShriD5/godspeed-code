@@ -306,13 +306,21 @@ pub fn instance_env(
 mod tests {
     use super::*;
 
+    fn abs(rel: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\{}", rel.replace('/', "\\"))
+        } else {
+            format!("/{rel}")
+        }
+    }
+
     fn instance() -> ProviderInstance {
         ProviderInstance {
             id: "work".into(),
             harness: HarnessId::ClaudeCode,
             name: "Work".into(),
             binary_path: None,
-            config_dir: Some("/tmp/claude-work".into()),
+            config_dir: Some(abs("tmp/claude-work")),
             env: vec![
                 ProviderInstanceEnvVar {
                     key: "CLAUDE_CONFIG_DIR".into(),
@@ -341,7 +349,7 @@ mod tests {
         let env = instance_env(&instance(), |key| {
             (key == "ANTHROPIC_API_KEY").then(|| "sk-resolved".to_string())
         });
-        assert_eq!(env["CLAUDE_CONFIG_DIR"], "/tmp/claude-work");
+        assert_eq!(env["CLAUDE_CONFIG_DIR"], abs("tmp/claude-work"));
         assert_eq!(env["ANTHROPIC_API_KEY"], "sk-resolved");
         assert_eq!(env["HTTPS_PROXY"], "http://proxy:8080");
         let unresolved = instance_env(&instance(), |_| None);
@@ -353,8 +361,8 @@ mod tests {
         let mut codex = instance();
         codex.harness = HarnessId::Codex;
         codex.env.clear();
-        codex.config_dir = Some("/tmp/codex-b".into());
-        assert_eq!(instance_env(&codex, |_| None)["CODEX_HOME"], "/tmp/codex-b");
+        codex.config_dir = Some(abs("tmp/codex-b"));
+        assert_eq!(instance_env(&codex, |_| None)["CODEX_HOME"], abs("tmp/codex-b"));
     }
 
     #[test]
@@ -399,6 +407,6 @@ mod tests {
         assert!(!json.contains("sk-"));
         let summary = serde_json::to_string(&ProviderInstanceSummary::from(&instance())).unwrap();
         assert!(!summary.contains("ANTHROPIC_API_KEY"));
-        assert!(!summary.contains("/tmp/claude-work"));
+        assert!(!summary.contains("claude-work"));
     }
 }
