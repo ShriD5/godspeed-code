@@ -104,6 +104,7 @@ mod session_lanes;
 mod side_chats;
 mod sidebar_pins;
 mod sidebar_sections;
+mod sidebar_selection;
 mod search_warm;
 pub(crate) mod spaces;
 mod thread_lifecycle;
@@ -490,6 +491,15 @@ pub fn apply_keymap(
         crate::composer::ToggleDictation,
         Some("MessageComposer"),
     )]);
+    // The prompt stash acts only in the message composer; with nothing to
+    // stash it passes the key on (Save file shares Cmd+S).
+    if !keymap.stash_prompt.is_empty() {
+        cx.bind_keys([KeyBinding::new(
+            &valid_or_default(&keymap.stash_prompt, ShortcutId::StashPrompt.default_combo()),
+            crate::composer::StashPrompt,
+            Some("MessageComposer"),
+        )]);
+    }
     // Fixed app-level shortcuts (Settings on every platform; ⌘Q quit, ⌘W
     // close, ⌘M minimize, ⌘H hide on macOS) — these back the native menu
     // key equivalents and must survive keymap re-application.
@@ -723,7 +733,7 @@ fn bind_unless_taken<A: gpui::Action>(
     let own = keystroke(combo);
     let taken = ShortcutId::ALL
         .iter()
-        .any(|other| *other != id && keystroke(keymap.get(*other)) == own);
+        .any(|other| *other != id && !id.shares_combo(*other) && keystroke(keymap.get(*other)) == own);
     if taken {
         tracing::warn!(?id, "shortcut combo already in use; leaving it unbound");
         return;
@@ -2269,6 +2279,15 @@ pub struct Shell {
     /// The last sidebar lifecycle action (settle, snooze, wake, mark unread),
     /// kept for one undo.
     lifecycle_undo: Option<thread_lifecycle::LifecycleUndo>,
+    /// Rows picked with Cmd/Shift-click for the bulk bar.
+    sidebar_selection: sidebar_selection::SidebarSelection,
+    /// The open chat when the selection was last reconciled: opening another
+    /// one clears the selection.
+    sidebar_selection_origin: Option<String>,
+    /// Held while the sidebar has keyboard focus, so Cmd+A selects rows.
+    sidebar_focus: FocusHandle,
+    /// The bulk bar's Snooze presets, open at this point.
+    bulk_snooze_menu: Option<Point<Pixels>>,
     /// The Snooze submenu's typed-time field, while it is open.
     snooze_custom: Option<thread_lifecycle::SnoozeCustom>,
     /// Ephemeral collapsed project/device sections, keyed by organization + id.
@@ -2905,6 +2924,10 @@ impl Shell {
             settled_open: false,
             settled_shown: 0,
             lifecycle_undo: None,
+            sidebar_selection: Default::default(),
+            sidebar_selection_origin: None,
+            sidebar_focus: cx.focus_handle(),
+            bulk_snooze_menu: None,
             snooze_custom: None,
             sidebar_collapsed_groups: std::collections::HashSet::new(),
             sidebar_reveal_motions: std::collections::HashSet::new(),
@@ -3204,6 +3227,7 @@ impl Shell {
             self.voice.update(cx, |voice, cx| voice.cancel(cx));
         }
         self.prune_file_explorers(cx);
+        self.reconcile_sidebar_selection(cx);
         self.take_add_to_device_request(state, cx);
         self.refresh_harness_update_watch(cx);
         self.sync_search_warm(cx);
@@ -5561,6 +5585,9 @@ impl Shell {
 
     fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.command_palette = None;
+        if route != self.route {
+            self.clear_sidebar_selection(cx);
+        }
         let was_pull_requests = matches!(self.route, Route::PullRequests);
         let will_show_pull_requests = matches!(route, Route::PullRequests);
         if was_pull_requests && !will_show_pull_requests {
@@ -6944,7 +6971,7 @@ impl Shell {
     }
 
     fn forget_deleted_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        self.delete_confirm = None;
+        self.sidebar_selection.retain(|id| id != chat_id);
         if let Some(tabs) = self.right_tabs.get(&chat_id) {
             for surface in tabs {
                 if let RightSurface::Browser(id) = surface {
@@ -8714,6 +8741,13 @@ impl Shell {
         } else {
             format!("chat-{id}")
         };
+        // While rows are picked for the bulk bar, the wash marks exactly
+        // those rows, so the selection reads at a glance.
+        let selected = if search_query.is_none() && !preview && !self.sidebar_selection.is_empty() {
+            self.sidebar_selection.contains(&id)
+        } else {
+            selected
+        };
         let pr_device = self
             .state
             .read(cx)
@@ -9155,6 +9189,17 @@ impl Shell {
                 )
                 .on_scroll_wheel(cx.listener(|this, _, _, cx| this.dismiss_session_card(cx)))
                 .on_click(cx.listener(move |this, event: &gpui::ClickEvent, _, cx| {
+                    // Cmd- and Shift-presses on a sidebar row select it for
+                    // the bulk bar instead of opening it.
+                    if search_query_none
+                        && this.select_sidebar_row(
+                            &select_id,
+                            sidebar_selection::row_click(&event.modifiers()),
+                            cx,
+                        )
+                    {
+                        return;
+                    }
                     // The palette's copy of the row only opens; the sidebar's
                     // double-click edits the title in place.
                     if event.click_count() >= 2 && search_query_none {
@@ -10185,6 +10230,12 @@ impl Shell {
         let github_star_banner = self.render_github_star_banner(update_strip.is_some(), theme, cx);
 
         div()
+            .id("chat-sidebar")
+            .track_focus(&self.sidebar_focus)
+            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                this.capture_sidebar_focus(window, cx);
+            }))
+            .on_key_down(cx.listener(|this, event, _, cx| this.on_sidebar_key_down(event, cx)))
             .w(px(self.sidebar_content_width()))
             .h_full()
             .flex()
@@ -10199,6 +10250,9 @@ impl Shell {
             )
             .child(filter_row)
             .child(sidebar_lists)
+            .when_some(self.render_sidebar_bulk_bar(theme, cx), |el, bar| {
+                el.child(bar)
+            })
             // Global connection pill (durable-by-design UI truth): appears
             // whenever the edge posture is degraded; hidden while healthy —
             // appearing IS the signal.
@@ -11397,8 +11451,13 @@ impl Shell {
         if self.right_plus.get().is_some() {
             return true;
         }
-        self.active_changes(cx)
+        if self
+            .active_changes(cx)
             .is_some_and(|changes| changes.update(cx, |changes, cx| changes.handle_escape(cx)))
+        {
+            return true;
+        }
+        self.escape_sidebar_selection(cx)
     }
 
     fn on_key_down_capture(
@@ -11661,6 +11720,9 @@ impl Shell {
             ));
         }
         if let Some(menu) = self.render_pull_request_tab_menu(cx) {
+            overlays.push(menu);
+        }
+        if let Some(menu) = self.render_bulk_snooze_menu(&theme, cx) {
             overlays.push(menu);
         }
 

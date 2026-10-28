@@ -44,6 +44,9 @@ use crate::theme::Theme;
 mod chip;
 pub(crate) mod continue_menu;
 pub(crate) mod limit_banner;
+mod prompt_recall;
+pub(crate) mod prompt_stash;
+mod recall_stash;
 mod relay_banner;
 mod zoomie;
 pub use zoomie::ZoomieCreated;
@@ -959,6 +962,7 @@ actions!(
         MentionTab,
         ToggleDictation,
         OutdentList,
+        StashPrompt,
     ]
 );
 
@@ -1932,6 +1936,9 @@ pub enum ComposerInputEvent {
     OpenAttachment(u32),
     /// The pointer moved onto (or off) an annotation chip.
     AnnotationHovered(Option<u32>),
+    /// Up at the start of the draft (or Down while browsing): step through
+    /// the prompts sent in this chat. `back` is toward older ones.
+    RecallStep { back: bool },
 }
 
 #[derive(Clone)]
@@ -2158,6 +2165,11 @@ pub struct ComposerInput {
     /// mention token is active, keeping input focus and native text editing.
     mention_open: bool,
     mention_has_selection: bool,
+    /// The message composer's Up and Down can recall sent prompts.
+    recall_keys: bool,
+    /// The draft is a recalled prompt, untouched: Up and Down on its first
+    /// and last lines keep stepping through the history.
+    pub(crate) recall_browsing: bool,
     /// Last prepainted chip bounds; the paint-phase pointer listener uses
     /// these instead of attempting to infer text geometry from the cursor.
     mention_hits: Vec<MentionHit>,
@@ -2258,6 +2270,8 @@ impl ComposerInput {
             last_edit: None,
             mention_open: false,
             mention_has_selection: false,
+            recall_keys: false,
+            recall_browsing: false,
             mention_hits: Vec::new(),
             chip_press: None,
             attachment_chips: None,
@@ -3425,6 +3439,10 @@ impl ComposerInput {
             cx.emit(ComposerInputEvent::MentionNavigate(-1));
             return;
         }
+        if self.recall_step_applies(true) {
+            cx.emit(ComposerInputEvent::RecallStep { back: true });
+            return;
+        }
         if let Some((ix, affinity, column)) = self.vertical_target(-1.0) {
             self.move_to(ix, cx);
             self.caret_affinity = affinity;
@@ -3437,11 +3455,41 @@ impl ComposerInput {
             cx.emit(ComposerInputEvent::MentionNavigate(1));
             return;
         }
+        if self.recall_step_applies(false) {
+            cx.emit(ComposerInputEvent::RecallStep { back: false });
+            return;
+        }
         if let Some((ix, affinity, column)) = self.vertical_target(1.0) {
             self.move_to(ix, cx);
             self.caret_affinity = affinity;
             self.preferred_column = Some(column);
         }
+    }
+
+    /// Whether Up (`back`) or Down reaches prompt recall instead of moving
+    /// the caret: Up with the caret at the very start, or either key on the
+    /// edge line of a recalled prompt that is still untouched.
+    fn recall_step_applies(&self, back: bool) -> bool {
+        if !self.recall_keys || !self.selected_range.is_empty() || self.marked_range.is_some() {
+            return false;
+        }
+        let offset = self.cursor_offset();
+        if back && offset == 0 {
+            return true;
+        }
+        if !self.recall_browsing {
+            return false;
+        }
+        let edge = if back { 0 } else { self.content.len() };
+        offset == edge
+            || self.vertical_target(if back { -1.0 } else { 1.0 })
+                .is_some_and(|(target, _, _)| target == edge)
+    }
+
+    /// Put the caret at `offset` (recall lands it at the start, so the next
+    /// Up keeps going back).
+    pub(crate) fn set_caret(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to(offset.min(self.content.len()), cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -6315,6 +6363,10 @@ pub struct Composer {
     pub(crate) input: Entity<ComposerInput>,
     /// Draft displaced while a queued message occupies the composer.
     pub(crate) queue_edit_draft: Option<(String, Vec<StagedAttachment>, Vec<CapturedAppshot>)>,
+    /// Where Up/Down prompt recall stands in this chat's sent prompts.
+    recall: Option<prompt_recall::RecallPosition>,
+    /// The "Stashed" chip's menu is open.
+    stash_menu_open: bool,
     /// The displaced draft's chip numbering and undo stash. The queued
     /// message gets its own while it is edited, so its chips can never name
     /// the draft's attachments.
@@ -6559,6 +6611,7 @@ impl Composer {
                 ComposerInput::with_context("Do anything…", MESSAGE_COMPOSER_CONTEXT, cx);
             input.enable_mentions();
             input.copies_transcript_selection = true;
+            input.recall_keys = true;
             input
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
@@ -6584,8 +6637,10 @@ impl Composer {
             ComposerInputEvent::ModifiedSubmitted => this.on_modified_submit(cx),
             ComposerInputEvent::Edited => {
                 this.sync_annotation_marks(cx);
+                this.forget_recall_on_edit(cx);
                 this.on_input_edited(cx)
             }
+            ComposerInputEvent::RecallStep { back } => this.step_prompt_recall(*back, cx),
             ComposerInputEvent::CursorMoved => this.on_input_edited(cx),
             ComposerInputEvent::ViewportChanged => cx.notify(),
             // The slash popup and the mention popup share the input's
@@ -6666,6 +6721,8 @@ impl Composer {
             state,
             input,
             queue_edit_draft: None,
+            recall: None,
+            stash_menu_open: false,
             queue_edit_attachment_draft: None,
             pickers,
             drafts: HashMap::new(),
@@ -7353,6 +7410,7 @@ impl Composer {
     /// Drop a deleted chat's per-chat composer state — staged attachments hold
     /// raw image bytes, and a deleted chat's stage could never be sent again.
     pub fn purge_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        prompt_stash::update(cx, |stash| stash.purge(chat_id));
         self.attachments.remove(chat_id);
         self.attachment_drafts.remove(chat_id);
         self.appshots.remove(chat_id);
@@ -9015,6 +9073,8 @@ impl Composer {
             }
             let draft = self.drafts.get(&key).cloned().unwrap_or_default();
             self.current_key = key;
+            self.end_recall(cx);
+            self.stash_menu_open = false;
             // `failure` deliberately survives navigation: chat-scoped
             // failures render only under their own chat (see `failure_key`),
             // so switching away and back must not erase the one visible
@@ -9326,6 +9386,7 @@ impl Composer {
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
     /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, text: String, queue: bool, cx: &mut Context<Self>) {
+        self.end_recall(cx);
         if !self.check_reference_delivery(&text, cx) {
             return;
         }
@@ -12313,7 +12374,8 @@ impl Render for Composer {
             // Both completion popups span the full pill width above it —
             // the file-mention and slash tokens are mutually exclusive.
             .children(self.render_file_mention_popup(&theme, cx))
-            .children(self.render_slash_popup(&theme, cx));
+            .children(self.render_slash_popup(&theme, cx))
+            .children(self.render_stash_chip(&theme, cx));
         // Restore the original chip-only selector treatment: destination at
         // the top-right, no surrounding surface. Cancel the column gap as the
         // row collapses so the pill never jumps at the route boundary.
@@ -12354,6 +12416,7 @@ impl Render for Composer {
         let container = container.child(
             div()
                 .track_focus(&self.dictation_focus)
+                .on_action(cx.listener(Self::stash_prompt_action))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                     if event.keystroke.key == "escape"
                         && this.input.read(cx).dictation.phase.active()

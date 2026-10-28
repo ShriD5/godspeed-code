@@ -550,6 +550,7 @@ impl SettingsStore {
 pub fn init(settings: UiSettings, data_dir: impl Into<PathBuf>, cx: &mut App) {
     let data_dir = data_dir.into();
     crate::dictation::init(data_dir.clone(), cx);
+    crate::composer::prompt_stash::init(data_dir.clone(), cx);
     cx.set_global(SettingsStore {
         current: settings,
         data_dir: data_dir.into(),
@@ -818,6 +819,18 @@ pub fn animated_dock_icon(cx: &App) -> bool {
 pub fn set_animated_dock_icon(enabled: bool, cx: &mut App) {
     update(SavePolicy::Immediate, cx, |settings| {
         settings.animated_dock_icon = enabled;
+    });
+}
+
+/// Read without cloning the settings, like [`animated_dock_icon`].
+pub fn dock_badge(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_none_or(|store| store.current.dock_badge)
+}
+
+pub fn set_dock_badge(enabled: bool, cx: &mut App) {
+    update(SavePolicy::Immediate, cx, |settings| {
+        settings.dock_badge = enabled;
     });
 }
 
@@ -1333,6 +1346,8 @@ pub struct UiSettings {
     pub pause_animations_in_background: bool,
     /// The speedster mascot replaces the Dock icon and mirrors agent activity.
     pub animated_dock_icon: bool,
+    /// The Dock icon wears a badge with how many chats are waiting on you.
+    pub dock_badge: bool,
     /// Mouse-wheel notches glide instead of jumping (`smooth_scroll`).
     /// Trackpads already scroll smoothly; reduced motion overrides.
     pub smooth_scrolling: bool,
@@ -1448,6 +1463,7 @@ impl Default for UiSettings {
             reduce_motion: crate::motion::ReduceMotion::System,
             pause_animations_in_background: false,
             animated_dock_icon: true,
+            dock_badge: true,
             smooth_scrolling: true,
             codex_voice: None,
             codex_voice_device: None,
@@ -1509,11 +1525,12 @@ pub enum ShortcutId {
     ToggleDiffPane,
     ReopenClosedTab,
     MissionControl,
+    StashPrompt,
     JumpSession(usize),
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 24 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 25 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
@@ -1538,6 +1555,7 @@ impl ShortcutId {
         ShortcutId::ToggleDiffPane,
         ShortcutId::ReopenClosedTab,
         ShortcutId::MissionControl,
+        ShortcutId::StashPrompt,
         ShortcutId::JumpSession(0),
         ShortcutId::JumpSession(1),
         ShortcutId::JumpSession(2),
@@ -1580,6 +1598,7 @@ impl ShortcutId {
             ShortcutId::ToggleDiffPane => "Toggle changes pane",
             ShortcutId::ReopenClosedTab => "Reopen closed tab",
             ShortcutId::MissionControl => "Open Mission Control",
+            ShortcutId::StashPrompt => "Stash prompt",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1636,8 +1655,22 @@ impl ShortcutId {
             ShortcutId::ToggleDiffPane => "mod-shift-g",
             ShortcutId::ReopenClosedTab => "mod-shift-t",
             ShortcutId::MissionControl => "mod-shift-k",
+            // Shares Save file's key: see `shares_combo`.
+            ShortcutId::StashPrompt => "mod-s",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
+    }
+
+    /// Whether `self` and `other` may hold the same combo. The prompt stash
+    /// only acts in the message composer and Save file only on an open
+    /// file's document, so one key serves both, as Cmd+S does in T3 Code; a
+    /// stash with nothing to stash passes the key on to Save file.
+    pub fn shares_combo(self, other: ShortcutId) -> bool {
+        matches!(
+            (self, other),
+            (ShortcutId::StashPrompt, ShortcutId::SaveFile)
+                | (ShortcutId::SaveFile, ShortcutId::StashPrompt)
+        )
     }
 
     /// The sidebar row this id jumps to, if it is a jump shortcut.
@@ -1679,6 +1712,7 @@ pub struct KeymapConfig {
     pub toggle_diff_pane: String,
     pub reopen_closed_tab: String,
     pub mission_control: String,
+    pub stash_prompt: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
     /// [`UiSettings::load`] discards the WHOLE file on a parse error, so a
     /// fixed-length array would let one malformed entry reset every unrelated
@@ -1759,6 +1793,7 @@ impl Default for KeymapConfig {
             toggle_diff_pane: ShortcutId::ToggleDiffPane.default_combo().into(),
             reopen_closed_tab: ShortcutId::ReopenClosedTab.default_combo().into(),
             mission_control: ShortcutId::MissionControl.default_combo().into(),
+            stash_prompt: ShortcutId::StashPrompt.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
             layout_neutral: true,
         }
@@ -1792,6 +1827,7 @@ impl KeymapConfig {
             ShortcutId::ToggleDiffPane => &self.toggle_diff_pane,
             ShortcutId::ReopenClosedTab => &self.reopen_closed_tab,
             ShortcutId::MissionControl => &self.mission_control,
+            ShortcutId::StashPrompt => &self.stash_prompt,
             ShortcutId::JumpSession(slot) => self
                 .jump_session
                 .get(slot)
@@ -1826,6 +1862,7 @@ impl KeymapConfig {
             ShortcutId::ToggleDiffPane => self.toggle_diff_pane = combo,
             ShortcutId::ReopenClosedTab => self.reopen_closed_tab = combo,
             ShortcutId::MissionControl => self.mission_control = combo,
+            ShortcutId::StashPrompt => self.stash_prompt = combo,
             ShortcutId::JumpSession(slot) => {
                 if slot < JUMP_SLOTS {
                     if self.jump_session.len() < JUMP_SLOTS {
@@ -1959,9 +1996,12 @@ pub fn conflicted_shortcuts(keymap: &KeymapConfig) -> Vec<ShortcutId> {
             let combo = keymap.get(id);
             id.available()
                 && !combo.is_empty()
-                && ShortcutId::ALL
-                    .into_iter()
-                    .any(|other| other.available() && other != id && keymap.get(other) == combo)
+                && ShortcutId::ALL.into_iter().any(|other| {
+                    other.available()
+                        && other != id
+                        && !id.shares_combo(other)
+                        && keymap.get(other) == combo
+                })
         })
         .collect()
 }
@@ -2368,6 +2408,7 @@ impl UiSettings {
             reduce_motion,
             pause_animations_in_background,
             animated_dock_icon,
+            dock_badge,
             smooth_scrolling,
             codex_voice,
             codex_voice_device,
@@ -2505,7 +2546,8 @@ impl UiSettings {
                                     !candidate.is_empty()
                                         && !ShortcutId::ALL.iter().any(|other| {
                                             let existing = resolved.get(*other);
-                                            !existing.is_empty()
+                                            !id.shares_combo(*other)
+                                                && !existing.is_empty()
                                                 && platform_combo(existing)
                                                     == platform_combo(candidate)
                                         })
@@ -2523,13 +2565,21 @@ impl UiSettings {
                         .get_mut("keymap")
                         .and_then(serde_json::Value::as_object_mut)
                     {
-                        for (id, field) in [(ShortcutId::ToggleFiles, "toggleFiles")] {
+                        for (id, field) in [
+                            (ShortcutId::ToggleFiles, "toggleFiles"),
+                            (ShortcutId::StashPrompt, "stashPrompt"),
+                        ] {
                             let default = platform_combo(id.default_combo());
+                            // Save file may keep the stash's key (`shares_combo`).
+                            let shared = |other: &str| {
+                                id == ShortcutId::StashPrompt && other == "saveFile"
+                            };
                             let taken = !keymap.contains_key(field)
-                                && keymap.values().any(|existing| {
-                                    existing
-                                        .as_str()
-                                        .is_some_and(|combo| platform_combo(combo) == default)
+                                && keymap.iter().any(|(other, existing)| {
+                                    !shared(other)
+                                        && existing
+                                            .as_str()
+                                            .is_some_and(|combo| platform_combo(combo) == default)
                                 });
                             if taken {
                                 keymap.insert(field.into(), serde_json::json!(""));
@@ -3577,6 +3627,7 @@ mod tests {
             reduce_motion: crate::motion::ReduceMotion::On,
             pause_animations_in_background: true,
             animated_dock_icon: false,
+            dock_badge: false,
             smooth_scrolling: false,
             legacy_accent_color: None,
         };
@@ -4499,13 +4550,36 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_stash_arrives_on_cmd_s_unless_another_action_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"saveFile": "mod-s"}}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.keymap.stash_prompt, "mod-s");
+        assert_eq!(loaded.keymap.save_file, "mod-s");
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"saveFile": "mod-shift-s", "toggleSidebar": "mod-s"}}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.keymap.stash_prompt, "", "the user's own Cmd+S wins");
+        assert_eq!(loaded.keymap.toggle_sidebar, "mod-s");
+    }
+
+    #[test]
     fn defaults_are_distinct_physical_keys() {
         // Distinct STRINGS is not enough — two defaults could still resolve to
         // the same keystroke through `platform_combo`.
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = std::collections::HashMap::new();
         for id in ShortcutId::ALL {
             let bound = platform_combo(id.default_combo());
-            assert!(seen.insert(bound.clone()), "{bound:?} bound twice");
+            if let Some(owner) = seen.insert(bound.clone(), id) {
+                assert!(id.shares_combo(owner), "{bound:?} bound twice");
+            }
         }
     }
 

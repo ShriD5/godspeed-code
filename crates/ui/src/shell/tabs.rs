@@ -229,6 +229,7 @@ impl Shell {
     /// Open a session from the sidebar: select it, the main area follows.
     pub(crate) fn open_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.command_palette = None;
+        self.clear_sidebar_selection(cx);
         // Opening any session steps the voice stage aside — including the one
         // already selected under it. The call keeps running in the background.
         self.set_voice_stage_open(false, cx);

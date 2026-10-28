@@ -4092,6 +4092,43 @@ impl Render for AppearancePage {
                     )
                     .into_any_element(),
             );
+            let dock_badge = crate::settings::dock_badge(cx);
+            motion_rows.push(
+                widgets::card_row(&theme, false)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(widgets::row_title(&theme, "Show badge on Dock icon"))
+                            .child(widgets::meta_line(
+                                &theme,
+                                vec![
+                                    div()
+                                        .child("Counts the chats waiting on an approval or an answer.")
+                                        .into_any_element(),
+                                ],
+                            )),
+                    )
+                    .child(
+                        widgets::toggle_switch(&theme, dock_badge, "dock-badge")
+                            .id("dock-badge-toggle")
+                            .tab_index(0)
+                            .role(gpui::Role::Switch)
+                            .aria_label("Show badge on Dock icon")
+                            .focus_visible(|s| s.border_2().border_color(theme.accent))
+                            .cursor_pointer()
+                            .aria_toggled(if dock_badge {
+                                gpui::Toggled::True
+                            } else {
+                                gpui::Toggled::False
+                            })
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                crate::settings::set_dock_badge(!dock_badge, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
         }
         let library_rows = self.render_theme_library_rows(&theme, cx);
         let library_warning = self

@@ -784,7 +784,9 @@ fn refusal(
 pub fn conflict_owner(keymap: &KeymapConfig, id: ShortcutId, combo: &str) -> Option<ShortcutId> {
     ShortcutId::ALL
         .into_iter()
-        .find(|&other| other.available() && other != id && keymap.get(other) == combo)
+        .find(|&other| {
+            other.available() && other != id && !id.shares_combo(other) && keymap.get(other) == combo
+        })
 }
 
 pub fn send_combo_is_reserved(_behavior: ComposerSendBehavior, combo: &str) -> bool {
@@ -838,7 +840,8 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::SettleSession
         | ShortcutId::NavigateBack
         | ShortcutId::NavigateForward
-        | ShortcutId::MissionControl => "Sessions",
+        | ShortcutId::MissionControl
+        | ShortcutId::StashPrompt => "Sessions",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
@@ -1762,6 +1765,24 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn the_prompt_stash_shares_save_files_key_and_nothing_else() {
+        let keymap = KeymapConfig::default();
+        assert_eq!(keymap.get(ShortcutId::StashPrompt), "mod-s");
+        assert_eq!(keymap.get(ShortcutId::SaveFile), "mod-s");
+        assert_eq!(conflict_owner(&keymap, ShortcutId::StashPrompt, "mod-s"), None);
+        assert_eq!(conflict_owner(&keymap, ShortcutId::SaveFile, "mod-s"), None);
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::StashPrompt, "mod-b"),
+            Some(ShortcutId::ToggleSidebar)
+        );
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::ToggleSidebar, "mod-s"),
+            Some(ShortcutId::SaveFile)
+        );
+        assert_eq!(group(ShortcutId::StashPrompt), "Sessions");
     }
 
     #[test]
