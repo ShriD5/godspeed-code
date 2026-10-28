@@ -120,7 +120,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a standalone session visible in Sessions with kind chat, or a child with kind side. Omitted kind preserves the default: side with an origin/parent, standalone otherwise. A side chat cannot create chats. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt and wait for the reply. Returns the new chat id. For parallel delegation use create_chats, or leave wait=false on every launch and wait only after all chats have been started.",
+            description: "Create a standalone session visible in Sessions with kind chat, or a child with kind side. Omitted kind preserves the default: side with an origin/parent, standalone otherwise. A side chat cannot create chats. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt and wait for the reply. Returns the new chat id. For parallel delegation use create_chats, or leave wait=false on every launch and wait only after all chats have been started. When several chats will edit the same repository at once, pass worktree \"new\" so each works in its own git worktree and branch instead of overwriting each other's files.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -136,7 +136,9 @@ fn catalog() -> Vec<ToolDef> {
                     "access_mode": { "type": "string", "enum": ["supervised", "auto-accept-edits", "auto", "full-access"], "description": "What the new chat's agent may do before it asks. Defaults to your own chat's mode and never exceeds it." },
                     "title": { "type": "string", "description": "Sidebar title. Otherwise the engine titles it from the first exchange." },
                     "branch": { "type": "string", "description": "Branch label to record on the chat." },
-                    "cwd": { "type": "string", "description": "Working directory override (an existing worktree path). Defaults to the project folder." },
+                    "cwd": { "type": "string", "description": "Working directory override (any folder on the host). Defaults to the parent's checkout or the project folder. Prefer worktree for checkouts." },
+                    "worktree": { "type": "string", "description": WORKTREE_ARG_DESCRIPTION },
+                    "base": { "type": "string", "description": "With worktree \"new\": the branch, tag or commit the new worktree starts from. Defaults to the parent chat's branch, else the project's checked-out branch." },
                     "prompt": { "type": "string", "description": "First message to send right away." },
                     "wait": { "type": "boolean", "default": false, "description": "With prompt: block until the first turn finishes and return the reply." },
                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
@@ -224,7 +226,7 @@ fn catalog() -> Vec<ToolDef> {
         (
             "create_chats",
             "create_chat",
-            "Create multiple standalone or side chats concurrently (kind per request). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false. Results preserve request order and include per-request errors; successful requests are not rolled back.",
+            "Create multiple standalone or side chats concurrently (kind per request). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false. Give every request that edits the same repository worktree \"new\" so the chats don't edit one checkout at once. Results preserve request order and include per-request errors; successful requests are not rolled back.",
         ),
         (
             "send_messages",
@@ -284,6 +286,14 @@ fn catalog() -> Vec<ToolDef> {
     tools.extend(crate::preview::catalog());
     tools
 }
+
+const WORKTREE_ARG_DESCRIPTION: &str = "\
+Where the chat works, in its project's repository. \"parent\" (default): share the parent chat's \
+checkout (the project folder without a parent). \"new\": a fresh git worktree on its own new branch, \
+started from the parent's branch (or base) and set up like worktrees made in the app (copied .env \
+files, reserved ports, setup commands); use it for parallel edits so chats don't overwrite each \
+other. Or an existing worktree of the project, by folder path or by the branch it has checked out. \
+Needs a project; can't be combined with cwd.";
 
 /// Shows a page in the CALLING chat, so it is offered only to an agent that
 /// Godspeed launched (`GODSPEED_CHAT_ID` set).
@@ -614,10 +624,43 @@ struct CreateChatArgs {
     title: Option<String>,
     branch: Option<String>,
     cwd: Option<String>,
+    worktree: Option<String>,
+    base: Option<String>,
     prompt: Option<String>,
     #[serde(default)]
     wait: bool,
     timeout_secs: Option<u64>,
+}
+
+/// `create_chat`'s `worktree` argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorktreeChoice {
+    /// The parent's checkout (today's behaviour).
+    Parent,
+    /// A fresh worktree on its own branch.
+    New,
+    /// An existing checkout, by folder or branch.
+    Existing(String),
+}
+
+impl WorktreeChoice {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|w| !w.is_empty()) {
+            None => Self::Parent,
+            Some(w) if w.eq_ignore_ascii_case("parent") => Self::Parent,
+            Some(w) if w.eq_ignore_ascii_case("new") => Self::New,
+            Some(w) => Self::Existing(w.to_owned()),
+        }
+    }
+}
+
+/// Where `place_chat` put a new chat.
+struct Placement {
+    /// `parent`, `new` or `existing`, as reported back.
+    mode: &'static str,
+    path: String,
+    branch: Option<String>,
+    setup_error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1075,18 +1118,59 @@ impl Tools {
                 short(parent)
             );
         }
-        if let Some(parent) = parent_chat_id.as_deref() {
-            let chat = self.godspeed.resolve_chat(parent).await?;
-            self.ensure_may_parent(
-                &chat,
-                "Cannot create a child of a side chat. Choose a top-level parent chat.",
-            )
-            .await?;
-        }
+        let parent_chat = match parent_chat_id.as_deref() {
+            Some(parent) => {
+                let chat = self.godspeed.resolve_chat(parent).await?;
+                self.ensure_may_parent(
+                    &chat,
+                    "Cannot create a child of a side chat. Choose a top-level parent chat.",
+                )
+                .await?;
+                Some(chat)
+            }
+            None => None,
+        };
+        let worktree_choice = WorktreeChoice::parse(args.worktree.as_deref());
+        let explicit_cwd = args
+            .cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_owned);
+        anyhow::ensure!(
+            worktree_choice == WorktreeChoice::Parent || explicit_cwd.is_none(),
+            "worktree and cwd can't be combined: worktree already picks the folder"
+        );
+        let base = args
+            .base
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .map(str::to_owned);
+        anyhow::ensure!(
+            base.is_none() || worktree_choice == WorktreeChoice::New,
+            "base only applies to worktree \"new\""
+        );
+        // A worktree lives in a project: the parent's when none is named.
+        let project = args.project.clone().or_else(|| {
+            (worktree_choice != WorktreeChoice::Parent)
+                .then(|| parent_chat.as_ref()?.space_id.clone())
+                .flatten()
+        });
         let (space, device_id) = self
             .godspeed
-            .resolve_target(args.project.as_deref(), args.device.as_deref())
+            .resolve_target(project.as_deref(), args.device.as_deref())
             .await?;
+        if worktree_choice != WorktreeChoice::Parent {
+            let space = space.as_ref().context(
+                "worktree needs a project: pass project (a git repository), or create the chat from a parent that has one",
+            )?;
+            anyhow::ensure!(
+                space.git_detected,
+                "project {} isn't a git repository, so it has no worktrees",
+                space.display_name()
+            );
+        }
         if args.notify {
             let parent = self
                 .godspeed
@@ -1155,6 +1239,31 @@ impl Tools {
             sandbox: access_mode.map_or(sandbox, |mode| mode.legacy().0),
             access_mode,
         };
+        anyhow::ensure!(
+            worktree_choice != WorktreeChoice::New || config.sandbox != SandboxLevel::ReadOnly,
+            "A read-only chat can't edit files, so it doesn't need its own worktree. Use worktree \"parent\", or a mode that may edit."
+        );
+        // Every refusal above comes before anything is created on disk.
+        let placement = self
+            .place_chat(
+                &worktree_choice,
+                space.as_ref(),
+                &device_id,
+                parent_chat.as_ref(),
+                base,
+            )
+            .await?;
+        let mut branch = args
+            .branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .map(str::to_owned);
+        if let Some(placed) = &placement
+            && (branch.is_none() || placed.mode != "parent")
+        {
+            branch = placed.branch.clone().or(branch);
+        }
 
         let chat_id = uuid::Uuid::new_v4().to_string();
         let mut mutate = json!({
@@ -1172,20 +1281,10 @@ impl Tools {
         if args.notify {
             mutate["notifyParent"] = json!(true);
         }
-        if let Some(branch) = args
-            .branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|b| !b.is_empty())
-        {
+        if let Some(branch) = &branch {
             mutate["branch"] = json!(branch);
         }
-        let mut cwd = args
-            .cwd
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(str::to_owned);
+        let mut cwd = explicit_cwd.or_else(|| placement.as_ref().map(|p| p.path.clone()));
         // A projectless chat runs in its own scratch folder on a host that
         // creates them; naming it here keeps createChat and the first run
         // in agreement.
@@ -1206,7 +1305,33 @@ impl Tools {
         if let Some(cwd) = &cwd {
             mutate["cwd"] = json!(cwd);
         }
-        self.godspeed.mutate(mutate).await?;
+        if let Err(err) = self.godspeed.mutate(mutate).await {
+            // A refused chat (e.g. the conductor's sub-agent cap) must not
+            // leave the worktree made for it behind.
+            if let Some(placed) = placement.as_ref().filter(|p| p.mode == "new") {
+                let space = space.as_ref().expect("a new worktree has a project");
+                let removed = self
+                    .godspeed
+                    .call(
+                        zeron_rpc::methods::DELETE_WORKTREE,
+                        json!({
+                            "repoPath": space.path,
+                            "worktreePath": placed.path,
+                            "force": true,
+                            "targetDeviceId": device_id,
+                        }),
+                    )
+                    .await;
+                return Err(match removed {
+                    Ok(_) => err.context("the chat wasn't created, so its new worktree was removed"),
+                    Err(cleanup) => err.context(format!(
+                        "the chat wasn't created, and removing its new worktree at {} failed too: {cleanup}",
+                        placed.path
+                    )),
+                });
+            }
+            return Err(err);
+        }
         if let Some(title) = args
             .title
             .as_deref()
@@ -1229,6 +1354,17 @@ impl Tools {
             "title": args.title,
             "parentChatId": parent_chat_id,
         });
+        if let Some(placed) = &placement {
+            result["branch"] = json!(branch);
+            result["worktree"] = json!({
+                "mode": placed.mode,
+                "path": placed.path,
+                "branch": placed.branch,
+            });
+            if let Some(error) = &placed.setup_error {
+                result["worktree"]["setupError"] = json!(error);
+            }
+        }
         if let Some(prompt) = args.prompt.filter(|p| !p.trim().is_empty()) {
             // The row may not have folded into WatchChats yet; build the
             // chat locally from what we just wrote rather than re-reading.
@@ -1238,7 +1374,7 @@ impl Tools {
                 title: args.title.clone(),
                 archived: false,
                 cwd: cwd.clone(),
-                branch: args.branch.clone(),
+                branch: branch.clone(),
                 checkout_id: None,
                 source_context: None,
                 config: Some(config),
@@ -1616,6 +1752,114 @@ impl Tools {
             )
             .await?;
         Ok(json!({ "chatId": chat.id, "requestId": request_id, "commandId": command_id }))
+    }
+
+    /// Where a new chat in `space` works, per its `worktree` argument.
+    /// `None` keeps the old default (the project folder, or a scratch folder
+    /// without a project). A fresh worktree is created here, on the host,
+    /// through the same path the app uses (environment, ports, setup).
+    async fn place_chat(
+        &self,
+        choice: &WorktreeChoice,
+        space: Option<&Space>,
+        device_id: &str,
+        parent: Option<&Chat>,
+        base: Option<String>,
+    ) -> anyhow::Result<Option<Placement>> {
+        let Some(space) = space else {
+            return Ok(None);
+        };
+        // The parent's checkout counts only when it is in this project on
+        // this host; anywhere else it means nothing here.
+        let parent_here = parent.filter(|p| {
+            p.device_id == device_id && p.space_id.as_deref() == Some(space.id.as_str())
+        });
+        let unsupported = |err: anyhow::Error| {
+            if err.to_string().contains("nknown method") {
+                anyhow::anyhow!("device {device_id} runs an older Godspeed without worktree support for agents; update it there")
+            } else {
+                err
+            }
+        };
+        match choice {
+            WorktreeChoice::Parent => Ok(parent_here.and_then(|p| {
+                Some(Placement {
+                    mode: "parent",
+                    path: p.cwd.clone()?,
+                    branch: p.branch.clone(),
+                    setup_error: None,
+                })
+            })),
+            WorktreeChoice::Existing(target) => {
+                let resolved: zeron_proto::ResolvedWorktree = serde_json::from_value(
+                    self.godspeed
+                        .call(
+                            zeron_rpc::methods::RESOLVE_WORKTREE,
+                            json!({ "repoPath": space.path, "target": target, "targetDeviceId": device_id }),
+                        )
+                        .await
+                        .map_err(unsupported)?,
+                )
+                .context("ResolveWorktree reply")?;
+                Ok(Some(Placement {
+                    mode: "existing",
+                    path: resolved.path,
+                    branch: resolved.branch,
+                    setup_error: None,
+                }))
+            }
+            WorktreeChoice::New => {
+                let base = match base {
+                    Some(base) => base,
+                    None => self.parent_base(space, device_id, parent_here).await,
+                };
+                let outcome: zeron_proto::CreateWorktreeOutcome = serde_json::from_value(
+                    self.godspeed
+                        .call(
+                            zeron_rpc::methods::CREATE_WORKTREE,
+                            json!({
+                                "repoPath": space.path,
+                                "branch": base,
+                                "spaceId": space.id,
+                                "targetDeviceId": device_id,
+                            }),
+                        )
+                        .await
+                        .map_err(unsupported)
+                        .with_context(|| format!("couldn't create a worktree off {base}"))?,
+                )
+                .context("CreateWorktree reply")?;
+                Ok(Some(Placement {
+                    mode: "new",
+                    path: outcome.worktree.path,
+                    branch: Some(outcome.worktree.branch),
+                    setup_error: outcome.setup_error,
+                }))
+            }
+        }
+    }
+
+    /// What a new worktree starts from by default: the branch (or detached
+    /// commit) the parent's checkout is on, else the project's checked-out
+    /// branch (`HEAD` of its folder).
+    async fn parent_base(&self, space: &Space, device_id: &str, parent: Option<&Chat>) -> String {
+        let Some(parent) = parent else {
+            return "HEAD".into();
+        };
+        if let Some(cwd) = parent.cwd.as_deref()
+            && let Ok(reply) = self
+                .godspeed
+                .call(
+                    zeron_rpc::methods::RESOLVE_WORKTREE,
+                    json!({ "repoPath": space.path, "target": cwd, "targetDeviceId": device_id }),
+                )
+                .await
+            && let Ok(resolved) = serde_json::from_value::<zeron_proto::ResolvedWorktree>(reply)
+            && let Some(base) = resolved.branch.or(resolved.head)
+        {
+            return base;
+        }
+        parent.branch.clone().unwrap_or_else(|| "HEAD".into())
     }
 
     /// A chat may start sub-agents when it is top-level or a conductor member
@@ -2235,6 +2479,46 @@ mod tests {
             create_chats.input_schema["properties"]["requests"]["items"]["properties"]["notify"]
                 .is_object()
         );
+    }
+
+    #[test]
+    fn worktree_is_documented_for_single_and_batch_creation() {
+        assert_eq!(WorktreeChoice::parse(None), WorktreeChoice::Parent);
+        assert_eq!(WorktreeChoice::parse(Some(" Parent ")), WorktreeChoice::Parent);
+        assert_eq!(WorktreeChoice::parse(Some("NEW")), WorktreeChoice::New);
+        assert_eq!(
+            WorktreeChoice::parse(Some("feat/x")),
+            WorktreeChoice::Existing("feat/x".into())
+        );
+        for name in ["create_chat", "create_chats"] {
+            let tool = catalog().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(tool.description.contains("worktree \"new\""), "{name}");
+            let props = if name == "create_chat" {
+                tool.input_schema["properties"].clone()
+            } else {
+                tool.input_schema["properties"]["requests"]["items"]["properties"].clone()
+            };
+            let doc = props["worktree"]["description"].as_str().unwrap();
+            assert!(doc.contains("\"new\"") && doc.contains("\"parent\""), "{doc}");
+            assert!(props["base"].is_object());
+        }
+    }
+
+    #[tokio::test]
+    async fn worktree_without_a_project_is_refused_before_any_write() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Origin::default());
+        let err = tools
+            .call("create_chat", json!({ "worktree": "new" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("needs a project"), "{err}");
+        let err = tools
+            .call("create_chat", json!({ "project": "space-1", "worktree": "new", "cwd": "/x" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("can't be combined"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
     }
 
     #[test]
