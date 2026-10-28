@@ -2,6 +2,25 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Review and merge from the PR pane.** Approve, request changes or comment; reply to review
+  threads and resolve or unresolve them; merge with the methods the repository allows (after a
+  confirmation that names the repository, PR, base, head and method, and only if the branch hasn't
+  moved); enable or disable auto-merge; mark a draft ready; close or reopen. Each action shows
+  progress and GitHub's reason when it refuses (for example "Review required by branch
+  protection"). Uses your `gh` login; GitHub only for now.
+- **PR watch that wakes the chat.** A watched pull request is polled every 90 seconds (backing off
+  on errors and rate limits, pausing when the app is idle). Newly failed checks (with the failing
+  log tail), new review comments and a new merge conflict are queued into the PR's chat and shown in
+  Needs you. On by default for PRs a Godspeed chat opened, toggled per PR from the PR pane; the
+  sidebar badge shows an eye on watched PRs. Each event is reported once, the agent's own comments
+  never wake it, and wakes are capped per PR per hour. Optional per-PR "auto-merge when green"
+  turns on GitHub auto-merge once checks pass and the PR is approved; nothing is ever approved for
+  you.
+
 ## 0.5.8 (2026-10-28)
 
 ### Added
