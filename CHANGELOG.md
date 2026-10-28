@@ -52,6 +52,15 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   or type a schedule in plain English ("weekdays at 6pm", "every 30 min", "tomorrow 9am"), see the
   next run live, and send. "Run this on a schedule…" turns any chat into a zoomie, the sidebar has a
   Zoomies section, and the palette has "New zoomie…".
+- **Select several sessions at once.** Cmd-click or Shift-click sidebar rows (Cmd+A in the sidebar
+  takes them all, Esc lets go) and settle, snooze, mark read or unread, pin, archive or delete them
+  together from the bar at the foot of the sidebar. Cmd+Z undoes a whole batch (ported from T3 Code).
+- **Prompt recall and stash.** Up in an empty composer brings back the prompts you sent in that chat
+  (Down goes forward again). Cmd+S sets the draft aside, attachments included, and the "Stashed"
+  chip brings it back or deletes it; stashes stay on this Mac across restarts. Rebind it in
+  Settings → Shortcuts (ported from T3 Code).
+- **Dock badge** with the number of chats waiting on an approval or an answer. Turn it off in
+  Settings → Appearance → "Show badge on Dock icon".
 
 ### Fixed
 

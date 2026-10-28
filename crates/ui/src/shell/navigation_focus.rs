@@ -35,7 +35,7 @@ impl NavigationFocus {
 /// Capture establishes a fallback before child listeners run. Inputs can
 /// claim focus during bubbling, including listeners that stop propagation.
 /// Clicking within an already focused input must not blur it first.
-fn focus_navigation_scope(scope: &FocusHandle, window: &mut Window, cx: &mut App) {
+pub(super) fn focus_navigation_scope(scope: &FocusHandle, window: &mut Window, cx: &mut App) {
     if !scope.contains_focused(window, cx) {
         window.focus(scope, cx);
     }
