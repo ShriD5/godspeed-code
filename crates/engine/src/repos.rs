@@ -2068,6 +2068,8 @@ impl Repos {
                 .map(chrono::DateTime::<chrono::Utc>::from)
         });
         committed.max(touched)
+    }
+
     /// Re-add the linked worktree of `repo_path` holding `cwd` after its
     /// folder was deleted outside Godspeed: on the branch (or detached commit)
     /// git still lists for it, else on `recorded` (root, branch) once git has
