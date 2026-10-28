@@ -473,6 +473,103 @@ async fn check_worktree_setup_and_reuse(use_project_symlink: bool, test_setup: b
     core.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_worktree_is_recreated_before_the_next_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_path = tmp.path().canonicalize().unwrap();
+    let repo_dir = tmp_path.join("repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    git(&repo_dir, &["init", "-b", "main"]);
+    git(&repo_dir, &["config", "user.email", "t@example.com"]);
+    git(&repo_dir, &["config", "user.name", "Test"]);
+    std::fs::write(repo_dir.join("README.md"), "hello\n").unwrap();
+    git(&repo_dir, &["add", "."]);
+    git(&repo_dir, &["commit", "-m", "init"]);
+    let repo_path = repo_dir.to_string_lossy().to_string();
+
+    let cwds: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(RecordingHarness { cwds: cwds.clone() }));
+    let core = EngineCore::assemble(
+        &tmp_path.join("data"),
+        Arc::new(registry),
+        HarnessId::Mock,
+        None,
+    )
+    .expect("engine core assembles");
+    core.workspace
+        .create_space(
+            "space-deleted-worktree",
+            &core.device_id,
+            &repo_path,
+            Some("Repo".into()),
+            true,
+        )
+        .expect("create project");
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            zeron_rpc::methods::SET_WORKTREE_SETTINGS,
+            serde_json::json!({
+                "useCustomDirectory": true,
+                "customDirectory": tmp_path.join("worktrees"),
+            }),
+        )
+        .await
+        .expect("choose worktree directory");
+    client
+        .call(
+            zeron_rpc::methods::MUTATE,
+            serde_json::json!({
+                "op": "createChat",
+                "chatId": CHAT,
+                "deviceId": core.device_id,
+                "spaceId": "space-deleted-worktree",
+            }),
+        )
+        .await
+        .expect("createChat");
+    core.workspace
+        .rename_chat(CHAT, "Pre-titled")
+        .expect("rename chat");
+
+    core.doc_host
+        .queue_command(
+            CHAT,
+            run_payload("msg-del-1", &repo_path, Some("space-deleted-worktree")),
+        )
+        .expect("queue run command");
+    wait_for(|| complete_assistant_count(&core) == 1, "first turn").await;
+    let worktree = cwds.lock().unwrap()[0].clone();
+    let branch = core.workspace.chat(CHAT).unwrap().unwrap().branch.unwrap();
+    std::fs::remove_dir_all(&worktree).unwrap();
+
+    let SessionCommandPayload::Run { mut request, .. } = run_payload("msg-del-2", &worktree, None)
+    else {
+        unreachable!()
+    };
+    request.worktree = None;
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request,
+                message_id: "msg-del-2".into(),
+            },
+        )
+        .expect("queue follow-up");
+    wait_for(|| complete_assistant_count(&core) == 2, "follow-up turn").await;
+    assert_eq!(cwds.lock().unwrap()[1], worktree);
+    let worktree = PathBuf::from(&worktree);
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).unwrap(),
+        "hello\n"
+    );
+    assert_eq!(core.repos.current_branch(&worktree).await.unwrap(), branch);
+
+    core.shutdown().await;
+}
+
 /// Long file paths are supported inside a checkout whose working directory
 /// fits Win32's process-start limit, regardless of global Git configuration.
 #[cfg(windows)]
