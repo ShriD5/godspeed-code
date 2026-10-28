@@ -48,7 +48,6 @@ const MAX_ARCHIVE_ENTRIES: usize = 50_000;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 const RECEIPT: &str = "godspeed-agent.json";
-const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 // ── Index ──────────────────────────────────────────────────────────────────
 

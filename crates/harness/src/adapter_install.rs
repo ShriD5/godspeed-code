@@ -473,6 +473,7 @@ pub(crate) async fn ensure_installed_shim(
     })
 }
 
+#[cfg(test)]
 fn npm_install_plan(
     npm: &Path,
     pin: &NpmPin,
