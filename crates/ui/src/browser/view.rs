@@ -285,6 +285,54 @@ impl BrowserSurface {
             .into_any_element()
     }
 
+    /// "Agent is using the preview", with Stop: the user can always take the
+    /// tab back from the agent's `preview_*` tools.
+    fn agent_strip(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("browser-agent-strip")
+            .h(px(26.0))
+            .px(px(10.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .text_size(crate::typography::ui_rems(11.0))
+            .text_color(theme.text_muted)
+            .role(gpui::Role::Status)
+            .aria_label("Agent is using the preview")
+            .child(
+                div()
+                    .size(px(6.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(theme.accent),
+            )
+            .child(div().flex_1().min_w_0().truncate().child("Agent is using the preview"))
+            .child(
+                div()
+                    .id("browser-agent-stop")
+                    .px(px(6.0))
+                    .h(px(18.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .role(gpui::Role::Button)
+                    .aria_label("Stop the agent using the preview")
+                    .text_color(theme.text)
+                    .hover(|s| s.bg(crate::theme::wash(0.10)))
+                    .on_mouse_down(MouseButton::Left, |_, w, _| w.prevent_default())
+                    .on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx)))
+                    .tooltip(crate::settings::widgets::text_tooltip(
+                        "Take the tab back. The agent's preview tools stop working in this chat until you close this tab.",
+                    ))
+                    .child("Stop"),
+            )
+            .into_any_element()
+    }
+
     fn empty_body(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         if self.page.url.is_none() && self.previews_task.is_some() {
             return self.preview_body(theme, cx);
@@ -854,6 +902,7 @@ impl Render for BrowserSurface {
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Back), |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Navigate(gpui::NavigationDirection::Forward), |_, _, cx| cx.stop_propagation())
             .child(toolbar)
+            .when(self.agent_using(), |el| el.child(self.agent_strip(&theme, cx)))
             .when_some(persistence_notice, |el, message| el.child(div().px(px(12.0)).py(px(8.0))
                 .text_size(crate::typography::ui_rems(11.0)).text_color(theme.text_muted).child(message.to_owned())))
             .when_some(self.validation.clone(), |el, message| el.child(div().px(px(12.0)).py(px(8.0)).text_size(crate::typography::ui_rems(11.0)).text_color(theme.danger).child(message)))

@@ -42,6 +42,7 @@ pub mod limit_recovery;
 pub mod local_import;
 pub mod message_index;
 mod model_catalogs;
+pub mod preview_driver;
 pub mod profile;
 pub mod project_actions;
 pub mod project_transfer;

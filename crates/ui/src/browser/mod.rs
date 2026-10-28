@@ -11,6 +11,7 @@ use macos as native;
 mod windows_webview;
 #[cfg(windows)]
 use windows_webview as native;
+pub mod agent;
 pub mod model;
 pub(crate) mod profile;
 mod view;
@@ -81,6 +82,25 @@ pub enum BrowserEvent {
         marker: u32,
         last: bool,
     },
+    /// The user pressed Stop on the "Agent is using the preview" strip.
+    AgentStopped,
+}
+
+/// How long the "Agent is using the preview" strip lingers after an action.
+const AGENT_LINGER: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Agent control of a tab (`preview_*` tools).
+#[derive(Default)]
+struct AgentControl {
+    /// The agent opened or adopted this tab.
+    owned: bool,
+    /// The user took the tab back with Stop.
+    stopped: bool,
+    /// Actions in flight.
+    busy: u32,
+    /// The strip shows until then after the last action.
+    linger_until: Option<std::time::Instant>,
+    _linger: Option<gpui::Task<()>>,
 }
 
 /// The in-page picker (`annotate.js`), injected only while annotating.
@@ -199,6 +219,7 @@ pub struct BrowserSurface {
     /// The page's pointer cursor (Windows: GPUI owns the cursor).
     #[cfg(windows)]
     page_cursor: gpui::CursorStyle,
+    agent: AgentControl,
 }
 
 impl EventEmitter<BrowserEvent> for BrowserSurface {}
@@ -283,6 +304,7 @@ impl BrowserSurface {
             favicon_generation: 0,
             #[cfg(windows)]
             page_cursor: gpui::CursorStyle::Arrow,
+            agent: AgentControl::default(),
         }
     }
 
@@ -422,6 +444,22 @@ impl BrowserSurface {
     }
 
     pub fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_with_focus(input, true, window, cx);
+    }
+
+    /// Load `input` without moving keyboard focus to the page: an agent's
+    /// navigation must not pull the user's typing out of the composer.
+    pub fn navigate_quietly(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_with_focus(input, false, window, cx);
+    }
+
+    fn navigate_with_focus(
+        &mut self,
+        input: &str,
+        take_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let url = match model::normalize_address(input) {
             Ok(url) => url,
             Err(message) => {
@@ -450,7 +488,7 @@ impl BrowserSurface {
             } else {
                 #[cfg(any(target_os = "macos", windows))]
                 {
-                    native::NativePage::new(window, &self.context.data, self.native_tx.clone())
+                    self.new_native_page(window)
                         .map(|mut native| {
                             native.present(self.presentation);
                             self.native = Some(native);
@@ -466,11 +504,13 @@ impl BrowserSurface {
             if let Err(error) = result {
                 self.page.error = Some(format!("Could not open this page: {error}"));
             }
-            window.focus(&self.focus, cx);
+            if take_focus {
+                window.focus(&self.focus, cx);
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
-            let _ = window;
+            let _ = (window, take_focus);
             cx.open_url(&url);
         }
         cx.emit(BrowserEvent::Changed);
@@ -740,6 +780,124 @@ impl BrowserSurface {
                 self.favicon_task = None;
                 self.favicon_generation += 1;
             }
+        }
+    }
+}
+
+/// Agent control (`preview_*` tools). The shell routes each action here;
+/// these are the tab's primitives.
+impl BrowserSurface {
+    #[cfg(target_os = "macos")]
+    fn new_native_page(&self, window: &mut Window) -> Result<native::NativePage, String> {
+        let page = native::NativePage::with_init_script(
+            window,
+            &self.context.data,
+            self.native_tx.clone(),
+            self.agent.owned.then_some(agent::AGENT_SCRIPT),
+        )?;
+        if self.agent.owned {
+            page.ensure_viewport();
+        }
+        Ok(page)
+    }
+
+    #[cfg(windows)]
+    fn new_native_page(&self, window: &mut Window) -> Result<native::NativePage, String> {
+        native::NativePage::new(window, &self.context.data, self.native_tx.clone())
+    }
+
+    /// The agent drives this tab from now on (until the user stops it).
+    pub fn mark_agent_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.agent.owned {
+            self.agent.owned = true;
+            cx.notify();
+        }
+    }
+
+    pub fn agent_owned(&self) -> bool {
+        self.agent.owned
+    }
+
+    pub fn agent_stopped(&self) -> bool {
+        self.agent.stopped
+    }
+
+    /// Whether the "Agent is using the preview" strip shows.
+    pub fn agent_using(&self) -> bool {
+        self.agent.owned
+            && !self.agent.stopped
+            && (self.agent.busy > 0
+                || self
+                    .agent
+                    .linger_until
+                    .is_some_and(|until| std::time::Instant::now() < until))
+    }
+
+    /// An agent action starts (`true`) or ends (`false`) on this tab.
+    pub fn agent_activity(&mut self, busy: bool, cx: &mut Context<Self>) {
+        if busy {
+            self.agent.busy += 1;
+        } else {
+            self.agent.busy = self.agent.busy.saturating_sub(1);
+            self.agent.linger_until = Some(std::time::Instant::now() + AGENT_LINGER);
+            self.agent._linger = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(AGENT_LINGER).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }));
+        }
+        cx.emit(BrowserEvent::Changed);
+        cx.notify();
+    }
+
+    /// The user takes the tab back: agent actions on it fail from now on.
+    pub fn stop_agent(&mut self, cx: &mut Context<Self>) {
+        if self.agent.owned && !self.agent.stopped {
+            self.agent.stopped = true;
+            self.agent.busy = 0;
+            self.agent.linger_until = None;
+            self.agent._linger = None;
+            cx.emit(BrowserEvent::AgentStopped);
+            cx.emit(BrowserEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// Whether the tab has a page to act on.
+    pub fn agent_ready(&self) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.native.is_none() {
+                return Err("The preview tab has no page open yet; call preview_open first".into());
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err("Agent preview tools are available on macOS for now".into())
+        }
+    }
+
+    /// Run `script` in the page; `done` gets its string result.
+    pub fn agent_evaluate(&self, script: &str, done: Box<dyn FnOnce(Result<String, String>)>) {
+        if let Err(error) = self.agent_ready() {
+            return done(Err(error));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.evaluate_with(script, done);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = script;
+    }
+
+    /// The rendered page as image bytes.
+    pub fn agent_capture(&self, done: Box<dyn FnOnce(Result<Vec<u8>, String>)>) {
+        if let Err(error) = self.agent_ready() {
+            return done(Err(error));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.snapshot(done);
         }
     }
 }
