@@ -68,6 +68,9 @@ pub mod methods {
     /// per pending command. Params `{chatId}`; IPC-only.
     pub const RETRY_DELIVERY: &str = "RetryDelivery";
     pub const FORK_SIDE_CHAT: &str = "ForkSideChat";
+    /// `{chatId}` → `{title}`. Retitles the chat from its conversation so
+    /// far, on the chat's host (whose text model writes titles).
+    pub const REGENERATE_CHAT_TITLE: &str = "RegenerateChatTitle";
     pub const WATCH_DOC_MESSAGES: &str = "WatchDocMessages";
     /// Explicit user navigation, `{chatId}`. Prioritizes this device's sync
     /// connection; automatic subscriptions and retries must not call it.

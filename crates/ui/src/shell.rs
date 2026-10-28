@@ -269,6 +269,7 @@ const CHAT_MENU_ROW_WAKE: u8 = 11;
 const CHAT_MENU_ROW_UNREAD: u8 = 12;
 const CHAT_MENU_ROW_QUESTION_TIMEOUT: u8 = 13;
 const CHAT_MENU_ROW_SCHEDULE: u8 = 14;
+const CHAT_MENU_ROW_REGENERATE_TITLE: u8 = 15;
 
 #[derive(Clone, Copy)]
 enum TabCloseAction {
@@ -6458,6 +6459,42 @@ impl Shell {
         }));
     }
 
+    /// Ask the chat's host to retitle it from the conversation so far; the
+    /// new title arrives through the workspace doc like any rename.
+    fn regenerate_chat_title(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.close_chat_menu(cx);
+        let state = self.state.read(cx);
+        let Some(engine) = state.engine().cloned() else {
+            return;
+        };
+        let Some(device_id) = state
+            .chats
+            .iter()
+            .find(|c| c.id == chat_id)
+            .map(|c| c.device_id.clone())
+        else {
+            return;
+        };
+        let params = serde_json::json!({ "chatId": chat_id, "targetDeviceId": device_id });
+        cx.spawn(async move |_, cx| {
+            let result = engine
+                .client()
+                .call(methods::REGENERATE_CHAT_TITLE, params)
+                .await;
+            cx.update(|cx| match result {
+                Ok(reply) => {
+                    if let Some(title) = reply.get("title").and_then(|t| t.as_str()) {
+                        crate::toast::success(cx, format!("Renamed to {title}"));
+                    }
+                }
+                Err(error) => {
+                    crate::toast::error(cx, format!("Couldn't regenerate the title: {error}"))
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Start editing `chat_id`'s title in place on its row: the sidebar's
     /// session row, or — for a side chat — its branch in the session card.
     fn open_rename_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
@@ -11516,6 +11553,7 @@ impl Shell {
                     .any(|chat| chat.id == chat_id && chat.parent_chat_id.is_some());
             let is_pinned = self.active_sidebar_pins(cx).contains(&chat_id);
             let rename_id = chat_id.clone();
+            let regenerate_id = chat_id.clone();
             let pin_id = chat_id.clone();
             let archive_id = chat_id.clone();
             let delete_id = chat_id.clone();
@@ -11545,7 +11583,29 @@ impl Shell {
                     }))
                     .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                     .child(SharedString::from("Rename"));
-                let menu = menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_RENAME, rename, cx));
+                let regenerate = popover::menu_row(
+                    &theme,
+                    false,
+                    format!("chat-menu-regenerate-title-{chat_id}"),
+                )
+                .id("chat-menu-regenerate-title")
+                .debug_selector(|| "chat-menu-regenerate-title".into())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.regenerate_chat_title(regenerate_id.clone(), cx)
+                }))
+                .child(
+                    icon(icons::MAGIC_STICK_3)
+                        .size(px(16.0))
+                        .text_color(theme.text_muted),
+                )
+                .child(SharedString::from("Regenerate title"));
+                let menu = menu
+                    .child(self.chat_menu_hover_row(CHAT_MENU_ROW_RENAME, rename, cx))
+                    .child(self.chat_menu_hover_row(
+                        CHAT_MENU_ROW_REGENERATE_TITLE,
+                        regenerate,
+                        cx,
+                    ));
                 let menu = if is_side_chat {
                     menu
                 } else {

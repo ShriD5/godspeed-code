@@ -1037,6 +1037,47 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
     tokio::time::sleep(Duration::from_millis(400)).await;
     let chat = core.workspace.chat(chat_id).expect("chat").expect("row");
     assert_eq!(chat.title.as_deref(), Some("My Custom Name"));
+
+    // Until the user asks: Regenerate title replaces it from the conversation
+    // and leaves the branch alone.
+    core.workspace
+        .set_chat_config(
+            chat_id,
+            &zeron_proto::ChatConfig {
+                harness: HarnessId::Mock,
+                model: None,
+                reasoning: None,
+                model_options: Default::default(),
+                sandbox: SandboxLevel::WorkspaceWrite,
+                access_mode: None,
+            },
+        )
+        .expect("set config");
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    let reply = client
+        .call(
+            methods::REGENERATE_CHAT_TITLE,
+            serde_json::json!({ "chatId": chat_id }),
+        )
+        .await
+        .expect("RegenerateChatTitle");
+    assert_eq!(reply["title"], "Fix Login Flow");
+    let chat = core.workspace.chat(chat_id).expect("chat").expect("row");
+    assert_eq!(chat.title.as_deref(), Some("Fix Login Flow"));
+    assert_eq!(chat.branch.as_deref(), Some("godspeed/fix-login-flow"));
+
+    let empty = "chat-title-empty";
+    core.workspace
+        .create_chat(empty, Some("space-title"), None, None, None)
+        .expect("create chat");
+    let error = client
+        .call(
+            methods::REGENERATE_CHAT_TITLE,
+            serde_json::json!({ "chatId": empty }),
+        )
+        .await
+        .expect_err("nothing to title");
+    assert!(error.to_string().contains("no messages"), "{error}");
     core.shutdown().await;
 }
 

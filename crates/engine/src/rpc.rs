@@ -1916,6 +1916,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         // queueing, verification, and the relayed response itself.
         methods::APPLY_HARNESS_UPDATE => Duration::from_secs(20 * 60),
         methods::CREATE_WORKTREE => Duration::from_secs(120),
+        // Three 30-second title runs with backoff.
+        methods::REGENERATE_CHAT_TITLE => Duration::from_secs(120),
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
         _ => Duration::from_secs(30),
@@ -1952,6 +1954,7 @@ fn forwardable(method: &str) -> bool {
     matches!(
         method,
         methods::FORK_SIDE_CHAT
+            | methods::REGENERATE_CHAT_TITLE
             | methods::LIST_HARNESSES
             | methods::INSTALL_HARNESS
             | methods::CANCEL_INSTALL
@@ -2590,6 +2593,18 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "outcome": outcome }))
+            }
+            methods::REGENERATE_CHAT_TITLE => {
+                let p: ChatParams = parse_params(params)?;
+                let titles = self
+                    .sessions
+                    .titles()
+                    .ok_or_else(|| RpcError::Failed("chat titles are unavailable".into()))?;
+                let title = titles
+                    .regenerate(&p.chat_id, &self.doc_host)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "title": title }))
             }
             methods::FORK_SIDE_CHAT => {
                 #[derive(Deserialize)]

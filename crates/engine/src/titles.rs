@@ -1,7 +1,8 @@
 //! Automatic session titles from the first user prompt. Device preferences select
 //! the harness and model; restricted title drivers run outside the repository.
 //! A side chat's title also sees the conversation it branched from. Failures
-//! fall back to the prompt's first words. A user rename always wins.
+//! fall back to the prompt's first words. A user rename always wins, until
+//! the user asks for a regenerated title from the conversation so far.
 //!
 //! [`generate_text`] is the shared restricted run behind every generated text
 //! (titles here; commit messages, PR text and branch names in
@@ -31,6 +32,11 @@ const RETRY_DELAYS_MS: &[u64] = &[250, 1_000];
 /// How much of the branched-from conversation a side chat's title run sees,
 /// counted back from the branch point.
 const FORK_HISTORY_CHARS: usize = 8_000;
+
+/// How much of its own conversation a regenerated title sees, and how much
+/// of that one message may take.
+const CONVERSATION_CHARS: usize = 8_000;
+const CONVERSATION_MESSAGE_CHARS: usize = 2_000;
 
 struct Inner {
     workspace: WorkspaceHost,
@@ -177,6 +183,74 @@ impl TitleGenerator {
         Ok(())
     }
 
+    /// Retitle `chat_id` from its conversation so far (the sidebar's
+    /// Regenerate title). Replaces a title the user set; the worktree branch
+    /// keeps the name it got from the first title.
+    pub async fn regenerate(&self, chat_id: &str, docs: &DocHost) -> Result<String, EngineError> {
+        if !self
+            .inner
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(chat_id.to_string())
+        {
+            return Err(EngineError::Other(
+                "This chat is already being titled".into(),
+            ));
+        }
+        let result = self.regenerate_title(chat_id, docs).await;
+        self.inner
+            .in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(chat_id);
+        result
+    }
+
+    async fn regenerate_title(&self, chat_id: &str, docs: &DocHost) -> Result<String, EngineError> {
+        let chat = self
+            .inner
+            .workspace
+            .chat(chat_id)?
+            .ok_or_else(|| EngineError::Other("chat has no workspace row".into()))?;
+        let id = chat_id.to_string();
+        let docs = docs.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            docs.open_local(&id)?
+                .doc()
+                .read_entries()
+                .map_err(|e| EngineError::Other(e.to_string()))
+        })
+        .await
+        .map_err(|e| EngineError::Other(e.to_string()))??;
+        let conversation = title_conversation(&entries);
+        if conversation.is_empty() {
+            return Err(EngineError::Other(
+                "This chat has no messages to title yet".into(),
+            ));
+        }
+        let fork = chat
+            .parent_chat_id
+            .as_ref()
+            .and_then(|_| fork_source(&entries));
+        let instructions = self.inner.registry.title_settings().title_instructions;
+        let previous = chat.title.as_deref().unwrap_or_default();
+        let prompt = regenerate_title_prompt(previous, &conversation, fork.as_ref(), &instructions)
+            .ok_or_else(|| EngineError::Other("title prompt could not be built".into()))?;
+        let title = generate_text(
+            &self.inner.registry,
+            chat.config.as_ref().map(|config| config.harness),
+            &prompt,
+            std::time::Duration::from_secs(30),
+            clean_title,
+        )
+        .await
+        .ok_or_else(|| EngineError::Other("Couldn't generate a title".into()))?;
+        self.inner.workspace.rename_chat(chat_id, &title)?;
+        tracing::info!(chat = %chat_id, title = %title, "chat title regenerated");
+        Ok(title)
+    }
+
     /// One-shot titling run: collect TextDeltas until Done; retries on failure.
     async fn run_title_model(
         &self,
@@ -201,6 +275,9 @@ impl TitleGenerator {
 /// The title task, sent ahead of the quoted session request.
 pub(crate) const SESSION_TITLE_TASK: &str = "Task: write a session title. Return only a concise 3-5 word title in Title Case, without quotes or punctuation.";
 
+/// The regenerate task, sent ahead of the current title and the conversation.
+pub(crate) const REGENERATE_TITLE_TASK: &str = "Task: rewrite the title of an existing session so the user can recognize it weeks later. Return only a concise 3-6 word title in Title Case, without quotes or punctuation. Read the USER messages first: the original subject stays the subject until the user clearly changes what the session is about. Use ASSISTANT messages only to name what the user referred to vaguely. Title the lasting subject and outcome, not the current step such as plans, tests, commits, pull requests or CI. Keep the current title if it is still accurate; otherwise return a clearly better one.";
+
 /// The chat a side chat branched from: its title and the tail of the
 /// conversation copied in before the branch point.
 #[derive(Debug, PartialEq)]
@@ -221,29 +298,150 @@ fn fork_source(entries: &[zeron_doc::SessionMessageEntry]) -> Option<ForkSource>
     let history = entries[..seam]
         .iter()
         .filter_map(|entry| {
-            let speaker = match entry.role {
+            let (role, text) = entry_text(entry)?;
+            let speaker = match role {
                 zeron_doc::MessageRole::User => "User",
-                zeron_doc::MessageRole::Assistant => "Assistant",
-                zeron_doc::MessageRole::System => return None,
+                _ => "Assistant",
             };
-            let text = entry
-                .parts
-                .iter()
-                .filter_map(|part| match part {
-                    zeron_doc::MessagePart::Text { text, .. } if !text.trim().is_empty() => {
-                        Some(text.trim())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!text.is_empty()).then(|| format!("{speaker}: {text}"))
+            Some(format!("{speaker}: {text}"))
         })
         .collect::<Vec<_>>()
         .join("\n\n");
     let skip = history.chars().count().saturating_sub(FORK_HISTORY_CHARS);
     let history: String = history.chars().skip(skip).collect();
     (!history.is_empty()).then_some(ForkSource { title, history })
+}
+
+/// A user or assistant message's text, or `None` for system rows and
+/// messages without text.
+fn entry_text(entry: &zeron_doc::SessionMessageEntry) -> Option<(zeron_doc::MessageRole, String)> {
+    if entry.role == zeron_doc::MessageRole::System {
+        return None;
+    }
+    let text = entry
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            zeron_doc::MessagePart::Text { text, .. } if !text.trim().is_empty() => {
+                Some(text.trim())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some((entry.role, text))
+}
+
+/// The chat's own conversation (after a side chat's branch point) for a
+/// regenerated title, within [`CONVERSATION_CHARS`]: the first request, then
+/// the latest requests, then the latest answers, in conversation order.
+/// Messages over their share keep their start and end.
+fn title_conversation(entries: &[zeron_doc::SessionMessageEntry]) -> String {
+    let own = entries
+        .iter()
+        .rposition(|entry| {
+            entry
+                .parts
+                .iter()
+                .any(|part| matches!(part, zeron_doc::MessagePart::Fork { .. }))
+        })
+        .map_or(entries, |seam| &entries[seam + 1..]);
+    let messages: Vec<(&str, String)> = own
+        .iter()
+        .filter_map(entry_text)
+        .map(|(role, text)| {
+            let label = match role {
+                zeron_doc::MessageRole::User => "USER",
+                _ => "ASSISTANT",
+            };
+            (label, text)
+        })
+        .collect();
+    let mut chosen: Vec<Option<String>> = vec![None; messages.len()];
+    let mut remaining = CONVERSATION_CHARS;
+    let mut take = |index: usize, reserve: usize, chosen: &mut [Option<String>]| {
+        let (label, text) = &messages[index];
+        let budget = CONVERSATION_MESSAGE_CHARS
+            .min(remaining.saturating_sub(reserve))
+            .saturating_sub(label.len() + 4);
+        if chosen[index].is_some() || budget <= TRUNCATED.len() {
+            return;
+        }
+        let section = format!("{label}:\n{}", keep_ends(text, budget));
+        remaining = remaining.saturating_sub(section.chars().count() + 2);
+        chosen[index] = Some(section);
+    };
+    let is_user = |index: &usize| messages[*index].0 == "USER";
+    if let Some(first) = (0..messages.len()).find(is_user) {
+        take(first, 0, &mut chosen);
+    }
+    // Later requests leave room for at least one answer.
+    for index in (0..messages.len()).rev().filter(is_user) {
+        take(index, CONVERSATION_MESSAGE_CHARS, &mut chosen);
+    }
+    for index in (0..messages.len()).rev().filter(|i| !is_user(i)) {
+        take(index, 0, &mut chosen);
+    }
+    let complete = chosen
+        .iter()
+        .zip(&messages)
+        .all(|(section, (_, text))| section.as_ref().is_some_and(|s| s.ends_with(text.as_str())));
+    let body = chosen
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if complete || body.is_empty() {
+        body
+    } else {
+        format!("[Earlier content truncated]\n\n{body}")
+    }
+}
+
+const TRUNCATED: &str = "\n[Content truncated]\n";
+
+/// `text` cut to `budget` chars by dropping its middle.
+fn keep_ends(text: &str, budget: usize) -> String {
+    let count = text.chars().count();
+    if count <= budget {
+        return text.to_string();
+    }
+    let available = budget.saturating_sub(TRUNCATED.len());
+    let head = available.div_ceil(2);
+    let tail = available - head;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(count - tail).collect();
+    format!("{start}{TRUNCATED}{end}")
+}
+
+/// The regenerate task with the current title, the user's title instructions
+/// when set, a side chat's inherited conversation, then the chat's own.
+fn regenerate_title_prompt(
+    previous: &str,
+    conversation: &str,
+    fork: Option<&ForkSource>,
+    instructions: &str,
+) -> Option<String> {
+    let mut prompt = format!(
+        "{REGENERATE_TITLE_TASK}\nThe current title is {}.",
+        serde_json::to_string(previous).ok()?
+    );
+    let instructions = instructions.trim();
+    if !instructions.is_empty() {
+        prompt.push_str(&format!("\nAdditional instructions: {instructions}"));
+    }
+    if let Some(fork) = fork {
+        prompt.push_str(&format!(
+            "\n\nThis session is a side chat branched from the session {}. Keep the inherited subject and add the direction the side chat took. Do not return the source title unchanged.\n\nConversation before the branch (JSON string, context only):\n{}",
+            serde_json::to_string(&fork.title).ok()?,
+            serde_json::to_string(&fork.history).ok()?,
+        ));
+    }
+    prompt.push_str(&format!(
+        "\n\nSession conversation (JSON string, context only):\n{}",
+        serde_json::to_string(conversation).ok()?
+    ));
+    Some(prompt)
 }
 
 /// The title task, the user's title instructions when set, the conversation a
@@ -716,6 +914,65 @@ mod tests {
         let history = fork_source(&entries).unwrap().history;
         assert_eq!(history.chars().count(), FORK_HISTORY_CHARS);
         assert!(history.ends_with("Assistant: the latest answer"));
+    }
+
+    #[test]
+    fn a_regenerated_title_sees_the_side_chats_own_conversation() {
+        use zeron_doc::MessageRole::{Assistant, User};
+        let entries = [
+            text(User, "inherited request"),
+            seam("Source"),
+            text(User, "make the login page faster"),
+            text(Assistant, "The bundle loads every locale."),
+        ];
+        assert_eq!(
+            title_conversation(&entries),
+            "USER:\nmake the login page faster\n\nASSISTANT:\nThe bundle loads every locale."
+        );
+        assert_eq!(title_conversation(&entries[..2]), "");
+    }
+
+    #[test]
+    fn a_long_conversation_keeps_the_first_request_and_the_latest_messages() {
+        use zeron_doc::MessageRole::{Assistant, User};
+        let mut entries = vec![text(User, "set up the billing page")];
+        for i in 0..20 {
+            entries.push(text(User, &format!("follow-up {i} {}", "x".repeat(600))));
+            entries.push(text(Assistant, &format!("answer {i} {}", "y".repeat(600))));
+        }
+        entries.push(text(
+            User,
+            &format!("{}tail of the latest request", "z".repeat(5_000)),
+        ));
+        let conversation = title_conversation(&entries);
+        assert!(conversation.chars().count() <= CONVERSATION_CHARS + 32);
+        assert!(
+            conversation
+                .starts_with("[Earlier content truncated]\n\nUSER:\nset up the billing page")
+        );
+        assert!(conversation.contains("[Content truncated]"));
+        assert!(conversation.contains("tail of the latest request"));
+        assert!(
+            conversation.contains("answer 19"),
+            "keeps the latest answer"
+        );
+        assert!(!conversation.contains("follow-up 0 "), "drops the middle");
+        let latest = conversation.find("tail of the latest request").unwrap();
+        assert!(
+            conversation.find("answer 19").unwrap() < latest,
+            "in conversation order"
+        );
+    }
+
+    #[test]
+    fn the_regenerate_prompt_names_the_current_title() {
+        let prompt =
+            regenerate_title_prompt("New Session", "USER:\nfix login", None, "Use German").unwrap();
+        assert!(prompt.starts_with(REGENERATE_TITLE_TASK));
+        let current = prompt.find("\"New Session\"").unwrap();
+        let instructions = prompt.find("Additional instructions: Use German").unwrap();
+        let conversation = prompt.find("\"USER:\\nfix login\"").unwrap();
+        assert!(current < instructions && instructions < conversation);
     }
 
     #[test]

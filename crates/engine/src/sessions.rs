@@ -529,6 +529,10 @@ impl SessionsEngine {
         let _ = self.inner.titles.set(titles);
     }
 
+    pub fn titles(&self) -> Option<&crate::titles::TitleGenerator> {
+        self.inner.titles.get()
+    }
+
     /// Wire the turn-start listener (called once at engine assembly).
     pub fn set_turn_listener(&self, listener: TurnListener) {
         let _ = self.inner.turn_listener.set(listener);
