@@ -111,6 +111,12 @@ is recorded below the table):
 | Gemini CLI (`gemini`) | npm `@google/gemini-cli`, `--acp` | ~99 MB unpacked |
 | Kimi CLI (`kimi`) | SHA-256-pinned `tar.gz`, `acp` | no darwin-x86_64 build in the registry |
 
+Last live run (2026-10-28, macOS arm64, scratch HOME, no sign-in): all four installed with
+their checksum verified and answered ACP `initialize` (protocol 1). Advertised sign-in methods:
+Droid `device-pairing`, `factory-api-key`; Copilot `copilot-login`; Gemini `oauth-personal`,
+`gemini-api-key`, `vertex-ai`, `gateway`; Kimi `login`. Godspeed does not drive those
+`authenticate` flows for registry agents yet.
+
 Signing in stays with each agent: set its API key as an instance env var (stored in
 the keychain), or sign in once with the agent's own CLI using the same config dir.
 
