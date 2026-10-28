@@ -1959,8 +1959,8 @@ impl Render for PullRequestDetailPage {
                         column = column
                             .child(assessment_card)
                             .child(checks.mt(px(CARD_GAP)))
-                            .child(self.actions_card(detail, &theme, cx))
-                            .child(self.handoff_card(detail, &theme, cx));
+                            .child(self.handoff_card(detail, &theme, cx))
+                            .child(self.actions_card(detail, &theme, cx));
                         let description = div()
                             .p(px(16.0))
                             .min_h(px(60.0))
