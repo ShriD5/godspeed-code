@@ -36,6 +36,7 @@ pub mod view;
 pub mod voice;
 pub mod workspace;
 pub mod worktree_env;
+pub mod worktree_cleanup;
 
 pub use access::*;
 pub use account_usage::*;
@@ -54,6 +55,12 @@ pub use sidebar_pins::*;
 pub use telemetry::*;
 pub use usage_history::*;
 pub use workspace::*;
+pub use worktree_cleanup::{
+    CleanWorktreesParams, ListWorktreeStorageParams, ResolveWorktreeParams, ResolvedWorktree,
+    WorktreeCleanupDecision,
+    WorktreeCleanupReason, WorktreeCleanupReport, WorktreeCleanupSettings, WorktreeKeepReason,
+    WorktreeStorageEntry,
+};
 pub use worktree_env::{
     WakeWorktreeOutcome, WorktreeCopyRule, WorktreeEnvironment, WorktreeEnvironmentSnapshot,
     WorktreeEnvironmentStatus, WorktreePortBlock, WorktreePorts, WorktreeSetupState,
