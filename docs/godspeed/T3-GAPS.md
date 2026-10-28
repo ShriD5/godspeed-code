@@ -12,7 +12,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 
 ## Top 10 (ranked by value for people running several agents)
 
-1. **Agents drive the in-app browser** (`preview_*` MCP tools: navigate, click, type, snapshot, record) so they can check their own UI work.
+1. ~~**Agents drive the in-app browser**~~ Done in #57 (`preview_*` MCP tools; recording and appearance still missing).
 2. **PR review and merge from the app**: approve / request changes, reply and resolve threads, merge, auto-merge, mark ready. Today Godspeed only posts comments. (PLAN.md phase 5.)
 3. **PR watch that wakes the chat** on failed checks, new review comments and merge conflicts.
 4. **Sidebar multi-select with bulk actions** (settle, snooze, pin, archive, delete many chats at once).
@@ -23,13 +23,12 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 9. **Composer prompt recall (↑) and prompt stash (⌘S).**
 10. **Dock badge for chats awaiting input**, plus iPhone Live Activities per running agent.
 
-Spot-checked against Godspeed's code on 2026-10-28: items 1, 2, 4, 5, 9 and 10 (badge) have no implementation today.
+Spot-checked against Godspeed's code on 2026-10-28: items 2, 4, 5, 9 and 10 (badge) have no implementation today.
 
 ## Desktop app
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
-| Browser | Agent drives the in-app browser: open, navigate, click, type, snapshot, wait, record, set appearance | `apps/server/src/mcp/toolkits/preview/tools.ts`; `apps/web/src/components/settings/settingsSearch.ts` ("Agent browser access") | MISSING: Godspeed MCP tools are chat orchestration only (`crates/mcp/src/tools.rs`); the browser (`crates/ui/src/browser/`) has no agent hook | high |
 | PR | Merge a PR from the app: merge now, pick the merge method | `apps/web/src/components/pullRequest/PullRequestActionsMenu.tsx` ("Merge now", "Merge"); `packages/contracts/src/settings.ts` (`pullRequestMergeMethod`) | MISSING: no merge action in `crates/ui/src/pull_request_*.rs` | high |
 | PR | Submit a review: approve, request changes, or comment; resolve threads | `apps/web/src/components/pullRequest/PullRequestReviewForm.tsx` ("Submit review", "Approve", "Request changes") | PARTIAL: comments and replies post (`pull_request_interactions.rs`); no review verdict, no resolve, threads read-only | high |
 | Sidebar | Select several threads and settle, snooze, pin, or delete them together | `apps/web/src/components/Sidebar.tsx` (bulk "Failed to snooze threads", "Failed to delete threads") | MISSING: one thread at a time in `crates/ui/src/shell/spaces.rs` and `shell.rs` | high |
@@ -165,7 +164,6 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 | Providers | Claude workflow progress: phases and per-agent state rows | `apps/server/src/orchestration-v2/Adapters/claudeWorkflowProgress.ts` | MISSING: no `workflow_progress` handling in `crates/harness/src/claude` | Low |
 | Providers | Provider-native workflow scripts can be run and stopped; the script sits behind a disclosure | `packages/contracts/src/orchestrationV2.ts` (`workflowScript`); MCP `t3_workflow_stop` | MISSING (PARITY section 14) | Low |
 | Providers | Sign in to ChatGPT without installing the Codex CLI | `apps/server/src/provider/CodexManagedRuntime.ts`; `CodexChatGptAuth.ts`; `CodexManagedTokenBroker.ts` | PARTIAL: wraps the CLI login only (PARITY section 1) | Low |
-| Orchestration | Agent-driven browser preview: open, navigate, snapshot, act, evaluate, wait, record | `apps/server/src/mcp/toolkits/preview/tools.ts` (`preview_open`, `preview_snapshot`, `preview_act`, `preview_recording_start`...); `apps/server/src/preview` | MISSING (PARITY section 11) | High |
 | Orchestration | Agent drives a device simulator or emulator: open, screenshot, close | `apps/server/src/mcp/toolkits/device/tools.ts`; `apps/server/src/device/DeviceService.ts` | MISSING | Med |
 | Orchestration | Agent-side delegation with a fresh worktree per child (`isolation: 'worktree'`) | `apps/server/src/mcp/toolkits/orchestrator/tools.ts` (`delegate_task`); `apps/server/src/mcp/toolkits/project/tools.ts` (`t3_thread_launch`, `workspaceStrategy`) | PARTIAL: engine runs accept a `WorktreeSpec` (`crates/proto/src/agent.rs`), but MCP `create_chat` always passes `worktree: None` (`crates/mcp/src/tools.rs`) | High |
 | Orchestration | Delegated tasks with a task id: check status, cancel, and the child wakes the parent on completion or question | `orchestrator/tools.ts` (`task_status`, `task_cancel`); `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`; `apps/server/src/orchestration-v2/ThreadManagementService.ts` | PARTIAL: `create_chat` + `wait_for_turn` only (PARITY section 4) | High |
@@ -233,3 +231,4 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Agents drive the in-app browser: open, navigate, snapshot, screenshot, click, type, scroll, eval, console, wait (`preview_*` MCP tools, macOS). Recording and set-appearance remain open. | #57 |
