@@ -60,14 +60,25 @@ One calm queue for every agent instead of babysitting ten chats.
 
 Godspeed already has the headless engine, chats hosted on another device, and cloud sync.
 
-- Linux release artifacts on every release (`scripts/package-linux.sh`), plus an install script.
-- "Run on a server" wizard in Settings → Devices: SSH host → install Godspeed headless → sign in →
-  start the background service → the server appears as a device you can start chats on.
-- Reliability: reconnecting a viewer never restarts or clobbers a running session; the phone,
-  desktop and Telegram hand a chat back and forth without "already has a writer" errors. Soak test
-  with a long run across lid-close, Wi-Fi drop and engine restart.
+Status (2026-10-28): built, end-to-end test pending a VPS (TEST-CHECKLIST §15e).
+
+- Done: Linux release artifacts on every `v*` tag (`.github/workflows/release-linux.yml`: x86_64
+  and aarch64 tarballs, `.sha256` files, `manifest-linux.json`; HANDOFF "Releases"). Linux
+  installs update from `manifest-linux.json`, idle-only.
+- Done: "Run on a server" wizard in Settings → Devices (`crates/ui/src/settings/servers.rs` on
+  `crates/remote`): `user@host` or a Tailscale peer → BatchMode ssh probe with clear host-key /
+  auth / network errors → download + sha256 check + install into `~/.godspeed/app/<v>` →
+  `godspeed login --stdin-code --org <workspace>` (the user signs in in the browser and pastes the
+  code; the server keeps its own session) → `systemd --user` service with lingering, or a `nohup`
+  supervisor + `@reboot` cron → the server syncs in as a device. Saved servers show online,
+  version and uptime, with Update / Stop / Start / Uninstall.
+- Done: setup, status and start never restart a running engine (scripts are idempotent and
+  content-checked; tests assert it), and installing a new version leaves the running engine on
+  its binary until the engine's idle-time updater moves it.
+- Open: the soak test across lid-close, Wi-Fi drop and engine restart, and the phone / desktop /
+  Telegram writer hand-off, both need the VPS.
 - Later: a hosted option on Cloudflare Sandbox for people without a server.
-- Needs from the owner: a small Linux server (e.g. a Hetzner VPS) for testing.
+- Needs from the owner: a small Linux server (e.g. a Hetzner VPS, Ubuntu 24.04) for testing.
 
 ## Phase 4: your limits go further (1 day, plus phase 0's result)
 
