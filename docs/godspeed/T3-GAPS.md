@@ -16,20 +16,18 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 2. ~~**PR review and merge from the app**: approve / request changes, reply and resolve threads, merge, auto-merge, mark ready.~~ Done (see Done).
 3. ~~**PR watch that wakes the chat** on failed checks, new review comments and merge conflicts.~~ Done (see Done).
 4. ~~**Sidebar multi-select with bulk actions**~~ Done in #55.
-5. **Sub-agents in their own worktree** from MCP `create_chat` (the engine supports it; the tool always passes no worktree).
+5. ~~**Sub-agents in their own worktree** from MCP `create_chat`~~ Done (#59).
 6. **Remote machines over SSH / Tailscale**: install and run the engine on a server (ROADMAP "Next" 1).
-7. **Worktree cleanup policies and a storage page** (auto-delete merged/old worktrees, "Delete now", disk use).
+7. ~~**Worktree cleanup policies and a storage page**~~ Done (#59).
 8. ~~**More agents via the ACP registry** (Factory Droid, Copilot CLI, Kimi, Gemini CLI) and **several instances of one agent** (accounts, binaries, custom models).~~ Done in #62 (uvx agents and Droid/Copilot-specific extensions still missing).
 9. ~~**Composer prompt recall (↑) and prompt stash (⌘S).**~~ Done in #55.
 10. ~~**Dock badge for chats awaiting input**~~ (done in #55), plus iPhone Live Activities per running agent.
 
-Spot-checked against Godspeed's code on 2026-10-28: item 5 has no implementation today.
 
 ## Desktop app
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
-| Worktrees | Cleanup policies: delete merged, settled, unchanged, or deleted-thread worktrees; "Delete now" | `apps/web/src/components/settings/WorktreesSettings.tsx`; `packages/contracts/src/settings.ts` (`WorktreeCleanupRules`) | PARTIAL: orphan worktree listing and dirty-removal guard (`crates/ui/src/settings/orphan_worktrees.rs`, engine `repos.rs`); no policies, no delete-now | high |
 | Desktop | Process list with resource use; stop or force-kill a process | `apps/web/src/components/settings/ProcessSignalActions.tsx`; `DiagnosticsSettings.tsx` | MISSING: no process view or signal actions in `crates/ui` | med |
 | Desktop | Diagnostics page: logs, connection diagnosis, copy trace ID | `apps/web/src/components/settings/DiagnosticsSettings.tsx` ("Copy trace ID") | MISSING: only the connection health dot (`shell.rs`); no logs view | med |
 | Desktop | Open a prompt link: new thread pre-filled with prompt, repo and model | `apps/web/src/components/CommandPalette.tsx` ("Copy prompt link", "...with repo and model"); `apps/desktop/src/app/DesktopLinuxUrlHandler.ts` | MISSING: `godspeed://open/chat/...` opens existing chats only (`crates/ui/src/links.rs`) | med |
@@ -147,7 +145,6 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 | Providers | Provider-native workflow scripts can be run and stopped; the script sits behind a disclosure | `packages/contracts/src/orchestrationV2.ts` (`workflowScript`); MCP `t3_workflow_stop` | MISSING (PARITY section 14) | Low |
 | Providers | Sign in to ChatGPT without installing the Codex CLI | `apps/server/src/provider/CodexManagedRuntime.ts`; `CodexChatGptAuth.ts`; `CodexManagedTokenBroker.ts` | PARTIAL: wraps the CLI login only (PARITY section 1) | Low |
 | Orchestration | Agent drives a device simulator or emulator: open, screenshot, close | `apps/server/src/mcp/toolkits/device/tools.ts`; `apps/server/src/device/DeviceService.ts` | MISSING | Med |
-| Orchestration | Agent-side delegation with a fresh worktree per child (`isolation: 'worktree'`) | `apps/server/src/mcp/toolkits/orchestrator/tools.ts` (`delegate_task`); `apps/server/src/mcp/toolkits/project/tools.ts` (`t3_thread_launch`, `workspaceStrategy`) | PARTIAL: engine runs accept a `WorktreeSpec` (`crates/proto/src/agent.rs`), but MCP `create_chat` always passes `worktree: None` (`crates/mcp/src/tools.rs`) | High |
 | Orchestration | Delegated tasks with a task id: check status, cancel, and the child wakes the parent on completion or question | `orchestrator/tools.ts` (`task_status`, `task_cancel`); `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`; `apps/server/src/orchestration-v2/ThreadManagementService.ts` | PARTIAL: `create_chat` + `wait_for_turn` only (PARITY section 4) | High |
 | Orchestration | Delegate a child to another linked machine, and it reports back | `apps/server/src/peer/RemoteDelegation.ts`; orchestrator `t3_environment_links` | PARTIAL: `create_chat` takes a `device` (`crates/mcp/src/tools.rs`); no wake-back | Med |
 | Orchestration | Agent schedules, lists, pauses, deletes and runs always-on tasks | `orchestrator/tools.ts` (`schedule_task`, `list_scheduled_tasks`, `delete_scheduled_task`); `thread/tools.ts` (`run_scheduled_task_now`) | MISSING: MCP has about 16 tools and none schedule (`crates/mcp/src/tools.rs`) | Med |
@@ -223,3 +220,5 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 | Sidebar multi-select with bulk settle, snooze, read/unread, pin, archive, delete; one undo per batch | #55 |
 | Composer prompt recall (↑/↓ through sent prompts) and per-chat prompt stash (⌘S, Stashed chip) | #55 |
 | Dock badge with the number of chats waiting on an approval or answer | #55 |
+| Sub-agents in their own worktree: MCP `create_chat` / `create_chats` `worktree` (`new`, `parent`, existing path or branch) | #59 |
+| Worktree cleanup policies (merged, untouched 7/14/30 days; changes always kept) and a worktree storage view with Delete now / Delete all eligible | #59 |
