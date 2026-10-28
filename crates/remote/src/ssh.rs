@@ -193,7 +193,7 @@ fn read_to_string_thread<R: Read + Send + 'static>(
 pub(crate) mod fake {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     pub struct FakeSsh {
         pub dir: tempfile::TempDir,
@@ -231,10 +231,6 @@ exit "$(cat "$here/code" 2>/dev/null || echo 0)"
             std::fs::write(&path, script).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             Self { dir }
-        }
-
-        pub fn path(&self) -> &Path {
-            self.dir.path()
         }
 
         pub fn set(&self, name: &str, contents: &str) {
