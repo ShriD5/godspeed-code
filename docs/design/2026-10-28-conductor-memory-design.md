@@ -1,6 +1,7 @@
 # Conductor and Zoomie memory: remember accurately, stay fresh
 
-Status: draft for review, 2026-10-28.
+Status: reviewed by Shrithan, 2026-10-28. Approved once in a PR, with the review changes applied
+(see "Decided in review").
 
 Builds on the conductor design (`docs/design/2026-10-23-conductor-design.md`) and on standing
 instructions (PR #44, `feat/conductor-instructions`). It **revises piece 3** of the conductor design
@@ -128,8 +129,11 @@ the research; the rest are my reading.
 Only three sources produce memory entries:
 
 - **What the user said** in the conductor's chats.
-- **What the repo shows**: code, docs, git history, PRs and CI results. The entry cites the file
-  and lines, commit or PR.
+- **What the repo shows**: code, docs, git history, PRs and CI results. The entry cites its source.
+  **A code or doc citation is a path plus a short content snippet or its hash, plus the commit it
+  was seen at. It never uses line numbers.** Line numbers drift on every edit. A snippet makes "does
+  this still match?" a content check, so the citation survives unrelated edits to the same file.
+  Commits, PRs and CI runs are cited by id.
 - **Outcomes that were checked**: a test that passed or failed, a PR that merged, a fix that held.
 
 Everything else is a **guess** and is labelled as one. This includes a worker's "I think the cause
@@ -149,11 +153,27 @@ other chats can create entries ("the README says releases are on Fridays"). They
 standing orders or widen what the agent may do. The same goes for the user's one-off permissions:
 "go ahead and push" for one task doesn't become "always push."
 
+**Untrusted sources never become facts on their own.** Other chats in the folder, imported chats,
+and PR or issue comments from other people are untrusted. Entries sourced from them are tagged with
+that source and stay guesses until the repo or the user confirms them. This applies to facts as well
+as instructions. (Decided in review.)
+
+**Write budget.** A confused agent must not be able to flood memory. This is the mem0 loop, where a
+made-up fact gets re-saved hundreds of times.
+- Memory writes are capped per turn, and the total entry count per owner is capped.
+- Before adding an entry, the store checks for an existing entry with the same meaning. If one
+  exists, the new evidence patches or confirms that entry instead of adding a near-duplicate.
+- A write over the cap is refused and the refusal is shown. It's never silently dropped.
+- The exact caps and the meaning-match method are the builder's call. (Decided in review.)
+
 ### 2. Saving visibly (decided with the user: option C from the mockups)
 
 - **Facts are saved right away and shown.** These are what the user said, what the repo shows, and
-  checked outcomes. A quiet line in the transcript reads "Remembered *fact* · *source*", with Undo.
-  It never interrupts.
+  checked outcomes. It never interrupts.
+- **One line per turn, not per write.** Writes in a turn are batched: "Remembered 3 things · Undo".
+  The line expands to show each entry and its source, with an Undo for each one. Undo on the
+  collapsed line reverts the whole turn's writes. A turn with one write can show it inline:
+  "Remembered *fact* · *source* · Undo". (Decided in review.)
 - **Guesses about the user ask first.** Technical guesses, like a worker's suspected cause, are saved
   and shown labelled "guess" without a question. They get confirmed by later evidence or fade fast.
   Asking about every technical guess would flood the user. (My call, refining option C.) Guess
@@ -315,6 +335,11 @@ make the conductor more accurate but not fresher.
   same threshold that triggers a full wake-up, §5), and when its context is **nearly full**. The
   threshold is the builder's call; piece 2 suggested about 75–80%. Restarts happen only between
   turns, never mid-turn.
+- **The context-full trigger must fire before the harness compacts itself.** Claude Code
+  auto-compacts near its limit, and other CLIs may too. If the CLI compacts first, the conductor gets
+  exactly the summary-on-summary this section exists to avoid. The trigger reads the existing context
+  meter (`meta.contextUsage`) after each turn. For each harness, it's set below that harness's own
+  compaction point. (Decided in review.)
 - **What the fresh session gets.** It is rebuilt from the standing orders, live context, the memory
   index, the wake-up digest (if any) and the last few turns verbatim. It is not built from a summary
   of a summary.
@@ -379,16 +404,36 @@ call.)
 the same folder, and so do two Zoomies' memories. Scoping memory hard avoids the bleed users dislike
 elsewhere. Sharing project facts between them could come later. (My call.)
 
-## Shipping order
+## Shipping order (decided in review)
 
-1. **The shared memory engine.** This covers the store, entry schema, tools, check-before-use,
-   fading and history, plus a memory view component both features can use.
-2. **Conductors on the engine.** Saving visibly, wake-up, creation as first wake-up, notes changes
-   and the fresh-session restart (§1–§10).
-3. **Zoomies on the engine** (§11), including migrating existing `MEMORY.md` files.
+Three phases. Each is useful by itself and small enough to review. Conductors and Zoomies share one
+memory system (§11) from P1, so the store and tools are built once, scoped per conductor and per
+Zoomie.
 
-Each step is usable by itself. (My call. Zoomies are smaller, so the builder may swap steps 2 and 3
-to prove the engine on Zoomies first.)
+**P1: memory you can see and trust**
+- The memory store (SQLite per owner, with history rows) and the add, patch, confirm and retire tools.
+- What may enter memory (§1), including the write budget, dedupe and untrusted-source tags.
+- The memory view: read, edit, delete, undo and history. A Markdown export.
+- The batched "Remembered … · Undo" line per turn (§2).
+- Check-on-read for repo-cited entries, with content-anchored citations (§3).
+- The §9a restart on context-full, firing before the harness compacts.
+- Notes become the user's scratchpad (§7).
+- Zoomies move from `MEMORY.md` to the store: same tools, memory view and "Remembered" lines, and
+  existing files imported as unconfirmed guesses (§11). (My reading of "one memory system". The
+  every-run wake-up waits for P2.)
+
+**P2: waking up**
+- The bookmark, the cheap diff on each user message, and the side-run digest (§5).
+- The "while you were away" note.
+- The §9a restart on a real gap.
+- Creation as the first wake-up (§6).
+- For Zoomies, every run is a wake-up against its bookmark (§11).
+
+**P3: learning about the user, and tuning**
+- Guess questions about the user (§2), including the Zoomie inbox and Telegram queue (§11).
+- Fade speeds tuned per kind (§4). P1 and P2 run on one default fade window.
+- Reading other Godspeed chats in the folder for wake-up and creation (§5, §6). These entries are
+  untrusted (§1).
 
 ## Constraints
 
@@ -396,6 +441,11 @@ to prove the engine on Zoomies first.)
   16 KiB, and notes plus standing orders already use most of that. Memory needs its own store.
 - **It must be versioned** (§8), **readable** (the user trusts what they can open), and **written
   only through Godspeed's tools**, so every write is attributable and shown in the chat.
+- **Storage (decided in review): one SQLite database per owner in the data dir.** An owner is one
+  conductor or one Zoomie. The engine already runs `agents.sqlite3`
+  (`crates/engine/src/agents/store.rs`) the same way. Entry history is kept as rows: every add,
+  patch, confirm, retire, supersede and undo. A Markdown export keeps it readable. A git-backed
+  directory was considered and rejected, because it adds lock and merge edge cases.
 - **Same device as the conductor**, as in the conductor design. Viewing memory from another device
   or the iPhone app is nice to have, not required.
 - **Personal.** Nothing is committed to the user's repo. Teammates never see it.
@@ -414,7 +464,21 @@ to prove the engine on Zoomies first.)
   context is nearly full (§9a).
 - Zoomies and conductors share the new memory engine (§11).
 
-## My calls (please check)
+## Decided in review (Shrithan, 2026-10-28)
+
+- Ship in three phases (see "Shipping order").
+- One memory system for conductors and Zoomies, scoped per owner.
+- Citations are a path plus a content snippet or hash plus the commit, never line numbers.
+- Storage is one SQLite database per owner in the data dir, with history as rows and a Markdown
+  export.
+- "Remembered" lines are batched to one per turn.
+- A write budget caps writes per turn and total entries, with dedupe by meaning before adding.
+- The context-full restart fires before the harness's own auto-compaction.
+- Untrusted sources (other chats, imported chats) are tagged and never become facts without repo or
+  user confirmation.
+- All of the calls below are approved.
+
+## My calls (approved in review)
 
 - Weight by "last confirmed," not "created," and fade at different speeds per kind.
 - Ruled-out approaches reopen when the code they depended on changes.
@@ -432,20 +496,19 @@ to prove the engine on Zoomies first.)
 - Off-device: "Remembered" lines are read-only, and guesses can be answered by replying.
 - Zoomies: every run is a wake-up. Guesses queue in the inbox or Telegram. Existing `MEMORY.md`
   is imported as unconfirmed guesses. No memory is shared between Zoomies and conductors.
-- Shipping order: shared engine, then conductors, then Zoomies.
 
 ## Left to the builder
 
-- **Storage.** One store for conductor and Zoomie memory, keyed by owner. That could be a file per
-  owner in the data dir (Zoomies use `agents/{id}/MEMORY.md` today), a small database, or a separate
-  sync room. It has to meet the constraints above. A git-backed
-  directory gets history for free.
-- **The entry schema.** At minimum: text, kind, source (with a citation), seen or guess, created,
-  last confirmed, and superseded-by.
+- **The SQLite layout**, and when the Markdown export is written (on change, or on demand from the
+  memory view).
+- **The entry schema.** At minimum: text, kind, source type (user, repo, checked outcome,
+  untrusted), citation (path plus snippet or hash plus commit, or an id), seen or guess, created,
+  last confirmed, superseded-by, and whether the user stated, confirmed or edited it.
 - **The MCP tools** that replace or sit beside `conductor_notes_write`. Add, patch, confirm and
   retire make sense; whole-file replace doesn't. Hermes dropped "replace" because models used it to
   overwrite.
-- **Fade windows, gap thresholds, the size of the loaded index,** and the memory cap.
+- **Fade windows, gap thresholds, the size of the loaded index,** the per-turn write cap, the
+  entry cap, and how duplicate entries are matched by meaning.
 - **Where the memory view lives** and how the inline "Remembered" line and guess questions render in
   GPUI.
 - **How wake-up gets Godspeed chats in the folder** (the message index, `SearchMessages`, isn't yet
