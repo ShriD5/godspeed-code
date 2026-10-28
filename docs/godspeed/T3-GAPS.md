@@ -19,7 +19,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 5. **Sub-agents in their own worktree** from MCP `create_chat` (the engine supports it; the tool always passes no worktree).
 6. **Remote machines over SSH / Tailscale**: install and run the engine on a server (ROADMAP "Next" 1).
 7. **Worktree cleanup policies and a storage page** (auto-delete merged/old worktrees, "Delete now", disk use).
-8. ~~**More agents via the ACP registry** (Factory Droid, Copilot CLI, Kimi, Gemini CLI) and **several instances of one agent** (accounts, binaries, custom models).~~ Done in #PRNUM (uvx agents and Droid/Copilot-specific extensions still missing).
+8. ~~**More agents via the ACP registry** (Factory Droid, Copilot CLI, Kimi, Gemini CLI) and **several instances of one agent** (accounts, binaries, custom models).~~ Done in #62 (uvx agents and Droid/Copilot-specific extensions still missing).
 9. ~~**Composer prompt recall (↑) and prompt stash (⌘S).**~~ Done in #55.
 10. ~~**Dock badge for chats awaiting input**~~ (done in #55), plus iPhone Live Activities per running agent.
 
@@ -213,10 +213,10 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
-| Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #PRNUM |
-| Factory Droid, GitHub Copilot CLI, Gemini CLI and Kimi CLI as ACP agents through the registry (generic ACP driver; Droid elicitation forms and Copilot subagent routing not ported) | #PRNUM |
-| Several instances per provider: binary, config dir, env vars (secrets in the keychain), default and custom models, account; picked in the model picker | #PRNUM |
-| Custom model ids per provider instance (hidden models still missing) | #PRNUM |
+| Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
+| Factory Droid, GitHub Copilot CLI, Gemini CLI and Kimi CLI as ACP agents through the registry (generic ACP driver; Droid elicitation forms and Copilot subagent routing not ported) | #62 |
+| Several instances per provider: binary, config dir, env vars (secrets in the keychain), default and custom models, account; picked in the model picker | #62 |
+| Custom model ids per provider instance (hidden models still missing) | #62 |
 | Agents drive the in-app browser: open, navigate, snapshot, screenshot, click, type, scroll, eval, console, wait (`preview_*` MCP tools, macOS). Recording and set-appearance remain open. | #57 |
 | PR review and merge from the PR pane: approve / request changes / comment, reply to and resolve / unresolve threads, merge (allowed methods, head-pinned, confirmed), enable / disable auto-merge, ready for review, close / reopen (`crates/engine/src/source_control_actions.rs`, `crates/ui/src/pull_request_actions.rs`) | #56 |
 | PR watch that wakes the chat on failed checks (with the failing log tail), new review comments and merge conflicts; Needs-you items; per-PR opt-in, on by default for PRs a chat opened; dedupe, hourly wake cap, backoff, idle pause; optional auto-merge when green and approved (`crates/engine/src/pr_watch.rs`) | #56 |
