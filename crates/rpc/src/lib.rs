@@ -268,6 +268,15 @@ pub mod methods {
     pub const GET_CHANGE_REQUEST: &str = "GetChangeRequest";
     pub const POST_CHANGE_REQUEST_COMMENT: &str = "PostChangeRequestComment";
     pub const GET_CHANGE_REQUEST_DIFF: &str = "GetChangeRequestDiff";
+    /// One explicit review / thread / merge / state write on a pull request
+    /// (`zeron_proto::pull_request_actions::ChangeRequestAction`).
+    pub const PERFORM_CHANGE_REQUEST_ACTION: &str = "PerformChangeRequestAction";
+    /// The repository's allowed merge methods and the PR's auto-merge state.
+    pub const GET_CHANGE_REQUEST_MERGE_OPTIONS: &str = "GetChangeRequestMergeOptions";
+    /// Pull request watches on this engine (checks, reviews, conflicts).
+    pub const LIST_PULL_REQUEST_WATCHES: &str = "ListPullRequestWatches";
+    /// Turn one pull request's watch (and its auto-merge toggle) on or off.
+    pub const SET_PULL_REQUEST_WATCH: &str = "SetPullRequestWatch";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
     /// Permanently restore one chat-owned checkout to its current HEAD and
     /// remove only its untracked, non-ignored paths.
@@ -294,6 +303,17 @@ pub mod methods {
     /// Store an image file an agent shows and fold it into that chat's live
     /// turn as an image part (`show_image`). Local only, like `PublishVisual`.
     pub const PUBLISH_IMAGE: &str = "PublishImage";
+    /// Agents driving the in-app preview browser (`preview_*` MCP tools,
+    /// `zeron_proto::preview_agent`). All IPC-only: the browser lives in the
+    /// window attached to this engine.
+    /// `PreviewActParams {chatId, action}` → the action's result. Fails with
+    /// `PREVIEW_NEEDS_WINDOW` when no window is attached.
+    pub const PREVIEW_ACT: &str = "PreviewAct";
+    /// A desktop window attaches as the preview driver: a stream of
+    /// `PreviewDriverRequest`s for as long as it stays subscribed.
+    pub const WATCH_PREVIEW_DRIVER: &str = "WatchPreviewDriver";
+    /// The window's answer to one request: `PreviewDriverAnswer` → `{}`.
+    pub const ANSWER_PREVIEW_REQUEST: &str = "AnswerPreviewRequest";
     /// Lazy full-tool-output fetch from the R2 sidecar by doc-resident ref
     /// (chat2-sync A3). Edge-direct from any device — never relay-forwarded.
     pub const FETCH_TOOL_BLOB: &str = "FetchToolBlob";

@@ -52,7 +52,12 @@ content sits directly on the chat with no cards or boxed panels, text uses the i
 and type scale, and colors are theme tokens that work on frosted glass or opaque, light or dark. \
 The reader sees the visual above that reply, so don't announce or restate it. To show the \
 reader an image file (a screenshot, a rendered PNG), call `show_image` with its path; don't \
-draw images through `show_visual`.";
+draw images through `show_visual`.\n\
+\n\
+To check UI you built, drive your chat's preview browser in the Godspeed window: `preview_open` \
+a local dev server, `preview_snapshot` for an outline with element refs, `preview_click` / \
+`preview_type` / `preview_scroll` by ref, `preview_wait` for a change, `preview_console` for \
+errors, and `preview_screenshot` to see it. They need the Godspeed window open.";
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -183,14 +188,30 @@ pub async fn handle_request(tools: &Tools, id: Value, method: &str, params: Valu
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             match tools.call(name, arguments).await {
-                Ok(value) => ok_response(
-                    id,
-                    json!({
-                        "content": [{ "type": "text", "text": pretty(&value) }],
-                        "structuredContent": wrap_structured(value),
-                        "isError": false,
-                    }),
-                ),
+                Ok(mut value) => {
+                    // A tool's image (preview_screenshot) rides as an image
+                    // block the model sees, ahead of the text.
+                    let image = value
+                        .as_object_mut()
+                        .and_then(|map| map.remove(crate::preview::IMAGE_KEY));
+                    let mut content = Vec::new();
+                    if let Some(image) = image {
+                        content.push(json!({
+                            "type": "image",
+                            "data": image.get("data").cloned().unwrap_or_default(),
+                            "mimeType": image.get("mimeType").cloned().unwrap_or_else(|| json!("image/png")),
+                        }));
+                    }
+                    content.push(json!({ "type": "text", "text": pretty(&value) }));
+                    ok_response(
+                        id,
+                        json!({
+                            "content": content,
+                            "structuredContent": wrap_structured(value),
+                            "isError": false,
+                        }),
+                    )
+                }
                 Err(message) => ok_response(
                     id,
                     json!({

@@ -6,6 +6,25 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ### Added
 
+- **Review and merge from the PR pane.** Approve, request changes or comment; reply to review
+  threads and resolve or unresolve them; merge with the methods the repository allows (after a
+  confirmation that names the repository, PR, base, head and method, and only if the branch hasn't
+  moved); enable or disable auto-merge; mark a draft ready; close or reopen. Each action shows
+  progress and GitHub's reason when it refuses (for example "Review required by branch
+  protection"). Uses your `gh` login; GitHub only for now.
+- **PR watch that wakes the chat.** A watched pull request is polled every 90 seconds (backing off
+  on errors and rate limits, pausing when the app is idle). Newly failed checks (with the failing
+  log tail), new review comments and a new merge conflict are queued into the PR's chat and shown in
+  Needs you. On by default for PRs a Godspeed chat opened, toggled per PR from the PR pane; the
+  sidebar badge shows an eye on watched PRs. Each event is reported once, the agent's own comments
+  never wake it, and wakes are capped per PR per hour. Optional per-PR "auto-merge when green"
+  turns on GitHub auto-merge once checks pass and the PR is approved; nothing is ever approved for
+  you.
+
+## 0.5.8 (2026-10-28)
+
+### Added
+
 - **Anonymous usage ping.** Once a day, on days you use it, Godspeed sends an anonymous ping:
   version, platform, and how much you used it (chats, turns, approvals, zoomie runs, harness mix,
   token totals, estimated spend at API prices). No prompts, code, paths, names or account details;
@@ -24,6 +43,20 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   teardown commands. Worktrees with uncommitted changes, unpushed commits or a running chat are
   always kept. A storage list shows every Godspeed worktree with its size on disk, branch, last
   activity, state and chat, with "Delete now" and "Delete all eligible" (ported from T3 Code).
+- **Agents drive the preview browser.** In-chat agents get ten `preview_*` tools (open, navigate,
+  snapshot with element refs, screenshot they can see, click, type, scroll, read-only eval, console,
+  wait) on their chat's own preview tab, to check the UI they build. Local dev servers open freely;
+  other sites need network access in the chat's mode or your approval. The tab shows "Agent is using
+  the preview" with a Stop button. macOS for now; details in [docs/mcp.md](docs/mcp.md#agent-preview-tools).
+- **Create zoomies from Home.** A ⚡ chip in the new-chat composer adds a "When" row: pick a preset
+  or type a schedule in plain English ("weekdays at 6pm", "every 30 min", "tomorrow 9am"), see the
+  next run live, and send. "Run this on a schedule…" turns any chat into a zoomie, the sidebar has a
+  Zoomies section, and the palette has "New zoomie…".
+
+### Fixed
+
+- Cursor usage bars match the pools on Cursor's spending page. Contributed by @devnm21.
+- The app icon is the gold Hermes again in every build.
 
 ## 0.5.7 (2026-10-27)
 

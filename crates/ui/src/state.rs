@@ -902,6 +902,9 @@ pub struct AppState {
     transcript_task: Option<Task<()>>,
     change_requests: ChangeRequestClientState,
     change_request_tasks: HashMap<ChangeRequestWatchKey, Task<()>>,
+    /// This device's pull request watches (chat rows mark watched PRs).
+    pull_request_watches: Vec<zeron_proto::pull_request_actions::PullRequestWatch>,
+    pull_request_watch_task: Option<Task<()>>,
     queue_task: Option<Task<()>>,
     change_requests_visible: bool,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
@@ -1015,6 +1018,8 @@ impl AppState {
             transcript_task: None,
             change_requests: ChangeRequestClientState::default(),
             change_request_tasks: HashMap::new(),
+            pull_request_watches: Vec::new(),
+            pull_request_watch_task: None,
             queue_task: None,
             change_requests_visible: true,
             sub_transcripts: HashMap::new(),
@@ -2534,6 +2539,34 @@ impl AppState {
             .change_request_for_chat(chat, &self.spaces)
     }
 
+    /// Replace this device's pull request watches (from the engine).
+    pub fn set_pull_request_watches(
+        &mut self,
+        watches: Vec<zeron_proto::pull_request_actions::PullRequestWatch>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pull_request_watches == watches {
+            return;
+        }
+        crate::change_requests::set_watched_pull_requests(
+            watches
+                .iter()
+                .filter(|watch| watch.active())
+                .map(|watch| watch.url.clone()),
+        );
+        self.pull_request_watches = watches;
+        cx.notify();
+    }
+
+    pub fn pull_request_watch(
+        &self,
+        url: &str,
+    ) -> Option<&zeron_proto::pull_request_actions::PullRequestWatch> {
+        self.pull_request_watches
+            .iter()
+            .find(|watch| watch.url == url)
+    }
+
     pub fn gate(&self) -> GatePhase {
         gate_phase(&self.connection, self.workspace_scope, self.auth.as_ref())
     }
@@ -2556,6 +2589,8 @@ impl AppState {
         self.transcript_task = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
+        self.pull_request_watch_task = None;
+        self.set_pull_request_watches(Vec::new(), cx);
         self.connection = ConnectionStatus::Connecting;
         self.workspace_scope = None;
         self.auth = None;
@@ -2822,6 +2857,7 @@ impl AppState {
         // The one-time anonymous usage stats notice (first launch only).
         crate::settings::telemetry::show_notice_once(handle.clone(), cx);
         self.reconcile_change_request_watches(cx);
+        self.pull_request_watch_task = Some(spawn_pull_request_watch_refresh(cx, handle.clone()));
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
         self.connection = ConnectionStatus::Ready;
@@ -3349,6 +3385,38 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
 }
 
 pub use zeron_proto::version_triple;
+
+/// Re-read this device's pull request watches every two minutes: the engine
+/// starts some on its own (a chat opened the PR) and their state moves.
+fn spawn_pull_request_watch_refresh(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        loop {
+            match handle
+                .client()
+                .call(methods::LIST_PULL_REQUEST_WATCHES, serde_json::json!({}))
+                .await
+            {
+                Ok(value) => {
+                    if let Ok(watches) = serde_json::from_value::<
+                        Vec<zeron_proto::pull_request_actions::PullRequestWatch>,
+                    >(value)
+                        && this
+                            .update(cx, |state, cx| state.set_pull_request_watches(watches, cx))
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+                // An older engine: nothing to show, nothing to poll.
+                Err(RpcError::UnknownMethod(_)) => return,
+                Err(_) => {}
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(120))
+                .await;
+        }
+    })
+}
 
 fn spawn_change_request_watch(
     cx: &mut Context<AppState>,

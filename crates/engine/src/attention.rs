@@ -79,6 +79,8 @@ struct Inner {
     /// When the next waiting question times out, as of the last refresh.
     next_timeout: Mutex<Option<DateTime<Utc>>>,
     snapshot: watch::Sender<AttentionSnapshot>,
+    /// Watched pull requests' events (attached before `start`).
+    pull_requests: Mutex<Option<crate::pr_watch::PrWatchService>>,
     /// One refresh at a time: they answer timeouts.
     refreshing: Mutex<()>,
     wake: Notify,
@@ -132,12 +134,18 @@ impl AttentionService {
                 first_seen: Mutex::new(HashMap::new()),
                 answered: Mutex::new(HashSet::new()),
                 next_timeout: Mutex::new(None),
+                pull_requests: Mutex::new(None),
                 refreshing: Mutex::new(()),
                 wake: Notify::new(),
                 cancel: CancellationToken::new(),
                 tasks: TaskTracker::new(),
             }),
         }
+    }
+
+    /// Fold watched pull requests' events into the queue. Call before `start`.
+    pub fn attach_pull_requests(&self, watch: crate::pr_watch::PrWatchService) {
+        *lock(&self.inner.pull_requests) = Some(watch);
     }
 
     /// Start following state changes. Needs a tokio runtime.
@@ -224,6 +232,14 @@ impl AttentionService {
                 });
                 device_settings::save(&inner.timed_out_path, &*timed_out)?;
             }
+            AttentionKind::PullRequest => {
+                // A pull request event is the watcher's own note: dismissing
+                // it never marks the chat seen.
+                let watch = lock(&inner.pull_requests).clone();
+                let dismissed = watch.is_some_and(|watch| watch.dismiss(item_id));
+                inner.refresh(now);
+                return Ok(dismissed);
+            }
             AttentionKind::Failed | AttentionKind::Finished => {}
         }
         if let Some(run) = &item.agent_run {
@@ -280,6 +296,9 @@ impl Inner {
         let mut sessions = self.sessions.watch_sessions();
         let mut chats = self.workspace.watch_chats();
         let mut agents = self.agents.watch();
+        let mut pull_requests = lock(&self.pull_requests)
+            .as_ref()
+            .map(|watch| watch.watch_inbox());
         loop {
             self.refresh(self.clock.now());
             let next_timeout = *lock(&self.next_timeout);
@@ -292,6 +311,12 @@ impl Inner {
                 changed = sessions.changed() => if changed.is_err() { return },
                 changed = chats.changed() => if changed.is_err() { return },
                 changed = agents.changed() => if changed.is_err() { return },
+                Some(changed) = async {
+                    match pull_requests.as_mut() {
+                        Some(receiver) => Some(receiver.changed().await),
+                        None => std::future::pending().await,
+                    }
+                } => if changed.is_err() { pull_requests = None },
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(sleep) => {}
             }
@@ -370,7 +395,7 @@ impl Inner {
         self.prune_timed_out(&chats);
         let timed_out = lock(&self.timed_out).clone();
         let conductors = self.workspace.conductors().unwrap_or_default();
-        let items = derive::derive(
+        let mut items = derive::derive(
             &Sources {
                 device_id: &self.device_id,
                 chats: &chats,
@@ -383,6 +408,31 @@ impl Inner {
             },
             now,
         );
+        let watch = lock(&self.pull_requests).clone();
+        if let Some(watch) = watch {
+            let open: HashSet<&str> = chats
+                .iter()
+                .filter(|chat| !chat.archived)
+                .map(|chat| chat.id.as_str())
+                .collect();
+            items.extend(watch.inbox_items().into_iter().map(|mut item| {
+                // An archived or deleted chat can't be opened from here.
+                if item.chat_id.as_deref().is_some_and(|id| !open.contains(id)) {
+                    item.actions
+                        .retain(|action| *action != zeron_proto::attention::AttentionAction::Open);
+                }
+                if let Some(chat) = item
+                    .chat_id
+                    .as_deref()
+                    .and_then(|id| chats.iter().find(|chat| chat.id == id))
+                {
+                    item.space_id = chat.space_id.clone();
+                    item.harness = chat.config.as_ref().map(|config| config.harness);
+                }
+                item
+            }));
+            items.sort_by(zeron_proto::attention::attention_order);
+        }
         let snapshot = AttentionSnapshot {
             device_id: self.device_id.clone(),
             items,

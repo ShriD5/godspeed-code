@@ -283,6 +283,7 @@ fn catalog() -> Vec<ToolDef> {
             "required": ["path"]
         }),
     });
+    tools.extend(crate::preview::catalog());
     tools
 }
 
@@ -823,7 +824,10 @@ impl Tools {
     fn callable(&self) -> impl Iterator<Item = ToolDef> {
         let in_chat = self.godspeed.origin().chat_id.is_some();
         catalog().into_iter().filter(move |tool| {
-            in_chat || (![SHOW_VISUAL, SHOW_IMAGE].contains(&tool.name) && !is_conductor_tool(tool.name))
+            in_chat
+                || (![SHOW_VISUAL, SHOW_IMAGE].contains(&tool.name)
+                    && !is_conductor_tool(tool.name)
+                    && !crate::preview::is_preview_tool(tool.name))
         })
     }
 
@@ -852,6 +856,7 @@ impl Tools {
             "conductor_notes_read" => self.conductor_notes_read().await,
             "conductor_notes_write" => self.conductor_notes_write(parse(args)?).await,
             SHOW_IMAGE => self.show_image(parse(args)?).await,
+            name if crate::preview::is_preview_tool(name) => return self.preview(name, args).await,
             other => return Err(format!("unknown tool: {other}")),
         };
         result.map_err(|e| format!("{e:#}"))
@@ -1576,6 +1581,31 @@ impl Tools {
             "image": shown,
             "message": "Shown to the reader above your reply. Don't mention or describe the image; reply with only what it doesn't already show.",
         }))
+    }
+
+    /// One `preview_*` tool: drive this chat's preview tab in the window.
+    async fn preview(&self, name: &str, args: Value) -> Result<Value, String> {
+        let chat_id = self.godspeed.origin().chat_id.clone().ok_or_else(|| {
+            format!("{name} only works from an agent Godspeed launched in a chat")
+        })?;
+        let action = crate::preview::action(name, args)?;
+        let value = self
+            .godspeed
+            .call(
+                zeron_rpc::methods::PREVIEW_ACT,
+                json!({ "chatId": chat_id, "action": action }),
+            )
+            .await
+            .map_err(|e| {
+                // The engine's message is for the agent; drop the method name.
+                let message = format!("{e:#}");
+                let prefix = format!("{}: ", zeron_rpc::methods::PREVIEW_ACT);
+                message
+                    .strip_prefix(&prefix)
+                    .map(str::to_owned)
+                    .unwrap_or(message)
+            })?;
+        Ok(crate::preview::present(&action, value))
     }
 
     async fn interrupt_chat(&self, args: ChatArgs) -> anyhow::Result<Value> {
@@ -2332,6 +2362,28 @@ mod tests {
                         .push((method.to_owned(), params.clone()));
                     RpcReply::Value(json!({ "id": "v:1", "title": params["title"] }))
                 }
+                methods::PREVIEW_ACT => {
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params.clone()));
+                    match params["action"]["action"].as_str() {
+                        Some("screenshot") => RpcReply::Value(json!({
+                            "png": "iVBORw0KGgo=", "width": 640, "height": 400,
+                            "url": "http://localhost:3000/"
+                        })),
+                        Some("snapshot") => RpcReply::Value(json!({
+                            "title": "Todo", "url": "http://localhost:3000/",
+                            "outline": "button \"Add\" [ref=e1]"
+                        })),
+                        Some("click") => {
+                            return Err(RpcError::Failed(
+                                zeron_proto::preview_agent::PREVIEW_NEEDS_WINDOW.into(),
+                            ));
+                        }
+                        _ => RpcReply::Value(json!({ "ok": true })),
+                    }
+                }
                 methods::PUBLISH_IMAGE => {
                     self.writes
                         .lock()
@@ -3073,6 +3125,72 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("standalone"), "{err}");
         assert!(world.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_tools_drive_only_the_calling_chat() {
+        let world = Arc::new(World::default());
+        let outside = tools(world.clone(), Origin::default());
+        assert!(!outside.has("preview_open"));
+        assert!(
+            !outside
+                .list()
+                .await
+                .iter()
+                .any(|t| t.name.starts_with("preview_"))
+        );
+        let inside = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: Some("dev-local".into()),
+            },
+        );
+        for name in crate::preview::TOOLS {
+            assert!(inside.has(name), "{name}");
+        }
+        // Validation happens before the engine is called.
+        let err = inside
+            .call("preview_open", json!({ "url": "file:///etc/passwd" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("blocked"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
+
+        inside
+            .call("preview_open", json!({ "url": "localhost:3000" }))
+            .await
+            .unwrap();
+        let (method, params) = world.writes.lock().unwrap().last().unwrap().clone();
+        assert_eq!(method, methods::PREVIEW_ACT);
+        assert_eq!(params["chatId"], "chat-alpha-1");
+        assert_eq!(params["action"], json!({ "action": "open", "url": "localhost:3000" }));
+
+        let snapshot = inside.call("preview_snapshot", json!({})).await.unwrap();
+        assert!(snapshot.as_str().unwrap().contains("[ref=e1]"));
+
+        // The engine's error reaches the agent as the tool's error.
+        let err = inside
+            .call("preview_click", json!({ "ref": "e1" }))
+            .await
+            .unwrap_err();
+        assert_eq!(err, zeron_proto::preview_agent::PREVIEW_NEEDS_WINDOW);
+
+        // A screenshot comes back as an MCP image block plus text.
+        let reply = crate::jsonrpc::handle_request(
+            &inside,
+            json!(7),
+            "tools/call",
+            json!({ "name": "preview_screenshot", "arguments": {} }),
+        )
+        .await;
+        let content = reply["result"]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["mimeType"], "image/png");
+        assert_eq!(content[0]["data"], "iVBORw0KGgo=");
+        assert_eq!(content[1]["type"], "text");
+        assert!(reply["result"]["structuredContent"].get("$image").is_none());
+        assert_eq!(reply["result"]["structuredContent"]["width"], 640);
     }
 
     #[tokio::test]

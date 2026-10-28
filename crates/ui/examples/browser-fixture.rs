@@ -2,6 +2,9 @@
 mod storage;
 #[path = "browser-fixture/transcript_links.rs"]
 mod transcript_links;
+#[cfg(target_os = "macos")]
+#[path = "browser-fixture/agent_preview.rs"]
+mod agent_preview;
 #[cfg(target_os = "linux")]
 #[path = "browser-fixture/linux.rs"]
 mod linux;
@@ -170,7 +173,12 @@ fn main() -> anyhow::Result<()> {
             let mut request = [0; 4096];
             let n = stream.read(&mut request).unwrap_or(0);
             let request = String::from_utf8_lossy(&request[..n]);
-            let (title, html) = if request.starts_with("GET /two ") {
+            let (title, html) = if request.starts_with("GET /agent ") {
+                (
+                    "Greeter",
+                    "<h1>Greeter</h1><label for='name'>Name</label><input id='name' placeholder='Your name'><button id='go' onclick=\"var n=document.getElementById('name').value;document.getElementById('out').textContent='Hello, '+n;console.log('greeted',n)\">Greet</button><p id='out'></p><script>console.warn('agent fixture ready')</script>",
+                )
+            } else if request.starts_with("GET /two ") {
                 (
                     "Details",
                     "<a href='/'>Back to overview</a><h1>A closer look.</h1><p>Independent navigation, right beside your work.</p>",
@@ -235,6 +243,10 @@ fn main() -> anyhow::Result<()> {
                         "profile": storage_profile, "url": url, "status": "pass"
                     }))?)?;
                     return Ok(());
+                }
+                #[cfg(target_os = "macos")]
+                if std::env::var_os("GODSPEED_AGENT_PREVIEW_FIXTURE_ONLY").is_some() {
+                    return agent_preview::exercise(window, &_origin, &output, cx).await;
                 }
                 if std::env::var_os("GODSPEED_TRANSCRIPT_LINK_FIXTURE_ONLY").is_some() {
                     return transcript_links::exercise(window, state.clone(), &_origin, &output, cx).await;

@@ -12,9 +12,9 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 
 ## Top 10 (ranked by value for people running several agents)
 
-1. **Agents drive the in-app browser** (`preview_*` MCP tools: navigate, click, type, snapshot, record) so they can check their own UI work.
-2. **PR review and merge from the app**: approve / request changes, reply and resolve threads, merge, auto-merge, mark ready. Today Godspeed only posts comments. (PLAN.md phase 5.)
-3. **PR watch that wakes the chat** on failed checks, new review comments and merge conflicts.
+1. ~~**Agents drive the in-app browser**~~ Done in #57 (`preview_*` MCP tools; recording and appearance still missing).
+2. ~~**PR review and merge from the app**: approve / request changes, reply and resolve threads, merge, auto-merge, mark ready.~~ Done (see Done).
+3. ~~**PR watch that wakes the chat** on failed checks, new review comments and merge conflicts.~~ Done (see Done).
 4. **Sidebar multi-select with bulk actions** (settle, snooze, pin, archive, delete many chats at once).
 5. ~~**Sub-agents in their own worktree** from MCP `create_chat`~~ Done (#59).
 6. **Remote machines over SSH / Tailscale**: install and run the engine on a server (ROADMAP "Next" 1).
@@ -23,15 +23,12 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 9. **Composer prompt recall (↑) and prompt stash (⌘S).**
 10. **Dock badge for chats awaiting input**, plus iPhone Live Activities per running agent.
 
-Spot-checked against Godspeed's code on 2026-10-28: items 1, 2, 4, 5, 9 and 10 (badge) have no implementation today.
+Spot-checked against Godspeed's code on 2026-10-28: items 2, 4, 5, 9 and 10 (badge) have no implementation today.
 
 ## Desktop app
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
-| Browser | Agent drives the in-app browser: open, navigate, click, type, snapshot, wait, record, set appearance | `apps/server/src/mcp/toolkits/preview/tools.ts`; `apps/web/src/components/settings/settingsSearch.ts` ("Agent browser access") | MISSING: Godspeed MCP tools are chat orchestration only (`crates/mcp/src/tools.rs`); the browser (`crates/ui/src/browser/`) has no agent hook | high |
-| PR | Merge a PR from the app: merge now, pick the merge method | `apps/web/src/components/pullRequest/PullRequestActionsMenu.tsx` ("Merge now", "Merge"); `packages/contracts/src/settings.ts` (`pullRequestMergeMethod`) | MISSING: no merge action in `crates/ui/src/pull_request_*.rs` | high |
-| PR | Submit a review: approve, request changes, or comment; resolve threads | `apps/web/src/components/pullRequest/PullRequestReviewForm.tsx` ("Submit review", "Approve", "Request changes") | PARTIAL: comments and replies post (`pull_request_interactions.rs`); no review verdict, no resolve, threads read-only | high |
 | Sidebar | Select several threads and settle, snooze, pin, or delete them together | `apps/web/src/components/Sidebar.tsx` (bulk "Failed to snooze threads", "Failed to delete threads") | MISSING: one thread at a time in `crates/ui/src/shell/spaces.rs` and `shell.rs` | high |
 | Desktop | Show a dock badge with the count of threads that need attention | `apps/desktop/src/ipc/methods/notificationBadge.ts` (`app.setBadgeCount`, cleared on focus) | MISSING: no dock or taskbar badge; `crates/ui/src/badges.rs` is message pills, not a badge | med |
 | Desktop | Process list with resource use; stop or force-kill a process | `apps/web/src/components/settings/ProcessSignalActions.tsx`; `DiagnosticsSettings.tsx` | MISSING: no process view or signal actions in `crates/ui` | med |
@@ -104,8 +101,7 @@ Spot-checked against Godspeed's code on 2026-10-28: items 1, 2, 4, 5, 9 and 10 (
 | Git | Submodule handling for new worktrees (modes) | `settingsSearch.ts` ("Submodules") | MISSING | low |
 | Git | Git hosts other than GitHub (GitLab, Bitbucket, Azure DevOps, Forgejo, GitCafe); token sign-in without `gh` | `packages/source-control-gitlab/`, `packages/source-control-bitbucket/`, `apps/web/src/components/settings/SourceControlAppSignInSettings.tsx` | MISSING: GitHub through `gh` only (`crates/engine/src/source_control.rs`) | low |
 | PR | Board filters: open, closed, merged; sort by readiness, updated, size; labels; authors | `apps/web/src/components/pullRequest/pullRequestListOptions.ts`; `PullRequestListFilters.tsx` | PARTIAL: Authored, All, Reviewing; stars; attention triage; open PRs only (`crates/ui/src/pull_requests.rs`) | med |
-| PR | Enable auto-merge; approve workflow runs | `PullRequestActionsMenu.tsx` ("Enable auto-merge", "Approve workflows to run") | MISSING | med |
-| PR | Convert to draft or mark ready; reopen or close; delete branch; update branch from base | `PullRequestActionsMenu.tsx` ("Convert to draft", "Ready for review", "Delete branch", "Update branch with the base branch") | MISSING | med |
+| PR | Convert to draft; delete branch; update branch from base; approve workflow runs | `PullRequestActionsMenu.tsx` ("Convert to draft", "Delete branch", "Update branch with the base branch", "Approve workflows to run") | MISSING (ready for review, close, reopen and auto-merge are done) | med |
 | PR | Review guide tab written by an agent (model and instructions settings) | `apps/web/src/components/pullRequest/PullRequestGuideTab.tsx`; `settingsSearch.ts` ("Review guides (beta)") | PARTIAL: a review handoff sends the PR to a new chat (`crates/ui/src/pull_request_handoff.rs`); no guide tab, model or instructions | low |
 | PR | Manually link a PR to a thread, or unlink it | `apps/web/src/components/pullRequest/LinkPullRequestDialog.tsx` ("Link pull request to thread", "Unlink from thread") | PARTIAL: PRs attach by branch or transcript link (`crates/ui/src/shell/chat_pull_requests.rs`); no manual link | low |
 | PR | Reviewer, label, title and body editing | `PullRequestReviewerPicker.tsx`; `PullRequestLabelPicker.tsx`; `PullRequestTitleEditor.tsx` | MISSING | low |
@@ -132,11 +128,6 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
-| Source control | Merge a PR from the app, choosing merge, squash or rebase | `packages/source-control-core/src/server/PullRequestProvider.ts` (`runAction`); `packages/contracts/src/pullRequest.ts` (PullRequestAction, merge methods) | MISSING: PR pane is read-only plus comment. `crates/engine/src/source_control.rs` only runs `gh pr view/diff/create/comment` | High |
-| Source control | Submit a review (comment, approve, request changes), with line and range comments | `packages/source-control-github/src/server/GitHubPullRequestProvider.ts` (CAPABILITIES review.rangeComment, verdicts); `PullRequestProvider.ts` (`submitReview`) | MISSING: only issue comments (`post_comment`) | High |
-| Source control | Reply to and resolve or unresolve review threads | `PullRequestProvider.ts` (`replyToThread`, `setThreadResolution`) | PARTIAL: threads are read (`crates/engine/src/source_control_review_threads.rs`), no reply or resolve | High |
-| Source control | Watch a PR from a thread: the agent is woken on failed checks, passed required checks, new comments or reviews, and conflicts (wake cap 10 against bot loops) | `apps/server/src/orchestration-v2/PullRequestWatchReactor.ts`; `apps/server/src/orchestration-v2/pullRequestWatch.ts`; MCP `watch_pull_request` (`apps/server/src/mcp/toolkits/pullRequests/tools.ts`) | PARTIAL: `crates/engine/src/change_requests.rs` polls status; `crates/proto/src/change_request_assessment.rs` suggests fixes, but the user must trigger each one. Nothing wakes a chat | High |
-| Source control | Enable or disable auto-merge when checks pass | `pullRequest.ts` (actions `enable-auto-merge`, `disable-auto-merge`); GitHub `autoMergeEnabled` | MISSING: `crates/engine/src/git_actions.rs` rule says "never auto-merge"; ROADMAP "Next" 2 plans merge-when-green | Med |
 | Source control | Mark ready for review, back to draft, close, reopen; delete the branch after merge | `pullRequest.ts` (actions `ready`, `draft`, `close`, `reopen`, `delete-branch`) | MISSING: `gh pr create --draft` only (`source_control.rs`) | Med |
 | Source control | Update a PR branch from its base (merge or rebase) | `pullRequest.ts` (action `update-branch`, `updateMethods`) | MISSING | Med |
 | Source control | Request reviewers, see reviewer candidates, set labels | `PullRequestProvider.ts` (`setReviewerRequest`, `listReviewerCandidates`, `setLabels`) | MISSING (PARITY section 13 agrees) | Med |
@@ -164,7 +155,6 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 | Providers | Claude workflow progress: phases and per-agent state rows | `apps/server/src/orchestration-v2/Adapters/claudeWorkflowProgress.ts` | MISSING: no `workflow_progress` handling in `crates/harness/src/claude` | Low |
 | Providers | Provider-native workflow scripts can be run and stopped; the script sits behind a disclosure | `packages/contracts/src/orchestrationV2.ts` (`workflowScript`); MCP `t3_workflow_stop` | MISSING (PARITY section 14) | Low |
 | Providers | Sign in to ChatGPT without installing the Codex CLI | `apps/server/src/provider/CodexManagedRuntime.ts`; `CodexChatGptAuth.ts`; `CodexManagedTokenBroker.ts` | PARTIAL: wraps the CLI login only (PARITY section 1) | Low |
-| Orchestration | Agent-driven browser preview: open, navigate, snapshot, act, evaluate, wait, record | `apps/server/src/mcp/toolkits/preview/tools.ts` (`preview_open`, `preview_snapshot`, `preview_act`, `preview_recording_start`...); `apps/server/src/preview` | MISSING (PARITY section 11) | High |
 | Orchestration | Agent drives a device simulator or emulator: open, screenshot, close | `apps/server/src/mcp/toolkits/device/tools.ts`; `apps/server/src/device/DeviceService.ts` | MISSING | Med |
 | Orchestration | Delegated tasks with a task id: check status, cancel, and the child wakes the parent on completion or question | `orchestrator/tools.ts` (`task_status`, `task_cancel`); `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`; `apps/server/src/orchestration-v2/ThreadManagementService.ts` | PARTIAL: `create_chat` + `wait_for_turn` only (PARITY section 4) | High |
 | Orchestration | Delegate a child to another linked machine, and it reports back | `apps/server/src/peer/RemoteDelegation.ts`; orchestrator `t3_environment_links` | PARTIAL: `create_chat` takes a `device` (`crates/mcp/src/tools.rs`); no wake-back | Med |
@@ -231,5 +221,8 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Agents drive the in-app browser: open, navigate, snapshot, screenshot, click, type, scroll, eval, console, wait (`preview_*` MCP tools, macOS). Recording and set-appearance remain open. | #57 |
+| PR review and merge from the PR pane: approve / request changes / comment, reply to and resolve / unresolve threads, merge (allowed methods, head-pinned, confirmed), enable / disable auto-merge, ready for review, close / reopen (`crates/engine/src/source_control_actions.rs`, `crates/ui/src/pull_request_actions.rs`) | #56 |
+| PR watch that wakes the chat on failed checks (with the failing log tail), new review comments and merge conflicts; Needs-you items; per-PR opt-in, on by default for PRs a chat opened; dedupe, hourly wake cap, backoff, idle pause; optional auto-merge when green and approved (`crates/engine/src/pr_watch.rs`) | #56 |
 | Sub-agents in their own worktree: MCP `create_chat` / `create_chats` `worktree` (`new`, `parent`, existing path or branch) | #59 |
 | Worktree cleanup policies (merged, untouched 7/14/30 days; changes always kept) and a worktree storage view with Delete now / Delete all eligible | #59 |

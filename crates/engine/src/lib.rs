@@ -42,8 +42,10 @@ pub mod limit_recovery;
 pub mod local_import;
 pub mod message_index;
 mod model_catalogs;
+pub mod preview_driver;
 pub mod profile;
 pub mod project_actions;
+pub mod pr_watch;
 pub mod project_transfer;
 pub mod registry;
 pub mod remote_terminals;
@@ -185,6 +187,8 @@ pub struct EngineCore {
     pub telegram: Telegram,
     /// The "Needs you" inbox over every hosted chat and agent run.
     pub attention: AttentionService,
+    /// Watched pull requests that wake their chats (checks, reviews, conflicts).
+    pub pr_watch: pr_watch::PrWatchService,
     pub delegations: delegation::DelegationNotifications,
     /// Usage-limit recovery: Limited markers, held sends, resume at reset.
     pub limit_recovery: limit_recovery::LimitRecoveryService,
@@ -473,7 +477,11 @@ impl EngineCore {
                 agents: agents.clone(),
             },
         );
+        let pr_watch =
+            pr_watch::PrWatchService::open(data_dir, doc_host.clone(), workspace.clone());
+        attention.attach_pull_requests(pr_watch.clone());
         attention.start();
+        pr_watch.start();
         limit_recovery.start();
         let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());
         chat_lifecycle.start();
@@ -515,6 +523,7 @@ impl EngineCore {
             agents,
             telegram,
             attention,
+            pr_watch,
             delegations,
             limit_recovery,
             chat_lifecycle,
@@ -662,6 +671,7 @@ impl EngineCore {
         .with_agents(self.agents.clone())
         .with_telegram(self.telegram.clone())
         .with_attention(self.attention.clone())
+        .with_pr_watch(self.pr_watch.clone())
         .with_limit_recovery(self.limit_recovery.clone())
         .with_chat_lifecycle(self.chat_lifecycle.clone())
         .with_worktree_cleanup(self.worktree_cleanup.clone())
@@ -701,6 +711,7 @@ impl EngineCore {
         self.telemetry.shutdown().await;
         self.telegram.shutdown().await;
         self.attention.shutdown().await;
+        self.pr_watch.shutdown().await;
         self.delegations.shutdown().await;
         self.agents.shutdown().await;
         self.limit_recovery.shutdown().await;
