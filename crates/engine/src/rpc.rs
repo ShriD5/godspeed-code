@@ -1050,6 +1050,12 @@ impl EngineRpc {
             .ok_or_else(|| RpcError::Failed("auth unavailable".into()))
     }
 
+    fn acp_agents(&self) -> Result<std::sync::Arc<crate::acp_agents::AcpAgents>, RpcError> {
+        self.registry
+            .acp_agents()
+            .ok_or_else(|| RpcError::Failed("the ACP registry is unavailable".into()))
+    }
+
     fn updater(&self) -> Result<&zeron_update::Updater, RpcError> {
         self.updater
             .as_ref()
@@ -1925,6 +1931,9 @@ fn forward_deadline(method: &str) -> std::time::Duration {
             Duration::from_secs(15 * 60)
         }
         methods::INSTALL_HARNESS => Duration::from_secs(15 * 60),
+        // Archives up to 1 GiB, or a large npm tree, plus verification.
+        methods::INSTALL_ACP_AGENT => Duration::from_secs(25 * 60),
+        methods::LIST_ACP_REGISTRY => Duration::from_secs(90),
         // A full fleet of enabled providers is checked two at a time; each
         // provider may need both a CLI probe and a network request.
         methods::CHECK_HARNESS_UPDATES => Duration::from_secs(4 * 60),
@@ -1979,6 +1988,12 @@ fn forwardable(method: &str) -> bool {
             | methods::GET_TITLE_SETTINGS
             | methods::SET_TITLE_SETTINGS
             | methods::SET_HARNESS_ENABLED
+            | methods::LIST_ACP_REGISTRY
+            | methods::INSTALL_ACP_AGENT
+            | methods::UNINSTALL_ACP_AGENT
+            | methods::LIST_PROVIDER_INSTANCES
+            | methods::SAVE_PROVIDER_INSTANCE
+            | methods::DELETE_PROVIDER_INSTANCE
             | methods::LIST_MODELS
             | methods::LIST_SKILLS
             | methods::LIST_COMMANDS
@@ -2518,6 +2533,65 @@ impl RpcService for EngineRpc {
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors())
+            }
+            methods::LIST_ACP_REGISTRY => {
+                #[derive(Deserialize, Default)]
+                #[serde(default, rename_all = "camelCase")]
+                struct Params {
+                    force: bool,
+                }
+                let p: Params = parse_params(params).unwrap_or_default();
+                let acp = self.acp_agents()?;
+                RpcReply::value(&acp.snapshot(p.force).await)
+            }
+            methods::INSTALL_ACP_AGENT | methods::UNINSTALL_ACP_AGENT => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    agent_id: String,
+                }
+                let p: Params = parse_params(params)?;
+                let acp = self.acp_agents()?;
+                let id = zeron_proto::AcpAgentId::new(&p.agent_id).map_err(RpcError::Failed)?;
+                if method == methods::INSTALL_ACP_AGENT {
+                    let installed = acp.install(&p.agent_id).await.map_err(RpcError::Failed)?;
+                    // An update must not swap the binary under a live run:
+                    // new runs pick up the new driver, live ones keep theirs.
+                    self.registry.register_acp_agent(&installed);
+                } else {
+                    let _lease = self.registry.update_lease(HarnessId::Acp(id)).await;
+                    acp.uninstall(&p.agent_id).map_err(RpcError::Failed)?;
+                    self.registry.unregister(HarnessId::Acp(id));
+                }
+                RpcReply::value(&acp.snapshot(false).await)
+            }
+            methods::LIST_PROVIDER_INSTANCES => {
+                RpcReply::value(&self.registry.provider_instances().list())
+            }
+            methods::SAVE_PROVIDER_INSTANCE => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    instance: zeron_proto::ProviderInstance,
+                }
+                let p: Params = parse_params(params)?;
+                self.registry
+                    .save_instance(p.instance)
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&self.registry.provider_instances().list())
+            }
+            methods::DELETE_PROVIDER_INSTANCE => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    harness: HarnessId,
+                    id: String,
+                }
+                let p: Params = parse_params(params)?;
+                self.registry
+                    .delete_instance(p.harness, &p.id)
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&self.registry.provider_instances().list())
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;

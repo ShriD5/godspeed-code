@@ -20,6 +20,17 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   never wake it, and wakes are capped per PR per hour. Optional per-PR "auto-merge when green"
   turns on GitHub auto-merge once checks pass and the PR is approved; nothing is ever approved for
   you.
+- **More agents from the ACP registry.** Settings → Providers → More agents lists the public ACP
+  agent registry (name, publisher, version, install size) and installs, updates or uninstalls an
+  agent in one click, into Godspeed's own data folder. Factory Droid, GitHub Copilot CLI, Gemini
+  CLI and Kimi CLI run through the ACP driver like any other provider. Registry data is treated as
+  untrusted: nothing runs unless it is pinned to a checksum (SHA-256 for binaries; exact npm
+  versions checked against npm's sha512, installed without lifecycle scripts).
+- **Several instances of one agent.** Each provider can have named instances with their own
+  binary, config dir (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …), env vars, default and custom models
+  and account. Secret-looking env values go to the OS keychain, never to settings or logs. Pick an
+  instance in the model picker, where it lists under its provider; existing chats keep the default
+  instance. Receipts name the instance; usage and telemetry still count by provider.
 - **Run on a server.** Settings → Devices → "Run on a server…" installs the headless engine on a
   Linux machine over your own SSH (keys, agent and `~/.ssh/config`; never a password), or on a
   Tailscale machine picked from a list. It checks the connection (with clear host-key and auth

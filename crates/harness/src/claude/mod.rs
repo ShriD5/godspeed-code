@@ -2156,6 +2156,7 @@ mod tests {
 
         let harness = ClaudeHarness::new();
         let request = RunRequest {
+            instance: None,
             mcp: None,
             prompt: "hi".into(),
             harness: None,
@@ -2346,6 +2347,7 @@ mod tests {
     #[test]
     fn runs_ask_the_cli_to_forward_subagent_text() {
         let request = RunRequest {
+            instance: None,
             mcp: None,
             prompt: "hi".into(),
             harness: None,

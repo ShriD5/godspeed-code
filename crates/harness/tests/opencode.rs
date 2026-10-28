@@ -261,6 +261,7 @@ impl FakeOpencode {
 
 fn request(prompt: &str) -> RunRequest {
     RunRequest {
+        instance: None,
         mcp: None,
         prompt: prompt.into(),
         harness: None,

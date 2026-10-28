@@ -1003,6 +1003,7 @@ impl Inner {
             writable_roots: vec![self.agent_dir(&agent.id).to_string_lossy().into_owned()],
         };
         let config = ChatConfig {
+            instance: None,
             harness: agent.draft.harness,
             model: agent.draft.model.clone(),
             reasoning: agent.draft.reasoning,
@@ -1029,6 +1030,7 @@ impl Inner {
             &chat_id,
             SessionCommandPayload::Run {
                 request: RunRequest {
+                    instance: None,
                     prompt,
                     harness: Some(agent.draft.harness),
                     model: agent.draft.model.clone(),

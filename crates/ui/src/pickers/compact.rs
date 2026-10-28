@@ -160,6 +160,7 @@ impl Pickers {
     ) -> AnyElement {
         let theme = Theme::of(cx).for_popup();
         let selected = self.effective_harness(cx) == Some(row.harness)
+            && self.effective_instance(cx) == row.instance
             && self
                 .selected_model(cx)
                 .is_some_and(|model| model.id == row.model.id);
@@ -176,7 +177,19 @@ impl Pickers {
             .as_deref()
             .map(str::trim)
             .filter(|d| row.ambiguous && !d.is_empty())
-            .map(|d| SharedString::from(d.to_owned()));
+            .map(|d| SharedString::from(d.to_owned()))
+            // A named instance's rows say which instance they run on.
+            .or_else(|| {
+                row.instance.as_ref().map(|_| {
+                    SharedString::from(
+                        row.harness_name
+                            .rsplit(" · ")
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    )
+                })
+            });
         let hovered = self.active == ix;
         let details: SharedString = match row.model.description.as_deref() {
             Some(description) => format!(

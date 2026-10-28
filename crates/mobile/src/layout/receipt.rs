@@ -331,6 +331,7 @@ mod tests {
     #[test]
     fn stamped_turn_reads_like_the_desktop() {
         let stats = TurnStats {
+            instance: None,
             harness: Some("claude-code".into()),
             model: Some("claude-fable-5".into()),
             effort: Some("high".into()),

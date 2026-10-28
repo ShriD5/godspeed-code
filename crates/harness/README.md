@@ -66,3 +66,80 @@ The iOS app adds no Install action. `HarnessDescriptor.can_install` already has
 `#[serde(default)]` (`crates/engine/src/registry.rs`); iOS's `WireHarness: Decodable`
 in `apps/ios/Godspeed/Sync/WorkspaceStore.swift` ignores unrecognized keys, including
 `canInstall`. `HarnessCatalog` continues consuming the existing mapped fields.
+
+# More agents from the ACP registry
+
+Settings → Providers → **More agents** lists the public ACP agent registry
+(`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`, the index
+T3 Code reads) as the selected device sees it: name, publisher, version, install
+size and route. One click installs, updates or uninstalls an agent; an installed
+agent then appears as an ordinary provider (`HarnessId::Acp`, wire name
+`acp:<registry id>`) driven by the generic ACP driver (`AcpHarness::registry_agent`):
+turn-boundary steering, models and modes discovered from its own session.
+
+Registry content is untrusted data (`acp_registry.rs`):
+
+- The index is capped at 1 MiB and 512 agents and cached under
+  `{data_dir}/acp-registry/` (refreshed after five minutes; installs always refetch).
+  Each agent is validated field by field as T3 does (bounded ids, names, versions,
+  arguments; HTTPS URLs without credentials; exact-version packages); an invalid agent
+  is dropped. Godspeed also refuses `cmd` paths that leave the archive and registry env
+  that sets `PATH`, `HOME`, `NODE_OPTIONS`, `LD_*`, `DYLD_*` or `GODSPEED_*`.
+- **Nothing runs unless it is pinned to a checksum.** Binary builds install only when
+  the registry pins their SHA-256 (T3 accepts unpinned binaries; Godspeed does not);
+  the download is hashed while it streams and a mismatch discards it. Archives are
+  `.zip`, `.tar.gz` or `.tar.bz2`, or a bare executable; links, devices and paths
+  outside the install dir are refused. npm packages install at the registry's exact
+  version with `--ignore-scripts` (no lifecycle script runs), into their own prefix,
+  and the installed tarball's lockfile `integrity` must equal the sha512 npm publishes
+  for that version. uvx (Python) agents are listed but not installable yet.
+- Installs land in `<adapters>/acp-registry/<agent>/<version>/` (the managed adapters
+  dir above), built in a `.tmp-*` sibling and renamed into place after the entry
+  resolves and the receipt `godspeed-agent.json` is written. An update installs the
+  new version first, then removes the old one; uninstall removes the agent's folder.
+- Registry entries Godspeed already drives natively (Claude, Codex, Cursor, Devin,
+  Grok, Antigravity, OpenCode, Pi) are not offered a second time.
+
+Routes for the agents Godspeed promises, as the live registry listed them on 2026-10-28
+(the live install + `initialize` check is `tests/acp_registry_live.rs`; its last result
+is recorded below the table):
+
+| Agent | Route | Notes |
+| --- | --- | --- |
+| Factory Droid (`factory-droid`) | npm `droid`, args `exec --output-format acp-daemon` | `--ignore-scripts` keeps its postinstall (an unpinned binary relink) from running; its JS shim launches the platform package |
+| GitHub Copilot CLI (`github-copilot-cli`) | npm `@github/copilot`, `--acp` | platform binary arrives as an integrity-checked optional dependency |
+| Gemini CLI (`gemini`) | npm `@google/gemini-cli`, `--acp` | ~99 MB unpacked |
+| Kimi CLI (`kimi`) | SHA-256-pinned `tar.gz`, `acp` | no darwin-x86_64 build in the registry |
+
+Last live run (2026-10-28, macOS arm64, scratch HOME, no sign-in): all four installed with
+their checksum verified and answered ACP `initialize` (protocol 1). Advertised sign-in methods:
+Droid `device-pairing`, `factory-api-key`; Copilot `copilot-login`; Gemini `oauth-personal`,
+`gemini-api-key`, `vertex-ai`, `gateway`; Kimi `login`. Godspeed does not drive those
+`authenticate` flows for registry agents yet.
+
+Signing in stays with each agent: set its API key as an instance env var (stored in
+the keychain), or sign in once with the agent's own CLI using the same config dir.
+
+# Provider instances
+
+Every provider can have named instances besides its implicit default one
+(Settings → Providers → a provider → **Instances**): display name, binary path,
+config/home dir, extra env vars, default model, custom model ids and an account
+label. Instances live per device in `{data_dir}/provider-instances.json`; env
+values that look secret (credential-shaped names such as `*_API_KEY`, `*_TOKEN`,
+or token-shaped values) go to the OS keychain (macOS Keychain, Secret Service on
+Linux; refused elsewhere) and are never written to settings, RPC replies or logs.
+
+Precedence (`instance.rs`): the instance's binary beats the provider's env override,
+which beats PATH detection; the config dir (exported as the provider's own variable:
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, `HERMES_HOME`,
+`PI_CODING_AGENT_DIR`, `GEMINI_HOME`, `GEMINI_CLI_HOME`, `COPILOT_HOME`) beats an
+extra var of the same name, which beats the chat's worktree env and the engine's
+own environment. Cursor, Devin, Muse and OpenCode have no config-dir variable;
+use env vars there. OpenCode shares one server across chats, so per-run env reaches
+it only through its own config.
+
+A chat records its instance id beside its harness (`ChatConfig.instance`,
+`RunRequest.instance`); chats without one run on the default instance exactly as
+before. Usage, receipts and telemetry attribute by provider; receipts add the
+instance name. Telemetry counts registry agents as `other`.

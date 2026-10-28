@@ -2620,6 +2620,7 @@ mod tests {
     #[test]
     fn access_modes_pick_policy_and_sandbox() {
         let mut request = RunRequest {
+            instance: None,
             prompt: String::new(),
             harness: None,
             model: None,

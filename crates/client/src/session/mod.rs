@@ -1463,6 +1463,7 @@ pub(crate) fn run_request_for(
 ) -> RunRequest {
     let config = chat.config.as_ref();
     let mut request = RunRequest {
+        instance: None,
         prompt,
         harness: config.map(|c| c.harness),
         model: config.and_then(|c| c.model.clone()),
@@ -1517,6 +1518,7 @@ mod run_request_tests {
 
     fn config(sandbox: SandboxLevel, access_mode: Option<AccessMode>) -> ChatConfig {
         ChatConfig {
+            instance: None,
             harness: HarnessId::ClaudeCode,
             model: Some("claude-opus-5-5".into()),
             reasoning: None,

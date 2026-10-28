@@ -73,6 +73,10 @@ pub struct ComposerDefaults {
     pub no_project: bool,
     /// Starred models (the picker's favorites rail), in starring order.
     pub favorites: Vec<FavoriteModel>,
+    /// Last provider instance picked per harness (Settings → Providers →
+    /// Instances). Absent — every file from before instances — is the
+    /// provider's default instance.
+    pub instance_by_harness: HashMap<HarnessId, String>,
 }
 
 impl ComposerDefaults {
@@ -131,6 +135,23 @@ impl ComposerDefaults {
         self.harness = Some(harness);
         self.model_by_harness
             .insert(harness, RememberedModel { id, label });
+    }
+
+    /// The remembered instance for a harness; `None` is its default instance.
+    pub fn instance_for(&self, harness: HarnessId) -> Option<&str> {
+        self.instance_by_harness.get(&harness).map(String::as_str)
+    }
+
+    /// Remember (or, with `None`, forget) the instance picked for a harness.
+    pub fn remember_instance(&mut self, harness: HarnessId, instance: Option<String>) {
+        match instance {
+            Some(id) => {
+                self.instance_by_harness.insert(harness, id);
+            }
+            None => {
+                self.instance_by_harness.remove(&harness);
+            }
+        }
     }
 
     /// The remembered option picks for one model, if any.
@@ -301,6 +322,29 @@ mod tests {
         assert!(!defaults.toggle_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
         assert!(!defaults.is_favorite(HarnessId::ClaudeCode, "claude-opus-5"));
         assert!(defaults.is_favorite(HarnessId::Codex, "gpt-5.2-codex"));
+    }
+
+    #[test]
+    fn files_from_before_instances_load_with_default_instances() {
+        let legacy: ComposerDefaults = serde_json::from_str(
+            r#"{"harness":"codex","modelByHarness":{"codex":{"id":"gpt-5","label":"GPT-5"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.harness, Some(HarnessId::Codex));
+        assert!(legacy.instance_for(HarnessId::Codex).is_none());
+        let mut defaults = legacy;
+        defaults.remember_instance(HarnessId::Codex, Some("work".into()));
+        let json = serde_json::to_string(&defaults).unwrap();
+        let back: ComposerDefaults = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.instance_for(HarnessId::Codex), Some("work"));
+        defaults.remember_instance(HarnessId::Codex, None);
+        assert!(defaults.instance_for(HarnessId::Codex).is_none());
+        // Chats from before instances keep running on the default instance.
+        let config: zeron_proto::ChatConfig = serde_json::from_str(
+            r#"{"harness":"claude-code","model":null,"reasoning":null,"sandbox":"workspace-write"}"#,
+        )
+        .unwrap();
+        assert_eq!(config.instance, None);
     }
 
     #[test]

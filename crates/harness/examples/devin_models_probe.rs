@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         turn: Default::default(),
     };
     let request = RunRequest {
+        instance: None,
         mcp: None,
         prompt: "Reply with exactly: Devin model discovery verified. Do not use tools.".into(),
         harness: None,

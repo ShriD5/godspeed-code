@@ -38,6 +38,11 @@ pub struct HarnessDescriptor {
     /// "unknown": consumers fall back to detection (see [`descriptor_enabled`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// The provider's named instances on the listing device (Settings →
+    /// Providers → Instances). The default instance is implicit and never
+    /// listed; engines predating instances omit the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<zeron_proto::ProviderInstanceSummary>,
 }
 
 impl HarnessDescriptor {
@@ -73,6 +78,7 @@ pub fn descriptor_enabled(descriptor: &HarnessDescriptor) -> bool {
 
 fn describe(harness: &dyn Harness) -> HarnessDescriptor {
     HarnessDescriptor {
+        instances: Vec::new(),
         id: harness.id(),
         name: harness.display_name().to_string(),
         supports_steering: harness.supports_steering(),
@@ -155,6 +161,13 @@ pub struct HarnessRegistry {
     gates: Mutex<HashMap<HarnessId, Arc<tokio::sync::RwLock<()>>>>,
     pending_updates: Mutex<std::collections::HashSet<HarnessId>>,
     update_generation: tokio::sync::watch::Sender<u64>,
+    /// Named provider instances on this device (Settings → Providers).
+    instances: Mutex<Arc<crate::provider_instances::ProviderInstances>>,
+    /// Drivers built per instance, keyed by `(harness, instance id)` with the
+    /// fingerprint of the configuration they were built from.
+    instance_drivers: Mutex<HashMap<(HarnessId, String), (String, Arc<dyn Harness>)>>,
+    /// The ACP registry service ("More agents"); `None` until loaded.
+    acp: Mutex<Option<Arc<crate::acp_agents::AcpAgents>>>,
 }
 
 impl Default for HarnessRegistry {
@@ -237,7 +250,167 @@ impl HarnessRegistry {
             gates: Mutex::new(HashMap::new()),
             pending_updates: Mutex::new(std::collections::HashSet::new()),
             update_generation,
+            instances: Mutex::new(Arc::new(Default::default())),
+            instance_drivers: Mutex::new(HashMap::new()),
+            acp: Mutex::new(None),
         }
+    }
+
+    /// Load this device's provider instances (keychain-backed secrets) and
+    /// register every installed ACP-registry agent.
+    pub fn load_providers(&self, data_dir: &Path) {
+        let install_root = zeron_harness::acp_registry::default_root()
+            .unwrap_or_else(|| data_dir.join("adapters").join("acp-registry"));
+        self.load_providers_with(
+            data_dir,
+            install_root,
+            Arc::new(crate::provider_instances::KeychainSecrets),
+        );
+    }
+
+    /// [`Self::load_providers`] with explicit install root and secret store.
+    pub fn load_providers_with(
+        &self,
+        data_dir: &Path,
+        install_root: PathBuf,
+        secrets: Arc<dyn crate::provider_instances::SecretStore>,
+    ) {
+        *self.instances.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(
+            crate::provider_instances::ProviderInstances::load(data_dir, secrets),
+        );
+        let acp = Arc::new(crate::acp_agents::AcpAgents::new(
+            data_dir.join("acp-registry"),
+            install_root,
+        ));
+        for installed in acp.installed() {
+            self.register_acp_agent(&installed);
+        }
+        *self.acp.lock().unwrap_or_else(PoisonError::into_inner) = Some(acp);
+    }
+
+    pub fn provider_instances(&self) -> Arc<crate::provider_instances::ProviderInstances> {
+        self.instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn acp_agents(&self) -> Option<Arc<crate::acp_agents::AcpAgents>> {
+        self.acp.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Register (or re-register after an update) an installed registry agent.
+    pub fn register_acp_agent(&self, installed: &zeron_harness::acp_registry::InstalledAgent) {
+        let Some(harness) = crate::acp_agents::harness_for(installed) else {
+            return;
+        };
+        let id = harness.id();
+        self.forget_instance_drivers(id);
+        let harness: Arc<dyn Harness> = Arc::new(harness);
+        if self.slots().insert(id, Slot::Ready(harness)).is_none() {
+            self.order().push(id);
+        }
+    }
+
+    /// Drop a harness slot (an uninstalled registry agent). Chats that used
+    /// it report it as not installed.
+    pub fn unregister(&self, id: HarnessId) {
+        self.slots().remove(&id);
+        self.order().retain(|known| *known != id);
+        self.forget_instance_drivers(id);
+    }
+
+    fn forget_instance_drivers(&self, id: HarnessId) {
+        self.instance_drivers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(harness, _), _| *harness != id);
+    }
+
+    /// The driver a run on `instance` uses: the provider's own slot for the
+    /// default instance (`None`), else the provider's driver launched from
+    /// the instance's binary with its environment and models.
+    pub fn resolve_instance(
+        &self,
+        id: HarnessId,
+        instance: Option<&str>,
+    ) -> Result<Arc<dyn Harness>, HarnessError> {
+        let Some(instance_id) = instance else {
+            return self.resolve(id);
+        };
+        let resolved = self
+            .provider_instances()
+            .resolve(id, instance_id)
+            .ok_or_else(|| {
+                HarnessError::NotInstalled(format!(
+                    "the {id} instance \"{instance_id}\" no longer exists on this device \
+                     (Settings → Providers)"
+                ))
+            })?;
+        let fingerprint = resolved.fingerprint();
+        let key = (id, instance_id.to_string());
+        if let Some((known, driver)) = self
+            .instance_drivers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            && *known == fingerprint
+        {
+            return Ok(driver.clone());
+        }
+        let inner: Arc<dyn Harness> = match id {
+            HarnessId::Acp(agent) => {
+                let installed = self
+                    .acp_agents()
+                    .and_then(|acp| {
+                        zeron_harness::acp_registry::installed_agent(acp.install_root(), agent.as_str())
+                    })
+                    .ok_or_else(|| HarnessError::NotInstalled(format!("{id}")))?;
+                let mut harness = crate::acp_agents::harness_for(&installed)
+                    .ok_or_else(|| HarnessError::NotInstalled(format!("{id}")))?
+                    .with_env(resolved.env.clone());
+                if let Some(path) = resolved.executable.clone() {
+                    harness = harness.with_executable(path);
+                }
+                Arc::new(harness)
+            }
+            _ => zeron_harness::instance::build_driver(
+                id,
+                resolved.executable.clone(),
+                resolved.env.clone(),
+            )
+            .ok_or_else(|| HarnessError::NotInstalled(format!("{id} has no instances")))?,
+        };
+        let driver: Arc<dyn Harness> = Arc::new(zeron_harness::instance::InstanceHarness::new(
+            inner,
+            resolved.env,
+            resolved.instance.default_model.clone(),
+            resolved.instance.custom_models.clone(),
+        ));
+        self.instance_drivers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, (fingerprint, driver.clone()));
+        Ok(driver)
+    }
+
+    /// Save an instance; cached drivers rebuild from the new configuration.
+    pub fn save_instance(
+        &self,
+        instance: zeron_proto::ProviderInstance,
+    ) -> Result<zeron_proto::ProviderInstance, String> {
+        if instance.harness != HarnessId::Mock && !self.slots().contains_key(&instance.harness) {
+            return Err(format!("unknown harness {}", instance.harness));
+        }
+        let saved = self.provider_instances().save(instance)?;
+        self.forget_instance_drivers(saved.harness);
+        Ok(saved)
+    }
+
+    pub fn delete_instance(&self, harness: HarnessId, id: &str) -> Result<bool, String> {
+        let removed = self.provider_instances().delete(harness, id)?;
+        self.forget_instance_drivers(harness);
+        Ok(removed)
     }
 
     fn gate(&self, id: HarnessId) -> Arc<tokio::sync::RwLock<()>> {
@@ -515,6 +688,7 @@ impl HarnessRegistry {
     /// Catalog for `ListHarnesses` — never forces a lazy resolve.
     pub fn descriptors(&self) -> Vec<HarnessDescriptor> {
         let enabled = self.enabled_set();
+        let instances = self.provider_instances();
         let slots = self.slots();
         self.order()
             .iter()
@@ -526,6 +700,7 @@ impl HarnessRegistry {
                         installed,
                         ..
                     }) => HarnessDescriptor {
+                        instances: Vec::new(),
                         installed: installed(),
                         ..descriptor.clone()
                     },
@@ -533,6 +708,7 @@ impl HarnessRegistry {
                 };
                 descriptor.enabled = Some(enabled.contains(id));
                 descriptor.can_install = zeron_harness::install::can_install(*id);
+                descriptor.instances = instances.summaries(*id);
                 Some(descriptor)
             })
             .collect()
@@ -595,6 +771,7 @@ pub fn default_registry() -> HarnessRegistry {
     }));
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::ClaudeCode,
             name: "Claude Code".into(),
             supports_steering: true,
@@ -623,6 +800,7 @@ pub fn default_registry() -> HarnessRegistry {
     // run/model call actually resolves the slot.
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Codex,
             name: "Codex".into(),
             supports_steering: true,
@@ -648,6 +826,7 @@ pub fn default_registry() -> HarnessRegistry {
     // CursorHarness exactly. Native step-boundary steering; no effort ladder.
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Cursor,
             name: "Cursor".into(),
             supports_steering: true,
@@ -666,6 +845,7 @@ pub fn default_registry() -> HarnessRegistry {
     // advertised model ids instead of a `thought_level` option.
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Devin,
             name: "Devin".into(),
             supports_steering: true,
@@ -684,6 +864,7 @@ pub fn default_registry() -> HarnessRegistry {
     // session via the `thought_level` config option.
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Grok,
             name: "Grok".into(),
             supports_steering: true,
@@ -706,6 +887,7 @@ pub fn default_registry() -> HarnessRegistry {
     // config over ACP today (hybrid reasoning is model-internal).
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Hermes,
             name: "Hermes".into(),
             supports_steering: true,
@@ -721,6 +903,7 @@ pub fn default_registry() -> HarnessRegistry {
     // Native Pi RPC. Thinking levels are discovered per model.
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Pi,
             name: "Pi".into(),
             supports_steering: true,
@@ -738,6 +921,7 @@ pub fn default_registry() -> HarnessRegistry {
     // prompt at the running turn's next model call; efforts are per model.
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Muse,
             name: "Muse Code".into(),
             supports_steering: true,
@@ -757,6 +941,7 @@ pub fn default_registry() -> HarnessRegistry {
     // run sends the first advertised variant id for the picked level).
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Opencode,
             name: "OpenCode".into(),
             supports_steering: true,
@@ -781,6 +966,7 @@ pub fn default_registry() -> HarnessRegistry {
     // the ladder lives on each model rather than the harness.
     registry.register_lazy(
         HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Antigravity,
             name: "Antigravity".into(),
             supports_steering: true,
@@ -803,6 +989,7 @@ mod tests {
     #[test]
     fn mid_turn_steering_requires_support_and_a_step_boundary() {
         let mut descriptor = HarnessDescriptor {
+            instances: Vec::new(),
             id: HarnessId::Mock,
             name: "Mock".into(),
             supports_steering: true,
@@ -830,6 +1017,7 @@ mod tests {
         let counted = calls.clone();
         registry.register_lazy(
             HarnessDescriptor {
+                instances: Vec::new(),
                 id: HarnessId::Mock,
                 name: "Lazy Mock".into(),
                 supports_steering: true,
@@ -971,6 +1159,7 @@ mod tests {
         assert!(descriptor_enabled(&claude));
         // ...and one this device never found is not.
         let missing = HarnessDescriptor {
+            instances: Vec::new(),
             installed: false,
             can_install: false,
             ..parse("grok")
@@ -983,6 +1172,7 @@ mod tests {
     fn test_slot(registry: &HarnessRegistry, id: HarnessId, installed: bool) {
         registry.register_lazy(
             HarnessDescriptor {
+                instances: Vec::new(),
                 id,
                 name: format!("{id:?}"),
                 supports_steering: true,
@@ -1066,6 +1256,7 @@ mod tests {
         let probe = Arc::clone(&found);
         registry.register_lazy(
             HarnessDescriptor {
+                instances: Vec::new(),
                 id: HarnessId::Grok,
                 name: "Grok".into(),
                 supports_steering: true,

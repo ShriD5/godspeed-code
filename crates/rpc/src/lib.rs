@@ -52,6 +52,19 @@ pub mod methods {
     pub const SET_TITLE_SETTINGS: &str = "SetTitleSettings";
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const LIST_MODELS: &str = "ListModels";
+    /// Settings → Providers → "More agents": the ACP registry as the target
+    /// device sees it (`{ force? }` → `AcpRegistrySnapshot`).
+    pub const LIST_ACP_REGISTRY: &str = "ListAcpRegistry";
+    /// Install or update one registry agent (`{ agentId }` → snapshot).
+    pub const INSTALL_ACP_AGENT: &str = "InstallAcpAgent";
+    pub const UNINSTALL_ACP_AGENT: &str = "UninstallAcpAgent";
+    /// Named provider instances on the target device (`→ [ProviderInstance]`;
+    /// secret env values are never included).
+    pub const LIST_PROVIDER_INSTANCES: &str = "ListProviderInstances";
+    /// `{ instance }` → the device's instances after the save.
+    pub const SAVE_PROVIDER_INSTANCE: &str = "SaveProviderInstance";
+    /// `{ harness, id }` → the device's instances after the delete.
+    pub const DELETE_PROVIDER_INSTANCE: &str = "DeleteProviderInstance";
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";

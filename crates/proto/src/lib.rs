@@ -4,6 +4,7 @@
 //! Context occupancy is replicated per chat; billing `Usage` remains a harness passthrough.
 
 pub mod access;
+pub mod acp_registry;
 pub mod account_usage;
 pub mod agent;
 pub mod agents;
@@ -30,6 +31,7 @@ pub mod pricing;
 pub mod pull_request_actions;
 pub mod project_transfer;
 pub mod projectless;
+pub mod provider_instance;
 pub mod sidebar_pins;
 pub mod telegram;
 pub mod build_slots;
@@ -42,6 +44,7 @@ pub mod worktree_env;
 pub mod worktree_cleanup;
 
 pub use access::*;
+pub use acp_registry::*;
 pub use account_usage::*;
 pub use agent::*;
 pub use approval_risk::{ApprovalRisk, approval_risk};
@@ -54,6 +57,9 @@ pub use entities::*;
 pub use git_actions::*;
 pub use message_search::*;
 pub use preview::*;
+pub use provider_instance::{
+    ProviderInstance, ProviderInstanceEnvVar, ProviderInstanceSummary,
+};
 pub use sidebar_pins::*;
 pub use build_slots::*;
 pub use telemetry::*;

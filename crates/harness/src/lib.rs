@@ -304,6 +304,7 @@ pub trait Harness: Send + Sync {
 }
 
 pub mod acp;
+pub mod acp_registry;
 pub(crate) mod adapter_install;
 pub mod approval;
 pub mod archive_install;
@@ -318,6 +319,7 @@ pub mod codex;
 pub mod cursor;
 pub(crate) mod executable;
 pub mod install;
+pub mod instance;
 pub mod limits;
 pub(crate) mod jsonl_tail;
 pub(crate) mod jsonrpc;
@@ -547,7 +549,7 @@ pub(crate) fn crash_message(
     }
 }
 
-pub use acp::AcpHarness;
+pub use acp::{AcpHarness, RegistryAgentLaunch};
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
 pub use cursor::CursorHarness;

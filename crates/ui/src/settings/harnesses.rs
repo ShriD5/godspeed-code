@@ -39,6 +39,10 @@ use crate::theme::Theme;
 
 #[path = "completion.rs"]
 mod completion;
+#[path = "instances.rs"]
+mod instances;
+#[path = "more_agents.rs"]
+mod more_agents;
 
 /// Left inset of an expanded provider's details: the header trigger's
 /// padding, brand tile and gap, so the details start on the title's edge.
@@ -114,6 +118,7 @@ pub fn cli_name(harness: HarnessId) -> &'static str {
         HarnessId::Opencode => "opencode",
         HarnessId::Antigravity => "Antigravity",
         HarnessId::Mock => "mock",
+        HarnessId::Acp(agent) => agent.as_str(),
     }
 }
 
@@ -191,6 +196,16 @@ pub struct HarnessesPage {
     /// "Check now" is running: the button says so, since rows no longer
     /// show "Checking…" while a check is in flight.
     checking_updates: bool,
+    /// "More agents": the ACP registry as the target device sees it.
+    acp: Loadable<zeron_proto::AcpRegistrySnapshot>,
+    /// The registry agent being installed, updated or uninstalled.
+    acp_busy: Option<String>,
+    acp_task: Option<Task<()>>,
+    acp_load_task: Option<Task<()>>,
+    /// Named provider instances on the target device.
+    instances: Loadable<Vec<zeron_proto::ProviderInstance>>,
+    instance_editor: Option<instances::InstanceEditor>,
+    instances_task: Option<Task<()>>,
 }
 
 impl HarnessesPage {
@@ -215,8 +230,16 @@ impl HarnessesPage {
             update_task: None,
             update_action_task: None,
             checking_updates: false,
+            acp: Loadable::Idle,
+            acp_busy: None,
+            acp_task: None,
+            acp_load_task: None,
+            instances: Loadable::Idle,
+            instance_editor: None,
+            instances_task: None,
         };
         page.load(cx);
+        page.load_acp_registry(false, cx);
         page
     }
 
@@ -267,6 +290,9 @@ impl HarnessesPage {
             .flex_col()
             .gap(px(20.0))
             .child(self.render_completion_for(harness, theme, cx))
+            .when(harness != HarnessId::Mock, |details| {
+                details.child(self.render_instances_for(harness, theme, cx))
+            })
             .children(self.render_updates_for(harness, theme, cx))
             .when_some(accounts, |details, accounts| details.child(accounts));
         if motion::reduced_motion(cx) {
@@ -408,7 +434,13 @@ impl HarnessesPage {
         self.updates = Loadable::Idle;
         self.update_task = None;
         self.update_action_task = None;
+        self.acp = Loadable::Idle;
+        self.acp_busy = None;
+        self.acp_task = None;
+        self.instances = Loadable::Idle;
+        self.instance_editor = None;
         self.load(cx);
+        self.load_acp_registry(false, cx);
         cx.notify();
     }
 
@@ -486,6 +518,7 @@ impl HarnessesPage {
                 }
             })
         });
+        self.load_instances(cx);
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let result = engine.client().call(methods::LIST_HARNESSES, params).await;
             this.update(cx, |page, cx| {
@@ -496,6 +529,32 @@ impl HarnessesPage {
                     },
                     Err(err) => Loadable::Error(err.to_string()),
                 };
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Re-fetch the provider rows in place (no skeleton): the installed set or
+    /// the instances changed under them.
+    fn refresh_harness_list(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let params = self.with_target(serde_json::json!({}));
+        let target = self.target_device.clone();
+        self.load_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine.client().call(methods::LIST_HARNESSES, params).await;
+            this.update(cx, |page, cx| {
+                if page.target_device != target {
+                    return;
+                }
+                if let Ok(list) = result
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| serde_json::from_value::<Vec<HarnessDescriptor>>(v).map_err(|e| e.to_string()))
+                {
+                    page.harnesses = Loadable::Ready(list);
+                }
                 cx.notify();
             })
             .ok();
@@ -1295,6 +1354,7 @@ impl Render for HarnessesPage {
 
         let scrollbar = popover::rail(self, "harnesses-page-scrollbar", &theme, cx);
         let access = self.render_default_access(&theme, cx);
+        let more_agents = self.render_more_agents(&theme, cx);
 
         div()
             .id("harnesses-page-host")
@@ -1331,7 +1391,8 @@ impl Render for HarnessesPage {
                                 )
                                 .children(update_error)
                                 .child(access)
-                                .child(body),
+                                .child(body)
+                                .child(div().mt(px(24.0)).child(more_agents)),
                         ),
                 )
                 .fade_overflow_y(&self.scroll.scroll),
@@ -1356,6 +1417,7 @@ mod tests {
             super::HarnessesPage::new(state, cx)
         });
         let descriptor = |id, name: &str| zeron_engine::registry::HarnessDescriptor {
+            instances: Vec::new(),
             id,
             name: name.into(),
             supports_steering: false,
