@@ -141,6 +141,9 @@ fontdb.workspace = true
 ttf-parser.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+# Zoomie schedules: show times in the schedule's IANA zone (the engine
+# already builds this version).
+chrono-tz = "0.10"
 anyhow.workspace = true
 tracing.workspace = true
 sha2.workspace = true

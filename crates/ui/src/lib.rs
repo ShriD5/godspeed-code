@@ -98,6 +98,7 @@ pub mod usage_history;
 pub mod visuals;
 pub mod voice;
 mod workspace_links;
+pub mod zoomies;
 
 /// Building a macOS gpui platform (even a headless one) reads the keyboard
 /// layout, and macOS 27 aborts the process when two threads do that at once.

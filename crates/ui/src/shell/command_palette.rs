@@ -289,6 +289,7 @@ impl Section {
 #[derive(Clone, Debug, PartialEq)]
 enum Command {
     NewChat,
+    NewZoomie,
     NewProject,
     NewConductor,
     Settings,
@@ -306,6 +307,7 @@ impl Command {
     fn label(&self) -> &'static str {
         match self {
             Self::NewChat => "New chat",
+            Self::NewZoomie => "New zoomie…",
             Self::NewProject => "New project",
             Self::NewConductor => "New conductor",
             Self::Settings => "Open settings",
@@ -321,9 +323,18 @@ impl Command {
         }
     }
 
+    /// Extra words a command answers to.
+    fn keywords(&self) -> &'static str {
+        match self {
+            Self::NewZoomie => "zoomie schedule recurring cron automate always-on agent",
+            _ => "",
+        }
+    }
+
     fn icon(&self) -> &'static str {
         match self {
             Self::NewChat => icons::PEN_NEW_SQUARE,
+            Self::NewZoomie => icons::FAST_TIER,
             Self::NewProject => icons::FOLDER,
             Self::NewConductor => icons::WIDGET,
             Self::Settings => icons::SETTINGS,
@@ -419,6 +430,7 @@ fn matches_query(query: &str, text: &str) -> bool {
 fn commands_for(query: &str, is_dark: bool, can_archive: bool) -> Vec<Command> {
     [
         Command::NewChat,
+        Command::NewZoomie,
         Command::NewProject,
         Command::NewConductor,
         Command::Settings,
@@ -431,7 +443,9 @@ fn commands_for(query: &str, is_dark: bool, can_archive: bool) -> Vec<Command> {
     ]
     .into_iter()
     .chain(can_archive.then_some(Command::ArchiveThread))
-    .filter(|command| matches_query(query, command.label()))
+    .filter(|command| {
+        matches_query(query, command.label()) || matches_query(query, command.keywords())
+    })
     .collect()
 }
 
@@ -1129,6 +1143,7 @@ impl Shell {
         self.close_command_palette(window, cx);
         match row.kind {
             RowKind::Command(Command::NewChat) => self.open_new_session(None, cx),
+            RowKind::Command(Command::NewZoomie) => self.open_zoomie_composer(cx),
             RowKind::Command(Command::NewProject) => self.open_add_space(cx),
             RowKind::Command(Command::NewConductor) => self.open_conductor_sheet(cx),
             RowKind::Command(Command::Settings) => self.open_last_settings(cx),
@@ -1199,6 +1214,7 @@ impl Shell {
             Command::ArchiveThread => ShortcutId::ArchiveSession,
             Command::MissionControl => ShortcutId::MissionControl,
             Command::NewConductor
+            | Command::NewZoomie
             | Command::Theme(_)
             | Command::GitCommit
             | Command::GitPush
@@ -3173,6 +3189,7 @@ mod tests {
             commands_for("", true, false),
             vec![
                 Command::NewChat,
+                Command::NewZoomie,
                 Command::NewProject,
                 Command::NewConductor,
                 Command::Settings,
@@ -3182,8 +3199,15 @@ mod tests {
         );
         assert_eq!(
             commands_for("new", true, false),
-            vec![Command::NewChat, Command::NewProject, Command::NewConductor]
+            vec![
+                Command::NewChat,
+                Command::NewZoomie,
+                Command::NewProject,
+                Command::NewConductor
+            ]
         );
+        assert_eq!(commands_for("zoomie", true, false), vec![Command::NewZoomie]);
+        assert_eq!(commands_for("schedule", true, false), vec![Command::NewZoomie]);
         assert_eq!(
             commands_for("settings", true, false),
             vec![Command::Settings]

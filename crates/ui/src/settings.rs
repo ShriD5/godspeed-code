@@ -1143,6 +1143,10 @@ pub struct UiSettings {
     pub sidebar_show_project_filter: bool,
     /// The Archived accordion below the active session list.
     pub sidebar_show_archived: bool,
+    /// The Zoomies section at the top of the sidebar's list.
+    pub sidebar_show_zoomies: bool,
+    /// Whether that section is expanded.
+    pub sidebar_zoomies_open: bool,
     /// The sidebar's "Star on GitHub" banner was dismissed (its close button
     /// or following the link). Device-local; never shown again once set.
     pub github_star_banner_dismissed: bool,
@@ -1363,6 +1367,8 @@ impl Default for UiSettings {
             sidebar_show_pull_request: true,
             sidebar_show_project_filter: true,
             sidebar_show_archived: true,
+            sidebar_show_zoomies: true,
+            sidebar_zoomies_open: true,
             github_star_banner_dismissed: false,
             chat_import_prompt_dismissed: false,
             last_space_id: None,
@@ -2290,6 +2296,8 @@ impl UiSettings {
             sidebar_show_pull_request,
             sidebar_show_project_filter,
             sidebar_show_archived,
+            sidebar_show_zoomies,
+            sidebar_zoomies_open,
             github_star_banner_dismissed,
             chat_import_prompt_dismissed,
             last_space_id,
@@ -3441,6 +3449,8 @@ mod tests {
             sidebar_show_pull_request: false,
             sidebar_show_project_filter: false,
             sidebar_show_archived: false,
+            sidebar_show_zoomies: false,
+            sidebar_zoomies_open: false,
             github_star_banner_dismissed: true,
             chat_import_prompt_dismissed: true,
             last_space_id: Some("space-1".into()),
