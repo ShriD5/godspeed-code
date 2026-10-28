@@ -83,6 +83,7 @@ mod files_panel;
 mod git_actions_ui;
 pub(crate) mod harness_updates;
 mod inbox_entry;
+mod zoomies_section;
 mod mission_control_entry;
 mod question_timeout_menu;
 mod navigation_focus;
@@ -266,6 +267,7 @@ const CHAT_MENU_ROW_SNOOZE: u8 = 10;
 const CHAT_MENU_ROW_WAKE: u8 = 11;
 const CHAT_MENU_ROW_UNREAD: u8 = 12;
 const CHAT_MENU_ROW_QUESTION_TIMEOUT: u8 = 13;
+const CHAT_MENU_ROW_SCHEDULE: u8 = 14;
 
 #[derive(Clone, Copy)]
 enum TabCloseAction {
@@ -2379,6 +2381,9 @@ pub struct Shell {
     usage_page_sub: Option<Subscription>,
     agents_page: Option<Entity<AgentsPage>>,
     agents_page_sub: Option<Subscription>,
+    /// This engine's zoomies, live, for the sidebar section.
+    pub(super) zoomies_feed: Entity<crate::zoomies::ZoomiesFeed>,
+    _zoomies_observe: Subscription,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
@@ -2783,8 +2788,11 @@ impl Shell {
                         t.on_own_queued_send(chat_id.clone(), message_id.clone(), cx)
                     });
                 }
+                ComposerEvent::ZoomieCreated(created) => this.zoomie_created(created, cx),
             }
         });
+        let zoomies_feed = cx.new(|cx| crate::zoomies::ZoomiesFeed::new(state.clone(), cx));
+        let zoomies_observe = cx.observe(&zoomies_feed, |_, _, cx| cx.notify());
         // Spawn chips open their subagent's transcript as a right-pane tab.
         let transcript_events = cx.subscribe(&transcript, Self::on_transcript_event);
         let data_dir = boot.data_dir.clone();
@@ -2960,6 +2968,8 @@ impl Shell {
             usage_page_sub: None,
             agents_page: None,
             agents_page_sub: None,
+            zoomies_feed,
+            _zoomies_observe: zoomies_observe,
             appearance_page: None,
             files_settings_page: None,
             notifications_page: None,
@@ -6384,25 +6394,7 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
-            SettingsSection::AlwaysOn => {
-                if self.agents_page.is_none() {
-                    let state = self.state.clone();
-                    let page = cx.new(|cx| AgentsPage::new(state, cx));
-                    self.agents_page_sub = Some(cx.subscribe(
-                        &page,
-                        |this: &mut Shell, _, event: &AgentsPageEvent, cx| match event {
-                            AgentsPageEvent::OpenChat(chat_id) => {
-                                this.open_chat(chat_id.clone(), cx);
-                            }
-                        },
-                    ));
-                    self.agents_page = Some(page);
-                }
-                match &self.agents_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
+            SettingsSection::AlwaysOn => self.agents_page(cx).into_any_element(),
         }
     }
 
@@ -9927,6 +9919,7 @@ impl Shell {
             .into_iter()
             .filter_map(|shelf| self.render_shelf_section(shelf, theme, cx))
             .collect();
+        let zoomies_section = self.render_zoomies_section(theme, cx);
 
         // The space filter lives ABOVE the scroll region (fixed) so its
         // dropdown can float without being clipped by the list's overflow.
@@ -10137,6 +10130,7 @@ impl Shell {
                     // No "Sessions" header (user request) — the list
                     // is the whole column; a little air stands in.
                     .pt(px(SIDEBAR_LIST_PAD_TOP))
+                    .children(zoomies_section)
                     .child(active_list)
                     .children(shelves)
                     .children(moving_row)
@@ -11542,8 +11536,24 @@ impl Shell {
                         &theme,
                         cx,
                     );
+                    let schedule_id = chat_id.clone();
+                    let schedule =
+                        popover::menu_row(&theme, false, format!("chat-menu-schedule-{chat_id}"))
+                            .id("chat-menu-schedule")
+                            .debug_selector(|| "chat-menu-schedule".into())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.convert_chat_to_zoomie(schedule_id.clone(), cx)
+                            }))
+                            .child(
+                                icon(icons::FAST_TIER)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Run this on a schedule…"));
                     let menu = menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_PIN, pin, cx));
                     let menu = self.render_lifecycle_menu_rows(menu, &chat_id, &theme, cx);
+                    let menu =
+                        menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_SCHEDULE, schedule, cx));
                     let menu = self.render_question_timeout_row(menu, &chat_id, &theme, cx);
                     menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_ARCHIVE, archive, cx))
                         .child(self.chat_menu_hover_row(CHAT_MENU_ROW_COPY, copy, cx))

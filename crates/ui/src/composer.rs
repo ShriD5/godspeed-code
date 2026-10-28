@@ -45,6 +45,8 @@ mod chip;
 pub(crate) mod continue_menu;
 pub(crate) mod limit_banner;
 mod relay_banner;
+mod zoomie;
+pub use zoomie::ZoomieCreated;
 pub use chip::ChipKind;
 use chip::*;
 pub(crate) use chip::{
@@ -5713,6 +5715,8 @@ pub enum ComposerEvent {
         chat_id: String,
         message_id: String,
     },
+    /// Zoomie mode's Send created a zoomie (and started its first run).
+    ZoomieCreated(ZoomieCreated),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6483,6 +6487,8 @@ pub struct Composer {
     /// after the transcript lands instead of vanishing.
     voice_last: Option<VoiceFrame>,
     voice_tween: VoiceTween,
+    /// Zoomie mode on the new-chat canvas (`composer::zoomie`).
+    pub(crate) zoomie: Option<zoomie::ZoomieMode>,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -6749,6 +6755,7 @@ impl Composer {
             dictation_focus: cx.focus_handle(),
             voice_last: None,
             voice_tween: VoiceTween::default(),
+            zoomie: None,
         };
         // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
         // a rig) — `GODSPEED_ATTACH=/path/a.png[,/path/b.png]`, and
@@ -9265,6 +9272,10 @@ impl Composer {
             self.execute_workspace_command(action, 0..self.input.read(cx).text().len(), cx);
             return;
         }
+        if self.zoomie_active(cx) {
+            self.submit_zoomie(cx);
+            return;
+        }
         let no_content = !composer_has_content(
             &text,
             self.staged().len() + self.staged_appshots().len(),
@@ -11299,13 +11310,16 @@ impl Composer {
             SendButtonMode::Send | SendButtonMode::Queue => {
                 // Share the submission guard with Enter, including pending
                 // edits and the new-session runnable-agent check.
-                let blocked = self.send_blocked(cx);
+                let zoomie = self.zoomie_active(cx);
+                let blocked = self.send_blocked(cx) || (zoomie && self.zoomie_send_blocked(cx));
                 send_circle("composer-send", blocked, theme)
                     .when(!blocked, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| this.on_submit(cx)))
                     })
                     .tooltip(crate::settings::widgets::text_tooltip(
-                        if mode == SendButtonMode::Queue {
+                        if zoomie {
+                            "Create zoomie"
+                        } else if mode == SendButtonMode::Queue {
                             "Queue message"
                         } else {
                             "Send message"
@@ -12101,6 +12115,9 @@ impl Render for Composer {
             });
         let beneath_voice = 1.0 - voice_t.clamp(0.0, 1.0);
         let model_picker = model_picker.opacity(beneath_voice);
+        let zoomie_chip = self
+            .render_zoomie_chip(&theme, cx)
+            .map(|chip| div().flex_none().opacity(beneath_voice).child(chip));
         let body = if expanded {
             // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row
             // (8px bottom + 2px top, 32px chips → 42px) ABSOLUTE at the pill's
@@ -12154,6 +12171,7 @@ impl Render for Composer {
                                 .gap(px(ACTION_UTILITY_GAP))
                                 .child(attach),
                         )
+                        .children(zoomie_chip)
                         .child(model_picker)
                         .child(
                             div()
@@ -12221,6 +12239,14 @@ impl Render for Composer {
                                 .opacity(beneath_voice)
                                 .child(self.render_input_with_completion()),
                         )
+                        .children(zoomie_chip.map(|chip| {
+                            div()
+                                .flex_none()
+                                .pr(px(4.0))
+                                .relative()
+                                .top(px(-cluster_dy))
+                                .child(chip)
+                        }))
                         .child(
                             div()
                                 .min_w_0()
@@ -12324,6 +12350,7 @@ impl Render for Composer {
             container
         };
         let dictation_status = self.render_dictation_status(cx);
+        let zoomie_panel = self.render_zoomie_panel(&theme, window, cx);
         let container = container.child(
             div()
                 .track_focus(&self.dictation_focus)
@@ -12339,6 +12366,7 @@ impl Render for Composer {
                 .flex_col()
                 .gap(px(Theme::SPACE_SM))
                 .child(pill_surface)
+                .children(zoomie_panel)
                 .children(dictation_status),
         );
 

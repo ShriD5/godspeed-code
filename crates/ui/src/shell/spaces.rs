@@ -2274,6 +2274,7 @@ enum SidebarViewRow {
     ShowHarness,
     ShowProjectFilter,
     ShowArchived,
+    ShowZoomies,
 }
 
 impl SidebarViewRow {
@@ -2288,9 +2289,9 @@ impl SidebarViewRow {
 }
 
 const SIDEBAR_VIEW_GROUPS: [(&str, std::ops::Range<usize>); 3] =
-    [("Organize", 0..3), ("Sort", 3..5), ("Show", 5..12)];
+    [("Organize", 0..3), ("Sort", 3..5), ("Show", 5..13)];
 
-const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 12] = [
+const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 13] = [
     SidebarViewRow::ByDevice,
     SidebarViewRow::ByProject,
     SidebarViewRow::InOneList,
@@ -2303,6 +2304,7 @@ const SIDEBAR_VIEW_ROWS: [SidebarViewRow; 12] = [
     SidebarViewRow::ShowProjectLabel,
     SidebarViewRow::ShowProjectFilter,
     SidebarViewRow::ShowArchived,
+    SidebarViewRow::ShowZoomies,
 ];
 
 // list items stay tightly related at 2px, while section boundaries use 12px
@@ -4183,6 +4185,9 @@ impl Shell {
             SidebarViewRow::ShowArchived => {
                 self.settings.sidebar_show_archived = !self.settings.sidebar_show_archived
             }
+            SidebarViewRow::ShowZoomies => {
+                self.settings.sidebar_show_zoomies = !self.settings.sidebar_show_zoomies
+            }
             SidebarViewRow::ShowProjectFilter => {
                 self.settings.sidebar_show_project_filter =
                     !self.settings.sidebar_show_project_filter;
@@ -4362,6 +4367,7 @@ impl Shell {
             "Location",
             "Project filter",
             "Archived",
+            "Zoomies",
         ];
         let icons = [
             icons::LAPTOP,
@@ -4377,6 +4383,7 @@ impl Shell {
             icons::REMOTE_SERVER,
             icons::FOLDER,
             icons::ARCHIVE_MINIMALISTIC,
+            icons::FAST_TIER,
         ];
         let selected = [
             organization == SidebarOrganization::ByDevice,
@@ -4391,6 +4398,7 @@ impl Shell {
             self.settings.sidebar_show_project_label,
             self.settings.sidebar_show_project_filter,
             self.settings.sidebar_show_archived,
+            self.settings.sidebar_show_zoomies,
         ];
         let values = [
             labels[selected[..3].iter().position(|v| *v).unwrap_or(0)].to_string(),

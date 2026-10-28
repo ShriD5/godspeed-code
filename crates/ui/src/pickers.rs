@@ -2315,6 +2315,32 @@ impl Pickers {
         cx.notify();
     }
 
+    /// Seed the new-session draft from an existing chat's run config
+    /// ("Run this on a schedule…") without touching the remembered
+    /// defaults. `None`s keep the current draft value.
+    pub(crate) fn prefill_draft(
+        &mut self,
+        harness: Option<HarnessId>,
+        model: Option<String>,
+        reasoning: Option<ReasoningLevel>,
+        access_mode: Option<AccessMode>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.read(cx).selected_chat.is_some() {
+            return;
+        }
+        if let Some(harness) = harness {
+            self.config.harness = Some(harness);
+            self.config.model = model;
+            self.config.reasoning = reasoning;
+            self.ensure_models(harness, false, cx);
+        }
+        if let Some(mode) = access_mode {
+            self.config.access_mode = Some(mode);
+        }
+        cx.notify();
+    }
+
     fn pick_model(&mut self, model_id: String, cx: &mut Context<Self>) {
         self.setting_menu = None;
         if self.title.is_some() {

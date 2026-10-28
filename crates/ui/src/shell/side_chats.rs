@@ -229,7 +229,9 @@ impl Shell {
                         ComposerEvent::NewThreadTransitionStarted
                         | ComposerEvent::WorktreeSetup { .. }
                         | ComposerEvent::AnnotationsChanged(_)
-                        | ComposerEvent::AnnotationHovered(_) => {}
+                        | ComposerEvent::AnnotationHovered(_)
+                        // Side chats never show Zoomie mode.
+                        | ComposerEvent::ZoomieCreated(_) => {}
                         ComposerEvent::Sent {
                             chat_id,
                             message_id,

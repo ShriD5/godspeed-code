@@ -495,6 +495,20 @@ impl Shell {
 
         let worktree = self.render_session_info_worktree(&theme, cx);
 
+        // ── Turn it into a zoomie.
+        let schedule_chat = chat.id.clone();
+        let schedule = chat.parent_chat_id.is_none().then(|| {
+            popover::picker_row(&theme, false, false, "session-info-schedule")
+                .id("session-info-schedule")
+                .debug_selector(|| "session-info-schedule".into())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.close_session_info_overlay(cx);
+                    this.convert_chat_to_zoomie(schedule_chat.clone(), cx);
+                }))
+                .child(popover::picker_icon_slot(row_glyph(icons::FAST_TIER, &theme)))
+                .child("Run this on a schedule…")
+        });
+
         // ── The project's run actions.
         let actions = self.render_session_info_actions(&theme, cx);
 
@@ -518,6 +532,7 @@ impl Shell {
             .children(branch_row)
             .children(limit_row)
             .children(worktree)
+            .children(schedule)
             .children(actions);
 
         // The session card keeps its height; only the lanes under it give.
