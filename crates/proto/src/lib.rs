@@ -27,6 +27,7 @@ pub mod motion;
 pub mod preview;
 pub mod preview_agent;
 pub mod pricing;
+pub mod pull_request_actions;
 pub mod project_transfer;
 pub mod projectless;
 pub mod sidebar_pins;

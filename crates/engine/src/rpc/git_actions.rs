@@ -158,6 +158,26 @@ impl EngineRpc {
         }
     }
 
+    /// A chat working in `root` opened `url`: watch it by default.
+    fn watch_created_pull_request(&self, root: &std::path::Path, url: &str) {
+        let Some(watch) = &self.pr_watch else {
+            return;
+        };
+        let local = self.doc_host.device_id();
+        let chat = self
+            .workspace
+            .watch_chats()
+            .borrow()
+            .iter()
+            .filter(|chat| chat.device_id == local && !chat.archived)
+            .filter(|chat| chat.cwd.as_deref().map(std::path::Path::new) == Some(root))
+            .max_by_key(|chat| chat.last_message_at)
+            .map(|chat| chat.id.clone());
+        if let Some(chat_id) = chat {
+            watch.register_automatic(url, &chat_id);
+        }
+    }
+
     /// After a write: refresh diff watchers (HEAD and refs moved) and the
     /// checkout's pull request badge.
     async fn after_git_write(&self, root: &std::path::Path) {
@@ -257,6 +277,7 @@ impl EngineRpc {
                     .await
                     .map_err(failed)?;
                 self.after_git_write(&root).await;
+                self.watch_created_pull_request(&root, &created.url);
                 RpcReply::value(&created)
             }
             methods::PUBLISH_REPOSITORY => {

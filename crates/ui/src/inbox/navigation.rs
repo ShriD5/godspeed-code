@@ -33,12 +33,13 @@ pub(crate) fn command_for(key: &str, shift: bool, other_modifiers: bool) -> Opti
 }
 
 /// Display groups, in order.
-pub(crate) const GROUP_ORDER: [AttentionKind; 6] = [
+pub(crate) const GROUP_ORDER: [AttentionKind; 7] = [
     AttentionKind::Approval,
     AttentionKind::Question,
     AttentionKind::Failed,
     AttentionKind::Limited,
     AttentionKind::TimedOut,
+    AttentionKind::PullRequest,
     AttentionKind::Finished,
 ];
 

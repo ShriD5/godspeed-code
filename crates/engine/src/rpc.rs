@@ -56,6 +56,7 @@
 
 mod agents;
 mod attention;
+mod pull_requests;
 mod chat_lifecycle;
 mod conductor;
 mod git_actions;
@@ -832,6 +833,7 @@ pub struct EngineRpc {
     agents: Option<crate::agents::Agents>,
     telegram: Option<crate::telegram::Telegram>,
     attention: Option<crate::attention::AttentionService>,
+    pr_watch: Option<crate::pr_watch::PrWatchService>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
     telemetry: Option<crate::Telemetry>,
@@ -892,6 +894,7 @@ impl EngineRpc {
             agents: None,
             telegram: None,
             attention: None,
+            pr_watch: None,
             limit_recovery: None,
             chat_lifecycle: None,
             telemetry: None,
@@ -1006,6 +1009,12 @@ impl EngineRpc {
     /// Attach the "Needs you" inbox.
     pub fn with_attention(mut self, attention: crate::attention::AttentionService) -> Self {
         self.attention = Some(attention);
+        self
+    }
+
+    /// Attach the pull request watcher (`ListPullRequestWatches` …).
+    pub fn with_pr_watch(mut self, watch: crate::pr_watch::PrWatchService) -> Self {
+        self.pr_watch = Some(watch);
         self
     }
 
@@ -1916,6 +1925,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         // queueing, verification, and the relayed response itself.
         methods::APPLY_HARNESS_UPDATE => Duration::from_secs(20 * 60),
         methods::CREATE_WORKTREE => Duration::from_secs(120),
+        // A thread write checks ownership first; each `gh` call may take 60 s.
+        methods::PERFORM_CHANGE_REQUEST_ACTION => Duration::from_secs(150),
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
         _ => Duration::from_secs(30),
@@ -1936,6 +1947,7 @@ fn forwardable(method: &str) -> bool {
         || worktree_env::handles(method)
         || telegram::handles(method)
         || attention::handles(method)
+        || pull_requests::handles(method)
         || limit_recovery::handles(method)
         || conductor::handles(method)
     {
@@ -2387,6 +2399,10 @@ impl RpcService for EngineRpc {
             }
             return self.forward(&target, method, params).await;
         }
+        // Any call from a client is app activity: the PR watcher keeps polling.
+        if let Some(watch) = &self.pr_watch {
+            watch.note_activity();
+        }
         if matches!(
             method,
             methods::SIGN_OUT
@@ -2414,6 +2430,9 @@ impl RpcService for EngineRpc {
         }
         if attention::handles(method) {
             return self.attention_rpc(method, params);
+        }
+        if pull_requests::handles(method) {
+            return self.pull_request_rpc(method, params).await;
         }
         if message_search::handles(method) {
             return self.message_search_rpc(params).await;
@@ -3253,12 +3272,19 @@ impl RpcService for EngineRpc {
             methods::WATCH_CHECKOUT_CHANGE_REQUEST => {
                 let p: CheckoutChangeRequestParams = parse_params(params)?;
                 let cwd = self.change_request_root(&p.cwd).await?;
+                let watch = self.pr_watch.clone();
                 let stream = self
                     .change_requests
                     .watch_for_branch(&cwd, p.branch.as_deref())
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?
-                    .filter_map(|status| async move { serde_json::to_value(status).ok() });
+                    .filter_map(move |status| {
+                        // A chat's own worktree gaining an open PR starts its watch.
+                        if let Some(watch) = &watch {
+                            watch.observe_checkout(&status);
+                        }
+                        async move { serde_json::to_value(status).ok() }
+                    });
                 Ok(RpcReply::Stream(stream.boxed()))
             }
             methods::GET_CHANGE_REQUEST_REPOSITORY => {
@@ -3353,7 +3379,7 @@ impl RpcService for EngineRpc {
                     base_ref_oid: Option<String>,
                 }
                 let p: P = parse_params(params)?;
-                let value = self
+                let mut value = self
                     .github
                     .detail_request(
                         &p.url,
@@ -3364,6 +3390,14 @@ impl RpcService for EngineRpc {
                     )
                     .await
                     .map_err(change_request_rpc_error)?;
+                // The PR pane shows this engine's watch beside the detail.
+                if method == methods::GET_CHANGE_REQUEST
+                    && let Some(watch) = &self.pr_watch
+                    && let Some(url) = value["url"].as_str()
+                    && let Some(state) = watch.list().into_iter().find(|w| w.url == url)
+                {
+                    value["watch"] = serde_json::to_value(state).unwrap_or_default();
+                }
                 RpcReply::value(&value)
             }
             // One-shot scoped capture for the Changes pane: `branch` diffs the

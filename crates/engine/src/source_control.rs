@@ -3,8 +3,19 @@
 //! Process execution and provider calls intentionally live outside this layer so
 //! remote parsing and head selector construction remain deterministic and testable.
 
+#[path = "source_control_actions.rs"]
+mod actions;
 #[path = "source_control_review_threads.rs"]
 mod review_threads;
+
+pub(crate) use actions::{
+    FAILED_LOG_CAP, parse_merge_options as parse_merge_options_value, trim_log_tail,
+};
+
+/// The canonical form of a GitHub pull request URL, or `None`.
+pub(crate) fn validated_pull_request_url_public(raw: &str) -> Option<String> {
+    validated_pull_request_url(raw).ok()
+}
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -1096,6 +1107,10 @@ pub enum GitHubWriteError {
     Timeout,
     #[error("gh: {0}")]
     Failed(String),
+    /// GitHub refused a pull request action; the text already leads with
+    /// the reason in plain words and quotes `gh` below it.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// What `gh pr create` should open.

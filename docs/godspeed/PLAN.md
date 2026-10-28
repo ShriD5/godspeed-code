@@ -80,6 +80,10 @@ Godspeed already has the headless engine, chats hosted on another device, and cl
 
 ## Phase 5: PR autopilot (3 days)
 
+Status (2026-10-28): review and merge from the PR pane, and the polling PR watch (failed checks,
+review comments, conflicts wake the chat; Needs-you items; opt-in auto-merge when green and
+approved) are shipped (#56). Webhook triggers remain.
+
 - Native PR review and merge in the PR pane: submit a review, reply to and resolve threads, merge
   and auto-merge, through the existing `gh` wrapper (`crates/engine/src/source_control.rs`).
 - Autopilot per PR (opt-in): watch checks; when one fails, queue a fix prompt into the PR's chat
