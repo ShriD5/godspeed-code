@@ -19812,6 +19812,80 @@ impl Shell {
         self.set_surfaces_open(true, cx);
         self.add_browser_surface(Some(url), window, cx);
     }
+    /// Open a session as a sidebar click would.
+    pub fn fixture_demo_open_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        self.open_chat(chat_id.to_string(), cx);
+    }
+    /// The sidebar's Zoomies section reads this snapshot (no engine needed).
+    pub fn fixture_demo_zoomies(
+        &mut self,
+        snapshot: zeron_proto::agents::AgentsSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        self.zoomies_feed
+            .update(cx, |feed, cx| feed.set_snapshot_for_test(snapshot, cx));
+    }
+    /// Home; `zoomie` flips the composer into Zoomie mode (the ⚡ chip).
+    pub fn fixture_demo_zoomie_composer(&mut self, zoomie: bool, cx: &mut Context<Self>) {
+        if self.state.read(cx).selected_chat.is_some() {
+            self.set_surfaces_open(false, cx);
+            self.open_new_session(None, cx);
+        }
+        self.composer
+            .update(cx, |composer, cx| composer.set_zoomie_mode(zoomie, cx));
+    }
+    /// Type into the composer's prompt (`Some`) or Zoomie When field.
+    pub fn fixture_demo_zoomie_text(
+        &mut self,
+        prompt: Option<&str>,
+        when: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer.update(cx, |composer, cx| {
+            if let Some(prompt) = prompt {
+                let prompt = prompt.to_string();
+                composer
+                    .input
+                    .update(cx, |input, cx| input.set_text(prompt, cx));
+            }
+            if let Some(when) = when {
+                composer.fixture_zoomie_when(when, cx);
+            }
+            cx.notify();
+        });
+    }
+    /// Send in Zoomie mode: "Creating…", then the created toast.
+    pub fn fixture_demo_zoomie_send(
+        &mut self,
+        agent: Option<zeron_proto::agents::AgentSummary>,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer.update(cx, |composer, cx| match agent {
+            None => composer.fixture_zoomie_creating(cx),
+            Some(agent) => composer.fixture_zoomie_created(agent, cx),
+        });
+    }
+    /// The active chat's agent preview tab, mid-action ("Agent is using the
+    /// preview"), as the `preview_*` tools would open it.
+    pub fn fixture_demo_agent_preview(
+        &mut self,
+        url: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_chat.is_empty() {
+            return;
+        }
+        self.set_surfaces_open(true, cx);
+        let chat_id = self.active_chat.clone();
+        let id = self.add_browser_surface_for(&chat_id, Some(url), true, true, window, cx);
+        if let Some(browser) = self.browsers.get(&id).cloned() {
+            browser.update(cx, |browser, cx| {
+                browser.mark_agent_tab(cx);
+                browser.agent_activity(true, cx);
+            });
+        }
+    }
 }
 
 #[cfg(test)]

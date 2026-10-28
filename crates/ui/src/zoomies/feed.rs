@@ -178,7 +178,7 @@ impl ZoomiesFeed {
         .detach();
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "demo-fixture"))]
     pub(crate) fn set_snapshot_for_test(
         &mut self,
         snapshot: AgentsSnapshot,

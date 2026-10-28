@@ -17,6 +17,15 @@
 //! `ffmpeg -f concat -i frames.txt -loop 1 -i backdrop.png -filter_complex
 //! "[0:v]scale=1200:-1:flags=lanczos,format=rgba[f];[1:v][f]overlay=alpha=premultiplied:shortest=1"`.
 //! Capture on an idle machine: frames render in real time.
+//!
+//! A second argument `promo` records the release-promo script instead (a
+//! receipt, Mission Control, the Inbox, an agent driving the preview, and a
+//! zoomie made from Home) in a 1280×800 window, and writes
+//! `scenes.txt` (`<scene> <first frame>`) so each beat can be cut out.
+//! The preview page itself is a native web view, which the window's own
+//! renderer does not draw: serve `GODSPEED_DEMO_PREVIEW_URL` (default
+//! `http://localhost:5173/pricing`) so the tab loads, and composite the
+//! page over the blank area afterwards.
 use gpui::{AppContext, AsyncApp, Bounds, WindowBounds, WindowOptions, px, size};
 use serde_json::json;
 use std::{
@@ -240,6 +249,18 @@ fn seed(state: &mut state::AppState, project: &std::path::Path) {
             true,
         ),
         chat(
+            "pricing",
+            "mbp",
+            "fieldnotes",
+            "Fix the yearly pricing toggle",
+            "claude-code",
+            "claude-opus-5-5",
+            "fix/pricing-toggle",
+            "Checking the toggle in the preview",
+            0,
+            true,
+        ),
+        chat(
             "astro",
             "mbp",
             "fieldnotes",
@@ -340,7 +361,6 @@ fn seed(state: &mut state::AppState, project: &std::path::Path) {
             "summary": summary, "actions": actions,
         }))
         .unwrap()
-        conductor: None,
     };
     let mut push = item(
         "approval:search:push",
@@ -405,6 +425,7 @@ fn refresh_sessions(state: &mut state::AppState) {
     };
     let mut sessions = vec![
         session("sync", "mbp", "working", 12, 2, false),
+        session("pricing", "mbp", "working", 2, 0, false),
         session("astro", "mbp", "working", 4, 0, false),
         session("profile", "studio", "working", 27, 3, false),
         session("embed", "studio", "working", 41, 1, false),
@@ -420,6 +441,191 @@ fn refresh_sessions(state: &mut state::AppState) {
         device.last_seen_at = Some(now);
     }
     state.sessions = sessions;
+}
+
+/// The preview beat's chat: an agent checking its fix in the preview.
+fn pricing_transcript(device: &str) -> serde_json::Value {
+    let start = chrono::Utc::now().timestamp_millis() - 2 * 60_000;
+    let tool = |id: &str, call: serde_json::Value, output: Option<&str>| {
+        let mut part = json!({"id": id, "kind": "tool", "call": call, "resolved": true});
+        if let Some(output) = output {
+            part["output"] = json!(output);
+        }
+        part
+    };
+    let preview = |id: &str, tool_name: &str, input: serde_json::Value, output: &str| {
+        tool(
+            id,
+            json!({"kind": "mcp", "server": "godspeed", "tool": tool_name, "input": input}),
+            Some(output),
+        )
+    };
+    json!([
+        {"id": "pu0", "role": "user", "createdAt": start, "deviceId": device, "parts": [
+            {"id": "pu0t", "kind": "text", "text": "The Yearly toggle on /pricing doesn't change the prices. Fix it, then check it in the preview."}
+        ]},
+        {"id": "pa0", "role": "assistant", "createdAt": start + 2_000, "deviceId": device, "status": "streaming",
+         "parts": [
+            tool("pa0s", json!({"kind": "search", "pattern": "billingPeriod", "path": "src/pricing"}), Some("4 matches in 2 files")),
+            tool("pa0r", json!({"kind": "readFile", "path": "src/pricing/PlanCard.tsx"})),
+            {"id": "pa0t0", "kind": "text", "text": "`PlanCard` reads the period once on mount, so flipping the toggle never re-renders the price. I moved it into the shared store."},
+            tool("pa0e", json!({"kind": "editFile", "path": "src/pricing/PlanCard.tsx"})),
+            {"id": "pa0t1", "kind": "text", "text": "Now checking it in the preview."},
+            preview("pa0p1", "preview_open", json!({"url": "http://localhost:5173/pricing"}), "Opened Pricing · fieldnotes"),
+            preview("pa0p2", "preview_click", json!({"ref": "e12"}), "Clicked \"Yearly\""),
+            preview("pa0p3", "preview_snapshot", json!({}), "Pro: $8/mo billed yearly"),
+         ]}
+    ])
+}
+
+fn zoomie(
+    id: &str,
+    name: &str,
+    space: &str,
+    instructions: &str,
+    trigger: serde_json::Value,
+    next_in_minutes: Option<i64>,
+    last: Option<(&str, i64, &str)>,
+    running: bool,
+) -> zeron_proto::agents::AgentSummary {
+    let now = chrono::Utc::now();
+    let mut agent = json!({
+        "id": id, "name": name, "harness": "claude-code", "model": "claude-sonnet-5",
+        "spaceId": space, "instructions": instructions, "enabled": true,
+        "triggers": [trigger],
+        "workspacePath": format!("/projects/{space}"), "memoryPath": format!("/agents/{id}/MEMORY.md"),
+        "webhookPath": format!("/agents/{id}/hook"), "consecutiveFailures": 0,
+        "createdAt": now - chrono::Duration::days(6), "updatedAt": now - chrono::Duration::days(1),
+    });
+    if let Some(minutes) = next_in_minutes {
+        agent["nextFireAt"] = json!(now + chrono::Duration::minutes(minutes));
+    }
+    if running {
+        agent["activeRunId"] = json!(format!("{id}-run"));
+    }
+    if let Some((status, minutes_ago, summary)) = last {
+        agent["lastRun"] = json!({
+            "id": format!("{id}-run"), "agentId": id, "agentName": name, "trigger": "cron",
+            "scheduledAt": now - chrono::Duration::minutes(minutes_ago),
+            "startedAt": now - chrono::Duration::minutes(minutes_ago),
+            "status": status, "summary": summary, "collapsed": 0, "read": true, "archived": false,
+            "createdAt": now - chrono::Duration::minutes(minutes_ago),
+        });
+    }
+    serde_json::from_value(agent).unwrap()
+}
+
+/// The sidebar's Zoomies, before (`made` = None) and after Send.
+fn zoomies(made: Option<zeron_proto::agents::AgentSummary>) -> zeron_proto::agents::AgentsSnapshot {
+    let tz = zeron_ui::zoomies::local_timezone();
+    let mut agents = vec![
+        zoomie(
+            "triage",
+            "Triage new issues",
+            "fieldnotes",
+            "Label and dedupe new GitHub issues",
+            json!({"kind": "cron", "expr": "0 9 * * *", "timezone": tz}),
+            Some(160),
+            Some(("succeeded", 21 * 60, "Labelled 6 issues, closed 2 duplicates")),
+            false,
+        ),
+        zoomie(
+            "deps",
+            "Nightly dependency check",
+            "api",
+            "Check for vulnerable or outdated packages",
+            json!({"kind": "cron", "expr": "0 2 * * *", "timezone": tz}),
+            None,
+            Some(("running", 1, "")),
+            true,
+        ),
+        zoomie(
+            "changelog",
+            "Update changelog on merge",
+            "fieldnotes",
+            "Add the merged PR to CHANGELOG.md",
+            json!({"kind": "webhook"}),
+            None,
+            Some(("succeeded", 95, "Added #214 to CHANGELOG.md")),
+            false,
+        ),
+    ];
+    agents.extend(made);
+    zeron_proto::agents::AgentsSnapshot {
+        agents,
+        unread_runs: 0,
+        needs_approval_runs: 0,
+    }
+}
+
+/// The zoomie Send makes in the promo: its first run starts right away.
+fn made_zoomie(prompt: &str) -> zeron_proto::agents::AgentSummary {
+    let tz = zeron_ui::zoomies::local_timezone();
+    zoomie(
+        "prs",
+        &zeron_ui::zoomies::derive_name(prompt),
+        "fieldnotes",
+        prompt,
+        json!({"kind": "cron", "expr": "0 18 * * 1-5", "timezone": tz}),
+        None,
+        Some(("running", 0, "")),
+        true,
+    )
+}
+
+const ZOOMIE_PROMPT: &str = "Summarise new PRs in fieldnotes and post a short digest";
+const ZOOMIE_WHEN: &str = "every weekday at 6pm";
+
+/// One step of the promo script.
+enum Act {
+    /// Start a named beat (`scenes.txt`).
+    Mark(&'static str),
+    Receipt,
+    Mission(bool),
+    Inbox,
+    /// Open a chat and load its transcript.
+    Chat(&'static str),
+    Preview,
+    /// Home; `true` turns Zoomie mode on.
+    Home(bool),
+    Prompt(usize),
+    When(usize),
+    Creating,
+    Created,
+}
+
+fn promo_script() -> Vec<(f32, Act)> {
+    let mut script = vec![
+        (0.0, Act::Mark("receipt")),
+        (1.0, Act::Receipt),
+        (4.2, Act::Mark("mission")),
+        (4.2, Act::Mission(true)),
+        (8.0, Act::Mission(false)),
+        (8.0, Act::Mark("inbox")),
+        (8.0, Act::Inbox),
+        (11.6, Act::Mark("preview")),
+        (11.6, Act::Chat("pricing")),
+        (12.3, Act::Preview),
+        (17.0, Act::Mark("zoomie")),
+        (17.0, Act::Home(false)),
+        (17.9, Act::Home(true)),
+    ];
+    // Typed a character at a time; the When field reads every keystroke.
+    let typing = 18.5;
+    let prompt = ZOOMIE_PROMPT.chars().count();
+    for i in 1..=prompt {
+        script.push((typing + i as f32 * 0.032, Act::Prompt(i)));
+    }
+    let when_start = typing + prompt as f32 * 0.032 + 0.5;
+    let when: Vec<char> = ZOOMIE_WHEN.chars().collect();
+    for i in 1..=when.len() {
+        script.push((when_start + i as f32 * 0.05, Act::When(i)));
+    }
+    let sent = when_start + when.len() as f32 * 0.05 + 2.0;
+    script.push((sent, Act::Creating));
+    script.push((sent + 0.5, Act::Created));
+    script.push((sent + 4.0, Act::Mark("end")));
+    script
 }
 
 /// An ffmpeg concat list: each frame for as long as it was on screen.
@@ -443,6 +649,11 @@ fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("warn").init();
     let output = PathBuf::from(std::env::args().nth(1).expect("frames directory"));
     std::fs::create_dir_all(&output)?;
+    let promo = std::env::args().nth(2).as_deref() == Some("promo");
+    let (width, height) = if promo { (1280.0, 800.0) } else { (WIDTH, HEIGHT) };
+    let frame_every = if promo { Duration::from_millis(33) } else { FRAME };
+    let preview_url = std::env::var("GODSPEED_DEMO_PREVIEW_URL")
+        .unwrap_or_else(|_| "http://localhost:5173/pricing".into());
     let show = std::env::var_os("GODSPEED_DEMO_SHOW").is_some();
     let temp = tempfile::tempdir()?;
     let data = temp.path().to_path_buf();
@@ -508,6 +719,14 @@ fn main() -> anyhow::Result<()> {
             settings.show_receipts = true;
             settings.session_info_hidden = true;
             settings.github_star_banner_dismissed = true;
+            if promo {
+                // The release promo runs in Godspeed's gold.
+                settings.accent =
+                    zeron_theme::AccentSelection::Preset(zeron_theme::AccentPreset::Amber);
+                settings.sidebar_show_zoomies = true;
+                settings.sidebar_zoomies_open = true;
+                settings.sidebar_width = 272.0;
+            }
             settings.save(&data).unwrap();
             settings::init(settings.clone(), data.clone(), cx);
             let fonts = typography::register_fonts(cx);
@@ -563,7 +782,7 @@ fn main() -> anyhow::Result<()> {
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                             gpui::point(px(40.), px(40.)),
-                            size(px(WIDTH), px(HEIGHT)),
+                            size(px(width), px(height)),
                         ))),
                         titlebar: Some(gpui::TitlebarOptions {
                             title: None,
@@ -620,31 +839,90 @@ fn main() -> anyhow::Result<()> {
                     });
                     // Fonts, icons and layout settle before the first frame.
                     pause(cx, 2000).await;
+                    if promo {
+                        window.update(cx, |s, _, cx| s.fixture_demo_zoomies(zoomies(None), cx))?;
+                        pause(cx, 600).await;
+                    }
                     let start = Instant::now();
                     let mut index = 0usize;
                     let mut last = start;
                     let mut step = 0;
                     // (seconds into the recording, action)
-                    let script: [(f32, u8); 4] = [(1.3, 1), (4.6, 2), (11.0, 3), (14.4, 4)];
+                    let script: Vec<(f32, Act)> = if promo {
+                        promo_script()
+                    } else {
+                        vec![
+                            (1.3, Act::Receipt),
+                            (4.6, Act::Mission(true)),
+                            (11.0, Act::Mission(false)),
+                            (11.0, Act::Inbox),
+                            (14.4, Act::Mark("end")),
+                        ]
+                    };
+                    let mut scenes = String::new();
                     loop {
                         let elapsed = start.elapsed().as_secs_f32();
                         while step < script.len() && elapsed >= script[step].0 {
-                            match script[step].1 {
-                                1 => {
+                            match &script[step].1 {
+                                Act::Mark(name) => scenes.push_str(&format!("{name} {index}\n")),
+                                Act::Receipt => {
                                     window.update(cx, |s, _, cx| s.fixture_demo_open_receipt(cx))?
                                 }
-                                2 => window.update(cx, |s, w, cx| {
-                                    s.fixture_demo_mission_control(true, w, cx)
+                                Act::Mission(open) => window.update(cx, |s, w, cx| {
+                                    s.fixture_demo_mission_control(*open, w, cx)
                                 })?,
-                                3 => window.update(cx, |s, w, cx| {
-                                    s.fixture_demo_mission_control(false, w, cx);
-                                    s.fixture_demo_inbox(cx);
+                                Act::Inbox => window.update(cx, |s, _, cx| s.fixture_demo_inbox(cx))?,
+                                Act::Chat(id) => {
+                                    window.update(cx, |s, _, cx| s.fixture_demo_open_chat(id, cx))?;
+                                    let id = id.to_string();
+                                    state.update(cx, |s, cx| {
+                                        let device = s.local_device_id.clone().unwrap();
+                                        let reset = if id == "pricing" {
+                                            pricing_transcript(&device)
+                                        } else {
+                                            transcript(&device)
+                                        };
+                                        s.receive_transcript_frame(
+                                            zeron_doc::TranscriptFrame::Reset {
+                                                reset: serde_json::from_value(reset).unwrap(),
+                                            },
+                                            cx,
+                                        )
+                                        .unwrap();
+                                        cx.notify();
+                                    });
+                                }
+                                Act::Preview => window.update(cx, |s, w, cx| {
+                                    s.fixture_demo_agent_preview(preview_url.clone(), w, cx)
                                 })?,
-                                _ => {}
+                                Act::Home(zoomie) => window.update(cx, |s, _, cx| {
+                                    s.fixture_demo_zoomie_composer(*zoomie, cx)
+                                })?,
+                                Act::Prompt(chars) => {
+                                    let text: String = ZOOMIE_PROMPT.chars().take(*chars).collect();
+                                    window.update(cx, |s, _, cx| {
+                                        s.fixture_demo_zoomie_text(Some(&text), None, cx)
+                                    })?
+                                }
+                                Act::When(chars) => {
+                                    let text: String = ZOOMIE_WHEN.chars().take(*chars).collect();
+                                    window.update(cx, |s, _, cx| {
+                                        s.fixture_demo_zoomie_text(None, Some(&text), cx)
+                                    })?
+                                }
+                                Act::Creating => {
+                                    window.update(cx, |s, _, cx| s.fixture_demo_zoomie_send(None, cx))?
+                                }
+                                Act::Created => window.update(cx, |s, _, cx| {
+                                    let made = made_zoomie(ZOOMIE_PROMPT);
+                                    s.fixture_demo_zoomie_send(Some(made.clone()), cx);
+                                    s.fixture_demo_zoomies(zoomies(Some(made)), cx);
+                                })?,
                             }
                             step += 1;
                         }
                         if step == script.len() {
+                            std::fs::write(output.join("scenes.txt"), &scenes)?;
                             break;
                         }
                         let any: gpui::AnyWindowHandle = window.into();
@@ -659,12 +937,12 @@ fn main() -> anyhow::Result<()> {
                         last = now;
                         tx.send((index, frame))?;
                         index += 1;
-                        let next = start + FRAME * index as u32;
+                        let next = start + frame_every * index as u32;
                         cx.background_executor()
                             .timer(next.saturating_duration_since(Instant::now()))
                             .await;
                     }
-                    list.lock().unwrap().push(FRAME.as_secs_f64());
+                    list.lock().unwrap().push(frame_every.as_secs_f64());
                     eprintln!(
                         "captured {index} frames in {:.1}s",
                         start.elapsed().as_secs_f32()
