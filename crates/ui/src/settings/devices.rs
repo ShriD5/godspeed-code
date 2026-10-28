@@ -14,6 +14,7 @@ use zeron_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::popover;
+use crate::settings::servers::ServersPanel;
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -70,12 +71,18 @@ pub struct DevicesPage {
     error: Option<SharedString>,
     task: Option<Task<()>>,
     copy_task: Option<Task<()>>,
+    /// "Run on a server" and the servers set up from here.
+    servers: Entity<ServersPanel>,
     _observe: Subscription,
 }
 
 impl DevicesPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
+        let servers = {
+            let state = state.clone();
+            cx.new(|cx| ServersPanel::new(state, cx))
+        };
         Self {
             state,
             scroll: widgets::PageScroll::default(),
@@ -84,6 +91,7 @@ impl DevicesPage {
             error: None,
             task: None,
             copy_task: None,
+            servers,
             _observe: observe,
         }
     }
@@ -113,7 +121,9 @@ impl DevicesPage {
     /// so it never closes Settings under the dialog. Returns whether it did.
     pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
         if self.rename.take().is_none() {
-            return false;
+            return self
+                .servers
+                .update(cx, |servers, cx| servers.dismiss_on_escape(cx));
         }
         cx.notify();
         true
@@ -399,7 +409,8 @@ impl Render for DevicesPage {
             .when(workspace_scope != Some(WorkspaceScope::Local), |el| {
                 el.child(widgets::section_label(&theme, "Other devices").mt(px(28.0)))
                     .child(others_block)
-            });
+            })
+            .child(self.servers.clone());
 
         let scrollbar = popover::rail(self, "devices-page-scrollbar", &theme, cx);
         div()

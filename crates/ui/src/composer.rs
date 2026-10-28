@@ -17397,3 +17397,17 @@ impl Composer {
 #[cfg(test)]
 #[path = "composer_dictation_tests.rs"]
 mod dictation_tests;
+
+/// The demo recording opens the composer's pickers.
+#[cfg(feature = "demo-fixture")]
+impl Composer {
+    pub(crate) fn fixture_open_picker(
+        &mut self,
+        kind: crate::pickers::PickerKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pickers
+            .update(cx, |pickers, cx| pickers.fixture_toggle(kind, window, cx));
+    }
+}

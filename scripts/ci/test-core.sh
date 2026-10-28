@@ -11,6 +11,7 @@
 #   zeron-preview  every test binary (preview-tests)
 #   zeron-doc      lib + attachments_roundtrip (cursor-compatibility)
 #   zeron-sync, zeron-update   lib only (session-sync-regressions)
+#   zeron-remote   lib ("Run on a server": ssh/tailscale parsing, remote scripts)
 #   zeron-engine   lib + the integration tests named below. Engine has many other
 #                  integration binaries (live agents etc.) that no workflow ran, so
 #                  they are listed instead of globbed to avoid compiling them.
@@ -29,6 +30,6 @@ for t in session_publication restart_resume side_chats codex_subagents claude_su
 done
 
 exec cargo nextest run --config-file scripts/ci/nextest.toml --locked --no-fail-fast \
-  -p zeron-harness -p zeron-engine -p zeron-sync -p zeron-update -p zeron-doc -p zeron-preview \
+  -p zeron-harness -p zeron-engine -p zeron-sync -p zeron-update -p zeron-remote -p zeron-doc -p zeron-preview \
   --features zeron-harness/native-fixture \
   --lib --bins "${tests[@]}" "$@"

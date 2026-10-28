@@ -11121,3 +11121,16 @@ impl Pickers {
         cx.notify();
     }
 }
+
+/// The demo recording opens a picker as a click on its chip would.
+#[cfg(feature = "demo-fixture")]
+impl Pickers {
+    pub(crate) fn fixture_toggle(
+        &mut self,
+        kind: PickerKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle(kind, window, cx);
+    }
+}

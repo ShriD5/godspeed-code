@@ -715,3 +715,31 @@ fn field_label(theme: &Theme, label: &str, hint: &str) -> gpui::Div {
                 .child(SharedString::from(hint.to_string())),
         )
 }
+
+/// The demo recording shows a worktree environment without an engine.
+#[cfg(feature = "demo-fixture")]
+impl Shell {
+    pub fn fixture_demo_worktree(&mut self, sleeping: bool, cx: &mut Context<Self>) {
+        if let Some(target) = self.worktree_target(cx) {
+            let mut names = std::collections::BTreeMap::new();
+            names.insert("web".to_string(), 0);
+            names.insert("api".to_string(), 1);
+            names.insert("db".to_string(), 2);
+            let _ = self.worktree_env.accept_status(
+                target.key.clone(),
+                Ok(Some(WorktreeEnvironmentStatus {
+                    path: target.key.path.clone(),
+                    ports: Some(zeron_proto::WorktreePorts {
+                        base: 4100,
+                        count: 3,
+                        names,
+                    }),
+                    sleeping,
+                    setup: None,
+                })),
+            );
+        }
+        self.show_session_info(cx);
+        cx.notify();
+    }
+}

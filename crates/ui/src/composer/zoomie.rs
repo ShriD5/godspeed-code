@@ -493,6 +493,47 @@ impl Composer {
     }
 }
 
+/// The README/promo demo recording drives Zoomie mode through these.
+#[cfg(feature = "demo-fixture")]
+impl Composer {
+    /// Put `text` in the When field; its edit event reads it, as typing does.
+    pub(crate) fn fixture_zoomie_when(&mut self, text: &str, cx: &mut Context<Self>) {
+        let Some(mode) = self.zoomie.as_ref() else {
+            return;
+        };
+        let when = mode.when.clone();
+        let text = text.to_string();
+        when.update(cx, |input, cx| input.set_text(text, cx));
+    }
+
+    /// "Creating your zoomie…" while the (absent) engine would answer.
+    pub(crate) fn fixture_zoomie_creating(&mut self, cx: &mut Context<Self>) {
+        if let Some(mode) = self.zoomie.as_mut() {
+            mode.creating = true;
+            mode.error = None;
+        }
+        cx.notify();
+    }
+
+    /// Finish as a successful create would, with the agent the fixture made.
+    pub(crate) fn fixture_zoomie_created(&mut self, agent: AgentSummary, cx: &mut Context<Self>) {
+        let phrase = self
+            .zoomie
+            .as_ref()
+            .and_then(|mode| mode.parsed.as_ref().ok())
+            .map(|parsed| parsed.phrase.clone())
+            .unwrap_or_default();
+        self.finish_zoomie_create(
+            ZoomieCreated {
+                agent,
+                run_chat_id: None,
+                phrase,
+            },
+            cx,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

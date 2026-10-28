@@ -17,7 +17,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 3. ~~**PR watch that wakes the chat** on failed checks, new review comments and merge conflicts.~~ Done (see Done).
 4. ~~**Sidebar multi-select with bulk actions**~~ Done in #55.
 5. ~~**Sub-agents in their own worktree** from MCP `create_chat`~~ Done (#59).
-6. **Remote machines over SSH / Tailscale**: install and run the engine on a server (ROADMAP "Next" 1).
+6. ~~**Remote machines over SSH / Tailscale**~~ Done (#61; e2e pending a VPS).
 7. ~~**Worktree cleanup policies and a storage page**~~ Done (#59).
 8. ~~**More agents via the ACP registry** (Factory Droid, Copilot CLI, Kimi, Gemini CLI) and **several instances of one agent** (accounts, binaries, custom models).~~ Done in #62 (uvx agents and Droid/Copilot-specific extensions still missing).
 9. ~~**Composer prompt recall (↑) and prompt stash (⌘S).**~~ Done in #55.
@@ -88,7 +88,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Browser | Passkeys in the in-app browser | `apps/desktop/src/preview/PasskeyBridge.ts` | MISSING | low |
 | Devices | Device panel: iOS Simulator and Android Emulator streams, with agent device tools | `apps/web/src/components/device/DevicePanel.tsx`; `settingsSearch.ts` ("Simulator support", "Agent device access") | MISSING | med |
 | Devices | Pair a phone or another computer with a QR code | `apps/web/src/components/settings/AuthorizedClientsSettings.tsx`; `apps/web/src/components/ui/qr-code.tsx` | MISSING (backend-heavy; may belong to the engine half) | med |
-| Devices | Add an SSH host, WSL distro or Tailscale endpoint as a device | `apps/desktop/src/ssh/DesktopSshEnvironment.ts`; `apps/desktop/src/wsl/DesktopWslBackend.ts`; `apps/desktop/src/backend/tailscaleEndpointProvider.ts` | MISSING (backend-heavy; may belong to the engine half) | low |
+| Devices | Add a WSL distro as a device | `apps/desktop/src/wsl/DesktopWslBackend.ts` | MISSING (SSH hosts and Tailscale machines are done: "Run on a server") | low |
 | Devices | Expose the engine on the network from a setting | `apps/desktop/src/backend/DesktopServerExposure.ts`; `settingsSearch.ts` ("Network access") | MISSING (backend-heavy; may belong to the engine half) | low |
 | Git | Auto-pull on a timer; git fetch interval | `settingsSearch.ts` ("Automatically pull", "Git fetch interval"); `packages/contracts/src/settings.ts` (`automaticGitFetchInterval`) | MISSING: manual fetch-all only | med |
 | Git | Writing style for commit, PR and branch text | `packages/contracts/src/settings.ts` (`sourceControlWritingStyle`); `settingsSearch.ts` ("Source control writing style") | PARTIAL: generated text is repo- and template-aware (`crates/engine/src/text_generation.rs`); no style setting, one shared model | low |
@@ -151,8 +151,7 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 | Orchestration | Agent asks the user for a secret in a private card and gets a one-use reference; the model never sees the value | `orchestrator/tools.ts` (`request_secret`) | MISSING (PARITY section 3) | Med |
 | Orchestration | Agent moves its own thread into a new worktree on a new branch | `apps/server/src/mcp/toolkits/worktree/tools.ts` (`t3_worktree_handoff`, `t3_worktree_status`, `t3_worktree_list`) | MISSING (PARITY section 12: "no handoff") | Med |
 | Orchestration | Webhook tasks verify an HMAC signature and dedupe deliveries | `apps/server/src/scheduledTasks/webhookVerification.ts`; `webhookDedupe.ts` | MISSING: no verification (signature headers are only redacted in `crates/engine/src/agents/prompt.rs`) | Med |
-| Orchestration | Remote machines over SSH: the app installs and runs the engine on a server through an SSH tunnel, with password prompt | `packages/ssh/src/tunnel.ts` (`SshEnvironmentManager`); `packages/ssh/src/auth.ts`; `apps/server/src/device/SshDeviceHost.ts` | MISSING: SSH is only the git clone protocol (`crates/ui/src/shell/add_to_device_ui.rs`). ROADMAP "Next" 1 plans "Run on a server" | High |
-| Orchestration | Tailscale: detect the tailnet, serve the engine on it, pick an exit node | `packages/tailscale/src/tailscale.ts`; `apps/server/src/environment/DirectEndpoints.ts` | MISSING (PARITY section 17) | Med |
+| Orchestration | Tailscale: serve the engine on the tailnet directly, pick an exit node | `packages/tailscale/src/tailscale.ts`; `apps/server/src/environment/DirectEndpoints.ts` | PARTIAL: Tailscale peers are offered as servers to set up ("Run on a server"); devices still talk through the edge, not directly over the tailnet | Low |
 | Orchestration | Agent asks a thread's history questions: search message text across all threads | `apps/server/src/mcp/toolkits/thread/tools.ts` (`t3_thread_search`) | MISSING for agents. In-app search exists (`crates/engine/src/message_index.rs`) | Low |
 | Orchestration | Agent pins, snoozes, settles, archives or marks unread its own thread | `thread/tools.ts` (`t3_thread_organize`) | PARTIAL: `archive_chat` only | Low |
 | Orchestration | Agent sends files into a thread | `apps/server/src/mcp/toolkits/attachment/tools.ts` (`t3_thread_send_attachments`) | MISSING | Low |
@@ -222,3 +221,4 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 | Dock badge with the number of chats waiting on an approval or answer | #55 |
 | Sub-agents in their own worktree: MCP `create_chat` / `create_chats` `worktree` (`new`, `parent`, existing path or branch) | #59 |
 | Worktree cleanup policies (merged, untouched 7/14/30 days; changes always kept) and a worktree storage view with Delete now / Delete all eligible | #59 |
+| Remote machines over SSH and Tailscale: Settings → Devices → "Run on a server" installs the headless engine on a Linux server with the user's own ssh (BatchMode, no passwords), verifies the GitHub release sha256, signs it in (`godspeed login --stdin-code`), runs it as a systemd user service (nohup + cron fallback), shows status with Update / Stop / Start / Uninstall; Linux release tarballs and `manifest-linux.json` on every `v*` tag (`crates/remote`, `crates/ui/src/settings/servers.rs`, `.github/workflows/release-linux.yml`). Password prompts and direct tailnet connections are not ported on purpose. **e2e pending a VPS** (TEST-CHECKLIST §15e). | #61 |

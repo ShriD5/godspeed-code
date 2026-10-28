@@ -1018,3 +1018,26 @@ mod tests {
         );
     }
 }
+
+/// The demo recording fills the page without an engine.
+#[cfg(feature = "demo-fixture")]
+impl PullRequestDetailPage {
+    pub(crate) fn fixture_demo_detail(
+        &mut self,
+        detail: ChangeRequestDetail,
+        merge_options: ChangeRequestMergeOptions,
+        cx: &mut Context<Self>,
+    ) {
+        self.body = Some(crate::pull_request_media::parse_description(&detail.body));
+        self.activity_bodies = detail
+            .activity_comments()
+            .map(|comment| crate::pull_request_media::parse_description(&comment.body))
+            .collect();
+        self.detail = Some(detail);
+        self.error = None;
+        self.loading = false;
+        self.actions.merge_options = Some(merge_options);
+        self.actions.merge_loading = false;
+        cx.notify();
+    }
+}
