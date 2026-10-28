@@ -25,6 +25,7 @@ pub mod invocation;
 pub mod message_search;
 pub mod motion;
 pub mod preview;
+pub mod preview_agent;
 pub mod pricing;
 pub mod project_transfer;
 pub mod projectless;

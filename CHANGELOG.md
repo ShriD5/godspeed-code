@@ -13,6 +13,11 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   turn it off in Settings → General → Privacy, or with `GODSPEED_TELEMETRY=0` or `DO_NOT_TRACK=1`.
   Field-by-field list: [docs/PRIVACY.md](docs/PRIVACY.md).
 - A private admin dashboard on the edge (`/admin`) for the maintainers, over those pings.
+- **Agents drive the preview browser.** In-chat agents get ten `preview_*` tools (open, navigate,
+  snapshot with element refs, screenshot they can see, click, type, scroll, read-only eval, console,
+  wait) on their chat's own preview tab, to check the UI they build. Local dev servers open freely;
+  other sites need network access in the chat's mode or your approval. The tab shows "Agent is using
+  the preview" with a Stop button. macOS for now; details in [docs/mcp.md](docs/mcp.md#agent-preview-tools).
 
 ## 0.5.7 (2026-10-27)
 

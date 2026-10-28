@@ -136,6 +136,7 @@ name (default: the local engine's device).
 | `conductor_notes_write` | `SetConductorNotes {id, notes}` (refused over 12 KB, or when the row would exceed the 16 KiB per-change sync budget) |
 | `show_visual`      | `PublishVisual {chatId, title, script, assets}` (origin chat only; assets base64 by name, read by the MCP server from the agent's cwd) |
 | `show_image`       | `PublishImage {chatId, name, data}` (origin chat only; the file base64, read by the MCP server from the agent's cwd) |
+| `preview_open`, `preview_navigate`, `preview_snapshot`, `preview_screenshot`, `preview_click`, `preview_type`, `preview_scroll`, `preview_eval`, `preview_console`, `preview_wait` | `PreviewAct {chatId, action}` (origin chat only; see [Agent preview tools](#agent-preview-tools)) |
 
 Watch streams are the engine's only read surface (there is no one-shot "get
 transcript" RPC); a snapshot is "subscribe, take the first item, drop" — drop
@@ -281,6 +282,76 @@ from the chat's own folder only and never copied (see
 [image-preview.md](image-preview.md#images-in-agent-replies)). Nothing tells
 an agent about that: the tool description and server instructions name only
 `show_image`, and no harness prompt changes.
+
+### Agent preview tools
+
+The ten `preview_*` tools let an agent check UI it built in the app's own
+preview browser (the right-pane browser tab), like T3 Code's `preview_*`
+tools. They are listed only when `ZERON_CHAT_ID` is set, and they act only on
+the calling chat's own preview tab.
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `preview_open` | `url` | Opens the chat's preview tab (reusing it, or adopting the chat's open browser tab), waits for the load: `{url, title, loading}` |
+| `preview_navigate` | `url` | Loads `url` in the chat's existing preview tab; fails until `preview_open` ran |
+| `preview_snapshot` | — | Text: page title, URL, then an outline of headings, text and controls; every actionable element carries a ref (`[ref=e12]`). Capped at 24 KB and 600 elements; password values are masked |
+| `preview_screenshot` | — | An MCP `image` block (PNG, longest side at most 1280 px) plus `{url, title, width, height}` |
+| `preview_click` | `ref` or `selector` | Scrolls the element into view and clicks it: `{clicked, page}` |
+| `preview_type` | `ref` or `selector`, `text`, `submit?` | Replaces the field's value (input events fire); `submit` presses Enter and submits its form |
+| `preview_scroll` | `dy`/`dx` or `to: top\|bottom`, optional `ref`/`selector` | The new scroll position |
+| `preview_eval` | `expression` | `{value}` as JSON, capped at 16 KB (`{truncated, json}` past it) |
+| `preview_console` | `clear?` | The last 50 console messages and uncaught errors |
+| `preview_wait` | `selector` or `text`, `timeoutMs?` (default 5000, at most 30000) | `{found, waitedMs, url}` |
+
+**Routing.** The browser lives in the desktop window, and the engine may be
+embedded in it or a separate daemon, so the window attaches to its engine as
+the preview driver: it holds `WatchPreviewDriver` open, receives
+`PreviewDriverRequest {id, chatId, action}` items on it, runs each on the
+chat's tab, and answers with `AnswerPreviewRequest {id, ok | err}`. The newest
+attached window serves; a closed window fails its in-flight requests. Every
+request has a deadline (30 s for loads, the wait's timeout plus 5 s, 20 s for
+screenshots, 15 s otherwise). With no window attached (a headless engine, the
+app closed, or a chat hosted on another device) every tool fails with
+"Preview tools need the Godspeed window open". The tools work on macOS today
+(WKWebView); on Linux and Windows they report that they are not available yet.
+
+**Policy** (enforced by the engine, `crates/engine/src/preview_driver.rs`, and
+again by the MCP server before it calls):
+
+- Only `http`/`https` URLs, without embedded credentials. `file:`, `data:`,
+  `javascript:`, `about:`, `blob:`, `view-source:`, app and browser-internal
+  schemes are refused. Downloads never start (the browser cancels them).
+- Loopback dev servers (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`)
+  open freely. Any other host needs the chat's access mode to allow network:
+  Auto and Full access load it; Supervised and Auto-accept edits raise a
+  Network approval card on the chat's live turn ("Open https://example.com in
+  the preview"). Approve for session remembers that origin for the chat. With
+  no live turn to ask on, the load is refused. Navigation the page makes by
+  itself (a clicked link, a redirect) follows the browser's normal policy.
+- Clicks, typing and scrolling are paced (120 ms apart) and capped at 20
+  every 10 seconds per chat.
+- `preview_eval` is for reading. The expression is refused when it mentions
+  cookies, storage (`localStorage`, `sessionStorage`, `indexedDB`, caches),
+  the network (`fetch`, `XMLHttpRequest`, `WebSocket`, `sendBeacon`), timers,
+  promises, `eval`/`Function`, `location`, obvious DOM writes, or contains an
+  assignment or `++`/`--` outside a quoted string. While it runs, the page's
+  `document.cookie` and storage getters throw. This is best effort, not a
+  sandbox: the page shares the expression's world, and page text is
+  untrusted content, not instructions. Expressions are compiled into the
+  injected script (never through `eval`), so a page's CSP doesn't block them.
+- Nothing exports cookies or storage, and no tool reads them.
+
+**In the window** (`crates/ui/src/shell/agent_preview.rs`,
+`crates/ui/src/browser/agent.{rs,js}`): a chat's agent tab is the tab
+`preview_open` opened or adopted (the chat's selected browser tab, else its
+newest). A new tab in the chat on screen opens the right pane and becomes
+the visible tab; in another chat it waits as that chat's selected tab, laid
+out at 1280×800. Agent loads never move keyboard focus. Agent tabs capture
+console output from document start. While the agent acts, and for four
+seconds after, the tab shows "Agent is using the preview" with **Stop**.
+Stop takes the tab back: every preview tool in that chat then fails with a
+message telling the agent not to retry unless asked, until the user closes
+that tab.
 
 ## Selecting a host and project
 

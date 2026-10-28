@@ -1462,6 +1462,34 @@ impl SessionsEngine {
             .is_some_and(|h| h.engine_tx.send(event).is_ok())
     }
 
+    /// Ask the user on the chat's live turn, as a harness would through its
+    /// input bridge (an engine-made approval card: the preview tools'
+    /// network approval). `None` when the chat has no run on this device.
+    /// Like the bridge, a run that ends first answers with nothing.
+    pub fn ask_input(
+        &self,
+        chat_id: &str,
+        questions: Vec<UserInputQuestion>,
+    ) -> Option<oneshot::Receiver<Vec<UserInputAnswer>>> {
+        let runs = lock(&self.inner.runs);
+        let handle = runs.get(chat_id)?;
+        let (tx, rx) = oneshot::channel();
+        let request_id = new_id();
+        lock(&handle.pending_inputs).insert(request_id.clone(), tx);
+        if handle
+            .engine_tx
+            .send(AgentEvent::InputRequested {
+                request_id: request_id.clone(),
+                questions,
+            })
+            .is_err()
+        {
+            lock(&handle.pending_inputs).remove(&request_id);
+            return None;
+        }
+        Some(rx)
+    }
+
     /// Resolve a pending `request_input` question set. Returns `false` when no such
     /// request is pending (unknown id, or the run already settled).
     pub fn respond_input(

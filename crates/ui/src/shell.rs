@@ -66,6 +66,7 @@ use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 
 mod actions_ui;
+mod agent_preview;
 mod add_to_device_ui;
 mod conductor_ui;
 mod chat_dropzone;
@@ -2334,6 +2335,9 @@ pub struct Shell {
     browsers: std::collections::HashMap<u64, Entity<crate::browser::BrowserSurface>>,
     browser_subs: std::collections::HashMap<u64, Subscription>,
     browser_seq: u64,
+    /// The agent preview tools (`agent_preview`): each chat's agent tab,
+    /// tabs the user took back with Stop, and the driver attachment.
+    agent_previews: agent_preview::AgentPreviews,
     /// Pull request tabs in session panes, keyed like the other surfaces.
     chat_pull_requests: std::collections::HashMap<u64, chat_pull_requests::ChatPullRequest>,
     chat_pull_request_seq: u64,
@@ -2933,6 +2937,7 @@ impl Shell {
             browsers: std::collections::HashMap::new(),
             browser_subs: std::collections::HashMap::new(),
             browser_seq: 0,
+            agent_previews: Default::default(),
             chat_pull_requests: std::collections::HashMap::new(),
             chat_pull_request_seq: 0,
             browser_context: crate::browser::BrowserContext::default(),
@@ -4318,11 +4323,33 @@ impl Shell {
         if self.active_chat.is_empty() {
             return;
         }
+        let chat_id = self.active_chat.clone();
+        self.add_browser_surface_for(&chat_id, url, true, false, window, cx);
+    }
+
+    /// A browser tab in `chat_id`'s right pane. `activate` selects it in the
+    /// visible pane (the active chat); otherwise it becomes that chat's
+    /// selected tab for when the user switches there. `agent` marks it the
+    /// chat's agent preview tab: it loads without taking keyboard focus.
+    fn add_browser_surface_for(
+        &mut self,
+        chat_id: &str,
+        url: Option<String>,
+        activate: bool,
+        agent: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> u64 {
         self.sync_browser_profile(cx);
-        let key = self.panel_key(cx);
+        let key = chat_id.to_owned();
         let remote = {
             let state = self.state.read(cx);
-            state.selected_chat_row().is_some_and(|chat| {
+            let chat = if chat_id == self.active_chat {
+                state.selected_chat_row()
+            } else {
+                state.chats.iter().find(|chat| chat.id == chat_id)
+            };
+            chat.is_some_and(|chat| {
                 Some(chat.device_id.as_str()) != state.local_device_id.as_deref()
             })
         };
@@ -4332,7 +4359,7 @@ impl Shell {
             crate::browser::BrowserSurface::new(self.browser_context.clone(), remote, window, cx)
         });
         if let Some(handle) = self.state.read(cx).engine().cloned() {
-            let chat_id = self.active_chat.clone();
+            let chat_id = chat_id.to_owned();
             browser.update(cx, |browser, cx| {
                 browser.watch_previews(handle, chat_id, cx)
             });
@@ -4352,6 +4379,7 @@ impl Shell {
                 crate::browser::BrowserEvent::Close => {
                     this.close_right_surface(RightSurface::Browser(id), window, cx)
                 }
+                crate::browser::BrowserEvent::AgentStopped => this.agent_preview_stopped(id, cx),
                 crate::browser::BrowserEvent::Annotation {
                     annotation,
                     marker,
@@ -4377,17 +4405,29 @@ impl Shell {
         self.browsers.insert(id, browser.clone());
         self.browser_subs.insert(id, sub);
         self.right_tabs
-            .entry(key)
+            .entry(key.clone())
             .or_default()
             .push(RightSurface::Browser(id));
-        self.set_right_active(RightSurface::Browser(id), cx);
+        if activate {
+            self.set_right_active(RightSurface::Browser(id), cx);
+        } else {
+            self.panels.update(&key, |panel| {
+                panel.right_active = RightSurface::Browser(id);
+                panel.changes_open = true;
+            });
+        }
         browser.update(cx, |browser, cx| {
-            if let Some(url) = url {
-                browser.navigate(&url, window, cx);
-            } else {
-                browser.focus_address(window, cx);
+            if agent {
+                browser.mark_agent_tab(cx);
+            }
+            match url {
+                Some(url) if agent => browser.navigate_quietly(&url, window, cx),
+                Some(url) => browser.navigate(&url, window, cx),
+                None if !agent => browser.focus_address(window, cx),
+                None => {}
             }
         });
+        id
     }
 
     /// The picker's Diffs card / the `+` menu's Diff row: every click opens a
@@ -14073,6 +14113,7 @@ impl Render for Shell {
         let wake = shell_clock_wake(self.state.read(cx), now);
         self.clock
             .arm(wake, now, |shell: &mut Shell| &mut shell.clock, cx);
+        self.ensure_preview_driver(window, cx);
         let active_files_key = self.panel_key(cx);
         let hidden_explorers = self
             .files

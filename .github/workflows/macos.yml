@@ -141,6 +141,14 @@ jobs:
         run: |
           scripts/ci/run-macos-fixture.sh target/debug/examples/browser-fixture "$RUNNER_TEMP/browser-captures"
           test -f "$RUNNER_TEMP/browser-captures/result.txt"
+      - name: Agent preview tools in native WebKit
+        timeout-minutes: 5
+        env:
+          RUST_BACKTRACE: 1
+          GODSPEED_AGENT_PREVIEW_FIXTURE_ONLY: 1
+        run: |
+          scripts/ci/run-macos-fixture.sh target/debug/examples/browser-fixture "$RUNNER_TEMP/browser-captures-agent"
+          test -f "$RUNNER_TEMP/browser-captures-agent/result.txt"
       - name: Persistent browser profiles across app launches
         timeout-minutes: 5
         run: python3 scripts/test-browser-storage.py --fixture target/debug/examples/browser-fixture

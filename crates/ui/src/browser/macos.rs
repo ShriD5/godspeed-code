@@ -349,10 +349,21 @@ pub(super) struct Host {
 }
 
 impl NativePage {
-    pub fn new(window: &Window, data: &BrowserData, tx: Sender) -> Result<Self, String> {
+    /// `init_script` runs at document start in every main-frame page (agent
+    /// tabs: the console capture of `agent.js`).
+    pub fn with_init_script(
+        window: &Window,
+        data: &BrowserData,
+        tx: Sender,
+        init_script: Option<&str>,
+    ) -> Result<Self, String> {
         let mtm = MainThreadMarker::new().ok_or("Browser must be created on the main thread")?;
         let new_tab = tx.clone();
-        let web = wry::WebViewBuilder::new()
+        let mut builder = wry::WebViewBuilder::new();
+        if let Some(script) = init_script {
+            builder = builder.with_initialization_script(script);
+        }
+        let web = builder
             .with_webview_configuration(data.configuration(mtm))
             .with_visible(false)
             .with_focused(false)
@@ -627,6 +638,65 @@ impl NativePage {
         }
     }
 
+    /// Run `script` and hand its string result (or the error) to `done`.
+    /// Unlike [`Self::evaluate`] the answer is correlated to this call.
+    pub fn evaluate_with(&self, script: &str, done: Box<dyn FnOnce(Result<String, String>)>) {
+        let host = self.0.borrow();
+        let done = RefCell::new(Some(done));
+        let completion = block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+            let result = match unsafe { error.as_ref() } {
+                Some(error) => Err(script_error(error)),
+                None => unsafe { value.as_ref() }
+                    .and_then(|value| value.downcast_ref::<NSString>())
+                    .map(|text| text.to_string())
+                    .ok_or_else(|| "the script returned no text".to_owned()),
+            };
+            if let Some(done) = done.borrow_mut().take() {
+                done(result);
+            }
+        });
+        unsafe {
+            host.view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(script), Some(&completion));
+        }
+    }
+
+    /// The page as WebKit last rendered it, as image bytes (TIFF).
+    pub fn snapshot(&self, done: Box<dyn FnOnce(Result<Vec<u8>, String>)>) {
+        let host = self.0.borrow();
+        let done = RefCell::new(Some(done));
+        let completion = block2::RcBlock::new(
+            move |image: *mut objc2_app_kit::NSImage, error: *mut NSError| {
+                let result = match unsafe { error.as_ref() } {
+                    Some(error) => Err(error.localizedDescription().to_string()),
+                    None => unsafe { image.as_ref() }
+                        .and_then(|image| image.TIFFRepresentation())
+                        .map(|data| data.to_vec())
+                        .ok_or_else(|| "WebKit returned no image".to_owned()),
+                };
+                if let Some(done) = done.borrow_mut().take() {
+                    done(result);
+                }
+            },
+        );
+        unsafe {
+            host.view
+                .takeSnapshotWithConfiguration_completionHandler(None, &completion);
+        }
+    }
+
+    /// Give a page that has never been on screen (an agent tab in a chat the
+    /// user isn't viewing) a viewport, so it lays out like a real window.
+    pub fn ensure_viewport(&self) {
+        let host = self.0.borrow();
+        if host.bounds.is_none() {
+            host.view.setFrame(objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(0., 0.),
+                objc2_foundation::NSSize::new(1280., 800.),
+            ));
+        }
+    }
+
     pub fn discover_favicon(&self, page: String) {
         let host = self.0.borrow();
         let tx = host.tx.clone();
@@ -652,6 +722,17 @@ impl NativePage {
             );
         }
     }
+}
+
+/// WebKit's message for a failed script: the JavaScript exception when
+/// there is one, else the error's description.
+fn script_error(error: &NSError) -> String {
+    let info = error.userInfo();
+    let message = info
+        .objectForKey(&*NSString::from_str("WKJavaScriptExceptionMessage"))
+        .and_then(|value| value.downcast::<NSString>().ok())
+        .map(|text| text.to_string());
+    message.unwrap_or_else(|| error.localizedDescription().to_string())
 }
 
 fn has_focus(view: &NSView) -> bool {

@@ -61,6 +61,7 @@ mod conductor;
 mod git_actions;
 mod limit_recovery;
 mod message_search;
+mod preview_agent;
 mod project_transfer;
 mod telegram;
 mod telemetry;
@@ -834,6 +835,8 @@ pub struct EngineRpc {
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
     telemetry: Option<crate::Telemetry>,
+    /// Shared by every clone: the window attached as the preview driver.
+    preview_driver: crate::preview_driver::PreviewDriverHub,
     engine_info: EngineInfo,
 }
 
@@ -892,6 +895,7 @@ impl EngineRpc {
             limit_recovery: None,
             chat_lifecycle: None,
             telemetry: None,
+            preview_driver: Default::default(),
             engine_info,
         }
     }
@@ -2425,6 +2429,9 @@ impl RpcService for EngineRpc {
         }
         if telemetry::handles(method) {
             return self.telemetry_rpc(method, params);
+        }
+        if preview_agent::handles(method) {
+            return self.preview_agent_rpc(method, params).await;
         }
         if conductor::handles(method) {
             return self.conductor_rpc(method, params);
