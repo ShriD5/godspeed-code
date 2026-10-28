@@ -4,6 +4,8 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+## 0.5.9 (2026-10-29)
+
 ### Added
 
 - **Review and merge from the PR pane.** Approve, request changes or comment; reply to review
