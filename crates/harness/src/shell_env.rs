@@ -53,6 +53,36 @@ pub fn login_shell_path() -> Option<&'static OsStr> {
     }
 }
 
+/// Build variables kept from the same snapshot, for [`login_shell_var`]:
+/// the ones that say the user picked their own build parallelism or rustc
+/// wrapper (`crate::build_env`).
+const KEPT_VARS: &[&str] = &[
+    "CARGO_MAKEFLAGS",
+    "MAKEFLAGS",
+    "MFLAGS",
+    "CARGO_BUILD_JOBS",
+    "RUSTC_WRAPPER",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+];
+
+static KEPT: std::sync::Mutex<Vec<(String, OsString)>> = std::sync::Mutex::new(Vec::new());
+
+/// One of a few build variables (`CARGO_BUILD_JOBS`, `RUSTC_WRAPPER`, …) as
+/// the user's login shell sets it, from the same once-per-process snapshot
+/// as [`login_shell_path`]. `None` when unset, empty, not one of the kept
+/// variables, or the snapshot isn't in yet.
+pub fn login_shell_var(name: &str) -> Option<OsString> {
+    if !KEPT_VARS.contains(&name) {
+        return None;
+    }
+    let _ = login_shell_path();
+    KEPT.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(kept, _)| kept == name)
+        .map(|(_, value)| value.clone())
+}
+
 /// Kick off the snapshot on a background thread so the first harness resolve
 /// doesn't pay the shell-startup latency inline. Call at daemon startup.
 pub fn prewarm() {
@@ -266,6 +296,10 @@ mod unix {
         for flags in attempt_flag_sets(shell) {
             let (output, expired) = run_and_capture(shell, &flags, &script, timeout);
             if let Some(path) = parse_snapshot_path(&output) {
+                *super::KEPT
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    parse_snapshot_vars(&output, super::KEPT_VARS);
                 return Snapshot::Path(path);
             }
             timed_out |= expired;
@@ -412,6 +446,31 @@ mod unix {
         None
     }
 
+    /// The non-empty values of `names` in the same `env` dump.
+    fn parse_snapshot_vars(output: &[u8], names: &[&str]) -> Vec<(String, OsString)> {
+        let Some(begin) = rfind_subslice(output, BEGIN_MARKER.as_bytes()) else {
+            return Vec::new();
+        };
+        let after = &output[begin + BEGIN_MARKER.len()..];
+        let Some(end) = find_subslice(after, END_MARKER.as_bytes()) else {
+            return Vec::new();
+        };
+        let mut vars = Vec::new();
+        for line in after[..end].split(|b| *b == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            for name in names {
+                if let Some(value) = line
+                    .strip_prefix(name.as_bytes())
+                    .and_then(|rest| rest.strip_prefix(b"="))
+                    && !value.is_empty()
+                {
+                    vars.push(((*name).to_owned(), OsString::from_vec(value.to_vec())));
+                }
+            }
+        }
+        vars
+    }
+
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         haystack
             .windows(needle.len())
@@ -452,6 +511,21 @@ exit 1
             );
             let path = parse_snapshot_path(output.as_bytes()).unwrap();
             assert_eq!(path, OsString::from("/custom/bin:/usr/bin"));
+        }
+
+        #[test]
+        fn keeps_build_vars_between_markers() {
+            let out = format!(
+                "CARGO_BUILD_JOBS=9\n{BEGIN_MARKER}\nPATH=/bin\nCARGO_BUILD_JOBS=2\nRUSTC_WRAPPER=\nMAKEFLAGS_X=1\n{END_MARKER}\n"
+            );
+            let vars = parse_snapshot_vars(
+                out.as_bytes(),
+                &["CARGO_BUILD_JOBS", "RUSTC_WRAPPER", "MAKEFLAGS"],
+            );
+            assert_eq!(
+                vars,
+                vec![("CARGO_BUILD_JOBS".to_owned(), OsString::from("2"))]
+            );
         }
 
         #[test]

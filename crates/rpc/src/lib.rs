@@ -442,6 +442,14 @@ pub mod methods {
     /// `TelemetrySettingsUpdate` → `TelemetrySettings`.
     pub const SET_TELEMETRY_SETTINGS: &str = "SetTelemetrySettings";
 
+    // Shared build slots and sccache (`zeron_proto::build_slots`): the
+    // jobserver this engine shares across the agents and terminals it
+    // starts. IPC only: it's this device's setting.
+    /// `{}` → `BuildSlotsSettings`.
+    pub const GET_BUILD_SLOTS_SETTINGS: &str = "GetBuildSlotsSettings";
+    /// `BuildSlotsSettingsUpdate` → `BuildSlotsSettings`.
+    pub const SET_BUILD_SLOTS_SETTINGS: &str = "SetBuildSlotsSettings";
+
     // Git write actions (ControlRpc, relay-forwardable — they run on the
     // device that owns the checkout). Params carry the checkout `cwd`.
     /// Branch, upstream, ahead/behind and remote facts for one checkout.

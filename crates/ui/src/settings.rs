@@ -22,6 +22,7 @@ pub mod accounts;
 pub mod agents;
 pub mod appearance;
 pub mod archived;
+pub mod build_slots;
 pub mod composer;
 pub mod devices;
 pub mod files;

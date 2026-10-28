@@ -66,6 +66,7 @@ mod message_search;
 mod preview_agent;
 mod project_transfer;
 mod telegram;
+mod build_slots;
 mod telemetry;
 mod usage_history;
 mod voice_chat;
@@ -841,6 +842,7 @@ pub struct EngineRpc {
     telemetry: Option<crate::Telemetry>,
     /// Shared by every clone: the window attached as the preview driver.
     preview_driver: crate::preview_driver::PreviewDriverHub,
+    build_slots: Option<crate::BuildSlots>,
     engine_info: EngineInfo,
 }
 
@@ -902,6 +904,7 @@ impl EngineRpc {
             worktree_cleanup: None,
             telemetry: None,
             preview_driver: Default::default(),
+            build_slots: None,
             engine_info,
         }
     }
@@ -976,6 +979,12 @@ impl EngineRpc {
     }
 
     /// Attach the anonymous telemetry settings (`GetTelemetrySettings`).
+    /// Attach the shared build slots (`GetBuildSlotsSettings`).
+    pub fn with_build_slots(mut self, build_slots: crate::BuildSlots) -> Self {
+        self.build_slots = Some(build_slots);
+        self
+    }
+
     pub fn with_telemetry(mut self, telemetry: crate::Telemetry) -> Self {
         self.telemetry = Some(telemetry);
         self
@@ -2453,6 +2462,9 @@ impl RpcService for EngineRpc {
         }
         if worktree_cleanup::handles(method) {
             return self.worktree_cleanup_rpc(method, params).await;
+        }
+        if build_slots::handles(method) {
+            return self.build_slots_rpc(method, params);
         }
         if telemetry::handles(method) {
             return self.telemetry_rpc(method, params);

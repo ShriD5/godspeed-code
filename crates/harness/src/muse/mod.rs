@@ -109,7 +109,7 @@ impl MuseHarness {
         let mut cmd = Command::new(&exe);
         crate::process::owned::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
-        crate::apply_run_env(&mut cmd, env);
+        crate::apply_run_env(&mut cmd, env, Some(cwd));
         // The CLI's own `muse login` is the account Godspeed runs on: an
         // inherited META_API_KEY would silently override it. Updates are the
         // user's (or Homebrew's) call, never a mid-session restart.

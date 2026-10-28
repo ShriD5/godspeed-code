@@ -107,6 +107,8 @@ pub struct ShortcutsPage {
     question_timeout: Entity<crate::settings::question_timeout::QuestionTimeoutCard>,
     /// Settings → General's anonymous usage stats switch (Privacy).
     telemetry: Entity<crate::settings::telemetry::TelemetryCard>,
+    /// Settings → General's shared build slots and sccache (Builds).
+    build_slots: Entity<crate::settings::build_slots::BuildSlotsCard>,
     worktrees: Entity<super::worktrees::WorktreeSettingsCard>,
     /// Re-renders Settings → General's Updates row as checks and downloads
     /// progress.
@@ -170,6 +172,10 @@ impl ShortcutsPage {
             telemetry: {
                 let state = state.clone();
                 cx.new(|cx| crate::settings::telemetry::TelemetryCard::new(state, cx))
+            },
+            build_slots: {
+                let state = state.clone();
+                cx.new(|cx| crate::settings::build_slots::BuildSlotsCard::new(state, cx))
             },
             worktrees: cx.new(|cx| super::worktrees::WorktreeSettingsCard::new(state.clone(), cx)),
             _app_update_observation: crate::app_update::AppUpdate::global(cx)
@@ -1169,6 +1175,7 @@ impl Render for ShortcutsPage {
                                     .child(self.thread_lifecycle.clone())
                                     .child(self.question_timeout.clone())
                                     .child(self.worktrees.clone())
+                                    .child(self.build_slots.clone())
                                     .child(self.telemetry.clone()),
                             ),
                     )

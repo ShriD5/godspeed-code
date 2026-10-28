@@ -56,6 +56,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+# The client cargo and rustc use, for the shared build slots' pool tests.
+jobserver = "0.1"
 zeron-mcp.workspace = true
 zeron-harness = { workspace = true, features = ["installer-fixture"] }
 # Paused-clock tests (the 30-minute idle reaper).

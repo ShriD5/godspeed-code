@@ -428,6 +428,10 @@ impl EngineHandle {
                     // from unit tests.
                     #[cfg(not(test))]
                     engine_runtime.start_telemetry(&engine_config.edge_url, true);
+                    // One jobserver shared by the agents and terminals this
+                    // engine starts (Settings → General → Builds).
+                    #[cfg(not(test))]
+                    engine_runtime.start_build_slots();
                     *runtime_for_boot.lock().await = Some(engine_runtime);
                     if service_for_boot.set(service).is_err() {
                         state_tx.send_replace(DeferredEngineState::Failed(
