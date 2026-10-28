@@ -2,7 +2,7 @@
 
 All notable changes to Godspeed are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.5.8 (2026-10-28)
 
 ### Added
 
@@ -18,6 +18,15 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   wait) on their chat's own preview tab, to check the UI they build. Local dev servers open freely;
   other sites need network access in the chat's mode or your approval. The tab shows "Agent is using
   the preview" with a Stop button. macOS for now; details in [docs/mcp.md](docs/mcp.md#agent-preview-tools).
+- **Create zoomies from Home.** A ⚡ chip in the new-chat composer adds a "When" row: pick a preset
+  or type a schedule in plain English ("weekdays at 6pm", "every 30 min", "tomorrow 9am"), see the
+  next run live, and send. "Run this on a schedule…" turns any chat into a zoomie, the sidebar has a
+  Zoomies section, and the palette has "New zoomie…".
+
+### Fixed
+
+- Cursor usage bars match the pools on Cursor's spending page. Contributed by @devnm21.
+- The app icon is the gold Hermes again in every build.
 
 ## 0.5.7 (2026-10-27)
 
