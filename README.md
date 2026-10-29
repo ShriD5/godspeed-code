@@ -68,7 +68,8 @@ Releases from 0.3.0 on are signed with a Developer ID and notarized by Apple, so
 normally. (0.1.0 and 0.2.0 were unsigned; for those, use System Settings → Privacy & Security →
 **Open Anyway**.)
 
-There is no auto-update yet. Download new releases from the
+Godspeed updates itself: it checks for new releases, verifies the download (sha256, code signature,
+Gatekeeper) and offers to restart into it. Release notes are on the
 [releases page](https://github.com/ShriD5/godspeed-code/releases).
 
 ## iPhone app
