@@ -6,6 +6,8 @@
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
+<p align="center"><a href="https://godspeed-code.pages.dev"><b>Website</b></a> · <a href="https://github.com/ShriD5/godspeed-code/releases/latest/download/Godspeed-macos-arm64.dmg">Download for macOS</a></p>
+
 <p align="center">
   <a href="https://github.com/ShriD5/godspeed-code/actions/workflows/ui-tests.yml"><img src="https://github.com/ShriD5/godspeed-code/actions/workflows/ui-tests.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/ShriD5/godspeed-code/releases/latest"><img src="https://img.shields.io/github/v/release/ShriD5/godspeed-code" alt="Latest release"></a>

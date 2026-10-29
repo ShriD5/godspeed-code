@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Godspeed Code: every coding agent in one fast Mac app</title>
+<meta name="description" content="Godspeed runs Claude Code, Codex, Cursor and more in one native Mac app. Opens in 133 ms, idles at 12 MiB. Free, open source, MIT. You bring your own agent subscriptions.">
+<meta name="theme-color" content="#0b0806">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://godspeed-code.pages.dev/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Godspeed Code">
+<meta property="og:url" content="https://godspeed-code.pages.dev/">
+<meta property="og:title" content="Godspeed Code: every coding agent in one fast Mac app">
+<meta property="og:description" content="Claude Code, Codex, Cursor and more in one native window. 133 ms cold start, 12 MiB idle. Free and MIT.">
+<meta property="og:image" content="https://godspeed-code.pages.dev/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Godspeed Code: the gold Hermes app icon, with 133 ms cold start and 12 MiB idle">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:site" content="@DevaiahShrithan">
+<meta name="twitter:creator" content="@DevaiahShrithan">
+<meta name="twitter:title" content="Godspeed Code: every coding agent in one fast Mac app">
+<meta name="twitter:description" content="Claude Code, Codex, Cursor and more in one native window. 133 ms cold start, 12 MiB idle. Free and MIT.">
+<meta name="twitter:image" content="https://godspeed-code.pages.dev/og.jpg">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preload" href="/fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/instrument-serif-italic.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/media/hero-poster.webp" as="image" fetchpriority="high">
+<link rel="preconnect" href="https://api.github.com" crossorigin>
+<link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Godspeed Code","operatingSystem":"macOS (Apple silicon), Linux","applicationCategory":"DeveloperApplication","description":"One native app for every AI coding agent: Claude Code, Codex, Cursor and more.","url":"https://godspeed-code.pages.dev/","downloadUrl":"https://github.com/ShriD5/godspeed-code/releases/latest","license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":[{"@type":"Person","name":"Shrithan","url":"https://x.com/DevaiahShrithan"},{"@type":"Person","name":"Devakumar","url":"https://x.com/DevaNm21"}]}
+</script>
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" id="top">
+  <div class="nav-in wrap">
+    <a class="brand" href="#top" aria-label="Godspeed Code, back to top">
+      <img src="/img/icon-64.webp" width="32" height="32" alt="">
+      <span>Godspeed<span class="brand-code"> Code</span></span>
+    </a>
+    <div class="track" aria-hidden="true">
+      <div class="track-line"><div class="track-fill"></div></div>
+      <div class="runner sprite" data-frame="10"></div>
+    </div>
+    <div class="nav-actions">
+      <a class="pill star-pill" href="https://github.com/ShriD5/godspeed-code" title="Star Godspeed Code on GitHub">
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="star-label">Star</span>
+        <span class="star-count" data-stars>12</span>
+      </a>
+      <a class="btn btn-gold btn-sm" href="#download" data-dl-nav>Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero">
+  <div class="hero-glow" aria-hidden="true"></div>
+  <div class="wrap hero-in">
+    <a class="eyebrow" href="https://github.com/ShriD5/godspeed-code/releases/latest" data-release-link>
+      <span class="dot" aria-hidden="true"></span>
+      <span data-version>v0.5.9</span>
+      <span class="sep" aria-hidden="true"></span>
+      <span data-released>shipped 28 Oct</span>
+    </a>
+    <h1>All your coding agents.<br><em>One fast app.</em></h1>
+    <p class="lede">Godspeed runs Claude Code, Codex, Cursor and the rest in one native Mac window. It opens in 133&nbsp;ms, idles at 12&nbsp;MiB, and works with the subscriptions you already pay for.</p>
+    <div class="cta-row">
+      <a class="btn btn-gold btn-lg" href="https://github.com/ShriD5/godspeed-code/releases/latest/download/Godspeed-macos-arm64.dmg" data-dl-primary>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.37 12.6c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.14-2.76.83-3.48.83-.72 0-1.82-.81-3-.79-1.54.02-2.96.9-3.76 2.27-1.6 2.78-.41 6.9 1.15 9.16.76 1.1 1.67 2.34 2.86 2.3 1.15-.05 1.58-.74 2.97-.74 1.38 0 1.78.74 2.99.72 1.24-.02 2.02-1.12 2.77-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.4-.92-2.42-3.66zM14.1 5.86c.63-.77 1.06-1.83.94-2.89-.91.04-2.02.61-2.67 1.37-.58.67-1.09 1.76-.96 2.8 1.02.08 2.05-.52 2.69-1.28z"/></svg>
+        <span data-dl-label>Download for macOS</span>
+      </a>
+      <button class="btn btn-ghost btn-lg" type="button" data-tour-open>
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13l11-6.5z"/></svg>
+        Watch the 60-second tour
+      </button>
+    </div>
+    <p class="fine" data-dl-note>Apple silicon. Free and MIT-licensed. No account needed. <a href="#download">All downloads</a></p>
+  </div>
+
+  <div class="wrap hero-media">
+    <div class="window">
+      <img class="hero-poster" src="/media/hero-poster.webp" width="1920" height="1080" alt="" fetchpriority="high">
+      <video class="hero-video" muted loop playsinline preload="none" width="1920" height="1080" data-hero-video aria-label="Godspeed in use: creating a zoomie from Home, a conductor chat steering three sub-agents, an approval for git push, copying .env files to a server, and usage meters">
+        <source data-src="/media/hero.webm" type="video/webm">
+        <source data-src="/media/hero.mp4" type="video/mp4">
+      </video>
+      <button class="vid-toggle" type="button" data-hero-toggle aria-label="Pause video">
+        <svg class="i i-pause" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
+        <svg class="i i-play" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13l11-6.5z"/></svg>
+      </button>
+    </div>
+  </div>
+</section>
+
+<section class="agents wrap" aria-labelledby="agents-h">
+  <div class="agents-copy">
+    <p class="label">Runs what you already use</p>
+    <h2 id="agents-h">Not another agent. <em>A home for yours.</em></h2>
+    <p>Godspeed drives the agent CLIs you already signed in to, each over its own protocol. It never resells model access, so your plans and limits stay yours.</p>
+  </div>
+  <div class="agents-list">
+    <p class="chips-h">Built in</p>
+    <ul class="chips">
+      <li>Claude Code</li><li>Codex</li><li>Cursor</li><li>Grok Build</li><li>OpenCode</li><li>Pi</li><li>Antigravity</li><li>Devin</li><li>Hermes</li><li>Muse Code</li>
+    </ul>
+    <p class="chips-h">One click from the ACP registry</p>
+    <ul class="chips chips-alt">
+      <li>GitHub Copilot CLI</li><li>Factory Droid</li><li>Gemini CLI</li><li>Kimi CLI</li>
+    </ul>
+  </div>
+</section>
+
+<section class="speed" id="speed" aria-labelledby="speed-h">
+  <div class="wrap">
+    <p class="label">Benchmarks</p>
+    <h2 id="speed-h">Native, so it's <em>quick</em>.</h2>
+    <p class="section-lede">Godspeed's headless engine against the T3 Code 0.0.40 server. Medians of six interleaved trials on an M2 MacBook Air.</p>
+
+    <div class="bench">
+      <div class="bench-row" style="--a:133;--b:877">
+        <div class="bench-head"><h3>Spawn to first answer</h3><span class="x">6.6× faster</span></div>
+        <div class="bar gs"><span class="who">Godspeed</span><span class="tb"><span class="fill"></span><b>133 ms</b></span></div>
+        <div class="bar t3"><span class="who">T3 Code</span><span class="tb"><span class="fill"></span><b>877 ms</b></span></div>
+      </div>
+      <div class="bench-row" style="--a:12.1;--b:166">
+        <div class="bench-head"><h3>Memory, idle 30 s</h3><span class="x">13.7× lighter</span></div>
+        <div class="bar gs"><span class="who">Godspeed</span><span class="tb"><span class="fill"></span><b>12.1 MiB</b></span></div>
+        <div class="bar t3"><span class="who">T3 Code</span><span class="tb"><span class="fill"></span><b>166.0 MiB</b></span></div>
+      </div>
+      <div class="bench-row" style="--a:0.8;--b:23">
+        <div class="bench-head"><h3>List a project with 200 threads</h3><span class="x">29× faster</span></div>
+        <div class="bar gs"><span class="who">Godspeed</span><span class="tb"><span class="fill"></span><b>0.8 ms</b></span></div>
+        <div class="bar t3"><span class="who">T3 Code</span><span class="tb"><span class="fill"></span><b>23.0 ms</b></span></div>
+      </div>
+      <div class="bench-row" style="--a:0.45;--b:3.99">
+        <div class="bench-head"><h3>Search 2,000 messages</h3><span class="x">8.9× faster</span></div>
+        <div class="bar gs"><span class="who">Godspeed</span><span class="tb"><span class="fill"></span><b>0.45 ms</b></span></div>
+        <div class="bar t3"><span class="who">T3 Code</span><span class="tb"><span class="fill"></span><b>3.99 ms</b></span></div>
+      </div>
+    </div>
+    <p class="footnote">These compare the headless servers, not the apps, and measure no agent or model work. The machine wasn't idle during the run, and the two search calls do different work. Against Zeron, which Godspeed is forked from, cold start is the same 65&nbsp;ms and Zeron idles about 1.6&nbsp;MiB lighter. Method and raw data: <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/godspeed/BENCHMARKS.md">vs T3 Code</a>, <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/godspeed/BENCHMARKS-ZERON.md">vs Zeron</a>.</p>
+  </div>
+</section>
+
+<section class="only" id="compare" aria-labelledby="only-h">
+  <div class="wrap">
+    <p class="label">Only here</p>
+    <h2 id="only-h">Not in T3 Code or <em>Zeron</em>.</h2>
+    <p class="section-lede">Five things we checked against both codebases before claiming them.</p>
+
+    <article class="feat">
+      <div class="feat-copy">
+        <span class="num">01</span>
+        <h3>Mission Control</h3>
+        <p class="feat-line">Every agent on every device, on one board.</p>
+        <p>Cmd+Shift+K opens a board with each agent's status, elapsed time, latest activity, branch and diff counts. Move with the arrow keys, open a chat with Return, approve the low-risk ones with A.</p>
+      </div>
+      <figure class="feat-media window">
+        <video muted playsinline preload="none" width="1280" height="800" poster="/media/mission-poster.webp" data-clip aria-label="Mission Control: six agents working, one waiting, one limited, two finished, across a MacBook and a server">
+          <source data-src="/media/mission.webm" type="video/webm">
+          <source data-src="/media/mission.mp4" type="video/mp4">
+        </video>
+      </figure>
+    </article>
+
+    <article class="feat flip">
+      <div class="feat-copy">
+        <span class="num">02</span>
+        <h3>Approvals ranked by risk</h3>
+        <p class="feat-line">The safe ones go with one key.</p>
+        <p>Every approval and question from every agent lands in one Needs-you inbox. Godspeed reads the actual command: read-only commands and edits inside the chat's own folder are low risk. Network calls, git push, .env files and anything outside the repo are high, and always show you the full command.</p>
+      </div>
+      <figure class="feat-media window">
+        <img src="/media/inbox.webp" width="1184" height="740" loading="lazy" decoding="async" alt="The Needs-you inbox: an approval to run git push origin feat/search marked medium risk, with Approve, Decline and Open chat">
+      </figure>
+    </article>
+
+    <article class="feat">
+      <div class="feat-copy">
+        <span class="num">03</span>
+        <h3>Receipts with tokens</h3>
+        <p class="feat-line">Every turn's tokens, on a receipt.</p>
+        <p>Each finished turn prints a receipt: wall time, tool calls by kind, files changed, and tokens in, out and cached. On API-billed accounts it adds an estimated cost. Copy it as text or as an image.</p>
+      </div>
+      <figure class="feat-media window">
+        <video muted playsinline preload="none" width="1116" height="720" poster="/media/receipt-poster.webp" data-clip aria-label="A turn receipt: Claude Code, 4 minutes 14 seconds, 8 tool calls, 4 files changed, 48,210 tokens in and 9,634 out">
+          <source data-src="/media/receipt.webm" type="video/webm">
+          <source data-src="/media/receipt.mp4" type="video/mp4">
+        </video>
+      </figure>
+    </article>
+
+    <article class="feat flip">
+      <div class="feat-copy">
+        <span class="num">04</span>
+        <h3>A Telegram bot for your zoomies</h3>
+        <p class="feat-line">Schedule, steer and approve from your phone.</p>
+        <p>Zoomies are agents that run on a schedule, a webhook or a file change. The engine serves a Telegram bot, so you can schedule one, run it now, pause it and answer its approvals from Telegram, even when the engine lives on a server.</p>
+      </div>
+      <figure class="feat-media tg" data-tg aria-label="A Telegram chat with the Godspeed bot: scheduling a zoomie for weekdays at 18:00, then approving a git push">
+        <div class="tg-head">
+          <img src="/img/icon-64.webp" width="32" height="32" alt="">
+          <div><b>Godspeed</b><span>bot</span></div>
+        </div>
+        <div class="tg-body">
+          <p class="msg me">/schedule weekdays 18:00 Summarise new PRs</p>
+          <p class="msg bot">Scheduled #3: weekdays 18:00 (America/Los_Angeles).<br>Next run Wed 28 Oct 18:00<br>Manage it with /schedules.</p>
+          <div class="msg bot approval">
+            <p><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" d="M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 017 0v3"/></svg><b>Approval needed</b> · Add search to notes</p>
+            <p>Run command:</p>
+            <pre>git push origin feat/search</pre>
+            <div class="tg-btns"><span class="tapped">Allow once</span><span>Allow for session</span><span class="wide">Deny</span></div>
+          </div>
+          <p class="msg bot done"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" d="M5 12.5l4.5 4.5L19 7.5"/></svg>Allow once</p>
+        </div>
+      </figure>
+    </article>
+
+    <article class="feat">
+      <div class="feat-copy">
+        <span class="num">05</span>
+        <h3>An animated Dock buddy</h3>
+        <p class="feat-line">Your Dock icon runs with your agents.</p>
+        <p>The speedster jogs while agents work, sprints at four or more, waves when something needs you, celebrates a finish and naps after ten quiet minutes. Try it here. Settings → Appearance turns it off.</p>
+      </div>
+      <figure class="feat-media dock-demo" data-dock>
+        <div class="dock-stage">
+          <div class="dock">
+            <span class="dock-app a1" aria-hidden="true"></span>
+            <span class="dock-app a2" aria-hidden="true"></span>
+            <span class="dock-tile"><span class="sprite sprite-lg" data-frame="10" role="img" aria-label="The speedster mascot"></span><span class="badge" hidden>2</span></span>
+            <span class="dock-app a3" aria-hidden="true"></span>
+          </div>
+          <span class="dock-dot" aria-hidden="true"></span>
+        </div>
+        <p class="dock-state" aria-live="polite"><b>Jog</b> 1 to 3 agents working</p>
+        <div class="moods" role="group" aria-label="Pick a mood">
+          <button type="button" data-mood="sleeping">Asleep</button>
+          <button type="button" data-mood="jog" aria-pressed="true">Working</button>
+          <button type="button" data-mood="sprint">4+ working</button>
+          <button type="button" data-mood="alert">Needs you</button>
+          <button type="button" data-mood="celebrate">Finished</button>
+        </div>
+      </figure>
+    </article>
+
+    <p class="footnote">Checked against T3 Code (origin/main 40d335a7) and Zeron (upstream/main 8b7afb30) source on 28 October 2026. Scheduled agents and agents driving the preview browser exist in T3 Code too, so they aren't on this list.</p>
+  </div>
+</section>
+
+<section class="more" id="features" aria-labelledby="more-h">
+  <div class="wrap">
+    <p class="label">Also shipping</p>
+    <h2 id="more-h">Everything else that's <em>in the box</em>.</h2>
+
+    <ul class="grid">
+      <li class="tile big">
+        <img src="/media/conductor.webp" width="760" height="620" loading="lazy" decoding="async" alt="A conductor chat splitting work into three sub-agents: sharing API, share sheet UI and end-to-end tests, each marked Working">
+        <h3>Conductor</h3>
+        <p>One long-lived chat plans the work and steers sub-agents. Each one gets a card, and the parent wakes when a child finishes, fails or needs you.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></svg>
+        <h3>Zoomies from Home</h3>
+        <p>Hit the bolt in the new-chat composer, type "weekdays at 6pm", see the next run, send.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="16" height="6.5" rx="1.5"/><path d="M8 7.25h.01M8 16.75h.01"/></svg>
+        <h3>Run on a server</h3>
+        <p>Install the headless engine on a Linux box over your own SSH or Tailscale. Agents keep going with the laptop shut.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12L4 7.5M12 12v9"/></svg>
+        <h3>ACP registry agents</h3>
+        <p>Copilot CLI, Factory Droid, Gemini CLI and Kimi install in one click, each pinned to a checksum.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.5"/><path d="M3 20c.6-3.4 3-5.5 6-5.5s5.4 2.1 6 5.5"/><path d="M16 5.2a3.5 3.5 0 010 6.6M18 14.8c1.6.8 2.7 2.6 3 5.2"/></svg>
+        <h3>Several accounts per agent</h3>
+        <p>Named instances with their own config dir, env and account. Secrets go to the keychain.</p>
+      </li>
+      <li class="tile big right">
+        <img src="/media/transfer.webp" width="720" height="544" loading="lazy" decoding="async" alt="Add to Studio server: copying .env and .env.local along with the clone">
+        <h3>Add a project to another device</h3>
+        <p>Clone a project onto your server or another Mac and bring the .env files git doesn't track, through your own signed-in engines.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="9" r="2"/><path d="M6 7.5v9M18 11c0 3-3 4-7 4.5l-3 .8"/></svg>
+        <h3>Sub-agent worktrees</h3>
+        <p>Sub-agents can start in a fresh worktree on their own branch. Cleanup never touches unpushed work.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M18 16V9.5A2.5 2.5 0 0015.5 7H11M13 4.5L10.5 7 13 9.5"/></svg>
+        <h3>PR review and merge</h3>
+        <p>Approve, comment, resolve threads and merge from the PR pane, with GitHub's reason when it refuses.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></svg>
+        <h3>PR watch</h3>
+        <p>Failed checks, new review comments and merge conflicts wake the PR's chat. Nothing is approved for you.</p>
+      </li>
+      <li class="tile big">
+        <img src="/media/usage.webp" width="760" height="445" loading="lazy" decoding="async" alt="Settings, Usage: Claude Code at 64% of the 5-hour limit and Codex at 81% of the weekly limit">
+        <h3>Usage meters</h3>
+        <p>Live 5-hour and weekly limits for every account, a tachometer in the composer, and history at API prices. Limited chats resume when the limit resets.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 11-2.3-5.6M20 4v4.5h-4.5"/><path d="M12 8.5V12l2.5 1.5"/></svg>
+        <h3>In-app updates</h3>
+        <p>Downloads, checks the signature and notarization, then asks you to restart. Never a downgrade.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M7.5 9.5v5M11 9.5v5M14.5 9.5v5"/></svg>
+        <h3>Shared build slots</h3>
+        <p>Parallel agents share one jobserver. In testing, peak memory went from 4.7 GB to 2.0 GB.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>
+        <h3>iPhone app</h3>
+        <p>Follow your Mac's chats, approve, and dictate from your phone. Build it yourself for now.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14v4.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V14M12 4v11M7.5 10.5L12 15l4.5-4.5"/></svg>
+        <h3>Move in</h3>
+        <p>Import chats from T3 Code, Claude Code, Codex and Cursor. Claude Code and Codex sessions carry on.</p>
+      </li>
+      <li class="tile">
+        <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 018 0v3"/></svg>
+        <h3>Local by default</h3>
+        <p>No account needed. Chats live on your Mac, searchable from a local index.</p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section class="people" aria-labelledby="people-h">
+  <div class="wrap">
+    <p class="label">From the launch thread</p>
+    <h2 id="people-h">What people <em>said</em>.</h2>
+    <ul class="quotes">
+      <li class="quote q-wide">
+        <blockquote>133ms is wild. I built my own Neovim-like editor in Rust (Nevi) and that startup and memory gap is a big reason I stopped wanting Electron for daily tools.</blockquote>
+        <a class="who" href="https://x.com/Annthonny/status/2115160868329800010"><img src="/img/people/Annthonny.webp" width="40" height="40" loading="lazy" alt=""><span><b>Anthony Amaro</b><span>@Annthonny</span></span></a>
+      </li>
+      <li class="quote">
+        <blockquote>The receipt after each turn is my favorite part, love seeing what a run actually cost.</blockquote>
+        <a class="who" href="https://x.com/dkolosovs/status/2115102522801041683"><img src="/img/people/dkolosovs.webp" width="40" height="40" loading="lazy" alt=""><span><b>Denys</b><span>@dkolosovs</span></span></a>
+      </li>
+      <li class="quote">
+        <blockquote>reading the actual command instead of vibes is the right call. push, .env and anything outside the repo always being high is exactly where i'd draw the line too</blockquote>
+        <a class="who" href="https://x.com/dxiaolong/status/2115157131318247850"><img src="/img/people/dxiaolong.webp" width="40" height="40" loading="lazy" alt=""><span><b>ZeroX</b><span>@dxiaolong</span></span></a>
+      </li>
+      <li class="quote">
+        <blockquote>12mb idle with that many agents is wild.</blockquote>
+        <a class="who" href="https://x.com/RohanBhanotAI/status/2115101437890032093"><img src="/img/people/RohanBhanotAI.webp" width="40" height="40" loading="lazy" alt=""><span><b>Rohan Bhanot</b><span>@RohanBhanotAI</span></span></a>
+      </li>
+      <li class="quote">
+        <blockquote>You're doing god's work</blockquote>
+        <a class="who" href="https://x.com/Sovex666/status/2115258196117897401"><img src="/img/people/Sovex666.webp" width="40" height="40" loading="lazy" alt=""><span><b>Sophie</b><span>@Sovex666</span></span></a>
+      </li>
+    </ul>
+    <p class="footnote">Replies to the <a href="https://x.com/DevaiahShrithan/status/2115096213448192050">launch post</a> on X, quoted as written (emoji left out). Each links to the original.</p>
+  </div>
+</section>
+
+<section class="star" id="star" aria-labelledby="star-h">
+  <div class="wrap star-in">
+    <div class="star-note">
+      <img class="star-av" src="/img/people/DevaiahShrithan.webp" width="56" height="56" loading="lazy" alt="Shrithan">
+      <h2 id="star-h" class="note">i ship something almost every day and i'm not stopping. star it and watch it get better.</h2>
+      <p class="sig">shrithan, <a href="https://x.com/DevaiahShrithan">@DevaiahShrithan</a></p>
+      <a class="btn btn-gold btn-lg star-btn" href="https://github.com/ShriD5/godspeed-code">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2.8l2.8 5.8 6.3.9-4.6 4.4 1.1 6.3L12 17.2l-5.6 3 1.1-6.3-4.6-4.4 6.3-.9z"/></svg>
+        Star on GitHub
+        <span class="count" data-stars>12</span>
+      </a>
+    </div>
+    <div class="cadence" data-cadence>
+      <ul class="stats">
+        <li><span class="k">releases</span><span class="v" data-rel-count>14</span><span class="s" data-rel-span>in 13 days</span></li>
+        <li><span class="k">latest</span><span class="v" data-rel-latest>v0.5.9</span><span class="s" data-rel-ago>28 Oct</span></li>
+        <li><span class="k">PRs merged</span><span class="v" data-prs>44</span><span class="s">and counting</span></li>
+      </ul>
+      <div class="chart" aria-hidden="true">
+        <svg class="chart-svg" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
+        <div class="chart-axis"><span data-axis-start>16 Oct</span><span data-axis-end>today</span></div>
+      </div>
+      <p class="chart-cap">Every dot is a release, pulled live from GitHub.</p>
+    </div>
+  </div>
+</section>
+
+<section class="needs" id="requirements" aria-labelledby="needs-h">
+  <div class="wrap needs-in">
+    <div>
+      <p class="label">Plainly</p>
+      <h2 id="needs-h">What you <em>need</em>.</h2>
+      <p class="section-lede">No pricing page, because there's no price.</p>
+    </div>
+    <dl class="needs-list">
+      <div><dt>A Mac with Apple silicon</dt><dd>M1 or later. Tested on macOS 27; the app declares macOS 12 as its minimum.</dd></div>
+      <div><dt>Your own agents</dt><dd>At least one agent CLI, signed in with your own account. Settings → Providers can run the installer for most of them.</dd></div>
+      <div><dt>Money</dt><dd>None. Godspeed is free and MIT-licensed. You keep paying for your agent subscriptions, and nothing else.</dd></div>
+      <div><dt>Linux</dt><dd>x86_64 and arm64 builds exist but are new and lightly tested. The same tarball runs the headless engine on a server.</dd></div>
+      <div><dt>Windows</dt><dd>Not yet.</dd></div>
+      <div><dt>iPhone</dt><dd>The app exists but isn't on TestFlight yet. Build it from source with Xcode; it needs cloud sync.</dd></div>
+      <div><dt>Sync</dt><dd>Off by default. Cloud sync is invite-only for now, or run your own sync server on Cloudflare.</dd></div>
+      <div><dt>Privacy</dt><dd>One anonymous usage ping a day, never prompts, code or paths. Turn it off in Settings → General. <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/PRIVACY.md">What's sent</a></dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="download" id="download" aria-labelledby="dl-h">
+  <div class="wrap">
+    <p class="label">Download</p>
+    <h2 id="dl-h">Get <em>Godspeed</em>.</h2>
+    <p class="section-lede"><span data-version>v0.5.9</span>, released <span data-released-date>28 Oct 2026</span>. The Mac app is signed and notarized by Apple, and updates itself from there.</p>
+
+    <div class="dl-grid">
+      <div class="dl-card dl-mac" data-os-card="mac">
+        <div class="dl-card-head">
+          <svg class="i os" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.37 12.6c-.02-2.3 1.88-3.4 1.96-3.46-1.07-1.56-2.73-1.78-3.32-1.8-1.41-.14-2.76.83-3.48.83-.72 0-1.82-.81-3-.79-1.54.02-2.96.9-3.76 2.27-1.6 2.78-.41 6.9 1.15 9.16.76 1.1 1.67 2.34 2.86 2.3 1.15-.05 1.58-.74 2.97-.74 1.38 0 1.78.74 2.99.72 1.24-.02 2.02-1.12 2.77-2.23.87-1.28 1.23-2.52 1.25-2.58-.03-.01-2.4-.92-2.42-3.66zM14.1 5.86c.63-.77 1.06-1.83.94-2.89-.91.04-2.02.61-2.67 1.37-.58.67-1.09 1.76-.96 2.8 1.02.08 2.05-.52 2.69-1.28z"/></svg>
+          <div><h3>macOS</h3><p>Apple silicon</p></div>
+          <span class="tag" data-os-tag hidden>Your system</span>
+        </div>
+        <ul class="dl-rows">
+          <li>
+            <span class="f"><b>.dmg</b><span data-size="dmg">64 MB</span></span>
+            <button class="sha" type="button" data-sha="dmg" data-full="dbf720da2e2ff5490fe39ed3418b61b5d316cda4c329bba800b9dfb4fb46f442" title="Copy SHA-256">sha256 dbf720…f442</button>
+            <a class="btn btn-gold btn-sm" href="https://github.com/ShriD5/godspeed-code/releases/latest/download/Godspeed-macos-arm64.dmg">Download</a>
+          </li>
+          <li>
+            <span class="f"><b>.app tarball</b><span data-size="app">57 MB</span></span>
+            <button class="sha" type="button" data-sha="app" data-full="7798a9b20b995d228162911311e8ccf3bee471b0bb1dffd5f2e9b73fdddf86f6" title="Copy SHA-256">sha256 7798a9…86f6</button>
+            <a class="btn btn-quiet btn-sm" data-asset="app" href="https://github.com/ShriD5/godspeed-code/releases/latest">Download</a>
+          </li>
+        </ul>
+      </div>
+      <div class="dl-card" data-os-card="linux">
+        <div class="dl-card-head">
+          <svg class="i os" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M4 6.5l5 5-5 5M11.5 17.5H20"/></svg>
+          <div><h3>Linux</h3><p>New, lightly tested. Also runs headless.</p></div>
+          <span class="tag" data-os-tag hidden>Your system</span>
+        </div>
+        <ul class="dl-rows">
+          <li>
+            <span class="f"><b>x86_64</b><span data-size="x64">70 MB · tar.gz</span></span>
+            <button class="sha" type="button" data-sha="x64" data-full="70764dd23bf77112d471e40781bd0cc2868581231f98aa583b4e732cd51eab43" title="Copy SHA-256">sha256 70764d…ab43</button>
+            <a class="btn btn-quiet btn-sm" data-asset="x64" href="https://github.com/ShriD5/godspeed-code/releases/latest">Download</a>
+          </li>
+          <li>
+            <span class="f"><b>arm64</b><span data-size="arm">66 MB · tar.gz</span></span>
+            <button class="sha" type="button" data-sha="arm" data-full="3aba45bf2cb5eea5dd60e099d504e33e9fc7699cbaa843d0b5d37be8c0354bca" title="Copy SHA-256">sha256 3aba45…4bca</button>
+            <a class="btn btn-quiet btn-sm" data-asset="arm" href="https://github.com/ShriD5/godspeed-code/releases/latest">Download</a>
+          </li>
+        </ul>
+      </div>
+      <div class="dl-card dl-small">
+        <div class="dl-card-head">
+          <svg class="i os" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+          <div><h3>iPhone</h3><p>Not on TestFlight yet. Build it with Xcode.</p></div>
+        </div>
+        <a class="btn btn-quiet btn-sm" href="https://github.com/ShriD5/godspeed-code/blob/main/apps/ios/README.md">Build guide</a>
+      </div>
+      <div class="dl-card dl-small">
+        <div class="dl-card-head">
+          <svg class="i os" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M3.5 5.5l7-1v7h-7zM12.5 4.2l8-1.2v8.5h-8zM3.5 13h7v6.5l-7-1zM12.5 13h8v8l-8-1.2z"/></svg>
+          <div><h3>Windows</h3><p>Not yet.</p></div>
+        </div>
+        <a class="btn btn-quiet btn-sm" href="https://github.com/ShriD5/godspeed-code/blob/main/README.md#build-from-source">Build from source</a>
+      </div>
+    </div>
+    <p class="dl-links">
+      <a href="https://github.com/ShriD5/godspeed-code/releases/latest/download/SHA256SUMS">SHA256SUMS</a>
+      <a href="https://github.com/ShriD5/godspeed-code/releases/latest" data-release-link>Release notes</a>
+      <a href="https://github.com/ShriD5/godspeed-code/releases">All releases</a>
+      <a href="https://github.com/ShriD5/godspeed-code/blob/main/CHANGELOG.md">Changelog</a>
+    </p>
+  </div>
+</section>
+
+<section class="closer" aria-labelledby="closer-h">
+  <div class="wrap closer-in">
+    <img src="/img/icon-256.webp" width="112" height="112" loading="lazy" alt="">
+    <h2 id="closer-h">Give your agents <em>wings</em>.</h2>
+    <p>Free, open source, and quick about it.</p>
+    <div class="cta-row">
+      <a class="btn btn-gold btn-lg" href="https://github.com/ShriD5/godspeed-code/releases/latest/download/Godspeed-macos-arm64.dmg" data-dl-primary><span data-dl-label>Download for macOS</span></a>
+      <a class="btn btn-ghost btn-lg" href="https://github.com/ShriD5/godspeed-code">Star on GitHub <span class="count" data-stars>12</span></a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div class="nap">
+      <span class="sprite sprite-nap" data-frame="8" role="img" aria-label="The speedster, asleep"></span>
+      <p>All agents settled. The speedster's napping.</p>
+    </div>
+    <div class="credits">
+      <p>Built by <a href="https://x.com/DevaiahShrithan">Shrithan</a> with <a href="https://x.com/DevaNm21">Devakumar</a>.</p>
+      <p>Godspeed is a fork of <a href="https://github.com/zeronsh/zeron">Zeron</a> by Wing, who built the native shell, the headless engine and most of the agent drivers. If you like this app, go star Zeron too.</p>
+      <p class="foot-links">
+        <a href="https://github.com/ShriD5/godspeed-code">GitHub</a>
+        <a href="https://github.com/ShriD5/godspeed-code/blob/main/LICENSE">MIT License</a>
+        <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/PRIVACY.md">Privacy</a>
+        <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/godspeed/ROADMAP.md">Roadmap</a>
+        <a href="https://github.com/ShriD5/godspeed-code/issues">Report a bug</a>
+      </p>
+    </div>
+  </div>
+</footer>
+
+<dialog class="tour" data-tour>
+  <div class="tour-in">
+    <button class="tour-close" type="button" data-tour-close aria-label="Close tour">
+      <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <video controls playsinline preload="none" width="1920" height="1080" poster="/media/tour-poster.webp" data-tour-video aria-label="The 60-second Godspeed tour, with music"></video>
+  </div>
+</dialog>
+</body>
+</html>
