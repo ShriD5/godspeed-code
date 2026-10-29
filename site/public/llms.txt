@@ -1,0 +1,16 @@
+# Godspeed Code
+
+> Godspeed Code is a free, MIT-licensed native Mac app (Rust + GPUI) that runs the coding-agent CLIs you already use (Claude Code, Codex, Cursor, Grok Build, OpenCode, Pi, Antigravity, Devin, Hermes, Muse Code, plus Copilot CLI, Factory Droid, Gemini CLI and Kimi CLI from the ACP registry) in one window. You bring your own agent subscriptions; it never resells model access.
+
+- Requirements: macOS on Apple silicon. Linux builds (x86_64, arm64) are new and lightly tested. No Windows build yet. The iPhone app must be built from source.
+- Benchmarks (headless engine vs T3 Code 0.0.40 server, M2 MacBook Air, medians of 6): 133 ms vs 877 ms spawn to first answer; 12.1 MiB vs 166.0 MiB idle.
+- Only in Godspeed (vs T3 Code and Zeron): Mission Control board, approvals ranked by risk, per-turn token receipts, a Telegram bot for zoomies (always-on agents), an animated Dock mascot.
+- Fork of Zeron by Wing (https://github.com/zeronsh/zeron). Built by Shrithan (@DevaiahShrithan) with Devakumar (@DevaNm21).
+
+## Links
+
+- [Download for macOS (Apple silicon)](https://github.com/ShriD5/godspeed-code/releases/latest/download/Godspeed-macos-arm64.dmg)
+- [Releases and checksums](https://github.com/ShriD5/godspeed-code/releases/latest)
+- [Source code and README](https://github.com/ShriD5/godspeed-code)
+- [Changelog](https://github.com/ShriD5/godspeed-code/blob/main/CHANGELOG.md)
+- [Benchmarks](https://github.com/ShriD5/godspeed-code/blob/main/docs/godspeed/BENCHMARKS.md)
