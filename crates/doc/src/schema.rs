@@ -562,6 +562,56 @@ impl SessionDoc {
         Ok(join_continuation_entries(entries))
     }
 
+    /// The turn in flight, cheaply: `None` unless the last entry is still
+    /// streaming, else the trailing entries back to (and including) the
+    /// user message that started it, continuations joined. Decodes only
+    /// those entries, never the whole transcript (search indexes a live
+    /// reply from this while it streams, and the full transcript once the
+    /// turn ends). Bounded at `max_entries` from the end.
+    pub fn read_streaming_tail(
+        &self,
+        max_entries: usize,
+    ) -> Result<Option<Vec<SessionMessageEntry>>, DocError> {
+        use loro::{Container, ValueOrContainer};
+        let messages = self.doc.get_list("messages");
+        let len = messages.len();
+        let streaming = len > 0
+            && matches!(
+                messages.get(len - 1),
+                Some(ValueOrContainer::Container(Container::Map(map)))
+                    if matches!(
+                        map.get("status"),
+                        Some(ValueOrContainer::Value(LoroValue::String(s)))
+                            if s.as_str() == status_str(MessageStatus::Streaming)
+                    )
+            );
+        if !streaming {
+            return Ok(None);
+        }
+        let mut entries = Vec::new();
+        for index in (len.saturating_sub(max_entries)..len).rev() {
+            let Some(ValueOrContainer::Container(Container::Map(map))) = messages.get(index) else {
+                continue;
+            };
+            let Ok(entry) = entry_from_json(map.get_deep_value().to_json_value()) else {
+                continue;
+            };
+            let user = entry.role == MessageRole::User;
+            entries.push(entry);
+            if user {
+                break;
+            }
+        }
+        entries.reverse();
+        // A turn whose first segment is outside the window keeps its root id.
+        if let Some(first) = entries.first_mut()
+            && let Some(root) = first.continuation_of.take()
+        {
+            first.id = root;
+        }
+        Ok(Some(join_continuation_entries(entries)))
+    }
+
     /// Read the commands ledger.
     ///
     /// Same skip-not-fail policy as `read_entries`: any device can append
