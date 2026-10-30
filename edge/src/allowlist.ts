@@ -1,9 +1,15 @@
 /**
  * Invite-only gate for the hosted edge.
  *
- * `ALLOWED_EMAILS` (a Worker secret) is a comma-separated, case-insensitive
- * list of emails and `@domain.com` entries. Unset or empty ⇒ the gate is off
- * and the edge behaves as it always did (self-hosted deployments).
+ * Two sources, either one admits a user:
+ *  - `ALLOWED_EMAILS` (a Worker secret): a comma-separated, case-insensitive
+ *    list of emails and `@domain.com` entries;
+ *  - emails an admin approved on `/admin/access` (the iPhone beta waitlist,
+ *    waitlist.ts / access-store.ts), stored in the `access-v1` Durable Object
+ *    so approving someone needs no redeploy. Read through a one-minute
+ *    per-isolate cache, and only for users the secret doesn't already admit.
+ * Both empty (or the secret unset and no store bound) ⇒ the gate is off and
+ * the edge behaves as it always did (self-hosted deployments).
  *
  * It is enforced wherever a WorkOS identity becomes usable here:
  *  - `/auth/exchange` and `/auth/refresh` check the user WorkOS returns before
@@ -20,6 +26,7 @@
  * user id, no emails) is never gated.
  */
 import type { Env } from "./env";
+import { allowedEmailSet, type AllowedSet } from "./waitlist";
 
 export const INVITE_ONLY_CODE = "invite_only";
 export const INVITE_ONLY_MESSAGE =
@@ -122,6 +129,36 @@ const lookupUser = async (apiKey: string, userId: string): Promise<Lookup> => {
   }
 };
 
+/** Is the gate on at all? The secret's list (if set) and the approved
+ * emails (fetched only when the secret is unset; `undefined` = not fetched). */
+const gateState = async (
+  env: Env
+): Promise<{ on: false } | { on: true; list: Allowlist | undefined; approved: AllowedSet | undefined }> => {
+  const list = parseAllowlist(env.ALLOWED_EMAILS);
+  if (list) return { on: true, list, approved: undefined };
+  const approved = await allowedEmailSet(env);
+  // No secret: gated only by a non-empty approved list. A store that can't be
+  // read keeps the old secret-only behaviour (open).
+  if (approved.kind !== "list" || approved.emails.size === 0) return { on: false };
+  return { on: true, list: undefined, approved };
+};
+
+/** The decision for a known email: the secret first (no store read), then
+ * the approved emails. A store error for someone the secret doesn't admit is
+ * a 503, never a 403 (that would sign an approved user out). */
+const decide = async (
+  env: Env,
+  state: { list: Allowlist | undefined; approved: AllowedSet | undefined },
+  email: string,
+  emailVerified: boolean
+): Promise<Response | undefined> => {
+  if (state.list && emailAllowed(state.list, email, emailVerified)) return undefined;
+  const approved = state.approved ?? (await allowedEmailSet(env));
+  if (approved.kind === "list" && approved.emails.has(email.trim().toLowerCase())) return undefined;
+  if (approved.kind === "error") return unavailableResponse("could not verify your account right now; try again shortly");
+  return inviteOnlyResponse();
+};
+
 /**
  * Gate an authenticated user id. `undefined` = allowed (or no list
  * configured); otherwise the response to send instead. Lookup failures answer
@@ -130,12 +167,12 @@ const lookupUser = async (apiKey: string, userId: string): Promise<Lookup> => {
  */
 export const gateUser = async (env: Env, userId: string): Promise<Response | undefined> => {
   if (env.AUTH_MODE === "dev") return undefined;
-  const list = parseAllowlist(env.ALLOWED_EMAILS);
-  if (!list) return undefined;
+  const state = await gateState(env);
+  if (!state.on) return undefined;
 
   const cached = userCache.get(userId);
   if (cached && Date.now() - cached.at < USER_TTL_MS) {
-    return emailAllowed(list, cached.email, cached.emailVerified) ? undefined : inviteOnlyResponse();
+    return decide(env, state, cached.email, cached.emailVerified);
   }
   if (!env.WORKOS_API_KEY) {
     return unavailableResponse("invite list is set but WORKOS_API_KEY is not configured");
@@ -143,7 +180,7 @@ export const gateUser = async (env: Env, userId: string): Promise<Response | und
   const found = await lookupUser(env.WORKOS_API_KEY, userId);
   if (found.kind === "user") {
     rememberUser(userId, found.email, found.emailVerified);
-    return emailAllowed(list, found.email, found.emailVerified) ? undefined : inviteOnlyResponse();
+    return decide(env, state, found.email, found.emailVerified);
   }
   if (found.kind === "missing") {
     userCache.delete(userId);
@@ -151,20 +188,20 @@ export const gateUser = async (env: Env, userId: string): Promise<Response | und
   }
   // WorkOS unreachable: a known user keeps their last decision.
   if (cached) {
-    return emailAllowed(list, cached.email, cached.emailVerified) ? undefined : inviteOnlyResponse();
+    return decide(env, state, cached.email, cached.emailVerified);
   }
   console.warn("allowlist: user lookup failed", found.detail);
   return unavailableResponse("could not verify your account right now; try again shortly");
 };
 
 /** Check a user WorkOS returned from exchange/refresh. `undefined` = allowed. */
-export const gateWorkOsUser = (
+export const gateWorkOsUser = async (
   env: Env,
   user: { readonly id: string; readonly email: string; readonly emailVerified: boolean }
-): Response | undefined => {
+): Promise<Response | undefined> => {
   if (env.AUTH_MODE === "dev") return undefined;
   rememberUser(user.id, user.email, user.emailVerified);
-  const list = parseAllowlist(env.ALLOWED_EMAILS);
-  if (!list) return undefined;
-  return emailAllowed(list, user.email, user.emailVerified) ? undefined : inviteOnlyResponse();
+  const state = await gateState(env);
+  if (!state.on) return undefined;
+  return decide(env, state, user.email, user.emailVerified);
 };

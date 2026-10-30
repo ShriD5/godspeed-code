@@ -307,7 +307,7 @@ td{color:var(--ink2)}
 </style></head>
 <body><main>
 <header><h1>Godspeed Code</h1><span class="meta">Anonymous usage · UTC · updated ${esc(stats.generatedAt.slice(0, 16).replace("T", " "))}</span>
-<nav class="picker" aria-label="Range">${picker}</nav><a class="out" href="/admin/logout">Sign out</a></header>
+<nav class="picker" aria-label="Range">${picker}</nav><a class="out" href="/admin/access">Beta access</a><a class="out" href="/admin/logout">Sign out</a></header>
 <div class="grid">${hero}</div>
 <div class="grid">${extras}</div>
 <div class="panels">

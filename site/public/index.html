@@ -326,7 +326,7 @@
       <li class="tile">
         <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>
         <h3>iPhone app</h3>
-        <p>Follow your Mac's chats, approve, and dictate from your phone. Build it yourself for now.</p>
+        <p>Follow your Mac's chats, approve, and dictate from your phone. <a href="#iphone">Join the iPhone beta</a>.</p>
       </li>
       <li class="tile">
         <svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14v4.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V14M12 4v11M7.5 10.5L12 15l4.5-4.5"/></svg>
@@ -412,9 +412,9 @@
       <div><dt>Money</dt><dd>None. Godspeed is free and MIT-licensed. You keep paying for your agent subscriptions, and nothing else.</dd></div>
       <div><dt>Linux</dt><dd>x86_64 and arm64 builds exist but are new and lightly tested. The same tarball runs the headless engine on a server.</dd></div>
       <div><dt>Windows</dt><dd>Not yet.</dd></div>
-      <div><dt>iPhone</dt><dd>The app exists but isn't on TestFlight yet. Build it from source with Xcode; it needs cloud sync.</dd></div>
+      <div><dt>iPhone</dt><dd>In beta on TestFlight. It needs cloud sync, so testers are let in from the <a href="#iphone">waitlist</a>.</dd></div>
       <div><dt>Sync</dt><dd>Off by default. Cloud sync is invite-only for now, or run your own sync server on Cloudflare.</dd></div>
-      <div><dt>Privacy</dt><dd>One anonymous usage ping a day, never prompts, code or paths. Turn it off in Settings → General. <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/PRIVACY.md">What's sent</a></dd></div>
+      <div><dt>Privacy</dt><dd>One anonymous usage ping a day, never prompts, code or paths. Turn it off in Settings → General. <a href="/privacy">What's sent</a></dd></div>
     </dl>
   </div>
 </section>
@@ -464,12 +464,21 @@
           </li>
         </ul>
       </div>
-      <div class="dl-card dl-small">
+      <div class="dl-card dl-small dl-beta" id="iphone">
         <div class="dl-card-head">
           <svg class="i os" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-          <div><h3>iPhone</h3><p>Not on TestFlight yet. Build it with Xcode.</p></div>
+          <div><h3>Join the iPhone beta</h3><p>A TestFlight beta that follows your Mac's chats. Cloud sync is invite-only, so leave your email and we'll send the invite.</p></div>
         </div>
-        <a class="btn btn-quiet btn-sm" href="https://github.com/ShriD5/godspeed-code/blob/main/apps/ios/README.md">Build guide</a>
+        <form class="beta-form" method="post" action="https://godspeed-edge.shrid5.workers.dev/waitlist" data-beta-form>
+          <label class="sr" for="beta-email">Email</label>
+          <input id="beta-email" name="email" type="email" required autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com">
+          <label class="sr" for="beta-note">What do you run on your Mac? (optional)</label>
+          <input id="beta-note" name="note" type="text" maxlength="500" placeholder="What do you run? (optional)">
+          <input class="hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
+          <button class="btn btn-gold btn-sm" type="submit">Join the beta</button>
+        </form>
+        <p class="beta-status" role="status" aria-live="polite" data-beta-status></p>
+        <p class="beta-fine">Use the email you'll sign in to sync with. We only use it for the beta (<a href="/privacy#the-iphone-beta-waitlist">privacy</a>).</p>
       </div>
       <div class="dl-card dl-small">
         <div class="dl-card-head">
@@ -514,7 +523,7 @@
       <p class="foot-links">
         <a href="https://github.com/ShriD5/godspeed-code">GitHub</a>
         <a href="https://github.com/ShriD5/godspeed-code/blob/main/LICENSE">MIT License</a>
-        <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/PRIVACY.md">Privacy</a>
+        <a href="/privacy">Privacy</a>
         <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/godspeed/ROADMAP.md">Roadmap</a>
         <a href="https://github.com/ShriD5/godspeed-code/issues">Report a bug</a>
       </p>
