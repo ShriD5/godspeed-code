@@ -381,6 +381,19 @@ impl Speedster {
     }
 }
 
+/// On battery or in Low Power Mode, read fresh (a cheap syscall); callers
+/// cache it. Always false outside macOS and in tests.
+pub(crate) fn power_saving_now() -> bool {
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        dock::low_power() || dock::on_battery()
+    }
+    #[cfg(not(all(target_os = "macos", not(test))))]
+    {
+        false
+    }
+}
+
 /// Start the Dock driver. Off outside macOS and in tests.
 pub fn init(state: gpui::Entity<crate::state::AppState>, cx: &mut gpui::App) {
     #[cfg(all(target_os = "macos", not(test)))]
@@ -517,7 +530,7 @@ mod dock {
             match self.power {
                 Some((at, saving)) if now.saturating_duration_since(at) < POWER_TTL => saving,
                 _ => {
-                    let saving = low_power() || on_battery();
+                    let saving = super::power_saving_now();
                     self.power = Some((now, saving));
                     saving
                 }
@@ -600,7 +613,7 @@ mod dock {
         }
     }
 
-    fn low_power() -> bool {
+    pub(super) fn low_power() -> bool {
         NSProcessInfo::processInfo().isLowPowerModeEnabled()
     }
 
@@ -612,7 +625,7 @@ mod dock {
         fn IOPSGetTimeRemainingEstimate() -> f64;
     }
 
-    fn on_battery() -> bool {
+    pub(super) fn on_battery() -> bool {
         // SAFETY: no arguments; a plain read of the power source state.
         let remaining = unsafe { IOPSGetTimeRemainingEstimate() };
         (remaining + 2.0).abs() > 0.5

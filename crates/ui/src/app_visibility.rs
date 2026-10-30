@@ -29,7 +29,7 @@ pub fn init(cx: &mut App) {
 }
 
 #[cfg(any(test, all(target_os = "macos", not(test))))]
-fn set_visible(visible: bool, cx: &mut App) {
+pub(crate) fn set_visible(visible: bool, cx: &mut App) {
     if cx.try_global::<AppVisibility>().map(|state| state.visible) != Some(visible) {
         cx.set_global(AppVisibility { visible });
     }
