@@ -1,8 +1,9 @@
 //! What the bot sends on its own: replies to Telegram messages once their
 //! turn settles (typing meanwhile), approval cards, and the results of
 //! schedules made from Telegram. One loop, woken by session and agent
-//! changes and a short tick; everything it sends is recorded first-win so
-//! a restart never repeats it.
+//! changes, plus a short tick while something is waiting to go out;
+//! everything it sends is recorded first-win so a restart never repeats it.
+//! With no bot connected it sleeps until the poller connects one.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +18,8 @@ use super::schedules::local_time;
 use super::store::{LinkedChat, PendingTurn, ScheduleRow};
 
 pub(super) const TYPING_EVERY: Duration = Duration::from_secs(4);
+/// Re-check cadence while replies, cards or schedule reports are pending
+/// (typing refresh, digest pacing, retries after a failed send).
 const TICK: Duration = Duration::from_secs(4);
 /// Session updates arrive in bursts while a turn streams.
 const COALESCE: Duration = Duration::from_millis(100);
@@ -117,18 +120,37 @@ impl Inner {
         let mut sessions = self.deps.sessions.watch_sessions();
         let mut agents = self.deps.agents.watch();
         loop {
-            if let Some(api) = self.api() {
-                self.deliver(&api).await;
-            }
+            let Some(api) = self.api() else {
+                // No bot connected: nothing can go out. The poller wakes
+                // this loop when it connects one (`Notify` keeps that wake
+                // if it lands before the wait starts).
+                tokio::select! {
+                    _ = self.cancel.cancelled() => return,
+                    _ = self.wake_delivery.notified() => {}
+                }
+                continue;
+            };
+            self.deliver(&api).await;
+            let pending = self.has_pending_work();
             tokio::select! {
                 _ = self.cancel.cancelled() => return,
                 changed = sessions.changed() => if changed.is_err() { return },
                 changed = agents.changed() => if changed.is_err() { return },
                 _ = self.wake_delivery.notified() => {}
-                _ = tokio::time::sleep(TICK) => {}
+                _ = tokio::time::sleep(TICK), if pending => {}
             }
             tokio::time::sleep(COALESCE).await;
         }
+    }
+
+    /// Whether anything still waits to go out on a timer: a reply (typing
+    /// meanwhile), an approval card (digests are paced), or a schedule
+    /// whose run reports may need a retry.
+    fn has_pending_work(&self) -> bool {
+        let any = |rows: Result<usize, _>| rows.map_or(true, |n: usize| n > 0);
+        any(self.store.pending_turns().map(|rows| rows.len()))
+            || any(self.store.pending_prompts().map(|rows| rows.len()))
+            || any(self.store.schedules().map(|rows| rows.len()))
     }
 
     async fn deliver(&self, api: &BotApi) {
