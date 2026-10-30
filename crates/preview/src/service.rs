@@ -37,8 +37,9 @@ enum Verdict {
         backoff: Duration,
     },
 }
-/// Discovery cadence while something may start or stop a server: a run is
-/// live, a terminal is open, or a person acted in the last [`ACTIVE_FOR`].
+/// Discovery cadence while something may start or stop a server, or someone
+/// is looking: a run is live, a terminal is open, a client watches previews
+/// (an open browser pane), or a person acted in the last [`ACTIVE_FOR`].
 const ACTIVE_SCAN: Duration = Duration::from_secs(2);
 /// Cadence otherwise. Each scan runs `lsof` twice and `ps` once (about
 /// 70 ms of CPU); every 2 s that was 6% of a core for the engine's life.
@@ -53,11 +54,12 @@ pub type LiveProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 /// live probe (embedders that never set one) discovery stays active.
 pub(crate) fn scan_delay(
     live: Option<bool>,
+    watched: bool,
     last_activity: Option<Instant>,
     now: Instant,
 ) -> Duration {
     let acted = last_activity.is_some_and(|at| now.saturating_duration_since(at) < ACTIVE_FOR);
-    if live.unwrap_or(true) || acted {
+    if live.unwrap_or(true) || watched || acted {
         ACTIVE_SCAN
     } else {
         QUIET_SCAN
@@ -134,6 +136,18 @@ struct Inner {
     last_activity: Mutex<Option<Instant>>,
     /// Wakes a quiet scanner for an immediate scan.
     scan_now: tokio::sync::Notify,
+    /// Clients watching the previews list ([`PreviewService::watch`]).
+    watchers: std::sync::atomic::AtomicUsize,
+}
+
+/// Held while a client watches the previews list: discovery stays at full
+/// cadence until the last one drops.
+pub struct PreviewWatch(PreviewService);
+
+impl Drop for PreviewWatch {
+    fn drop(&mut self) {
+        self.0.0.watchers.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 /// Stream services beyond previews (terminals), keyed by service id prefix.
 /// Each handler sees the authenticated peer that opened the stream and
@@ -154,7 +168,22 @@ impl PreviewService {
             live: Mutex::new(None),
             last_activity: Mutex::new(None),
             scan_now: tokio::sync::Notify::new(),
+            watchers: std::sync::atomic::AtomicUsize::new(0),
         })))
+    }
+
+    /// Watch the previews list. Keep the guard as long as the subscription:
+    /// a list someone is looking at is refreshed at full cadence, starting
+    /// with a scan now.
+    pub fn watch(
+        &self,
+    ) -> (
+        tokio::sync::watch::Receiver<zeron_proto::PreviewSnapshot>,
+        PreviewWatch,
+    ) {
+        self.0.watchers.fetch_add(1, Ordering::SeqCst);
+        self.0.scan_now.notify_one();
+        (self.0.catalog.subscribe(), PreviewWatch(self.clone()))
     }
 
     /// What keeps discovery at full cadence besides a person acting: a live
@@ -172,8 +201,9 @@ impl PreviewService {
 
     fn scan_delay(&self) -> Duration {
         let live = self.0.live.lock().unwrap().clone().map(|probe| probe());
+        let watched = self.0.watchers.load(Ordering::SeqCst) > 0;
         let last_activity = *self.0.last_activity.lock().unwrap();
-        scan_delay(live, last_activity, Instant::now())
+        scan_delay(live, watched, last_activity, Instant::now())
     }
     /// Serve stream ids starting with `prefix` from `handler` — to peers and
     /// to this device alike. Registering a prefix again replaces its handler.
@@ -454,20 +484,32 @@ mod tests {
     fn discovery_slows_down_when_nothing_can_start_a_server() {
         let now = Instant::now();
         // Embedders without a probe keep the full cadence.
-        assert_eq!(scan_delay(None, None, now), ACTIVE_SCAN);
+        assert_eq!(scan_delay(None, false, None, now), ACTIVE_SCAN);
         // A live run or open terminal.
-        assert_eq!(scan_delay(Some(true), None, now), ACTIVE_SCAN);
+        assert_eq!(scan_delay(Some(true), false, None, now), ACTIVE_SCAN);
+        // A client watches the list (an open browser pane).
+        assert_eq!(scan_delay(Some(false), true, None, now), ACTIVE_SCAN);
         // A person acted recently.
-        assert_eq!(
-            scan_delay(Some(false), Some(now - Duration::from_secs(30)), now),
-            ACTIVE_SCAN
-        );
+        let recent = Some(now - Duration::from_secs(30));
+        assert_eq!(scan_delay(Some(false), false, recent, now), ACTIVE_SCAN);
         // Nobody here and nothing running: once a minute.
-        assert_eq!(scan_delay(Some(false), None, now), QUIET_SCAN);
-        assert_eq!(
-            scan_delay(Some(false), Some(now - ACTIVE_FOR), now),
-            QUIET_SCAN
-        );
+        assert_eq!(scan_delay(Some(false), false, None, now), QUIET_SCAN);
+        let stale = Some(now - ACTIVE_FOR);
+        assert_eq!(scan_delay(Some(false), false, stale, now), QUIET_SCAN);
+    }
+
+    #[test]
+    fn a_watcher_holds_full_cadence_until_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let service =
+            PreviewService::new(dir.path().join("previews.json"), "dev".into(), "Dev".into())
+                .unwrap();
+        service.set_live_probe(Arc::new(|| false));
+        assert_eq!(service.scan_delay(), QUIET_SCAN);
+        let (_changes, watching) = service.watch();
+        assert_eq!(service.scan_delay(), ACTIVE_SCAN);
+        drop(watching);
+        assert_eq!(service.scan_delay(), QUIET_SCAN);
     }
 
     #[test]
