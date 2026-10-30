@@ -271,15 +271,13 @@ impl Shell {
         let body = if rows.is_empty() {
             self.render_zoomies_empty(theme, cx)
         } else {
-            let still = cx.reduce_motion();
-            let jog = self.zoomies_feed.read(cx).jog_frame();
             let mut list = div()
                 .flex()
                 .flex_col()
                 .pt(px(SIDEBAR_DISCLOSURE_BODY_INSET))
                 .gap(px(SIDEBAR_LIST_GAP));
             for (ix, row) in rows.into_iter().enumerate() {
-                list = list.child(self.render_zoomie_row(ix, row, jog, still, theme, cx));
+                list = list.child(self.render_zoomie_row(ix, row, theme, cx));
             }
             list.into_any_element()
         };
@@ -329,8 +327,6 @@ impl Shell {
         &self,
         ix: usize,
         row: ZoomieRow,
-        jog: usize,
-        still: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -339,7 +335,13 @@ impl Shell {
         let toggle_id = row.id.clone();
         let enabled = row.enabled;
         let dot = status_color(row.status, theme);
-        let pose = Pose::for_row(row.status, jog, still);
+        // A running row jogs in its own small view on the pulse clock; the
+        // shell re-renders only when the zoomies themselves change.
+        let glyph = if row.status == RowStatus::Running {
+            mascot::jogging(format!("sidebar-zoomie-jog-{}", row.id), 18.0).into_any_element()
+        } else {
+            mascot::mascot(Pose::for_row(row.status, 0, true), 18.0).into_any_element()
+        };
         let switch = div()
             .id(("sidebar-zoomie-switch", ix))
             .debug_selector(move || format!("sidebar-zoomie-switch-{ix}"))
@@ -408,7 +410,7 @@ impl Shell {
                     .flex_none()
                     .size(px(18.0))
                     .when(!enabled, |el| el.opacity(0.5))
-                    .child(mascot::mascot(pose, 18.0)),
+                    .child(glyph),
             )
             .child(
                 div()
@@ -589,6 +591,44 @@ mod tests {
         });
         redraw(cx);
         assert!(cx.debug_bounds("zoomies-toggle").is_none());
+    }
+
+    /// A running zoomie jogs in its own row view: the feed (which the shell
+    /// observes, cascading to the transcript and sidebar) notifies only when
+    /// the zoomies change, never per frame.
+    #[gpui::test]
+    fn a_running_zoomie_never_re_renders_the_shell_per_frame(cx: &mut gpui::TestAppContext) {
+        init(cx);
+        let dir = tempfile::tempdir().unwrap();
+        let (host, cx) =
+            cx.add_window_view(|_, cx| SidebarHost(cx.new(|cx| new_shell(dir.path(), cx))));
+        let shell = host.read_with(cx, |host, _| host.0.clone());
+        let feed = shell.read_with(cx, |shell, _| shell.zoomies_feed.clone());
+        let notified = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let count = notified.clone();
+        let _observe = cx.update(|_, cx| cx.observe(&feed, move |_, _| count.set(count.get() + 1)));
+
+        let mut running = agent("a1", "Nightly build");
+        running.active_run_id = Some("run-1".into());
+        shell.update(cx, |shell, cx| set_agents(shell, vec![running.clone()], cx));
+        redraw(cx);
+        assert_eq!(notified.get(), 1, "a new snapshot notifies once");
+        assert!(cx.debug_bounds("sidebar-zoomie-0").is_some());
+
+        // The engine re-sending the same list is not a change.
+        shell.update(cx, |shell, cx| set_agents(shell, vec![running.clone()], cx));
+        assert_eq!(notified.get(), 1);
+
+        // Seconds of jogging: no feed notifications at all.
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        assert_eq!(notified.get(), 1, "the jog must not tick the shell");
+
+        // The run ending is a change.
+        running.active_run_id = None;
+        shell.update(cx, |shell, cx| set_agents(shell, vec![running], cx));
+        assert_eq!(notified.get(), 2);
     }
 
     #[gpui::test]

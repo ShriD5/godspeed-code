@@ -119,6 +119,12 @@ pub fn pulse_delta_slow(spec: &MotionSpec, view: EntityId, cx: &mut App) -> f32 
     pulse_delta_every(spec, view, 2, cx)
 }
 
+/// [`pulse_delta`] repainting every `stride` ticks of the 30fps clock: a
+/// frame-stepped sprite needs only its own frame rate (stride 4 ≈ 7.5Hz).
+pub fn pulse_delta_stride(spec: &MotionSpec, view: EntityId, stride: u64, cx: &mut App) -> f32 {
+    pulse_delta_every(spec, view, stride.max(1), cx)
+}
+
 fn pulse_delta_every(spec: &MotionSpec, view: EntityId, stride: u64, cx: &mut App) -> f32 {
     if cx.reduce_motion() {
         return 0.0;

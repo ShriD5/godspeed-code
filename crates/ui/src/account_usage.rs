@@ -166,9 +166,12 @@ pub struct AccountUsage {
     /// The chat whose turn state the gauge last saw, and whether a turn was
     /// running: a fresh turn revs the needle.
     last_turn: Option<(String, bool)>,
+    /// A poll came due while no window was on screen; reload on return.
+    missed_poll: bool,
     _poll: Task<()>,
     _cache: Subscription,
     _state: Subscription,
+    _visibility: Subscription,
 }
 
 impl AccountUsage {
@@ -178,8 +181,15 @@ impl AccountUsage {
                 cx.background_executor().timer(POLL_INTERVAL).await;
                 if this
                     .update(cx, |usage, cx| {
-                        if usage.harness.is_some() {
+                        if usage.harness.is_none() {
+                            return;
+                        }
+                        // Nobody can see the gauge: skip the probe (it asks
+                        // the provider for limits) and catch up on return.
+                        if crate::app_visibility::is_visible(cx) {
                             usage.load(true, cx);
+                        } else {
+                            usage.missed_poll = true;
                         }
                     })
                     .is_err()
@@ -199,7 +209,18 @@ impl AccountUsage {
             popup: popover::Popup::default(),
             tachometer: Tachometer::default(),
             last_turn: None,
+            missed_poll: false,
             _poll: poll,
+            _visibility: cx.observe_global::<crate::app_visibility::AppVisibility>(
+                |usage: &mut Self, cx| {
+                    if crate::app_visibility::is_visible(cx)
+                        && std::mem::take(&mut usage.missed_poll)
+                        && usage.harness.is_some()
+                    {
+                        usage.load(true, cx);
+                    }
+                },
+            ),
             // Settings → Usage and Accounts write the same cache.
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
         }
