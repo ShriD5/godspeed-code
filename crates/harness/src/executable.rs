@@ -144,19 +144,81 @@ fn newest_candidate(candidates: Vec<PathBuf>) -> Option<PathBuf> {
 }
 
 type VersionKey = (PathBuf, Option<std::time::SystemTime>, u64);
-type VersionEntry = (Option<semver::Version>, std::collections::HashSet<String>);
-static VERSION_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<VersionKey, VersionEntry>>,
-> = std::sync::OnceLock::new();
+
+struct VersionEntry {
+    version: Option<semver::Version>,
+    aliases: std::collections::HashSet<String>,
+    /// Set for anything but a version: a probe that could not finish
+    /// (timeout, transient spawn failure) is retried soon, a definite
+    /// failure a little later; only an answer is kept for the binary's life.
+    expires: Option<std::time::Instant>,
+}
+
+#[derive(Default)]
+struct VersionCache {
+    entries: std::collections::HashMap<VersionKey, VersionEntry>,
+    /// One lock per executable being probed, so concurrent callers for the
+    /// same binary share one `--version` while other binaries probe freely.
+    probing: std::collections::HashMap<VersionKey, std::sync::Arc<std::sync::Mutex<()>>>,
+    /// Per name, how often [`invalidate_versions`] cleared it: a probe whose
+    /// names were cleared while it ran may have run the replaced wrapper, so
+    /// its answer is not cached.
+    invalidated: std::collections::HashMap<String, u64>,
+}
+
+impl VersionCache {
+    /// A stamp over `names` that changes whenever any of them is invalidated.
+    fn invalidation_stamp<'a>(&self, names: impl IntoIterator<Item = &'a String>) -> u64 {
+        names
+            .into_iter()
+            .map(|name| self.invalidated.get(name).copied().unwrap_or(0))
+            .sum()
+    }
+}
+
+static VERSION_CACHE: std::sync::OnceLock<std::sync::Mutex<VersionCache>> =
+    std::sync::OnceLock::new();
+
+/// A freshly installed or updated CLI's first exec waits on the OS malware
+/// scan, and an npm `.cmd` shim starts node before the CLI itself does.
+const VERSION_PROBE_TIMEOUT: std::time::Duration = if cfg!(windows) {
+    std::time::Duration::from_secs(10)
+} else {
+    std::time::Duration::from_secs(5)
+};
+
+/// How long an inconclusive probe is trusted before the binary is asked again.
+const INCONCLUSIVE_VERSION_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a definite failure (non-zero exit, no version in the output) is
+/// trusted: a busy machine or a half-finished update heals.
+const VERSION_FAILURE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+enum Probe {
+    /// The binary answered: a version, or a definite failure (non-zero exit,
+    /// unparseable output). Cached for the executable's identity.
+    Answered(Option<semver::Version>),
+    /// The probe could not finish; cached only briefly.
+    Inconclusive,
+}
+
+fn version_cache() -> std::sync::MutexGuard<'static, VersionCache> {
+    VERSION_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
 
 /// An explicit install may replace wrappers without changing their metadata.
 /// Clear all candidates, including canonical paths behind vendor symlinks.
 pub(crate) fn invalidate_versions(names: &[&str]) {
-    if let Some(cache) = VERSION_CACHE.get() {
+    if VERSION_CACHE.get().is_some() {
+        let mut cache = version_cache();
+        for name in names {
+            *cache.invalidated.entry((*name).to_owned()).or_default() += 1;
+        }
         cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, (_, aliases)| !names.iter().any(|name| aliases.contains(*name)));
+            .entries
+            .retain(|_, entry| !names.iter().any(|name| entry.aliases.contains(*name)));
     }
 }
 
@@ -190,28 +252,105 @@ pub(crate) fn neutral_cwd() -> PathBuf {
     .clone()
 }
 
-/// Probe once per executable identity. Failures are cached too, including timeout.
-/// Keep the lock during the short probe so concurrent descriptor requests coalesce.
+/// Probe once per executable identity. A version is cached until the file
+/// changes; a failure is retried after [`VERSION_FAILURE_TTL`], and a probe
+/// that timed out after [`INCONCLUSIVE_VERSION_TTL`], so one cold first exec
+/// cannot pin an older install for the life of the process.
 pub fn binary_version(path: &Path) -> Option<semver::Version> {
-    use std::time::Duration;
+    binary_version_with(path, VERSION_PROBE_TIMEOUT)
+}
+
+fn binary_version_with(path: &Path, timeout: std::time::Duration) -> Option<semver::Version> {
     let canonical = path.canonicalize().ok()?;
     let metadata = canonical.metadata().ok()?;
     let key = (canonical, metadata.modified().ok(), metadata.len());
-    let mut cache = VERSION_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
     let alias = path
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    if let Some((version, aliases)) = cache.get_mut(&key) {
-        aliases.insert(alias);
-        return version.clone();
+    let cached = |cache: &mut VersionCache| {
+        let entry = cache.entries.get_mut(&key)?;
+        if entry
+            .expires
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            return None;
+        }
+        entry.aliases.insert(alias.clone());
+        Some(entry.version.clone())
+    };
+    let slot = {
+        let mut cache = version_cache();
+        if let Some(version) = cached(&mut cache) {
+            return version;
+        }
+        cache.probing.entry(key.clone()).or_default().clone()
+    };
+    // The global lock is released while probing: a slow binary must not
+    // stall every other harness's resolution behind it.
+    let _probing = slot.lock().unwrap_or_else(|e| e.into_inner());
+    // The names this binary is known by: what an invalidation would match.
+    let (names, stamp) = {
+        let mut cache = version_cache();
+        if let Some(version) = cached(&mut cache) {
+            return version;
+        }
+        let mut names: Vec<String> = vec![alias.clone()];
+        if let Some(entry) = cache.entries.get(&key) {
+            names.extend(entry.aliases.iter().cloned());
+        }
+        let stamp = cache.invalidation_stamp(&names);
+        (names, stamp)
+    };
+    let (version, expires) = match probe_version(path, timeout) {
+        Probe::Answered(Some(version)) => (Some(version), None),
+        Probe::Answered(None) => (None, Some(std::time::Instant::now() + VERSION_FAILURE_TTL)),
+        Probe::Inconclusive => (
+            None,
+            Some(std::time::Instant::now() + INCONCLUSIVE_VERSION_TTL),
+        ),
+    };
+    let mut cache = version_cache();
+    if cache.invalidation_stamp(&names) != stamp {
+        // An install replaced wrappers while this probe ran: its answer may
+        // be the old one's, so the next caller asks again.
+        if cache
+            .probing
+            .get(&key)
+            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &slot))
+        {
+            cache.probing.remove(&key);
+        }
+        return version;
     }
+    let mut aliases: std::collections::HashSet<String> = [alias].into_iter().collect();
+    // An inconclusive retry keeps the aliases earlier callers registered.
+    if let Some(previous) = cache.entries.get(&key) {
+        aliases.extend(previous.aliases.iter().cloned());
+    }
+    cache.entries.retain(|(p, _, _), _| p != &key.0);
+    cache.entries.insert(
+        key.clone(),
+        VersionEntry {
+            version: version.clone(),
+            aliases,
+            expires,
+        },
+    );
+    if cache
+        .probing
+        .get(&key)
+        .is_some_and(|current| std::sync::Arc::ptr_eq(current, &slot))
+    {
+        cache.probing.remove(&key);
+    }
+    version
+}
+
+fn probe_version(path: &Path, timeout: std::time::Duration) -> Probe {
     #[cfg(not(windows))]
-    let probe = || -> Option<semver::Version> {
+    let probe = || -> Probe {
         use std::io::Read;
         use std::process::{Command, Stdio};
         let mut command = Command::new(path);
@@ -226,7 +365,10 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        let mut child = command.spawn().ok()?;
+        let Ok(mut child) = command.spawn() else {
+            // ETXTBSY while an updater is still writing the file, EAGAIN, …
+            return Probe::Inconclusive;
+        };
         fn reader(pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
             std::thread::spawn(move || {
                 let mut bytes = Vec::new();
@@ -234,18 +376,23 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
                 bytes
             })
         }
-        let readers = [reader(child.stdout.take()?), reader(child.stderr.take()?)];
+        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Probe::Inconclusive;
+        };
+        let readers = [reader(stdout), reader(stderr)];
         let start = std::time::Instant::now();
-        let success = loop {
+        let status = loop {
             match child.try_wait() {
-                Ok(Some(status)) => break status.success(),
-                Ok(None) if start.elapsed() < Duration::from_secs(2) => {
-                    std::thread::sleep(Duration::from_millis(10))
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if start.elapsed() < timeout => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
                 }
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    break false;
+                    break None;
                 }
             }
         };
@@ -253,59 +400,66 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         unsafe {
             libc::kill(-(child.id() as i32), libc::SIGKILL);
         }
-        if !success {
-            return None;
+        let Some(status) = status else {
+            return Probe::Inconclusive;
+        };
+        if !status.success() {
+            return Probe::Answered(None);
         }
         let mut bytes = Vec::new();
         for reader in readers {
-            while !reader.is_finished() && start.elapsed() < Duration::from_secs(2) {
-                std::thread::sleep(Duration::from_millis(5));
+            while !reader.is_finished() && start.elapsed() < timeout {
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
             if !reader.is_finished() {
-                return None;
+                return Probe::Inconclusive;
             }
-            bytes.extend(reader.join().ok()?);
+            bytes.extend(reader.join().unwrap_or_default());
             bytes.push(b' ');
         }
-        parse_version(&bytes)
+        Probe::Answered(parse_version(&bytes))
     };
     #[cfg(windows)]
-    let probe = || -> Option<semver::Version> {
+    let probe = || -> Probe {
         let path = path.to_path_buf();
         // Use the native launcher for npm .cmd/.bat shims and job-tree cleanup.
         // A separate runtime is safe even when descriptors run inside Tokio.
         std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .ok()?
-                .block_on(async {
-                    let mut command = crate::process::Command::new(&path);
-                    command
-                        .arg("--version")
-                        .current_dir(neutral_cwd())
-                        .stdin(crate::process::Stdio::null())
-                        .stdout(crate::process::Stdio::piped())
-                        .stderr(crate::process::Stdio::piped())
-                        .kill_on_drop(true);
-                    let output = tokio::time::timeout(Duration::from_secs(2), command.output())
-                        .await
-                        .ok()?
-                        .ok()?;
-                    if !output.status.success() {
-                        return None;
+            else {
+                return Probe::Inconclusive;
+            };
+            runtime.block_on(async {
+                let mut command = crate::process::Command::new(&path);
+                command
+                    .arg("--version")
+                    .current_dir(neutral_cwd())
+                    .stdin(crate::process::Stdio::null())
+                    .stdout(crate::process::Stdio::piped())
+                    .stderr(crate::process::Stdio::piped())
+                    .kill_on_drop(true);
+                let output = match tokio::time::timeout(timeout, command.output()).await {
+                    Ok(Ok(output)) => output,
+                    Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Probe::Answered(None);
                     }
-                    parse_version(&output.stdout).or_else(|| parse_version(&output.stderr))
-                })
+                    // Timed out, or a spawn the AV scanner held up.
+                    _ => return Probe::Inconclusive,
+                };
+                if !output.status.success() {
+                    return Probe::Answered(None);
+                }
+                Probe::Answered(
+                    parse_version(&output.stdout).or_else(|| parse_version(&output.stderr)),
+                )
+            })
         })
         .join()
-        .ok()
-        .flatten()
+        .unwrap_or(Probe::Inconclusive)
     };
-    let version = probe();
-    cache.retain(|(p, _, _), _| p != &key.0);
-    cache.insert(key, (version.clone(), [alias].into_iter().collect()));
-    version
+    probe()
 }
 
 /// Remove terminal control sequences a CLI writes even into a pipe: OSC
@@ -728,10 +882,186 @@ mod tests {
             std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             let started = std::time::Instant::now();
-            assert_eq!(binary_version(&path), None);
+            assert_eq!(
+                binary_version_with(&path, std::time::Duration::from_secs(1)),
+                None
+            );
             assert!(started.elapsed() < std::time::Duration::from_secs(3));
             assert_eq!(newest_candidate(vec![path.clone()]), Some(path));
         }
+    }
+
+    /// A first exec slower than the probe budget (an AV scan of a fresh
+    /// install) must not pin "unknown version" for the process lifetime.
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_probe_is_retried_after_its_ttl_but_answers_are_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("slow-until-warm");
+        let warm = dir.path().join("warm");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\n[ -e '{}' ] || sleep 30\necho cli 3.1.0\n",
+                warm.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let short = std::time::Duration::from_millis(500);
+        assert_eq!(binary_version_with(&path, short), None);
+        std::fs::write(&warm, "").unwrap();
+        // Still inside the TTL: the inconclusive result is reused, not re-run.
+        assert_eq!(binary_version_with(&path, short), None);
+        // Age the entry past its TTL.
+        let canonical = path.canonicalize().unwrap();
+        for entry in version_cache()
+            .entries
+            .iter_mut()
+            .filter(|((p, _, _), _)| p == &canonical)
+            .map(|(_, entry)| entry)
+        {
+            assert!(entry.expires.is_some(), "a timeout is cached only briefly");
+            entry.expires = Some(std::time::Instant::now());
+        }
+        assert_eq!(
+            binary_version_with(&path, std::time::Duration::from_secs(10)),
+            Some(semver::Version::new(3, 1, 0))
+        );
+        let entries = version_cache();
+        let entry = entries
+            .entries
+            .iter()
+            .find(|((p, _, _), _)| p == &canonical)
+            .unwrap()
+            .1;
+        assert!(entry.expires.is_none(), "an answer is kept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_probe_is_retried_once_its_failure_ages_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let answer = dir.path().join("answer");
+        let path = dir.path().join("flaky-cli");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ncat '{}' || exit 1\n", answer.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(binary_version(&path), None);
+        // The binary itself is unchanged, so its identity (and cache key) is too.
+        std::fs::write(&answer, "flaky-cli 1.2.3\n").unwrap();
+        assert_eq!(binary_version(&path), None, "a fresh failure is cached");
+        let canonical = path.canonicalize().unwrap();
+        for entry in version_cache()
+            .entries
+            .iter_mut()
+            .filter(|((p, _, _), _)| p == &canonical)
+            .map(|(_, entry)| entry)
+        {
+            assert!(entry.expires.is_some(), "a failure is cached only briefly");
+            entry.expires = Some(std::time::Instant::now());
+        }
+        assert_eq!(binary_version(&path), Some(semver::Version::new(1, 2, 3)));
+    }
+
+    /// An install that replaces a wrapper in place (same metadata) while it
+    /// is being probed: the probe's answer, from the old wrapper, is not
+    /// cached over the invalidation.
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_racing_an_invalidation_does_not_cache_its_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("racing-wrapper");
+        let (calls, go) = (dir.path().join("calls"), dir.path().join("go"));
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho x >> '{}'\nwhile [ ! -e '{}' ]; do sleep 0.02; done\necho cli 1.0.0\n",
+                calls.display(),
+                go.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let budget = std::time::Duration::from_secs(30);
+        let probe = {
+            let path = path.clone();
+            std::thread::spawn(move || binary_version_with(&path, budget))
+        };
+        while !calls.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        invalidate_versions(&["racing-wrapper"]);
+        std::fs::write(&go, "").unwrap();
+        assert_eq!(probe.join().unwrap(), Some(semver::Version::new(1, 0, 0)));
+        let canonical = path.canonicalize().unwrap();
+        assert!(
+            !version_cache()
+                .entries
+                .keys()
+                .any(|(p, _, _)| p == &canonical),
+            "the stale answer was cached"
+        );
+        // The next caller probes again.
+        assert_eq!(
+            binary_version_with(&path, budget),
+            Some(semver::Version::new(1, 0, 0))
+        );
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x\nx\n");
+    }
+
+    /// Concurrent callers for one binary share a probe, and a slow binary
+    /// does not hold up probes of another.
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_probes_coalesce_per_binary_without_a_global_wait() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let slow = dir.path().join("slow");
+        let fast = dir.path().join("fast");
+        std::fs::write(
+            &slow,
+            format!(
+                "#!/bin/sh\necho x >> '{}'\nsleep 3\necho cli 1.0.0\n",
+                dir.path().join("slow.calls").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(&fast, "#!/bin/sh\necho cli 2.0.0\n").unwrap();
+        for path in [&slow, &fast] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // A budget far past the slow binary's 3s: on a loaded machine the
+        // default one could time it out, which is not what this tests.
+        let budget = std::time::Duration::from_secs(30);
+        let slow_callers: Vec<_> = (0..4)
+            .map(|_| {
+                let slow = slow.clone();
+                std::thread::spawn(move || binary_version_with(&slow, budget))
+            })
+            .collect();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            binary_version_with(&fast, budget),
+            Some(semver::Version::new(2, 0, 0))
+        );
+        assert!(
+            slow_callers.iter().all(|caller| !caller.is_finished()),
+            "the fast probe waited on the slow one"
+        );
+        for caller in slow_callers {
+            assert_eq!(caller.join().unwrap(), Some(semver::Version::new(1, 0, 0)));
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("slow.calls")).unwrap(),
+            "x\n"
+        );
     }
 
     /// pingdotgg/t3code#7754: opencode ≤ 1.18 writes an OSC window title to

@@ -27,6 +27,77 @@ use crate::registry::HarnessRegistry;
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_JITTER: u64 = 30 * 60;
 const FIRST_RETRY: Duration = Duration::from_secs(5 * 60);
+/// The first check after launch waits this long: `--version`, `claude
+/// doctor`, npm/GitHub and Homebrew queries must not compete with startup.
+const LAUNCH_DELAY: Duration = Duration::from_secs(90);
+/// The last complete check, so a relaunch inside [`CHECK_INTERVAL`] shows
+/// its answer instead of repeating every probe.
+const STATUS_CACHE_FILE: &str = "harness-update-status.json";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct StatusCache {
+    checked_at_ms: i64,
+    statuses: Vec<HarnessUpdateStatus>,
+}
+
+/// Fill the launch statuses from the last complete check. Only when it is
+/// younger than [`CHECK_INTERVAL`] and has a settled answer (current or
+/// available) for every monitored harness, i.e. every row starting as
+/// `Checking`; anything else checks afresh. "Available" is recomputed against
+/// the dismissals made since. Returns how long until the next check is due.
+fn restore_cached_statuses(
+    statuses: &mut HashMap<HarnessId, HarnessUpdateStatus>,
+    cache: &StatusCache,
+    dismissed: &HashMap<HarnessId, String>,
+    now_ms: i64,
+) -> Option<Duration> {
+    let age = Duration::from_millis(u64::try_from(now_ms - cache.checked_at_ms).ok()?);
+    let remaining = CHECK_INTERVAL.checked_sub(age)?;
+    let mut restored = Vec::new();
+    for (harness, status) in statuses.iter() {
+        if status.phase != HarnessUpdatePhase::Checking {
+            continue;
+        }
+        let cached = cache
+            .statuses
+            .iter()
+            .find(|cached| cached.harness == *harness)?;
+        if !matches!(
+            cached.phase,
+            HarnessUpdatePhase::Current | HarnessUpdatePhase::Available
+        ) {
+            return None;
+        }
+        let available = match (&cached.latest_version, &cached.installed_version) {
+            (Some(latest), Some(installed)) => {
+                version_is_newer(latest, installed)
+                    && dismissed
+                        .get(harness)
+                        .is_none_or(|version| version != latest)
+            }
+            _ => cached.phase == HarnessUpdatePhase::Available,
+        };
+        restored.push((*harness, cached.clone(), available));
+    }
+    for (harness, cached, available) in restored {
+        if let Some(status) = statuses.get_mut(&harness) {
+            status.installed_version = cached.installed_version;
+            status.latest_version = cached.latest_version;
+            status.channel = cached.channel;
+            status.source = cached.source;
+            status.checked_at = cached.checked_at;
+            status.can_apply = cached.can_apply;
+            status.manual_command = cached.manual_command;
+            status.phase = if available {
+                HarnessUpdatePhase::Available
+            } else {
+                HarnessUpdatePhase::Current
+            };
+        }
+    }
+    Some(remaining)
+}
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -353,6 +424,11 @@ struct Inner {
     order: Vec<HarnessId>,
     prefs_path: PathBuf,
     prefs: Mutex<Preferences>,
+    /// See [`STATUS_CACHE_FILE`].
+    cache_path: PathBuf,
+    /// Wait before the worker's first check: [`LAUNCH_DELAY`], or until the
+    /// cached check is due.
+    first_check_in: Duration,
     statuses: Mutex<HashMap<HarnessId, HarnessUpdateStatus>>,
     status_tx: watch::Sender<Vec<HarnessUpdateStatus>>,
     cancellations: Mutex<HashMap<HarnessId, ActiveUpdate>>,
@@ -465,6 +541,15 @@ impl HarnessUpdateCoordinator {
                 )
             })
             .collect();
+        let mut statuses = statuses;
+        let cache_path = data_dir.join(STATUS_CACHE_FILE);
+        let cache: StatusCache = std::fs::read_to_string(&cache_path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let first_check_in =
+            restore_cached_statuses(&mut statuses, &cache, &prefs.dismissed_versions, now_ms())
+                .map_or(LAUNCH_DELAY, |due| due.max(LAUNCH_DELAY));
         let initial = ordered_snapshot(&order, &statuses);
         let (status_tx, _) = watch::channel(initial);
         Self {
@@ -472,6 +557,8 @@ impl HarnessUpdateCoordinator {
                 registry,
                 order,
                 prefs_path,
+                cache_path,
+                first_check_in,
                 prefs: Mutex::new(prefs),
                 statuses: Mutex::new(statuses),
                 status_tx,
@@ -490,10 +577,15 @@ impl HarnessUpdateCoordinator {
         }
     }
 
-    /// Start the immediate check plus the six-hour jittered/retry loop. Bare
-    /// synchronous test assemblies simply omit the worker and can still use
-    /// the explicit RPC methods once running under Tokio.
+    /// Start the six-hour jittered/retry loop. The first check waits
+    /// [`LAUNCH_DELAY`], or until the cached check from an earlier launch is
+    /// due. Bare synchronous test assemblies simply omit the worker and can
+    /// still use the explicit RPC methods once running under Tokio.
     pub fn start(&self) {
+        self.start_after(self.inner.first_check_in);
+    }
+
+    fn start_after(&self, first: Duration) {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
@@ -503,6 +595,10 @@ impl HarnessUpdateCoordinator {
         }
         let coordinator = self.clone();
         *worker = Some(tokio::spawn(async move {
+            tokio::select! {
+                _ = coordinator.inner.shutdown.cancelled() => return,
+                _ = tokio::time::sleep(first) => {}
+            }
             let mut retry = FIRST_RETRY;
             loop {
                 // Shutdown must not wait out slow probes or registry requests.
@@ -563,7 +659,32 @@ impl HarnessUpdateCoordinator {
             .collect::<Vec<_>>()
             .await;
 
-        self.snapshot()
+        let snapshot = self.snapshot();
+        self.save_status_cache(&snapshot);
+        snapshot
+    }
+
+    /// Remember a complete check for the next launch (see
+    /// [`restore_cached_statuses`]).
+    fn save_status_cache(&self, statuses: &[HarnessUpdateStatus]) {
+        let cache = StatusCache {
+            checked_at_ms: now_ms(),
+            statuses: statuses.to_vec(),
+        };
+        let Ok(json) = serde_json::to_string(&cache) else {
+            return;
+        };
+        let temp = self.inner.cache_path.with_extension("json.tmp");
+        if let Err(error) = std::fs::write(&temp, json)
+            .and_then(|()| std::fs::rename(&temp, &self.inner.cache_path))
+        {
+            tracing::debug!(%error, "harness update status cache not saved");
+        }
+    }
+
+    /// An install changes what is installed: the next launch checks afresh.
+    fn forget_status_cache(&self) {
+        let _ = std::fs::remove_file(&self.inner.cache_path);
     }
 
     pub async fn check_one(&self, harness: HarnessId) -> Result<(), String> {
@@ -981,6 +1102,7 @@ impl HarnessUpdateCoordinator {
         if self.inner.shutdown.is_cancelled() {
             return Err("update cancelled".into());
         }
+        self.forget_status_cache();
         let current = self
             .snapshot()
             .into_iter()
@@ -2600,7 +2722,7 @@ mod tests {
         registry.register(Arc::new(ExecutableHarness(executable, HarnessId::Grok)));
         let coordinator = super::HarnessUpdateCoordinator::new(temp.path(), registry);
         let mut watch = coordinator.watch();
-        coordinator.start();
+        coordinator.start_after(Duration::ZERO);
         // The startup check is now blocked in the CLI's version probe.
         tokio::time::timeout(Duration::from_secs(5), async {
             while coordinator.status(HarnessId::Grok).phase != HarnessUpdatePhase::Checking
@@ -2614,6 +2736,139 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), coordinator.shutdown())
             .await
             .expect("shutdown waited for a probe that can take the full command timeout");
+    }
+
+    /// Launch does not probe: the worker's first check waits, and a fresh
+    /// cached check from the last launch is shown instead of re-run.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_waits_and_relaunch_reuses_a_fresh_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("grok");
+        let calls = temp.path().join("calls");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\necho \"$1\" >> '{}'\ncase \"$1:$2\" in\n  version:) echo 'grok 1.0.4' ;;\n  update:--check) echo 'A new version of Grok Build is available: 1.0.4 -> 1.0.41 [stable]' ;;\n  *) exit 2 ;;\nesac\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let registry = Arc::new(HarnessRegistry::new());
+        registry.register(Arc::new(ExecutableHarness(executable, HarnessId::Grok)));
+
+        // First launch: nothing cached, the check waits out the launch delay.
+        let first = super::HarnessUpdateCoordinator::new(temp.path(), registry.clone());
+        assert_eq!(first.inner.first_check_in, super::LAUNCH_DELAY);
+        first.start();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!calls.exists(), "no CLI probe at launch");
+        assert_eq!(
+            first.status(HarnessId::Grok).phase,
+            HarnessUpdatePhase::Checking
+        );
+        first.check_all().await;
+        assert_eq!(
+            first.status(HarnessId::Grok).phase,
+            HarnessUpdatePhase::Available
+        );
+        first.shutdown().await;
+        let probes = std::fs::read_to_string(&calls).unwrap().lines().count();
+
+        // Relaunch: the cached answer shows at once and the next check is
+        // hours away, not at launch.
+        let second = super::HarnessUpdateCoordinator::new(temp.path(), registry.clone());
+        let status = second.status(HarnessId::Grok);
+        assert_eq!(status.phase, HarnessUpdatePhase::Available);
+        assert_eq!(status.installed_version.as_deref(), Some("1.0.4"));
+        assert_eq!(status.latest_version.as_deref(), Some("1.0.41"));
+        assert!(second.inner.first_check_in > Duration::from_secs(5 * 60 * 60));
+        second.start();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap().lines().count(),
+            probes
+        );
+        // A dismissal made after the check holds across the relaunch.
+        second.dismiss(HarnessId::Grok, None);
+        second.shutdown().await;
+        let third = super::HarnessUpdateCoordinator::new(temp.path(), registry);
+        assert_eq!(
+            third.status(HarnessId::Grok).phase,
+            HarnessUpdatePhase::Current
+        );
+    }
+
+    #[test]
+    fn stale_or_unsettled_caches_are_not_restored() {
+        use std::collections::HashMap;
+        use zeron_proto::{HarnessUpdatePolicy, HarnessUpdateStatus};
+        let status = |phase| HarnessUpdateStatus {
+            harness: HarnessId::Grok,
+            installed_version: Some("1.0.0".into()),
+            latest_version: Some("1.1.0".into()),
+            channel: None,
+            source: Default::default(),
+            policy: HarnessUpdatePolicy::default(),
+            phase,
+            progress: None,
+            checked_at: Some(0),
+            error: None,
+            can_apply: true,
+            manual_command: None,
+        };
+        let launch = || HashMap::from([(HarnessId::Grok, status(HarnessUpdatePhase::Checking))]);
+        let now = 10 * 60 * 60 * 1000;
+        let cache = |age_ms: i64, phase| super::StatusCache {
+            checked_at_ms: now - age_ms,
+            statuses: vec![status(phase)],
+        };
+        let none = HashMap::new();
+        let mut fresh = launch();
+        let due = super::restore_cached_statuses(
+            &mut fresh,
+            &cache(60 * 60 * 1000, HarnessUpdatePhase::Available),
+            &none,
+            now,
+        );
+        assert_eq!(due, Some(super::CHECK_INTERVAL - Duration::from_secs(3600)));
+        assert_eq!(fresh[&HarnessId::Grok].phase, HarnessUpdatePhase::Available);
+        // Too old.
+        let too_old = super::CHECK_INTERVAL.as_millis() as i64 + 1;
+        let mut stale = launch();
+        assert_eq!(
+            super::restore_cached_statuses(
+                &mut stale,
+                &cache(too_old, HarnessUpdatePhase::Current),
+                &none,
+                now
+            ),
+            None
+        );
+        assert_eq!(stale[&HarnessId::Grok].phase, HarnessUpdatePhase::Checking);
+        // A failed check is retried, not restored.
+        let mut failed = launch();
+        assert_eq!(
+            super::restore_cached_statuses(
+                &mut failed,
+                &cache(1000, HarnessUpdatePhase::Failed),
+                &none,
+                now
+            ),
+            None
+        );
+        // A harness the cache never saw: check everything afresh.
+        let mut missing = launch();
+        let empty = super::StatusCache {
+            checked_at_ms: now - 1000,
+            statuses: Vec::new(),
+        };
+        assert_eq!(
+            super::restore_cached_statuses(&mut missing, &empty, &none, now),
+            None
+        );
     }
 
     #[cfg(unix)]

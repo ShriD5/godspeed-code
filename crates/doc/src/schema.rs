@@ -475,6 +475,13 @@ impl SessionDoc {
         Ok(())
     }
 
+    /// Whether the transcript has any message entry, without materializing
+    /// one: the list's length, not its contents. A torn entry counts — it is
+    /// still history that must never be overwritten.
+    pub fn has_message_entries(&self) -> bool {
+        !self.doc.get_list("messages").is_empty()
+    }
+
     /// Read all entries (continuations NOT joined — see `join_continuation_entries`).
     ///
     /// Malformed entries are SKIPPED, not fatal: a torn intermediate state
@@ -1553,6 +1560,18 @@ pub fn materialize_tail(
 mod tests {
     use super::*;
     use crate::parts::fold_event_into_parts;
+
+    #[test]
+    fn has_message_entries_reads_the_length_only() {
+        let doc = SessionDoc::init("chat").unwrap();
+        assert!(!doc.has_message_entries());
+        let entry: SessionMessageEntry = serde_json::from_value(serde_json::json!({
+            "id": "m", "role": "user", "parts": [], "createdAt": 1, "deviceId": "d"
+        }))
+        .unwrap();
+        doc.push_message(&entry).unwrap();
+        assert!(doc.has_message_entries());
+    }
 
     #[test]
     fn fork_seam_round_trips_through_the_doc() {
