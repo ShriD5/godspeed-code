@@ -16,6 +16,7 @@ mod account_usage;
 pub mod add_to_device;
 pub mod app_menus;
 pub mod app_update;
+pub(crate) mod app_visibility;
 pub mod appearance;
 mod approval_view;
 pub mod appshots;
@@ -278,6 +279,7 @@ pub fn run_app(config: UiConfig) {
         })
         .detach();
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+        app_visibility::init(cx);
         speedster::init(state.clone(), cx);
         dock_badge::init(state.clone(), cx);
 

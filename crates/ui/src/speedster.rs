@@ -4,8 +4,17 @@
 //! other devices move it too.
 //!
 //! [`Speedster`] is the pure state machine (counts and attention items in, a
-//! [`Mood`] out); `dock` is the macOS driver that swaps
-//! `NSApp.applicationIconImage` frames only while an animated mood is showing.
+//! [`Mood`] and a [`Plan`] out); `dock` is the macOS driver that swaps
+//! `NSApp.applicationIconImage` frames only while the plan animates.
+//!
+//! Idle costs nothing: working moods animate while agents run, but a quiet
+//! speedster jogs in place for [`SLEEP_AFTER`] and then settles on one still
+//! sleeping frame with no timer, and a waiting alert settles after
+//! [`ALERT_HOLD`]. On battery, in Low Power Mode, or with every window
+//! hidden or covered, frames step at most [`POWER_SAVING_MAX_FPS`]. Hidden
+//! windows are the usual case while agents work (the user is in another
+//! app), and then the Dock is the only sign of it, so working moods keep
+//! running there; only the quiet idle pose holds still.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -19,8 +28,14 @@ use zeron_proto::view::{Indicator, effective_indicator};
 pub const MAX_FPS: f32 = 12.0;
 /// How long a fresh finish or failure holds the celebrate / oops pose.
 pub const TRANSIENT: Duration = Duration::from_secs(2);
-/// Quiet this long (nothing working, nothing waiting) and the speedster naps.
-pub const SLEEP_AFTER: Duration = Duration::from_secs(10 * 60);
+/// Quiet this long (nothing working, nothing waiting) and the speedster naps:
+/// one still sleeping frame, no timer.
+pub const SLEEP_AFTER: Duration = Duration::from_secs(45);
+/// A waiting alert waves this long, then holds its first frame.
+pub const ALERT_HOLD: Duration = Duration::from_secs(60);
+/// Frame-rate ceiling on battery, in Low Power Mode, or with every window
+/// hidden or covered.
+pub const POWER_SAVING_MAX_FPS: f32 = 4.0;
 /// After the first attention snapshot from an engine, items keep arriving as
 /// its watch catches up. Nothing in that window is news.
 pub const SETTLE: Duration = Duration::from_secs(5);
@@ -90,7 +105,8 @@ impl Mood {
         }
     }
 
-    /// Frames per second; 0 holds the first frame.
+    /// Frames per second; 0 holds the first frame. (The Dock holds even
+    /// Sleeping still: see [`Speedster::plan`].)
     pub const fn fps(self) -> f32 {
         match self {
             Self::Sleeping | Self::Idle => 0.5,
@@ -107,6 +123,30 @@ impl Mood {
         let fps = self.fps().min(MAX_FPS);
         (fps > 0.0 && self.frames().len() > 1).then(|| Duration::from_secs_f32(1.0 / fps))
     }
+}
+
+/// What keeps the Dock driver awake between app-state changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plan {
+    /// Nothing: the icon holds its frame until the app state changes.
+    None,
+    /// Step a frame every interval.
+    Animate(Duration),
+    /// One wake-up for a transient ending or the nap starting.
+    Wake(Instant),
+}
+
+/// What the driver knows about the world outside the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Conditions {
+    /// Reduce Motion (the preference or the OS): every mood holds still.
+    pub reduced_motion: bool,
+    /// Every window hidden, minimized or covered: the Dock is the only sign
+    /// of work, so working moods animate (capped); the quiet idle pose holds
+    /// still.
+    pub hidden: bool,
+    /// On battery or in Low Power Mode.
+    pub power_saving: bool,
 }
 
 /// `(working, awaiting input)` across every device's session rows,
@@ -167,6 +207,8 @@ pub struct Speedster {
     oops_until: Option<Instant>,
     /// Since when nothing has been working, waiting or limited.
     quiet_since: Option<Instant>,
+    /// Since when something has been waiting on the user.
+    alert_since: Option<Instant>,
 }
 
 impl Speedster {
@@ -181,6 +223,7 @@ impl Speedster {
             celebrate_until: None,
             oops_until: None,
             quiet_since: None,
+            alert_since: None,
         }
     }
 
@@ -189,11 +232,17 @@ impl Speedster {
     pub fn observe(&mut self, observation: Observation<'_>, now: Instant) {
         let attention = observation.attention;
         self.working = observation.working;
-        self.alert = observation.awaiting_input > 0
+        let alert = observation.awaiting_input > 0
             || attention
                 .items
                 .iter()
                 .any(|item| matches!(item.kind, AttentionKind::Approval | AttentionKind::Question));
+        if !alert {
+            self.alert_since = None;
+        } else if !self.alert {
+            self.alert_since = Some(now);
+        }
+        self.alert = alert;
         self.tired = attention
             .items
             .iter()
@@ -297,6 +346,31 @@ impl Speedster {
             .min()
     }
 
+    /// How the Dock driver shows the mood at `now`. Animates a mood with
+    /// frames to step while motion is allowed; never asleep (one still frame,
+    /// the one with the "z"), never a settled alert, and never the idle pose
+    /// while every window is hidden. Power saving and hidden windows cap the
+    /// rate at [`POWER_SAVING_MAX_FPS`]. Otherwise one wake for the next mood
+    /// change, or nothing at all.
+    pub fn plan(&self, now: Instant, conditions: Conditions) -> Plan {
+        let mood = self.mood(now);
+        let settled = mood == Mood::Sleeping
+            || (mood == Mood::Alert
+                && self
+                    .alert_since
+                    .is_some_and(|since| now >= since + ALERT_HOLD))
+            || (conditions.hidden && mood == Mood::Idle);
+        let animate = !conditions.reduced_motion && !settled;
+        let capped = conditions.power_saving || conditions.hidden;
+        match mood.frame_interval().filter(|_| animate) {
+            Some(interval) if capped => {
+                Plan::Animate(interval.max(Duration::from_secs_f32(1.0 / POWER_SAVING_MAX_FPS)))
+            }
+            Some(interval) => Plan::Animate(interval),
+            None => self.next_deadline(now).map_or(Plan::None, Plan::Wake),
+        }
+    }
+
     fn sleeps_at(&self) -> Option<Instant> {
         let quiet = self.quiet_since?;
         let settled = [self.oops_until, self.celebrate_until]
@@ -325,7 +399,7 @@ mod dock {
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::{NSData, NSProcessInfo};
 
-    use super::{Frame, Mood, Observation, Speedster};
+    use super::{Conditions, Frame, Mood, Observation, Plan, Speedster};
     use crate::state::AppState;
 
     /// Same order as [`Frame`].
@@ -350,15 +424,9 @@ mod dock {
         include_bytes!("../assets/speedster/oops@512.png"),
     ];
 
-    /// What keeps the driver awake between app-state changes.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Plan {
-        None,
-        /// Step a frame every interval.
-        Animate(Duration),
-        /// One wake-up for a transient ending or the nap starting.
-        Wake(Instant),
-    }
+    /// How long a battery / Low Power Mode reading is trusted. Only read
+    /// while syncing, which a still icon never does on its own.
+    const POWER_TTL: Duration = Duration::from_secs(30);
 
     struct Dock {
         state: WeakEntity<AppState>,
@@ -371,6 +439,8 @@ mod dock {
         mood: Option<Mood>,
         frame: usize,
         plan: Plan,
+        /// Last power reading: (when, saving power).
+        power: Option<(Instant, bool)>,
         _task: Option<Task<()>>,
     }
 
@@ -385,6 +455,7 @@ mod dock {
             mood: None,
             frame: 0,
             plan: Plan::None,
+            power: None,
             _task: None,
         });
         cx.observe(&state, |_, cx| sync(cx, true)).detach();
@@ -392,6 +463,9 @@ mod dock {
         cx.observe_global::<crate::settings::SettingsStore>(|cx| sync(cx, false))
             .detach();
         cx.observe_global::<crate::motion::MotionState>(|cx| sync(cx, false))
+            .detach();
+        // Windows shown, hidden or covered.
+        cx.observe_global::<crate::app_visibility::AppVisibility>(|cx| sync(cx, false))
             .detach();
         sync(cx, true);
     }
@@ -412,6 +486,11 @@ mod dock {
                 return;
             }
             let now = Instant::now();
+            let conditions = Conditions {
+                reduced_motion: crate::motion::reduced_outside_window(cx),
+                hidden: !crate::app_visibility::is_visible(cx),
+                power_saving: self.power_saving(now),
+            };
             let reread = reread || self.machine.is_none();
             let machine = self
                 .machine
@@ -419,22 +498,30 @@ mod dock {
             if reread && let Some(state) = self.state.upgrade() {
                 machine.observe(Observation::of(state.read(cx), chrono::Utc::now()), now);
             }
-            let (mood, deadline) = (machine.mood(now), machine.next_deadline(now));
+            let mood = machine.mood(now);
             if self.mood != Some(mood) {
                 self.mood = Some(mood);
                 self.frame = 0;
             }
-            let still = crate::motion::reduced_outside_window(cx) || low_power();
-            if still {
+            let plan = machine.plan(now, conditions);
+            if !matches!(plan, Plan::Animate(_)) {
+                // Still: the mood's first frame (asleep: the one with the "z").
                 self.frame = 0;
             }
             let frames = mood.frames();
             self.show(Some(frames[self.frame % frames.len()]));
-            let plan = match mood.frame_interval() {
-                Some(interval) if !still => Plan::Animate(interval),
-                _ => deadline.map_or(Plan::None, Plan::Wake),
-            };
             self.set_plan(plan, cx);
+        }
+
+        fn power_saving(&mut self, now: Instant) -> bool {
+            match self.power {
+                Some((at, saving)) if now.saturating_duration_since(at) < POWER_TTL => saving,
+                _ => {
+                    let saving = low_power() || on_battery();
+                    self.power = Some((now, saving));
+                    saving
+                }
+            }
         }
 
         fn step(&mut self, cx: &mut App) {
@@ -515,6 +602,20 @@ mod dock {
 
     fn low_power() -> bool {
         NSProcessInfo::processInfo().isLowPowerModeEnabled()
+    }
+
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        /// Seconds of battery left; `kIOPSTimeRemainingUnlimited` (-2) on
+        /// external power, `kIOPSTimeRemainingUnknown` (-1) while on battery
+        /// and still estimating.
+        fn IOPSGetTimeRemainingEstimate() -> f64;
+    }
+
+    fn on_battery() -> bool {
+        // SAFETY: no arguments; a plain read of the power source state.
+        let remaining = unsafe { IOPSGetTimeRemainingEstimate() };
+        (remaining + 2.0).abs() > 0.5
     }
 }
 
@@ -823,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn naps_after_ten_quiet_minutes() {
+    fn naps_after_a_quiet_spell() {
         let mut rig = Rig::new();
         assert_eq!(rig.observe(0, vec![], 0.0), Mood::Idle);
         let nap = rig.t0 + SLEEP_AFTER;
@@ -881,6 +982,160 @@ mod tests {
         assert_eq!(Mood::Jog.frame_interval(), Some(Duration::from_millis(125)));
         assert_eq!(Mood::Idle.frame_interval(), Some(Duration::from_secs(2)));
         assert_eq!(Mood::Tired.frame_interval(), None);
+    }
+
+    const VISIBLE: Conditions = Conditions {
+        reduced_motion: false,
+        hidden: false,
+        power_saving: false,
+    };
+
+    #[test]
+    fn a_quiet_speedster_jogs_in_place_briefly_then_holds_still_with_no_timer() {
+        let mut rig = Rig::new();
+        rig.observe(1, vec![], 0.0);
+        assert_eq!(
+            rig.machine.plan(rig.at(0.0), VISIBLE),
+            Plan::Animate(Duration::from_millis(125)),
+            "working moods animate while agents run"
+        );
+        // Work ends: idle animates for the hold.
+        rig.observe(0, vec![], 10.0);
+        assert_eq!(
+            rig.machine.plan(rig.at(10.0), VISIBLE),
+            Plan::Animate(Duration::from_secs(2))
+        );
+        assert!(SLEEP_AFTER >= Duration::from_secs(30) && SLEEP_AFTER <= Duration::from_secs(60));
+        // Then one still sleeping frame and nothing scheduled, for good.
+        let asleep = rig.at(10.0) + SLEEP_AFTER;
+        assert_eq!(rig.machine.mood(asleep), Mood::Sleeping);
+        assert_eq!(Mood::Sleeping.frames()[0], Frame::Sleeping1);
+        assert_eq!(rig.machine.plan(asleep, VISIBLE), Plan::None);
+        assert_eq!(
+            rig.machine
+                .plan(asleep + Duration::from_secs(86_400), VISIBLE),
+            Plan::None
+        );
+    }
+
+    #[test]
+    fn a_waiting_alert_waves_then_settles() {
+        let mut rig = Rig::new();
+        let ask = item("chat:q", AttentionKind::Question, rig.fresh());
+        assert_eq!(rig.observe(0, vec![ask.clone()], 0.0), Mood::Alert);
+        assert!(matches!(
+            rig.machine.plan(rig.at(0.0), VISIBLE),
+            Plan::Animate(_)
+        ));
+        // Still waiting later (new snapshots do not restart the wave).
+        rig.observe(0, vec![ask.clone()], 30.0);
+        let settled = rig.at(0.0) + ALERT_HOLD;
+        assert_eq!(rig.machine.mood(settled), Mood::Alert);
+        assert_eq!(rig.machine.plan(settled, VISIBLE), Plan::None);
+        // Answered, then asked again: waves again.
+        rig.observe(0, vec![], 70.0);
+        rig.observe(0, vec![ask], 80.0);
+        assert!(matches!(
+            rig.machine.plan(rig.at(80.0), VISIBLE),
+            Plan::Animate(_)
+        ));
+    }
+
+    #[test]
+    fn battery_and_low_power_cap_working_moods_at_four_fps() {
+        let mut rig = Rig::new();
+        let saving = Conditions {
+            power_saving: true,
+            ..VISIBLE
+        };
+        let cap = Duration::from_secs_f32(1.0 / POWER_SAVING_MAX_FPS);
+        rig.observe(1, vec![], 0.0);
+        assert_eq!(rig.machine.plan(rig.at(0.0), saving), Plan::Animate(cap));
+        rig.observe(SPRINT_FROM, vec![], 1.0);
+        assert_eq!(rig.machine.mood(rig.at(1.0)), Mood::Sprint);
+        assert_eq!(rig.machine.plan(rig.at(1.0), saving), Plan::Animate(cap));
+        // Slower moods keep their own pace.
+        rig.observe(0, vec![], 2.0);
+        assert_eq!(
+            rig.machine.plan(rig.at(2.0), saving),
+            Plan::Animate(Duration::from_secs(2))
+        );
+    }
+
+    /// Every window hidden while agents run is the common case (the user is
+    /// in another app), and the Dock is then the only sign of work: working
+    /// moods keep running, at most four frames a second.
+    #[test]
+    fn hidden_window_plus_running_agents_animates_at_most_four_fps() {
+        let mut rig = Rig::new();
+        let hidden = Conditions {
+            hidden: true,
+            ..VISIBLE
+        };
+        let cap = Duration::from_secs_f32(1.0 / POWER_SAVING_MAX_FPS);
+        let at_most_four_fps = |plan: Plan| matches!(plan, Plan::Animate(i) if i >= cap);
+        rig.observe(1, vec![], 0.0);
+        assert_eq!(rig.machine.mood(rig.at(0.0)), Mood::Jog);
+        let plan = rig.machine.plan(rig.at(0.0), hidden);
+        assert!(at_most_four_fps(plan), "{plan:?}");
+        assert_eq!(plan, Plan::Animate(cap));
+        rig.observe(SPRINT_FROM, vec![], 1.0);
+        assert_eq!(rig.machine.mood(rig.at(1.0)), Mood::Sprint);
+        assert!(at_most_four_fps(rig.machine.plan(rig.at(1.0), hidden)));
+        // Hidden and on battery: still capped, never faster.
+        let both = Conditions {
+            power_saving: true,
+            ..hidden
+        };
+        assert_eq!(rig.machine.plan(rig.at(1.0), both), Plan::Animate(cap));
+    }
+
+    #[test]
+    fn hidden_windows_hold_the_quiet_pose_still_until_the_nap() {
+        let mut rig = Rig::new();
+        let hidden = Conditions {
+            hidden: true,
+            ..VISIBLE
+        };
+        rig.observe(0, vec![], 1.0);
+        assert_eq!(rig.machine.mood(rig.at(1.0)), Mood::Idle);
+        // No frame timer: one wake for the nap (quiet since the rig's first
+        // observation), then nothing.
+        let nap = rig.t0 + SLEEP_AFTER;
+        assert_eq!(rig.machine.plan(rig.at(1.0), hidden), Plan::Wake(nap));
+        assert_eq!(rig.machine.plan(nap, hidden), Plan::None);
+        // A waiting alert still waves while hidden, then settles.
+        let ask = item("chat:q", AttentionKind::Question, rig.fresh());
+        rig.observe(0, vec![ask], 100.0);
+        assert!(matches!(
+            rig.machine.plan(rig.at(100.0), hidden),
+            Plan::Animate(_)
+        ));
+        assert_eq!(
+            rig.machine.plan(rig.at(100.0) + ALERT_HOLD, hidden),
+            Plan::None
+        );
+    }
+
+    #[test]
+    fn reduced_motion_follows_mood_changes_only() {
+        let mut rig = Rig::new();
+        let still = Conditions {
+            reduced_motion: true,
+            ..VISIBLE
+        };
+        rig.observe(SPRINT_FROM, vec![], 0.0);
+        assert_eq!(
+            rig.machine.plan(rig.at(0.0), still),
+            Plan::None,
+            "no frame timer"
+        );
+        // A pending mood change still gets its one wake-up.
+        rig.observe(0, vec![], 1.0);
+        assert_eq!(
+            rig.machine.plan(rig.at(1.0), still),
+            Plan::Wake(rig.at(1.0) + SLEEP_AFTER)
+        );
     }
 
     #[test]
