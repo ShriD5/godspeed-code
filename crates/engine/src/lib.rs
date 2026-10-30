@@ -375,6 +375,13 @@ impl EngineCore {
             terminals::link::SERVICE_PREFIX,
             Arc::new(terminals::link::Service::new(terminals.clone())),
         );
+        // Port discovery runs `lsof` and `ps`: full cadence only while a run
+        // or a terminal may be starting servers (or someone just acted).
+        previews.set_live_probe({
+            let runs = live_run_probe(&sessions);
+            let terminals = terminals.clone();
+            Arc::new(move || runs() || terminals.any_open())
+        });
         let uploads = Uploads::from_root_with_fallback(
             profile.uploads_root(),
             legacy_uploads_root.as_deref(),
@@ -446,10 +453,12 @@ impl EngineCore {
         });
         let turn_slots = build_slots.clone();
         let turn_telemetry = telemetry.clone();
+        let turn_previews = previews.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
             turn_limits.note_turn_start(chat_id);
             turn_slots.note_live();
+            turn_previews.note_activity();
             turn_telemetry.note_activity(false);
         }));
         let input_telemetry = telemetry.clone();

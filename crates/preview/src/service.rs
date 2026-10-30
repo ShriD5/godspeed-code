@@ -37,6 +37,33 @@ enum Verdict {
         backoff: Duration,
     },
 }
+/// Discovery cadence while something may start or stop a server: a run is
+/// live, a terminal is open, or a person acted in the last [`ACTIVE_FOR`].
+const ACTIVE_SCAN: Duration = Duration::from_secs(2);
+/// Cadence otherwise. Each scan runs `lsof` twice and `ps` once (about
+/// 70 ms of CPU); every 2 s that was 6% of a core for the engine's life.
+const QUIET_SCAN: Duration = Duration::from_secs(60);
+/// How long a person's action keeps discovery at [`ACTIVE_SCAN`].
+const ACTIVE_FOR: Duration = Duration::from_secs(2 * 60);
+
+/// Whether something may be starting servers now: see [`ACTIVE_SCAN`].
+pub type LiveProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// The pause after a scan: short while active, long while quiet. Without a
+/// live probe (embedders that never set one) discovery stays active.
+pub(crate) fn scan_delay(
+    live: Option<bool>,
+    last_activity: Option<Instant>,
+    now: Instant,
+) -> Duration {
+    let acted = last_activity.is_some_and(|at| now.saturating_duration_since(at) < ACTIVE_FOR);
+    if live.unwrap_or(true) || acted {
+        ACTIVE_SCAN
+    } else {
+        QUIET_SCAN
+    }
+}
+
 const NOT_HTTP_INITIAL_BACKOFF: Duration = Duration::from_secs(4);
 const NOT_HTTP_MAX_BACKOFF: Duration = Duration::from_secs(60);
 
@@ -101,6 +128,12 @@ struct Inner {
     peers: std::sync::OnceLock<Peers>,
     /// Engine-provided stream services peers may open, by id prefix.
     streams: StreamServices,
+    /// Runs live or terminals open: discovery at full cadence.
+    live: Mutex<Option<LiveProbe>>,
+    /// The last time a person acted in the app.
+    last_activity: Mutex<Option<Instant>>,
+    /// Wakes a quiet scanner for an immediate scan.
+    scan_now: tokio::sync::Notify,
 }
 /// Stream services beyond previews (terminals), keyed by service id prefix.
 /// Each handler sees the authenticated peer that opened the stream and
@@ -118,7 +151,29 @@ impl PreviewService {
             callback_tunnels: CallbackTunnels::default(),
             peers: std::sync::OnceLock::new(),
             streams: StreamServices::default(),
+            live: Mutex::new(None),
+            last_activity: Mutex::new(None),
+            scan_now: tokio::sync::Notify::new(),
         })))
+    }
+
+    /// What keeps discovery at full cadence besides a person acting: a live
+    /// run or an open terminal (either may start a dev server).
+    pub fn set_live_probe(&self, probe: LiveProbe) {
+        *self.0.live.lock().unwrap() = Some(probe);
+    }
+
+    /// A person acted, or a run started: scan now, then at full cadence for
+    /// a while, so the list is current whenever someone may look at it.
+    pub fn note_activity(&self) {
+        *self.0.last_activity.lock().unwrap() = Some(Instant::now());
+        self.0.scan_now.notify_one();
+    }
+
+    fn scan_delay(&self) -> Duration {
+        let live = self.0.live.lock().unwrap().clone().map(|probe| probe());
+        let last_activity = *self.0.last_activity.lock().unwrap();
+        scan_delay(live, last_activity, Instant::now())
     }
     /// Serve stream ids starting with `prefix` from `handler` — to peers and
     /// to this device alike. Registering a prefix again replaces its handler.
@@ -249,6 +304,7 @@ impl PreviewService {
         self.0.tasks.lock().unwrap().push(listener_task);
         let catalog = self.0.catalog.clone();
         let stop = self.0.stop.clone();
+        let service = self.clone();
         let scanner = tokio::spawn(async move {
             let mut memory = ProbeMemory::default();
             loop {
@@ -307,7 +363,12 @@ impl PreviewService {
                     }
                 };
                 tokio::select! { _ = stop.cancelled() => break, _ = scan => {} }
-                tokio::select! { _ = stop.cancelled() => break, _ = tokio::time::sleep(Duration::from_secs(2)) => {} }
+                let delay = service.scan_delay();
+                tokio::select! {
+                    _ = stop.cancelled() => break,
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = service.0.scan_now.notified() => {}
+                }
             }
         });
         let mut tasks = self.0.tasks.lock().unwrap();
@@ -389,6 +450,26 @@ mod tests {
             zeron_owned: false,
         }
     }
+    #[test]
+    fn discovery_slows_down_when_nothing_can_start_a_server() {
+        let now = Instant::now();
+        // Embedders without a probe keep the full cadence.
+        assert_eq!(scan_delay(None, None, now), ACTIVE_SCAN);
+        // A live run or open terminal.
+        assert_eq!(scan_delay(Some(true), None, now), ACTIVE_SCAN);
+        // A person acted recently.
+        assert_eq!(
+            scan_delay(Some(false), Some(now - Duration::from_secs(30)), now),
+            ACTIVE_SCAN
+        );
+        // Nobody here and nothing running: once a minute.
+        assert_eq!(scan_delay(Some(false), None, now), QUIET_SCAN);
+        assert_eq!(
+            scan_delay(Some(false), Some(now - ACTIVE_FOR), now),
+            QUIET_SCAN
+        );
+    }
+
     #[test]
     fn a_confirmed_http_server_is_never_probed_again() {
         let mut memory = ProbeMemory::default();
