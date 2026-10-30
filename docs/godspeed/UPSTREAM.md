@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@8b7afb30 (2026-10-28)
+Synced through: zeronsh/zeron@d643a2ca (2026-10-30)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -56,6 +56,13 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     (Claude `plan`, Codex `plan` collaboration mode, OpenCode `plan` agent) and the MCP
     create_chat access cap are the parts Godspeed lacks; worth a dedicated port onto
     Godspeed's model.
+- Deferred 2026-10-30:
+  - 6aa4d5af (background processes: tray, read output, stop): Godspeed already publishes
+    a `background_tasks: u32` count on the session row (delegation wake-ups, the busy
+    indicator) under the same `backgroundTasks` wire key that upstream turns into a
+    `Vec<BackgroundTask>`, so older peers would fail to read new rows. Needs a wire
+    decision (new key, or keep the count beside the list) and a merge with Godspeed's
+    count users; 26 files conflict.
 - Partly ported (2026-10-27): f65c5bc6 and d8a14b35 brought the shared header parser and the
   desktop rows; their iOS/Android captions wait for inline marks and a workspace snapshot in
   the mobile layout (Android needs cc7da5c2).
