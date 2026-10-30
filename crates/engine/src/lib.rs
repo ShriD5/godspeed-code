@@ -66,6 +66,7 @@ pub mod titles;
 mod transcript_history;
 pub mod uploads;
 pub mod usage_history;
+mod user_activity;
 pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
@@ -143,6 +144,21 @@ pub(crate) fn now_ms() -> i64 {
 
 pub(crate) fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// "Is any run on this engine working or waiting on input?" for background
+/// services that relax when nothing runs. Reads the status watch, so it holds
+/// no sessions handle (the sessions engine holds those services' listeners).
+pub(crate) fn live_run_probe(sessions: &SessionsEngine) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    let statuses = sessions.watch_sessions();
+    Arc::new(move || {
+        statuses.borrow().iter().any(|session| {
+            matches!(
+                session.status,
+                zeron_proto::SessionStatus::Working | zeron_proto::SessionStatus::AwaitingInput
+            )
+        })
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -422,10 +438,18 @@ impl EngineCore {
         let turn_limits = limit_recovery.clone();
         let telemetry = Telemetry::open(data_dir);
         let build_slots = BuildSlots::open(data_dir);
+        // Leak checks run only while something may build.
+        build_slots.set_live_probe({
+            let runs = live_run_probe(&sessions);
+            let terminals = terminals.clone();
+            Arc::new(move || runs() || terminals.any_open())
+        });
+        let turn_slots = build_slots.clone();
         let turn_telemetry = telemetry.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
             turn_limits.note_turn_start(chat_id);
+            turn_slots.note_live();
             turn_telemetry.note_activity(false);
         }));
         let input_telemetry = telemetry.clone();
@@ -437,10 +461,14 @@ impl EngineCore {
             limited.note_limited(chat_id, signal);
         }));
         // Turn ends stamp the "Latest turn" diff onto the turn's receipt.
+        // Turn ends also re-capture the chat's checkout: the safety net for
+        // watcher events dropped during the turn.
         let turn_files = diff_sync.clone();
         sessions.set_turn_files_listener(Arc::new(move |chat_id| {
+            turn_files.note_turn_end(chat_id);
             turn_files.turn_file_stats(chat_id)
         }));
+        diff_sync.set_live_probe(live_run_probe(&sessions));
         // Stamped turns feed the usage history; agent logs are read on demand.
         let usage_history = UsageIndex::open(
             data_dir,
@@ -492,6 +520,8 @@ impl EngineCore {
             pr_watch::PrWatchService::open(data_dir, doc_host.clone(), workspace.clone());
         attention.attach_pull_requests(pr_watch.clone());
         attention.start();
+        // A live run keeps the watch at full speed.
+        pr_watch.set_live_probe(live_run_probe(&sessions));
         pr_watch.start();
         limit_recovery.start();
         let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());

@@ -19,6 +19,10 @@
 //!   are missing for two ticks in a row while no build tool runs anywhere,
 //!   it puts them back. Surplus (a top-up that raced a build) is drained the
 //!   same way. A FIFO deleted from under it (temp-dir sweeps) is recreated.
+//!   Leaks only happen while something builds, so the checks (and the
+//!   occasional `make --version` re-probe) run only while a run is live or a
+//!   terminal is open, plus [`GRACE_TICKS`] after; then the task parks with
+//!   no timer until [`BuildSlots::note_live`] wakes it, checking at once.
 //! - **sccache**: when on and installed, `RUSTC_WRAPPER` for runs in Rust
 //!   projects, so worktrees of one repo share compiled dependencies.
 
@@ -42,6 +46,26 @@ pub const FILE_NAME: &str = "build-slots.json";
 
 /// How often the pool is checked for leaks and deletion.
 const TICK: Duration = Duration::from_secs(30);
+/// Checks kept up after the last live run, so a leak at its end still gets
+/// the two quiet ticks a refill needs.
+const GRACE_TICKS: u32 = 4;
+/// Re-probe the host (sccache, make) at most this often, and only when the
+/// checks are running.
+const REPROBE_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Whether a run is live or a terminal is open: something may build.
+pub type LiveProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// After one check, whether the loop parks until woken. `idle_ticks` counts
+/// consecutive checks with nothing live.
+pub(crate) fn parks_after_check(live: bool, idle_ticks: &mut u32) -> bool {
+    if live {
+        *idle_ticks = 0;
+        return false;
+    }
+    *idle_ticks = idle_ticks.saturating_add(1);
+    *idle_ticks > GRACE_TICKS
+}
 
 /// Process names that mean a build may be holding slots.
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -220,6 +244,10 @@ struct Inner {
     fallback_dir: PathBuf,
     state: Mutex<State>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// `None` (not wired): always live, checks every tick.
+    live: Mutex<Option<LiveProbe>>,
+    /// Wakes a parked check loop.
+    wake: tokio::sync::Notify,
 }
 
 /// The engine's build-slot service. Cheap to clone.
@@ -254,8 +282,25 @@ impl BuildSlots {
                 }),
                 settings_path,
                 task: Mutex::new(None),
+                live: Mutex::new(None),
+                wake: tokio::sync::Notify::new(),
             }),
         }
+    }
+
+    /// What decides whether anything may be building.
+    pub fn set_live_probe(&self, probe: LiveProbe) {
+        *lock(&self.inner.live) = Some(probe);
+    }
+
+    /// A run started or a terminal opened: resume the checks now (a pool
+    /// swept away while parked is rebuilt before the first build).
+    pub fn note_live(&self) {
+        self.inner.wake.notify_one();
+    }
+
+    fn live(&self) -> bool {
+        lock(&self.inner.live).clone().is_none_or(|probe| probe())
     }
 
     /// The setting and what the engine found.
@@ -311,19 +356,28 @@ impl BuildSlots {
         }
         let this = self.clone();
         *task = Some(tokio::spawn(async move {
+            let mut probed_at: Option<std::time::Instant> = None;
+            let mut idle_ticks = 0;
             loop {
                 // Re-probe now and then: sccache or a newer make may have been
                 // installed, the login shell snapshot may have arrived.
-                if let Ok(probe) = tokio::task::spawn_blocking(Probe::run).await {
+                if probed_at.is_none_or(|at| at.elapsed() >= REPROBE_AFTER)
+                    && let Ok(probe) = tokio::task::spawn_blocking(Probe::run).await
+                {
+                    probed_at = Some(std::time::Instant::now());
                     let mut state = lock(&this.inner.state);
                     state.probe = Some(probe);
                     this.reconcile(&mut state);
                 }
-                for _ in 0..20 {
+                if parks_after_check(this.live(), &mut idle_ticks) {
+                    // Nothing can build: no timer until something goes live.
+                    this.inner.wake.notified().await;
+                    idle_ticks = 0;
+                } else {
                     tokio::time::sleep(TICK).await;
-                    let this = this.clone();
-                    let _ = tokio::task::spawn_blocking(move || this.check()).await;
                 }
+                let check = this.clone();
+                let _ = tokio::task::spawn_blocking(move || check.check()).await;
             }
         }));
     }

@@ -368,3 +368,57 @@ mod unix {
         }
     }
 }
+
+#[test]
+fn checks_park_after_a_grace_once_nothing_is_live() {
+    let mut idle = 0;
+    // A live run keeps ticking forever.
+    for _ in 0..100 {
+        assert!(!parks_after_check(true, &mut idle));
+    }
+    // After it ends: GRACE_TICKS more checks (a leak at its end gets its two
+    // quiet ticks), then park with no timer.
+    for _ in 0..GRACE_TICKS {
+        assert!(!parks_after_check(false, &mut idle));
+    }
+    assert!(parks_after_check(false, &mut idle));
+    // Going live again resets the grace.
+    assert!(!parks_after_check(true, &mut idle));
+    assert!(!parks_after_check(false, &mut idle));
+}
+
+#[test]
+fn unwired_slots_stay_live_and_a_wired_probe_decides() {
+    let dir = tempfile::tempdir().unwrap();
+    let slots = BuildSlots::open_in(dir.path(), dir.path());
+    assert!(slots.live(), "no probe: the old always-checking behaviour");
+    let live = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let probe = live.clone();
+    slots.set_live_probe(Arc::new(move || {
+        probe.load(std::sync::atomic::Ordering::Relaxed)
+    }));
+    assert!(!slots.live());
+    live.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(slots.live());
+}
+
+/// A parked loop schedules nothing: it wakes only on `note_live`, and then
+/// checks right away rather than after a tick.
+#[tokio::test(start_paused = true)]
+async fn a_parked_loop_has_no_timer_and_wakes_on_note_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let slots = BuildSlots::open_in(dir.path(), dir.path());
+    slots.set_live_probe(Arc::new(|| false));
+    let woke = {
+        let slots = slots.clone();
+        tokio::spawn(async move { slots.inner.wake.notified().await })
+    };
+    // Hours of (virtual) time pass with no wake.
+    tokio::time::sleep(Duration::from_secs(6 * 60 * 60)).await;
+    assert!(!woke.is_finished());
+    slots.note_live();
+    tokio::time::timeout(Duration::from_millis(10), woke)
+        .await
+        .expect("note_live wakes the parked loop")
+        .unwrap();
+}
