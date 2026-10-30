@@ -1,14 +1,15 @@
 //! The local engine's zoomies, followed live (`WatchAgents`) for the
-//! sidebar, plus the jog clock its running rows animate on.
+//! sidebar. Running rows animate in their own small views
+//! ([`super::mascot::jogging`]); this feed notifies its observers (the shell)
+//! only when the snapshot actually changes.
 
 use std::time::Duration;
 
 use gpui::{Context, Entity, Subscription, Task};
 use serde_json::json;
-use zeron_proto::agents::{AgentRunStatus, AgentsSnapshot};
+use zeron_proto::agents::AgentsSnapshot;
 use zeron_rpc::methods;
 
-use crate::speedster::Mood;
 use crate::state::{AppState, EngineHandle};
 
 /// A dropped watch retries after this long.
@@ -20,32 +21,22 @@ pub struct ZoomiesFeed {
     /// The connection `watch` follows; a runtime swap restarts it.
     engine: Option<EngineHandle>,
     watch: Option<Task<()>>,
-    /// Steps `jog_frame` while a run works and motion is allowed.
-    ticker: Option<Task<()>>,
-    jog_frame: usize,
     /// Set by the first [`Self::ensure_watching`]: nothing subscribes until
     /// the sidebar actually shows the section.
     wanted: bool,
     _observe: Subscription,
-    _motion: Subscription,
 }
 
 impl ZoomiesFeed {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
-        let motion = cx.observe_global::<crate::motion::MotionState>(|this: &mut Self, cx| {
-            this.sync_ticker(cx);
-        });
         Self {
             state,
             snapshot: None,
             engine: None,
             watch: None,
-            ticker: None,
-            jog_frame: 0,
             wanted: false,
             _observe: observe,
-            _motion: motion,
         }
     }
 
@@ -62,21 +53,14 @@ impl ZoomiesFeed {
         self.snapshot.as_ref()
     }
 
-    /// Index into the jog frames for running rows.
-    pub fn jog_frame(&self) -> usize {
-        self.jog_frame % Mood::Jog.frames().len()
-    }
-
-    fn any_running(&self) -> bool {
-        self.snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.agents.iter().any(|agent| {
-                agent.active_run_id.is_some()
-                    && agent
-                        .last_run
-                        .as_ref()
-                        .is_none_or(|run| run.status != AgentRunStatus::NeedsApproval)
-            })
-        })
+    /// Take a snapshot; `false` (and no notify) when nothing changed, so an
+    /// engine re-sending the same list never re-renders the shell.
+    fn apply_snapshot(&mut self, snapshot: AgentsSnapshot) -> bool {
+        if self.snapshot.as_ref() == Some(&snapshot) {
+            return false;
+        }
+        self.snapshot = Some(snapshot);
+        true
     }
 
     /// Follow the current engine; restart when it changes or the watch died.
@@ -99,7 +83,6 @@ impl ZoomiesFeed {
         self.engine = engine.clone();
         let Some(engine) = engine else {
             self.watch = None;
-            self.sync_ticker(cx);
             cx.notify();
             return;
         };
@@ -116,9 +99,9 @@ impl ZoomiesFeed {
                         continue;
                     };
                     let alive = this.update(cx, |feed, cx| {
-                        feed.snapshot = Some(snapshot);
-                        feed.sync_ticker(cx);
-                        cx.notify();
+                        if feed.apply_snapshot(snapshot) {
+                            cx.notify();
+                        }
                     });
                     if alive.is_err() {
                         return;
@@ -132,34 +115,6 @@ impl ZoomiesFeed {
                 feed.sync(cx);
             })
             .ok();
-        }));
-    }
-
-    /// Keep one frame timer while something runs and motion is allowed.
-    fn sync_ticker(&mut self, cx: &mut Context<Self>) {
-        let animate = self.any_running() && !cx.reduce_motion();
-        if !animate {
-            self.ticker = None;
-            self.jog_frame = 0;
-            return;
-        }
-        if self.ticker.is_some() {
-            return;
-        }
-        let interval = Mood::Jog
-            .frame_interval()
-            .unwrap_or(Duration::from_millis(125));
-        self.ticker = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(interval).await;
-                let alive = this.update(cx, |feed, cx| {
-                    feed.jog_frame = feed.jog_frame.wrapping_add(1);
-                    cx.notify();
-                });
-                if alive.is_err() {
-                    return;
-                }
-            }
         }));
     }
 
@@ -184,8 +139,8 @@ impl ZoomiesFeed {
         snapshot: AgentsSnapshot,
         cx: &mut Context<Self>,
     ) {
-        self.snapshot = Some(snapshot);
-        self.sync_ticker(cx);
-        cx.notify();
+        if self.apply_snapshot(snapshot) {
+            cx.notify();
+        }
     }
 }
