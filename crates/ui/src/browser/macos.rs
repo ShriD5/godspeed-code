@@ -495,6 +495,11 @@ impl NativePage {
                         .any(|s| gpui::Keystroke::parse(s).is_ok_and(|s| s == us))
                 });
             if browser_key || app_key {
+                tracing::info!(
+                    target: "godspeed::keys",
+                    %combo,
+                    "preview page forwarded a shortcut to the app"
+                );
                 if monitor_tx.try_send(NativeEvent::Key(keystroke)).is_ok() {
                     std::ptr::null_mut()
                 } else {

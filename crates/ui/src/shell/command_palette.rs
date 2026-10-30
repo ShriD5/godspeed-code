@@ -35,7 +35,7 @@ const REMOTE_MESSAGE_DEBOUNCE: Duration = Duration::from_millis(120);
 const RESULTS_FADE_BAND: f32 = 18.0;
 
 pub(super) struct CommandPalette {
-    search: Entity<ComposerInput>,
+    pub(super) search: Entity<ComposerInput>,
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     tab: Tab,
