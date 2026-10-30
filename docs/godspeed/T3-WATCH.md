@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@79f6cd30c7 (2026-10-27)
+Reviewed T3 through: pingdotgg/t3code@32ecd71726 (2026-10-30)
 
 ## Rules
 
@@ -23,6 +23,20 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-30 | The thread details card shows 5-hour, weekly and context limits (`310c128552`, `d7935f135f`) | PR #TBD |
+| 2026-10-30 | Stop always completes, and an agent that ignores it can be force stopped (`6b1245cced`, `36d4d711b7`, `6d12bb1e9f`) | queued (check Stop on a Claude/Codex run that ignores the interrupt; Godspeed has no force-stop) |
+| 2026-10-30 | See and stop the dev servers a thread started (`a27ec88bfa`) | queued (with the T3-GAPS process-list row) |
+| 2026-10-30 | Claude command approvals show the command, not Claude's description (`5eebf77b37`); Open diff shows Claude edits as a diff (`eb565e13ab`, `441a4ebd65`) | queued (check the Bash approval card and edit tool rows) |
+| 2026-10-30 | Turn a No project thread into a project (`58e60bf5e8`) | queued (no move-to-project action in `crates/ui`) |
+| 2026-10-30 | Review local commits in the Diff pane (`5ef56853ef`); PR diff hide-tests filter (`a5448f4c50`); shift-click marks PR files viewed (`ff424802ed`) | queued (see T3-GAPS diff and PR rows) |
+| 2026-10-30 | Compaction row reads "Compacting for 12s" (`3ef1610079`) | queued (check the Claude compaction row's wording) |
+| 2026-10-30 | Parallel worktree launches no longer fail on the `.git/config` lock (`3b22620a5c`) | skipped (Godspeed already serializes creation and its config marks per repository: `Repos::worktree_lock`) |
+| 2026-10-30 | Fleet switch between Stable and Nightly (`f2943ee90e`); release notes in the update popover (`b5fc7bedfe`) | skipped (needs a second release feed; T3-GAPS "Update track" and "Release notes" rows cover it) |
+| 2026-10-30 | Linked environments, @-mention a machine, remote delegate wake-back (`4005759adf`…`5e9d56416f`, `4ab7084aa7`, `0affd28db2`, `96a330c957`) | skipped (T3's peer links; Godspeed delegates across devices with `create_chat` `device`; wake-back is the existing T3-GAPS row) |
+| 2026-10-30 | Simlock simulator leasing and EAS sessions (`be6ff17f51`, `be7d86fa66`, `812c0a71c7`, `d07c0a7c7b`) | skipped (Godspeed has no device panel yet; T3-GAPS Devices row) |
+| 2026-10-30 | Provider fallback when out of usage (`861a51a6c4`); 1Password secret providers (`7a4f5b6188`, `97e35bcf23`, `ee81ea4ce8`) | skipped (account fallback out of scope; secrets are a Labs flag in T3) |
+| 2026-10-30 | Boring sidebar folders (`4e4d4ba395`, `001d16e969`, `80fcb7f58f`, `5211acfe95`); multi-project filter (`c38b265adc`); custom snooze options (`93a9e079b1`, `c3858bf1f7`); F6 focus cycle (`2525252c96`); back/forward swipe (`476590d0ad`) | skipped (Godspeed has a project filter, snooze presets and back/forward; F6 is the existing T3-GAPS row) |
+| 2026-10-30 | ~300 other commits: streaming and timeline perf, server query/startup perf, React effect removal, mobile/Android, GitCafe/GitLab/Forgejo, guest links, Antigravity/Cursor/OpenCode/Copilot fixes, `t3 service protect`, Electron bump, credential redaction, CI and release fixes | skipped (internal/minor) |
 | 2026-10-27 | A thread whose worktree was deleted recovers on the next message (`0604547a3a`) | PR #41 |
 | 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | queued (`files/markdown_preview.rs` shows SKILL.md frontmatter as a rule and a setext heading; mask it with spaces so task toggles keep their offsets) |
 | 2026-10-27 | ACP session notices show as notices, not reply text (`323d9611ff`) | queued (`acp/normalize.rs` drops `notice` updates; needs a notice event and row) |
