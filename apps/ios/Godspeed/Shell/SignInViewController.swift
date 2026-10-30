@@ -1,11 +1,9 @@
 import AuthenticationServices
 import UIKit
 
-/// Placeholders until the owner's edge is deployed and a sign-in method is
-/// chosen (docs/godspeed/HANDOFF.md, "Cloud and iPhone app"); they mirror the
-/// desktop's defaults in crates/client/src/auth.rs. The `.invalid` host
-/// (RFC 2606) never resolves, so nothing reaches Zeron's edge. Debug builds can
-/// point at a dev edge with `-edge <url>`.
+/// The hosted edge and its WorkOS AuthKit client: the desktop's defaults in
+/// crates/client/src/auth.rs. Debug builds can point at a dev edge with
+/// `-edge <url>`.
 enum Endpoints {
     static let edgeURL = URL(string: "https://godspeed-edge.shrid5.workers.dev")!
     static let workosClientId = "client_01M52B7VJ0PRXA4Y63HQKYYRA8"
@@ -29,6 +27,7 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
     private let app: AppModel
     private let status = UILabel()
     private let signIn = UIButton(type: .system)
+    private let sample = UIButton(type: .system)
     private var session: ASWebAuthenticationSession?
 
     init(app: AppModel) {
@@ -68,6 +67,29 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
         signIn.accessibilityIdentifier = "sign-in"
         signIn.addAction(UIAction { [weak self] _ in self?.startWorkOS() }, for: .touchUpInside)
 
+        // No Mac with Godspeed (or no invite yet, or App Review): explore
+        // the offline demo workspace instead of signing in.
+        var secondary = UIButton.Configuration.plain()
+        secondary.title = "Look around with sample data"
+        secondary.baseForegroundColor = Palette.text
+        secondary.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20)
+        secondary.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { a in
+            var a = a
+            a.font = Fonts.ui(.sansSemibold, 16)
+            return a
+        }
+        sample.configuration = secondary
+        sample.accessibilityIdentifier = "sample-data"
+        sample.accessibilityHint = "Opens a demo workspace with made-up chats. Nothing is sent anywhere."
+        sample.addAction(UIAction { [weak self] _ in self?.app.startSampleData() }, for: .touchUpInside)
+
+        let explain = UILabel()
+        explain.text = "Godspeed for iPhone follows the chats running in Godspeed Code on your Mac. Sign in with the account you use for sync there."
+        explain.font = Fonts.ui(.sans, 13)
+        explain.textColor = Palette.secondary
+        explain.numberOfLines = 0
+        explain.textAlignment = .center
+
         status.font = Fonts.ui(.sans, 14)
         status.textColor = Palette.danger
         status.numberOfLines = 0
@@ -81,7 +103,7 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
         top.axis = .vertical
         top.alignment = .center
         top.spacing = 12
-        let buttons = UIStackView(arrangedSubviews: [status, signIn])
+        let buttons = UIStackView(arrangedSubviews: [status, explain, signIn, sample])
         buttons.axis = .vertical
         buttons.spacing = 12
         for v in [top, buttons] {

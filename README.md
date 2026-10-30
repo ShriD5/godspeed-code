@@ -53,7 +53,7 @@ the features listed below on top. If you like this app, go star Zeron.
 
 All of that at the same speed: cold start is 65 ms for both, and memory after a 400-chat workload is
 within 1 MiB ([benchmark](docs/godspeed/BENCHMARKS-ZERON.md)). Zeron is still ahead on Windows and
-Linux builds and a shipped iPhone app (Godspeed's is in development). Full comparison and issue list:
+Linux builds and a shipped iPhone app (Godspeed's is in TestFlight beta). Full comparison and issue list:
 [VS-ZERON.md](docs/godspeed/VS-ZERON.md).
 
 ## Download
@@ -77,11 +77,14 @@ Gatekeeper) and offers to restart into it. Release notes are on the
 Godspeed for iOS follows and drives your Mac's chats from your phone: transcripts, the composer,
 approvals and voice. Agents keep running on the Mac (or a headless server); the phone is a remote.
 
-- **Status:** in development. A TestFlight beta is next; until then, build it from source.
+- **Status:** public beta on TestFlight. Cloud sync is invite-only, so
+  [join the waitlist](https://godspeed-code.pages.dev/#iphone) and you'll get the TestFlight link
+  once your email is approved.
 - **Needs:** cloud sync. On the Mac, choose **Enable sync** in the account menu and sign in, then
-  sign in with the same account on the phone.
-- **Build it:** see [apps/ios/README.md](apps/ios/README.md) (Xcode 26+, Rust iOS targets). Open
-  `apps/ios/Godspeed.xcodeproj`, pick your iPhone and press Run.
+  sign in with the same account on the phone. No Mac? **Look around with sample data** on the
+  sign-in screen.
+- **Build it yourself:** see [apps/ios/README.md](apps/ios/README.md) (Xcode 26+, Rust iOS
+  targets). Releasing to TestFlight: [docs/godspeed/TESTFLIGHT.md](docs/godspeed/TESTFLIGHT.md).
 
 ## Supported agents
 
