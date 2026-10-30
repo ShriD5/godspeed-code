@@ -83,7 +83,7 @@ client. **The GUI was not measured** (see [GUI](#gui-not-measured)).
 | Zeron tarball SHA-256 | `b000663adeb205349124400dace8dc0aaccad524b3881153514344af246406b6` (matches the release's `manifest.json`) |
 | Zeron binary SHA-256 | `zeron` `ef0bda732d52a2543ed2d385cd511d73bfb1c4db6b1f19d4dbdad6691b1b69c3` (157,781,440 B). `Zeron Engine` `f46c59ab31cc23c95578817670b0ef0406e1cfb7d29224fcfa59ccdd0028a74f` (55,000,256 B; GUI background engine, not used by `zeron headless`) |
 | Godspeed 0.2.0 (reference arm) | The same download as in `BENCHMARKS-ZERON.md`. Binary SHA-256 `e3c2b7ea87cd1bc39bb7c57bd7de7bb77b9935e347c2bee57ee9807f739b99d7`, re-verified. |
-| Distance from the fork | Both descend from `v0.2.113` (`6ac88599`). Godspeed `v0.5.9` is 340 commits past it, and Zeron `v0.2.130` is 103 commits past it, with +164k/−16k lines in `crates/` and `apps/`. Godspeed has not merged upstream since the fork. |
+| Distance from the fork | Both descend from `v0.2.113` (`6ac88599`). Godspeed `v0.5.9` is 340 commits past it, and Zeron `v0.2.130` is 103 commits past it, with +164k/−16k lines in `crates/` and `apps/`. Godspeed ports upstream changes by hand (through `8b7afb30` at the time of this run). |
 
 **Binary location.** Each tarball was downloaded and extracted into its own
 directory: `/Volumes/Lexar/tmp/perf-bench/{godspeed-dl,zeron-dl}/`. That is
@@ -270,8 +270,10 @@ mean Godspeed is bigger or slower.
 | `list_201p_400t` (50 reps) | 1.329 (1.308–1.397) | 1.483 | 1.118 (1.092–2.921) | 1.233 | **1.19x** | 1.310 |
 
 The list gap with Zeron is consistent: in 5 of 6 trials, Zeron's per-trial
-p50 sits below Godspeed's minimum. Godspeed 0.2.0 matches 0.5.9, so the gap
-comes from Zeron getting faster upstream.
+p50 sits below Godspeed's minimum. Godspeed 0.2.0 matches 0.5.9. A later
+code review found no upstream commit behind the gap; the likely cause is
+Godspeed-only: every chat row carries a default `lifecycle` field on the
+wire (not measured).
 
 ### Streaming (fake Claude CLI, 5,000-delta turns)
 
@@ -324,7 +326,10 @@ Notes on streaming:
   a new chat is the other way round. Most of the time goes to spawning the
   agent, which includes about 80 ms of Python start-up in the fake for both
   apps. Godspeed takes about 40 ms longer there, and 0.2.0 was 15 ms slower
-  still, so Zeron sped this path up upstream.
+  still. A later code review traced this to Godspeed-only code rather than an
+  upstream speed-up: before the first launch Godspeed runs the Claude CLI once
+  to probe `--thinking-display`, and an inconclusive answer (as from the
+  fake CLI used here) is not cached, so every new chat paid an extra spawn.
 - **A streamed turn's memory cost is about 70x its text, in every build.**
   The footprint grows about 30 MiB for 436 KB of streamed text, and only
   part of that comes back.
