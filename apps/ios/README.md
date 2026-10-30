@@ -49,21 +49,15 @@ only. The script runs cargo in a clean environment, so in a worktree point
 
 ## Connecting to your edge
 
-The app ships pointed at nothing: `Endpoints` in
-`Godspeed/Shell/SignInViewController.swift` holds a `.invalid` edge URL and an
-empty WorkOS client id, mirroring the desktop defaults in
-`crates/client/src/auth.rs`. To connect it needs:
+`Endpoints` in `Godspeed/Shell/SignInViewController.swift` points at the hosted edge
+(`https://godspeed-edge.shrid5.workers.dev`) and its WorkOS AuthKit client, the same defaults as
+the desktop (`crates/client/src/auth.rs`); `godspeed://callback` is the redirect URI. Cloud sync
+there is invite-only (`edge/DEPLOY.md`, "The iPhone beta waitlist"). A self-hosted edge needs its
+URL and client id in `Endpoints`, plus an APNs key for push (see Session notifications).
 
-1. **A deployed edge** (`edge/DEPLOY.md`): set `Endpoints.edgeURL` to
-   `https://godspeed-edge.<subdomain>.workers.dev`.
-2. **Sign-in config**: not decided yet (WorkOS or a pairing code). With WorkOS,
-   set `Endpoints.workosClientId` and the edge's `WORKOS_CLIENT_ID`, and add
-   `godspeed://callback` as a redirect URI in WorkOS.
-3. **Push** (optional): an APNs key on the edge (see Session notifications).
-
-For development without either, run a local `wrangler dev` edge with
-`AUTH_MODE=dev` and launch a Debug build with `-dev <userId> <orgId> -edge
-<url>` (see Launch arguments), or use `-demo` for the offline demo workspace.
+For development, run a local `wrangler dev` edge with `AUTH_MODE=dev` and launch a Debug build
+with `-dev <userId> <orgId> -edge <url>` (see Launch arguments), or use `-demo` (the same offline
+workspace as "Look around with sample data").
 
 ## Layout
 
@@ -209,9 +203,29 @@ set (`APNS_TEAM_ID`, `APNS_TOPIC` in `edge/wrangler.jsonc`).
 
 ## TestFlight release
 
-Zeron's TestFlight workflow was not carried over (GitHub Actions is off on this
-repo). By hand: create the app in App Store Connect with bundle id
-`site.shrithan.godspeed.ios`, then in Xcode select the Godspeed scheme, Any iOS
-Device, Product → Archive (Release; the Rust core builds in the archive with
-the `mobile-dist` profile), and upload from the Organizer. Bump
-`CURRENT_PROJECT_VERSION` for each upload.
+Public beta through TestFlight (step-by-step and tester approvals:
+[`docs/godspeed/TESTFLIGHT.md`](../../docs/godspeed/TESTFLIGHT.md)).
+
+```sh
+scripts/ios/testflight.sh              # Rust core (mobile-dist) → Release archive → upload
+scripts/ios/testflight.sh --no-upload  # same, but export the .ipa locally
+scripts/ios/asc-setup.sh status        # app record, builds, review state, public link
+scripts/ios/asc-setup.sh submit        # newest processed build → public group + beta review
+```
+
+- **Signing:** automatic, team `QPUV967B5U`, `-allowProvisioningUpdates` with the App Store
+  Connect API key from `~/.config/outbound/keys.env` (`ASC_KEY_ID`, `ASC_ISSUER_ID`,
+  `ASC_KEY_PATH`; never printed). Xcode creates the distribution profiles and the App Group.
+- **Versions:** `MARKETING_VERSION` stays `1.0` in the project; the build number is a UTC
+  timestamp (`YYYYMMDD.HHMM`) passed as `CURRENT_PROJECT_VERSION` at archive time, so every
+  upload is higher than the last and the project file doesn't change.
+- **App Store metadata** (test information, beta review notes, the public group) lives in
+  `scripts/ios/asc.py`; the review contact and demo account come from
+  `~/.config/godspeed/testflight.env` (`edge/scripts/review-account.mjs` creates the account).
+- **Release readiness:** `ITSAppUsesNonExemptEncryption` is false (HTTPS/TLS via rustls and
+  WebRTC's DTLS-SRTP only); `Godspeed/PrivacyInfo.xcprivacy` and
+  `GodspeedLiveActivity/PrivacyInfo.xcprivacy` declare the collected data (matching
+  `docs/PRIVACY.md`) and required-reason APIs; the icon is the single 1024 px
+  `AppIcon1024.png` (Xcode renders the other sizes).
+- **Reviewers and testers without a Mac:** "Look around with sample data" on the sign-in screen
+  starts the offline demo workspace (the `-demo` fixtures); Settings → Leave Sample Data returns.

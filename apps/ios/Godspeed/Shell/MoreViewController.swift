@@ -229,7 +229,9 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
             Row(id: "archived", title: "Archived Sessions", symbol: "archivebox"),
         ])
         s.appendSections([" "])
-        s.appendItems([Row(id: "signout", title: "Sign Out", symbol: "rectangle.portrait.and.arrow.right", accessory: .none, destructive: true)])
+        // Sample data (the sign-in screen's "Look around" path) has no
+        // account to sign out of: leaving returns to the sign-in screen.
+        s.appendItems([Row(id: "signout", title: app.isDemo ? "Leave Sample Data" : "Sign Out", symbol: "rectangle.portrait.and.arrow.right", accessory: .none, destructive: true)])
         dataSource.apply(s, animatingDifferences: false)
     }
 
@@ -287,8 +289,13 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
         case "archived":
             navigationController?.pushViewController(FolderViewController(app: app, folder: FolderRowVM(id: "archived", name: "Archived", count: 0, symbol: "archivebox")), animated: true)
         case "signout":
-            let alert = UIAlertController(title: "Sign out?", message: "Local drafts stay on this device.", preferredStyle: .actionSheet)
-            alert.addAction(UIAlertAction(title: "Sign Out", style: .destructive) { [weak self] _ in self?.app.signOut() })
+            let demo = app.isDemo
+            let alert = UIAlertController(
+                title: demo ? "Leave sample data?" : "Sign out?",
+                message: demo ? "You'll go back to the sign-in screen." : "Local drafts stay on this device.",
+                preferredStyle: .actionSheet
+            )
+            alert.addAction(UIAlertAction(title: demo ? "Leave" : "Sign Out", style: .destructive) { [weak self] _ in self?.app.signOut() })
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             alert.popoverPresentationController?.sourceView = collectionView.cellForItem(at: path)
             present(alert, animated: true)
