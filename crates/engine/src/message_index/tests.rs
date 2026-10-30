@@ -5,6 +5,14 @@ use zeron_doc::{MessageStatus, SegmentWriter};
 use super::index::{Index, MessageText, SearchOptions};
 use super::*;
 
+fn reads(index: &MessageIndex) -> usize {
+    index.inner.snapshot_reads.load(Ordering::Relaxed)
+}
+
+fn full_reads(index: &MessageIndex) -> usize {
+    index.inner.full_reads.load(Ordering::Relaxed)
+}
+
 const FLUSH: Duration = Duration::from_secs(20);
 
 fn entry(id: &str, role: MessageRole, text: &str, created_at: i64) -> SessionMessageEntry {
@@ -107,7 +115,7 @@ fn filter_skips_documents_that_are_not_chats() {
 }
 
 #[test]
-fn persisted_index_restarts_without_rereading_and_rebuilds_when_corrupt() {
+fn stored_index_restarts_without_rereading_and_rebuilds_when_corrupt() {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(DocsStore::open(dir.path()).unwrap());
     for chat in 0..5 {
@@ -119,8 +127,9 @@ fn persisted_index_restarts_without_rereading_and_rebuilds_when_corrupt() {
     }
     let first = MessageIndex::open(store.clone(), Some(dir.path()), None);
     assert!(first.flush(FLUSH));
-    assert_eq!(first.inner.snapshot_reads.load(Ordering::Relaxed), 5);
+    assert_eq!(reads(&first), 5);
     first.shutdown();
+    drop(first);
     let path = dir.path().join(INDEX_FILE);
     assert!(path.exists());
 
@@ -133,20 +142,68 @@ fn persisted_index_restarts_without_rereading_and_rebuilds_when_corrupt() {
     );
     let second = MessageIndex::open(store.clone(), Some(dir.path()), None);
     assert!(second.flush(FLUSH));
-    assert_eq!(second.inner.snapshot_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(reads(&second), 1);
     assert_eq!(second.stats().messages, 5);
     assert_eq!(found(&second, "rewritten").len(), 1);
     assert_eq!(found(&second, "persisted").len(), 4);
     second.shutdown();
+    drop(second);
 
-    // Garbage on disk: rebuild from the store and write a valid file.
+    // Garbage on disk: rebuild from the store.
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
     std::fs::write(&path, b"definitely not an index").unwrap();
     let third = MessageIndex::open(store, Some(dir.path()), None);
     assert!(third.flush(FLUSH));
-    assert_eq!(third.inner.snapshot_reads.load(Ordering::Relaxed), 5);
+    assert_eq!(reads(&third), 5);
     assert_eq!(found(&third, "persisted").len(), 4);
     third.shutdown();
-    assert!(persist::decode(&std::fs::read(&path).unwrap()).is_ok());
+}
+
+/// First launch after the in-memory index: searches answer from the old file
+/// while the database builds in the background, then the old file goes.
+#[test]
+fn a_first_build_answers_from_the_old_index_then_deletes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+    let mut old = Index::default();
+    for chat in 0..3 {
+        let id = format!("chat-{chat}");
+        let entries = [entry(
+            "m",
+            MessageRole::Assistant,
+            &format!("migrated reply {chat}"),
+            1,
+        )];
+        save_chat(&store, &id, &entries);
+        old.update_chat(&id, &message_texts(entries.to_vec()));
+    }
+    let legacy = dir.path().join(LEGACY_INDEX_FILE);
+    std::fs::write(&legacy, persist::encode(&old)).unwrap();
+
+    let index = MessageIndex::open_with(store, Some(dir.path()), None, true);
+    let deadline = Instant::now() + FLUSH;
+    while read(&index.inner.legacy).is_none() {
+        assert!(Instant::now() < deadline, "old index never loaded");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!index.is_ready(), "still building");
+    assert_eq!(
+        found(&index, "migrated").len(),
+        3,
+        "the old index answers meanwhile"
+    );
+    assert_eq!(reads(&index), 0);
+
+    index.inner.hold_build.store(false, Ordering::Release);
+    assert!(index.flush(FLUSH));
+    assert!(index.is_ready());
+    assert!(read(&index.inner.legacy).is_none(), "old index dropped");
+    assert!(!legacy.exists(), "old file deleted");
+    assert_eq!(reads(&index), 3);
+    assert_eq!(found(&index, "migrated").len(), 3);
+    index.shutdown();
 }
 
 #[test]
@@ -172,9 +229,14 @@ fn streaming_reply_updates_incrementally() {
     }
     assert!(index.flush(FLUSH));
     assert_eq!(found(&index, "wick"), [("live".to_owned(), "reply".to_owned())]);
+    assert_eq!(
+        found(&index, "how work"),
+        [("live".to_owned(), "q".to_owned())]
+    );
     assert_eq!(index.stats().messages, 2);
 
-    // Keep streaming: the reply re-indexes in place.
+    // Keep streaming: searches see the new words, nothing is written and
+    // the transcript is never read whole while the turn is in flight.
     text.push_str(" slowly");
     writer
         .sync(&[MessagePart::Text {
@@ -186,7 +248,30 @@ fn streaming_reply_updates_incrementally() {
     assert!(index.flush(FLUSH));
     assert_eq!(found(&index, "slow").len(), 1);
     assert_eq!(index.stats().messages, 2);
-    assert_eq!(index.inner.read().docs.len(), 2, "no slot churn while streaming");
+    assert_eq!(full_reads(&index), 0, "no whole-transcript read mid-turn");
+    assert_eq!(
+        index.inner.with_db(|db| db.totals()).docs,
+        0,
+        "nothing stored mid-turn"
+    );
+
+    // The turn ends: one full read stores it and the overlay empties.
+    writer
+        .finish(
+            &[MessagePart::Text {
+                id: "body".into(),
+                text: text.clone(),
+            }],
+            MessageStatus::Complete,
+        )
+        .unwrap();
+    index.note_changed("live", &doc);
+    assert!(index.flush(FLUSH));
+    assert_eq!(full_reads(&index), 1);
+    assert!(read(&index.inner.overlay).is_empty());
+    assert_eq!(index.inner.with_db(|db| db.totals()).docs, 2);
+    assert_eq!(found(&index, "slow").len(), 1);
+    assert_eq!(index.stats().messages, 2);
 
     index.remove_chat("live");
     assert!(index.flush(FLUSH));
@@ -237,6 +322,15 @@ impl Rng {
 }
 
 pub(super) fn synthetic_corpus(chats: usize, per_chat: usize) -> Index {
+    let mut index = Index::default();
+    for (chat, messages) in synthetic_chats(chats, per_chat) {
+        index.update_chat(&chat, &messages);
+    }
+    index
+}
+
+/// The synthetic corpus as `(chat id, transcript)` in index order.
+pub(super) fn synthetic_chats(chats: usize, per_chat: usize) -> Vec<(String, Vec<MessageText>)> {
     const SYLLABLES: [&str; 24] = [
         "ka", "lo", "mi", "ren", "sto", "va", "qui", "dex", "tor", "pa", "ze", "lin", "ar",
         "bo", "cu", "fen", "gri", "hal", "jo", "nu", "or", "pe", "sy", "wex",
@@ -257,7 +351,7 @@ pub(super) fn synthetic_corpus(chats: usize, per_chat: usize) -> Index {
             .collect();
         vocabulary.push(word);
     }
-    let mut index = Index::default();
+    let mut corpus = Vec::with_capacity(chats);
     let day = 86_400_000i64;
     for chat in 0..chats {
         let messages: Vec<MessageText> = (0..per_chat)
@@ -292,9 +386,9 @@ pub(super) fn synthetic_corpus(chats: usize, per_chat: usize) -> Index {
                 }
             })
             .collect();
-        index.update_chat(&format!("chat-{chat}"), &messages);
+        corpus.push((format!("chat-{chat}"), messages));
     }
-    index
+    corpus
 }
 
 /// Per-query bound: 50 ms is the release target; unoptimized test builds of
@@ -320,7 +414,17 @@ fn synthetic_owner_scale_queries_stay_fast() {
         now_ms: 400 * 86_400_000,
     };
     let mut worst = (Duration::ZERO, "");
-    for query in ["t", "e", "ka", "the", "fix test", "search index deploy", "cargo", "zzzz", "wexgri"] {
+    for query in [
+        "t",
+        "e",
+        "ka",
+        "the",
+        "fix test",
+        "search index deploy",
+        "cargo",
+        "zzzz",
+        "wexgri",
+    ] {
         // Best of three, so a scheduler hiccup on a shared CI box is not a failure.
         let elapsed = (0..3)
             .map(|_| {
@@ -351,5 +455,103 @@ fn synthetic_owner_scale_queries_stay_fast() {
         worst.0,
         worst.1,
         encoded.len() / 1024,
+    );
+}
+
+/// The database ranks exactly like the in-memory index it replaces: same
+/// hits, order, snippets and scores, on the owner-scale corpus, from single
+/// letters to multi-word queries, with and without the per-chat cap.
+#[test]
+fn the_database_ranks_like_the_old_index() {
+    let corpus = synthetic_chats(360, 120);
+    let mut old = Index::default();
+    for (chat, messages) in &corpus {
+        old.update_chat(chat, messages);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = db::Db::open(Some(&dir.path().join(INDEX_FILE))).unwrap();
+    let started = Instant::now();
+    for batch in corpus.chunks(32) {
+        db.batch(|db| {
+            for (chat, messages) in batch {
+                db.update_chat(chat, messages)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    db.optimize().unwrap();
+    let built = started.elapsed();
+    assert_eq!(db.totals().unwrap().docs as usize, old.message_count());
+    assert_eq!(db.term_count().unwrap(), old.term_count());
+
+    let options = |per_chat| SearchOptions {
+        limit: 50,
+        per_chat,
+        chat_filter: None,
+        now_ms: 400 * 86_400_000,
+    };
+    let queries = [
+        "t",
+        "e",
+        "a",
+        "k",
+        "s",
+        "ka",
+        "the",
+        "fix test",
+        "search index deploy",
+        "cargo",
+        "zzzz",
+        "wexgri",
+        "lo mi",
+        "crate_1",
+        "deploy worker",
+        "tor",
+        "error build",
+        "qui dex",
+    ];
+    let mut timings = Vec::new();
+    for query in queries {
+        for per_chat in [None, Some(1)] {
+            let old_at = Instant::now();
+            let want = old.search(query, &options(per_chat));
+            let old_took = old_at.elapsed();
+            let terms = tokens::query_terms(query);
+            let at = Instant::now();
+            let got = db.search(&terms, &options(per_chat), &[]).unwrap();
+            timings.push((query, per_chat, old_took, at.elapsed()));
+            assert_eq!(got.len(), want.len(), "{query:?} {per_chat:?}");
+            for (got, want) in got.iter().zip(&want) {
+                assert_eq!(
+                    (
+                        &got.chat_id,
+                        &got.message_id,
+                        &got.snippet,
+                        &got.ranges,
+                        got.field
+                    ),
+                    (
+                        &want.chat_id,
+                        &want.message_id,
+                        &want.snippet,
+                        &want.ranges,
+                        want.field
+                    ),
+                    "{query:?} {per_chat:?}"
+                );
+                assert_eq!(
+                    got.score.to_bits(),
+                    want.score.to_bits(),
+                    "{query:?} {per_chat:?}"
+                );
+            }
+        }
+    }
+    timings.sort_by_key(|t| std::cmp::Reverse(t.3));
+    println!(
+        "database: {} msgs, built {built:?}; slowest (query, per_chat, old, new): {:?}",
+        old.message_count(),
+        &timings[..6]
     );
 }
