@@ -4,6 +4,37 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+## 0.5.10 (2026-10-30)
+
+### Added
+
+- **Usage in the session card.** The thread details card shows how much is left in each limit
+  window of the chat's account (5-hour first, then weekly) and how full the context window is,
+  with reset times on hover. It reuses the usage data the composer gauge already loads.
+- **fx as a provider.** `fx acp` runs through the ACP driver like the other agents (from Zeron).
+
+### Changed
+
+- **Much less background work while you're away.** With 10 chats open in their own worktrees,
+  Godspeed now starts about 25 `git` processes in 10 idle minutes instead of 375. Diffs refresh
+  when you come back, when a turn ends or when files change, with a safety check every 15 minutes
+  only while you're active; build output in `target/` and `node_modules/` no longer triggers
+  refreshes. The PR watch backs off properly when you're away, and build-slot checks stop when
+  nothing can build.
+- **A calmer Dock buddy.** The speedster falls asleep on a still frame after 45 seconds of quiet
+  instead of animating forever. While agents work it keeps running, capped at 4 fps on battery,
+  in Low Power Mode or when every window is hidden. A waiting alert settles after a minute.
+- **Lighter redraws.** A running zoomie animates only its own row instead of redrawing the whole
+  window, and Mission Control repaints only the card that moves.
+- **Quieter launch.** The empty-chat check at launch is cheaper, agent update checks wait 90
+  seconds and are reused for 6 hours, and usage meters don't refresh while no window is visible.
+
+### Fixed
+
+- One slow agent CLI no longer stalls every other agent lookup while its version is checked, and a
+  failed version check is retried instead of cached until restart (from Zeron).
+- Direct device links over Tailscale carry data again (WebRTC packets may fragment; from Zeron).
+
 ## 0.5.9 (2026-10-29)
 
 ### Added
