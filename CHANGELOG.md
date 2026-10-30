@@ -33,7 +33,7 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 - One slow agent CLI no longer stalls every other agent lookup while its version is checked, and a
   failed version check is retried instead of cached until restart (from Zeron).
-- Direct device links over Tailscale carry data again (WebRTC packets may fragment; from Zeron).
+- Direct device links over Tailscale (MTU 1280) now carry data: WebRTC packets may fragment (from Zeron).
 
 ## 0.5.9 (2026-10-29)
 
