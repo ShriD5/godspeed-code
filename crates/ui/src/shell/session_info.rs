@@ -1,4 +1,5 @@
-//! The session card: where this chat runs (device, project, branch) and the
+//! The session card: where this chat runs (device, project, branch), how much
+//! of its account's limits and its context window are used, and the
 //! project's run actions, with the lanes card (its side chats and subagents,
 //! see `session_lanes`) stacked under it, both behind one toggle.
 //! While the column has room, the card shows at its right on its own (until
@@ -100,6 +101,104 @@ fn limit_summary(limit: &zeron_proto::ChatLimit, now: chrono::DateTime<Utc>) -> 
         LimitRecovery::Snoozed => format!("Snoozed until {time}"),
         LimitRecovery::Ask => format!("Limited · resets {time}"),
     }
+}
+
+/// One Usage row: a limit window of the chat's account, or its context
+/// window. `used` is `None` while the context window has no token count.
+#[derive(Debug, Clone, PartialEq)]
+struct UsageRow {
+    label: SharedString,
+    used: Option<f32>,
+    detail: SharedString,
+}
+
+/// The card's Usage rows: the account's windows (5-hour first), then the
+/// context window when the harness reports one. Pure.
+fn usage_rows(
+    account: Option<&zeron_proto::AgentAccount>,
+    context: Option<zeron_proto::ContextUsage>,
+    now: chrono::DateTime<Utc>,
+) -> Vec<UsageRow> {
+    let mut rows: Vec<UsageRow> = account
+        .map(crate::usage_cockpit::ordered_windows)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|window| UsageRow {
+            label: crate::usage_cockpit::window_label(window).into(),
+            used: Some(window.used_fraction.clamp(0.0, 1.0)),
+            detail: crate::usage_cockpit::window_summary(window, now).into(),
+        })
+        .collect();
+    if crate::context_usage::has_window(context) {
+        rows.push(UsageRow {
+            label: "Context".into(),
+            used: context
+                .and_then(zeron_proto::ContextUsage::fraction)
+                .map(|fraction| fraction.clamp(0.0, 1.0) as f32),
+            detail: crate::context_usage::details(context).into(),
+        });
+    }
+    rows
+}
+
+/// A Usage row: label, bar, percent used; hover for resets or tokens.
+fn usage_row(row: UsageRow, index: usize, theme: &Theme) -> AnyElement {
+    use crate::settings::accounts::{UsageLevel, usage_color, usage_level};
+    let level = row.used.map(usage_level);
+    let fill = level.map(|level| usage_color(level, theme));
+    div()
+        .id(("session-info-usage", index))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .h(px(24.0))
+        .px(px(9.0))
+        .rounded(px(5.0))
+        .text_size(crate::typography::ui_rems(12.0))
+        .hover(|style| style.bg(crate::theme::ink(0.05)))
+        .tooltip(crate::settings::widgets::text_tooltip(row.detail))
+        .child(
+            div()
+                .w(px(56.0))
+                .flex_none()
+                .truncate()
+                .text_color(theme.text_muted)
+                .child(row.label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .h(px(4.0))
+                .rounded_full()
+                .overflow_hidden()
+                .bg(theme.wash(0.08))
+                .children(row.used.zip(fill).filter(|(used, _)| *used > 0.0).map(
+                    |(used, fill)| {
+                        div()
+                            .h_full()
+                            .w(gpui::relative(used.max(0.015)))
+                            .rounded_full()
+                            .bg(fill.opacity(0.85))
+                    },
+                )),
+        )
+        .child(
+            div()
+                .w(px(34.0))
+                .flex_none()
+                .text_right()
+                .text_color(match level.zip(fill) {
+                    Some((UsageLevel::Normal, _)) => theme.text,
+                    Some((_, fill)) => fill,
+                    None => theme.text_muted,
+                })
+                .child(SharedString::from(row.used.map_or_else(
+                    || "—".to_owned(),
+                    |used| format!("{}%", (used * 100.0).round() as u32),
+                ))),
+        )
+        .into_any_element()
 }
 
 fn row_glyph(path: &'static str, theme: &Theme) -> AnyElement {
@@ -493,6 +592,32 @@ impl Shell {
             .tooltip(crate::settings::widgets::text_tooltip(label))
         });
 
+        // ── How much of the account's limits and the context it has used.
+        let account = chat.config.as_ref().and_then(|config| {
+            let target = (!local).then(|| chat.device_id.clone());
+            let snapshot = cx
+                .try_global::<crate::settings::accounts::AccountsSnapshotCache>()?
+                .0
+                .get(&target)?;
+            crate::account_usage::active_account(snapshot, config.harness).cloned()
+        });
+        let context = self.state.read(cx).context_usage;
+        let usage_rows = usage_rows(account.as_ref(), context, now);
+        let usage = (!usage_rows.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(popover::MENU_GAP))
+                .child(popover::picker_divider())
+                .child(popover::menu_heading(&theme, "Usage"))
+                .children(
+                    usage_rows
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, row)| usage_row(row, index, &theme)),
+                )
+        });
+
         let worktree = self.render_session_info_worktree(&theme, cx);
 
         // ── Turn it into a zoomie.
@@ -531,6 +656,7 @@ impl Shell {
             .child(project_row)
             .children(branch_row)
             .children(limit_row)
+            .children(usage)
             .children(worktree)
             .children(schedule)
             .children(actions);
@@ -745,6 +871,57 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn account(windows: &[(&str, f32)]) -> zeron_proto::AgentAccount {
+        serde_json::from_value(serde_json::json!({
+            "id": "claude-1",
+            "harness": HarnessId::ClaudeCode,
+            "email": null,
+            "planLabel": null,
+            "active": true,
+            "switchable": true,
+            "usageWindows": windows
+                .iter()
+                .map(|(label, used)| zeron_proto::AgentUsageWindow {
+                    label: (*label).into(),
+                    used_fraction: *used,
+                    resets_at: None,
+                })
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn usage_lists_the_account_windows_five_hour_first_then_context() {
+        let account = account(&[("week", 0.3), ("session", 1.4)]);
+        let context = zeron_proto::ContextUsage {
+            tokens: Some(50_000),
+            window: Some(200_000),
+        };
+        let rows = usage_rows(Some(&account), Some(context), Utc::now());
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_ref()).collect();
+        assert_eq!(labels, ["5-hour", "Weekly", "Context"]);
+        assert_eq!(rows[0].used, Some(1.0));
+        assert_eq!(rows[2].used, Some(0.25));
+        assert!(rows[2].detail.contains("150,000 tokens remaining"));
+    }
+
+    #[test]
+    fn context_shows_only_with_a_reported_window() {
+        let no_window = zeron_proto::ContextUsage {
+            tokens: Some(1_200),
+            window: None,
+        };
+        assert!(usage_rows(None, Some(no_window), Utc::now()).is_empty());
+        let waiting = zeron_proto::ContextUsage {
+            tokens: None,
+            window: Some(200_000),
+        };
+        let rows = usage_rows(None, Some(waiting), Utc::now());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].used, None);
+    }
 
     #[test]
     fn a_wide_column_keeps_the_transcript_centered_beside_the_card() {

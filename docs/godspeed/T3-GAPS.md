@@ -73,6 +73,9 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Chat | Response streaming mode: turn or paragraph | `packages/contracts/src/settings.ts` (`ResponseStreamingMode`) | MISSING: live streaming only | low |
 | Chat | GitHub alert blocks and `<details>` collapsibles in replies | `apps/web/src/markdownGithubAlerts.test.tsx`; `apps/web/src/components/chat/MarkdownDetails.tsx` | MISSING: `crates/ui/src/markdown/` has no alert or details rendering | low |
 | Chat | Inline video: play video attachments and video in replies | `apps/web/src/components/media/MediaVideoPlayer.tsx` | MISSING | low |
+| Desktop | See and stop the dev servers a thread started | `apps/web/src/components/chat/ThreadDetailsPanel.tsx` (#22542 `a27ec88bfa`) | MISSING: no per-chat process list | med |
+| Chat | Stop always completes; force-stop an agent that ignores Stop | `apps/server` (#27252 `6b1245cced`) | MISSING: one Stop, no force escalation in the UI | med |
+| Sidebar | Turn a No project thread into a project | #26767 `58e60bf5e8` | MISSING | low |
 | Chat | Related threads: link threads to each other, see them in the details panel | `apps/web/src/components/chat/ThreadRelationshipsControl.tsx` | MISSING: session card only (`crates/ui/src/shell/session_info.rs`) | low |
 | Terminal | Split a terminal side by side or stacked; split horizontally or vertically | `apps/web/src/components/ThreadTerminalDrawer.tsx` ("Split Terminal Horizontally", "Single / Stacked / Side by side"); `packages/shared/src/keybindings.ts` (`terminal.split`) | MISSING: one terminal per tab (`crates/ui/src/terminal/panel.rs`) | med |
 | Terminal | Right-click menu: copy, paste, select all, jump to latest, add selection to chat | `apps/web/src/components/ThreadTerminalDrawer.tsx` (context menu items) | MISSING: right-click goes to the PTY or nowhere (`terminal/panel.rs` `on_other_mouse_down`) | med |
@@ -209,6 +212,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
 | Factory Droid, GitHub Copilot CLI, Gemini CLI and Kimi CLI as ACP agents through the registry (generic ACP driver; Droid elicitation forms and Copilot subagent routing not ported) | #62 |
 | Several instances per provider: binary, config dir, env vars (secrets in the keychain), default and custom models, account; picked in the model picker | #62 |

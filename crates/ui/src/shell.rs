@@ -2251,6 +2251,8 @@ pub struct Shell {
     voice_stage_selection: Option<String>,
     _voice_observation: gpui::Subscription,
     _voice_catalog: gpui::Subscription,
+    /// The session card's Usage rows read the accounts cache.
+    _accounts_cache: gpui::Subscription,
     /// Measured height of the bottom chrome stack (status strip + composer +
     /// terminal dock) the full-height transcript scrolls under. Paint-time
     /// measurement schedules another frame whenever this value changes.
@@ -2746,6 +2748,10 @@ impl Shell {
             cx.observe_global::<crate::pickers::HarnessCatalogChanged>(|this: &mut Shell, cx| {
                 this.check_voice_codex(true, cx)
             });
+        let accounts_cache = cx
+            .observe_global::<crate::settings::accounts::AccountsSnapshotCache>(|_, cx| {
+                cx.notify()
+            });
         let links = Self::session_links(None, cx);
         transcript.update(cx, |transcript, _| {
             transcript.set_workspace_link_handler(links)
@@ -2909,6 +2915,7 @@ impl Shell {
             voice_stage_selection: None,
             _voice_observation: voice_observation,
             _voice_catalog: voice_catalog,
+            _accounts_cache: accounts_cache,
             // Seed with the compact composer stack's rough height so the
             // first frame's clearance isn't zero (the measure corrects it).
             bottom_stack: std::rc::Rc::new(std::cell::Cell::new(120.0)),

@@ -236,7 +236,7 @@ directly comparable; the movers are listed below.
 | Rendered HTML / CSV / PDF / audio | ❌ | markdown and images only |
 | File picker `mod+p`, project content search | 🟡 | via palette; smart-case only, no regex or whole-word toggle |
 | Files outside the workspace (read-only) | ✅ | file links open any path |
-| Thread details panel | 🟡 | session card; no linked PRs, lineage or related threads |
+| Thread details panel | 🟡 | session card with limits and context usage; no linked PRs, lineage or related threads |
 | Open in external editor (VS Code, Cursor, Zed, JetBrains) | 🟡 | "Open in default editor" only (`files/preview.rs`) |
 | Panel animation | ✅ | animated by default (`shell/panel_layout.rs` eased tweens), Reduce motion respected; no duration slider |
 

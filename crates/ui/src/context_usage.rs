@@ -116,7 +116,7 @@ pub fn has_window(usage: Option<ContextUsage>) -> bool {
         .is_some_and(|window| window > 0)
 }
 
-fn details(usage: Option<ContextUsage>) -> String {
+pub(crate) fn details(usage: Option<ContextUsage>) -> String {
     match usage.unwrap_or_default() {
         ContextUsage {
             tokens: Some(tokens),
