@@ -453,10 +453,14 @@ impl EngineCore {
             limited.note_limited(chat_id, signal);
         }));
         // Turn ends stamp the "Latest turn" diff onto the turn's receipt.
+        // Turn ends also re-capture the chat's checkout: the safety net for
+        // watcher events dropped during the turn.
         let turn_files = diff_sync.clone();
         sessions.set_turn_files_listener(Arc::new(move |chat_id| {
+            turn_files.note_turn_end(chat_id);
             turn_files.turn_file_stats(chat_id)
         }));
+        diff_sync.set_live_probe(live_run_probe(&sessions));
         // Stamped turns feed the usage history; agent logs are read on demand.
         let usage_history = UsageIndex::open(
             data_dir,

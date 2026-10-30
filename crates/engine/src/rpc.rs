@@ -2435,6 +2435,8 @@ impl RpcService for EngineRpc {
             if let Some(watch) = &self.pr_watch {
                 watch.note_activity();
             }
+            self.diff_sync
+                .note_user_activity(method == methods::PROBE_SYNC);
         }
         if matches!(
             method,
