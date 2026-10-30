@@ -7,7 +7,9 @@
  * Routes:
  *   GET  /health
  *   POST /telemetry/v1/ping           — anonymous daily usage ping (telemetry.ts)
+ *   POST /waitlist                    — iPhone beta waitlist sign-up (waitlist.ts)
  *   GET  /admin, /admin/api/stats     — private dashboard, ADMIN_EMAILS only (admin.ts)
+ *   GET|POST /admin/access            — beta waitlist + approvals (admin-access.ts)
  *   POST /auth/exchange               — WorkOS code → tokens
  *   POST /auth/refresh                — WorkOS refresh → fresh tokens
  *   GET  /auth/orgs                   — caller's active org memberships
@@ -54,6 +56,7 @@ import { RegistryRoom } from "./registry-room";
 import { ChatRoom } from "./chat-room";
 import installSh from "./install.sh";
 import { countUpdateCheck, handleTelemetryPing } from "./telemetry";
+import { handleWaitlist } from "./waitlist";
 
 export { SessionRoom, DeviceRoom, RegistryRoom, ChatRoom, PreviewRoom, TelemetryStore };
 
@@ -134,6 +137,9 @@ export default {
     //    the admin dashboard (its own browser sign-in) ──────────────────────
     if (url.pathname === "/telemetry/v1/ping") {
       return handleTelemetryPing(request, env);
+    }
+    if (url.pathname === "/waitlist") {
+      return handleWaitlist(request, env);
     }
     const admin = await handleAdminRoute(request, env, url);
     if (admin) return admin;

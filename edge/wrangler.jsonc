@@ -34,7 +34,9 @@
       { "name": "CHAT_ROOMS", "class_name": "ChatRoom" },
       // Anonymous usage telemetry: ONE instance (`telemetry-v1`) holds the
       // daily pings (src/telemetry-store.ts, docs/PRIVACY.md). A SQLite DO,
-      // not D1: the account's free-plan D1 quota is used up.
+      // not D1: the account's free-plan D1 quota is used up. A second
+      // instance, `access-v1`, holds the iPhone beta waitlist and approved
+      // emails (src/access-store.ts), so no emails sit with the pings.
       { "name": "TELEMETRY", "class_name": "TelemetryStore" }
     ]
   },
@@ -81,6 +83,13 @@
       "name": "TELEMETRY_RATE_LIMITER",
       "namespace_id": "1002",
       "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      // Per-IP limit on POST /waitlist (src/waitlist.ts), the landing page's
+      // "Join the iPhone beta" form. The IP only keys the counter.
+      "name": "WAITLIST_RATE_LIMITER",
+      "namespace_id": "1003",
+      "simple": { "limit": 5, "period": 60 }
     }
   ],
   "vars": {
@@ -93,7 +102,11 @@
     "AUTH_MODE": "workos",
     // Push: the Godspeed iOS app's team and bundle id (defaults in env.ts).
     "APNS_TEAM_ID": "QPUV967B5U",
-    "APNS_TOPIC": "site.shrithan.godspeed.ios"
+    "APNS_TOPIC": "site.shrithan.godspeed.ios",
+    // The public TestFlight link, put in the invite messages /admin/access
+    // shows after approving someone (src/admin-access.ts). Empty until the
+    // beta group's public link exists.
+    "TESTFLIGHT_URL": ""
   },
   "observability": {
     "enabled": true

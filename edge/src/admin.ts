@@ -12,10 +12,15 @@
  * key derived from WORKOS_API_KEY) holding the email and an expiry, and the
  * email is re-checked against the current list on every request, so
  * removing someone from ADMIN_EMAILS locks them out at once.
+ *
+ * `/admin/access` (admin-access.ts) is the iPhone beta waitlist and the
+ * approved-email allow-list; it is the only route that takes POSTs.
  */
+import { ACCESS_ACTIONS, applyAccessAction, parseAccessForm, renderAccessPage, type AccessAction } from "./admin-access";
 import { computeStats, parseRange } from "./admin-stats";
 import { renderDashboard } from "./admin-page";
 import type { Env } from "./env";
+import { accessStore, normalizeEmail } from "./waitlist";
 import { exchange, WorkOsAuthFailed } from "./workos";
 
 const SESSION_COOKIE = "gs_admin";
@@ -92,6 +97,13 @@ export const verifySession = async (
   } catch {
     return undefined;
   }
+};
+
+/** The CSRF token for forms on a session (HMAC of the cookie value). */
+export const csrfToken = async (env: Env, sessionValue: string): Promise<string> => {
+  const key = await sessionKey(env);
+  if (!key) throw new Error("WORKOS_API_KEY is not configured");
+  return b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`csrf:${sessionValue}`))));
 };
 
 const cookie = (request: Request, name: string): string | undefined => {
@@ -178,7 +190,8 @@ export const handleAdminRoute = async (
 ): Promise<Response | undefined> => {
   const path = url.pathname.replace(/\/+$/, "") || "/";
   if (path !== "/admin" && !path.startsWith("/admin/")) return undefined;
-  if (request.method !== "GET" && request.method !== "HEAD") return json({ error: "method not allowed" }, 405);
+  const accessPost = path === "/admin/access" && request.method === "POST";
+  if (request.method !== "GET" && request.method !== "HEAD" && !accessPost) return json({ error: "method not allowed" }, 405);
 
   if (path === "/admin/logout") {
     return redirect("/admin/signed-out", [setCookie(SESSION_COOKIE, "", 0)]);
@@ -220,10 +233,13 @@ export const handleAdminRoute = async (
     return redirect("/admin", [setCookie(SESSION_COOKIE, session, SESSION_TTL_S), clearState]);
   }
 
-  const email = await verifySession(env, cookie(request, SESSION_COOKIE));
+  const sessionValue = cookie(request, SESSION_COOKIE);
+  const email = await verifySession(env, sessionValue);
   const api = path === "/admin/api/stats";
   if (!email) {
     if (api) return json({ error: "unauthenticated" }, 401);
+    if (accessPost) return json({ error: "unauthenticated" }, 401);
+    if (path === "/admin/access") return redirect("/admin");
     if (path !== "/admin") return json({ error: "not_found" }, 404);
     if (!env.WORKOS_API_KEY || !env.WORKOS_CLIENT_ID || env.WORKOS_CLIENT_ID === "unset") {
       return page("Godspeed admin", "<h1>Admin sign-in is not configured</h1>", 503);
@@ -232,6 +248,7 @@ export const handleAdminRoute = async (
     return redirect(authorizeUrl(env, url.origin, state), [setCookie(STATE_COOKIE, state, STATE_TTL_S)]);
   }
   if (!isAdmin(env, email)) return api ? json({ error: "forbidden" }, 403) : forbidden();
+  if (path === "/admin/access") return handleAccess(request, env, url, email, sessionValue!);
   if (!env.TELEMETRY) return api ? json({ error: "telemetry not configured" }, 503) : page("Godspeed admin", "<h1>No telemetry database bound</h1>", 503);
 
   const range = parseRange(url.searchParams.get("range"));
@@ -252,5 +269,67 @@ export const handleAdminRoute = async (
   if (api) return json(stats);
   return new Response(renderDashboard(stats), {
     headers: { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS }
+  });
+};
+
+// ---------------------------------------------------------------------------
+// /admin/access
+// ---------------------------------------------------------------------------
+
+const accessHeaders = (nonce: string) => ({
+  ...SECURITY_HEADERS,
+  "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`
+});
+
+const timingSafeEqual = (a: string, b: string): boolean => {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+};
+
+/** The waitlist page and its form actions; the caller is a signed-in admin. */
+const handleAccess = async (request: Request, env: Env, url: URL, admin: string, sessionValue: string): Promise<Response> => {
+  if (!accessStore(env)) return page("Godspeed admin", "<h1>No access store bound</h1>", 503);
+  const csrf = await csrfToken(env, sessionValue);
+
+  if (request.method === "POST") {
+    const origin = request.headers.get("origin");
+    if (origin && origin !== url.origin) return json({ error: "bad origin" }, 403);
+    if (Number(request.headers.get("content-length") ?? "0") > 4096) return json({ error: "too_large" }, 413);
+    const bytes = await request.arrayBuffer();
+    if (bytes.byteLength > 4096) return json({ error: "too_large" }, 413);
+    const text = new TextDecoder().decode(bytes);
+    const parsed = parseAccessForm(text);
+    if (!parsed.ok) return page("Godspeed admin", `<h1>Couldn't do that</h1><p>${escapeHtml(parsed.error)}</p><p><a href="/admin/access">Back</a></p>`, 400);
+    if (!timingSafeEqual(parsed.csrf, csrf)) {
+      return page("Godspeed admin", `<h1>That form expired</h1><p><a href="/admin/access">Reload the page</a> and try again.</p>`, 403);
+    }
+    try {
+      await applyAccessAction(env, parsed.action, parsed.email, admin);
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      return page("Godspeed admin", `<h1>Access store unavailable</h1><p>${escapeHtml(detail)}</p><p><a href="/admin/access">Back</a></p>`, 503);
+    }
+    const params = new URLSearchParams({ done: parsed.action, email: parsed.email });
+    return new Response(null, { status: 303, headers: { location: `/admin/access?${params}`, ...SECURITY_HEADERS } });
+  }
+
+  let overview: Awaited<ReturnType<NonNullable<ReturnType<typeof accessStore>>["accessOverview"]>>;
+  try {
+    overview = await accessStore(env)!.accessOverview();
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    return page("Godspeed admin", `<h1>Access store unavailable</h1><p>${escapeHtml(detail)}</p>`, 503);
+  }
+  const doneAction = url.searchParams.get("done");
+  const doneEmail = normalizeEmail(url.searchParams.get("email"));
+  const done =
+    doneAction && (ACCESS_ACTIONS as readonly string[]).includes(doneAction) && doneEmail
+      ? { action: doneAction as AccessAction, email: doneEmail }
+      : undefined;
+  const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
+  return new Response(renderAccessPage(env, overview, csrf, nonce, done), {
+    headers: { "content-type": "text/html; charset=utf-8", ...accessHeaders(nonce) }
   });
 };

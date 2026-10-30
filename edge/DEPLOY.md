@@ -18,7 +18,10 @@ account `f715952f0d5650529fe9401bcca31e2e`, served on workers.dev only.
 | secret | `WORKOS_API_KEY` | `/auth/exchange`, `/auth/refresh`, `/auth/orgs` (WorkOS sign-in) | WorkOS secret key; unset ⇒ those routes answer 501 |
 | secret | `APNS_KEY_P8` | push notifications | contents of `AuthKey_XXXXXXXXXX.p8` |
 | secret | `APNS_KEY_ID` | push notifications | the key's 10-character id |
-| secret | `ALLOWED_EMAILS` | invite-only sign-in (optional) | comma-separated emails and `@domain` entries; unset ⇒ anyone who can sign in may sync |
+| secret | `ALLOWED_EMAILS` | invite-only sign-in (optional) | comma-separated emails and `@domain` entries; with no approved emails on `/admin/access` either, unset ⇒ anyone who can sign in may sync |
+| Durable Object | `TelemetryStore` instance `access-v1` | iPhone beta waitlist + approved emails (`/waitlist`, `/admin/access`) | same class and migration as telemetry, a separate instance (separate SQLite) |
+| rate limit | `WAITLIST_RATE_LIMITER` | per-IP limit on `POST /waitlist` | in `wrangler.jsonc` |
+| var | `TESTFLIGHT_URL` | the public TestFlight link in invite messages | in `wrangler.jsonc`; empty ⇒ the message says it's coming |
 | Durable Object | `TelemetryStore` (binding `TELEMETRY`, migration `v5`) | anonymous usage pings, `/admin` | created by the deploy; one instance, `telemetry-v1` |
 | rate limit | `TELEMETRY_RATE_LIMITER` | per-IP limit on `POST /telemetry/v1/ping` | in `wrangler.jsonc` |
 | secret | `ADMIN_EMAILS` | who may open `/admin` | comma-separated exact emails; unset ⇒ nobody (see "Admins") |
@@ -76,6 +79,28 @@ node scripts/allowlist.mjs new.person@example.com | npx wrangler secret put ALLO
 The key comes from `$WORKOS_API_KEY` or `~/.config/godspeed/workos-api-key`.
 An empty list turns the gate off, so the script refuses to output one.
 Refused accounts see the invite-only message (403 `invite_only`).
+
+### The iPhone beta waitlist (`/admin/access`)
+
+The landing page's "Join the iPhone beta" form posts to `POST /waitlist`
+(email + optional note; validated, rate-limited per IP, stored in the
+`access-v1` store). Admins see the list at `https://<edge>/admin/access`
+(linked from the dashboard as **Beta access**):
+
+- **Approve** adds the email to the approved list. The bearer gate admits
+  approved emails in addition to `ALLOWED_EMAILS`, within a minute, with no
+  redeploy. Exact emails only (no `@domain` entries here).
+- The page then shows the invite message (TestFlight link from
+  `TESTFLIGHT_URL`, Mac setup, sign-in email) with **Copy invite message** and
+  **Open in Mail**. The edge sends no email itself.
+- **Allow an email directly** does the same for someone not on the list (a
+  collaborator, the App Review demo account).
+- **Dismiss** hides a pending request; **Revoke** removes an approval;
+  **Delete** erases every trace of an email (removal requests).
+
+`ALLOWED_EMAILS` keeps working as before and is still the place for
+`@domain` entries; the page can't read or change it. On an edge with no
+secret, approving the first email here turns the gate on.
 
 ### Admins (the `/admin` dashboard)
 

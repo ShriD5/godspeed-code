@@ -360,3 +360,51 @@ getJSON(`${API}/releases?per_page=100`, 'gs:releases').then((rels) => {
 }).catch(() => {});
 getJSON(`https://api.github.com/search/issues?q=${encodeURIComponent(`repo:${REPO} is:pr is:merged`)}&per_page=1`, 'gs:prs', 30)
   .then((r) => { if (Number.isFinite(r.total_count)) setAll('[data-prs]', String(r.total_count)); }).catch(() => {});
+
+/* ---------- iPhone beta waitlist ---------- */
+// The form posts to the edge's /waitlist without JS (it redirects back with
+// ?beta=…); with JS it stays on the page.
+{
+  const form = $('[data-beta-form]');
+  const status = $('[data-beta-status]');
+  const say = (text, err = false) => {
+    if (!status) return;
+    status.textContent = text;
+    status.classList.toggle('err', err);
+  };
+  const JOINED = "You're on the list. We'll email your TestFlight invite when there's room.";
+  const back = new URLSearchParams(location.search).get('beta');
+  if (back === 'joined') say(JOINED);
+  else if (back === 'invalid') say('That email didn\'t look right. Try again?', true);
+  else if (back === 'busy') say('Too many tries right now. Try again in a minute.', true);
+  form?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const body = { email: String(data.get('email') || '').trim() };
+    const note = String(data.get('note') || '').trim();
+    if (note) body.note = note;
+    const hp = String(data.get('website') || '');
+    if (hp) body.website = hp;
+    const button = form.querySelector('button');
+    button.disabled = true;
+    say('Sending…');
+    try {
+      const res = await fetch(form.action, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (res.ok) {
+        form.reset();
+        say(JOINED);
+      } else {
+        say(out.message || 'Something went wrong. Try again later.', true);
+      }
+    } catch {
+      say("Couldn't reach the server. Check your connection and try again.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}

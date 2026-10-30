@@ -12,8 +12,25 @@
  * Stored: only the validated ping fields (docs/PRIVACY.md). No IPs, user
  * agents, emails, account ids or free text. Rows older than 400 days are
  * deleted on the first write of each UTC day (`prune`).
+ *
+ * The same class also backs the beta access store, as a SEPARATE instance
+ * (`access-v1`, access-store.ts): the waitlist and approved emails live
+ * there, never in `telemetry-v1`. Its tables are created on first use, so
+ * the telemetry instance never gets them.
  */
 import { DurableObject } from "cloudflare:workers";
+import {
+  accessAllow,
+  accessForget,
+  accessOverview,
+  accessRevoke,
+  allowedEmails,
+  ensureAccessSchema,
+  waitlistDismiss,
+  waitlistJoin,
+  type AccessOverview,
+  type JoinResult
+} from "./access-store";
 import { computeStatsSql, type Range, type StatsCore } from "./admin-stats";
 import type { Env } from "./env";
 import { addDays, RETENTION_DAYS, utcDay, type PingRow } from "./telemetry";
@@ -141,6 +158,46 @@ export class TelemetryStore extends DurableObject<Env> {
   /** The dashboard's numbers (everything but GitHub). */
   stats(range: Range, nowIso: string): StatsCore {
     return computeStatsSql(this.sql, range, new Date(nowIso));
+  }
+
+  // ── beta access (only ever called on the `access-v1` instance) ──────────
+
+  private accessReady = false;
+
+  private access(): SqlStorage {
+    if (!this.accessReady) {
+      ensureAccessSchema(this.sql);
+      this.accessReady = true;
+    }
+    return this.sql;
+  }
+
+  waitlistJoin(email: string, note: string, nowMs: number): JoinResult {
+    return waitlistJoin(this.access(), email, note, nowMs);
+  }
+
+  accessAllow(email: string, by: string, nowMs: number): void {
+    accessAllow(this.access(), email, by, nowMs);
+  }
+
+  accessRevoke(email: string, by: string, nowMs: number): void {
+    accessRevoke(this.access(), email, by, nowMs);
+  }
+
+  waitlistDismiss(email: string, by: string, nowMs: number): void {
+    waitlistDismiss(this.access(), email, by, nowMs);
+  }
+
+  accessForget(email: string): void {
+    accessForget(this.access(), email);
+  }
+
+  allowedEmails(): string[] {
+    return allowedEmails(this.access());
+  }
+
+  accessOverview(): AccessOverview {
+    return accessOverview(this.access());
   }
 
   cacheGet(key: string): { body: string; fetchedAt: number } | null {
