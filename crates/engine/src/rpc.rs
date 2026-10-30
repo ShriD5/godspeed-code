@@ -2437,6 +2437,10 @@ impl RpcService for EngineRpc {
             }
             self.diff_sync
                 .note_user_activity(method == methods::PROBE_SYNC);
+            // Someone may look at the previews list: keep it current.
+            if let Some(previews) = &self.previews {
+                previews.note_activity();
+            }
             // A terminal may build: resume the slot pool's leak checks.
             if matches!(method, methods::OPEN_TERMINAL | methods::RUN_PROJECT_ACTION)
                 && let Some(slots) = &self.build_slots
@@ -3107,7 +3111,9 @@ impl RpcService for EngineRpc {
                     .as_ref()
                     .ok_or_else(|| RpcError::Failed("Preview discovery unavailable".into()))?;
                 let catalog = previews.catalog().clone();
-                let changes = catalog.subscribe();
+                // The guard keeps discovery at full cadence while this list
+                // is watched (an open browser pane).
+                let (changes, watching) = previews.watch();
                 let chats = self.workspace.watch_chats();
                 let workspace = self.workspace.clone();
                 // This subscription stays on the viewing device. A remote chat
@@ -3152,7 +3158,11 @@ impl RpcService for EngineRpc {
                         let value = serde_json::to_value(snapshot).ok()?;
                         Some((value, (changes, chats, false, workspace, catalog, chat_id)))
                     },
-                );
+                )
+                .map(move |value| {
+                    let _watching = &watching;
+                    value
+                });
                 Ok(RpcReply::Stream(Box::pin(stream)))
             }
             methods::WATCH_CHATS => {
