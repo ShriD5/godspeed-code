@@ -967,6 +967,13 @@ impl BrowserSurface {
                     window.defer(cx, move |window, cx| {
                         window.dispatch_keystroke(key, cx);
                     });
+                } else {
+                    tracing::info!(
+                        target: "godspeed::keys",
+                        keystroke = %key.unparse(),
+                        presentation = ?self.presentation,
+                        "dropped a shortcut forwarded by a preview page that is not live"
+                    );
                 }
             }
             #[cfg(windows)]

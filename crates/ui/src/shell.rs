@@ -91,6 +91,8 @@ mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
 mod panel_layout;
+#[cfg(test)]
+mod palette_shortcut_tests;
 use panel_layout::{AuxiliaryPanel, FitInputs, HorizontalPanelFit, panel_content_tween};
 #[cfg(test)]
 mod panel_interaction_tests;
@@ -649,6 +651,36 @@ pub fn apply_keymap(
     }));
     localize_key_bindings(cx, &equivalents);
     crate::settings::set_bound_key_equivalents(equivalents);
+}
+
+/// ⌘K reports (2026-10-30) gave no trace of where the key went. Log each
+/// one GPUI dispatches, with the action it resolved to (none means no binding
+/// matched) and the focused key contexts. No line at all for a press means
+/// the key never reached GPUI: the preview page's monitor logs its own
+/// forwards, so silence there too points outside the app (a global hotkey).
+fn log_palette_keystroke(event: &gpui::KeystrokeEvent) {
+    let keystroke = &event.keystroke;
+    let primary = if cfg!(target_os = "macos") {
+        keystroke.modifiers.platform
+    } else {
+        keystroke.modifiers.control
+    };
+    if !primary || keystroke.key != "k" {
+        return;
+    }
+    let contexts = event
+        .context_stack
+        .iter()
+        .map(|context| format!("{context:?}"))
+        .collect::<Vec<_>>()
+        .join(" > ");
+    tracing::info!(
+        target: "godspeed::keys",
+        keystroke = %keystroke.unparse(),
+        action = event.action.as_ref().map_or("none", |action| action.name()),
+        %contexts,
+        "palette chord dispatched"
+    );
 }
 
 /// Move every binding to the key the active layout types for it. Combos are
@@ -2691,6 +2723,8 @@ pub struct Shell {
     /// with missing or unmounted focus they go dead. Recover after handoffs
     /// settle, preserving focus on mounted controls.
     focus_sub: Option<Subscription>,
+    /// Logs every ⌘K that reaches GPUI's dispatch (see `log_palette_keystroke`).
+    palette_keystroke_log: Option<Subscription>,
     shortcut_focus: FocusHandle,
     navigation_focus: navigation_focus::NavigationFocus,
     /// Neutral shortcut target after clicking away from an input.
@@ -3155,6 +3189,7 @@ impl Shell {
             splash,
             splash_task: None,
             focus_sub: None,
+            palette_keystroke_log: None,
             shortcut_focus: cx.focus_handle(),
             navigation_focus: navigation_focus::NavigationFocus::new(cx),
             unfocused: cx.focus_handle(),
@@ -14395,6 +14430,10 @@ impl Render for Shell {
                 cx.notify();
             }));
         }
+        if self.palette_keystroke_log.is_none() {
+            self.palette_keystroke_log =
+                Some(cx.observe_keystrokes(|_, event, _, _| log_palette_keystroke(event)));
+        }
         if self.settings_restore_pending {
             self.settings_restore_pending = false;
             let target = self
@@ -14714,6 +14753,12 @@ impl Render for Shell {
                 cx.listener(|this, event, _, cx| this.on_modifiers_changed(event, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
+                tracing::info!(
+                    target: "godspeed::keys",
+                    route = ?this.route,
+                    opening = this.command_palette.is_none(),
+                    "command palette shortcut handled"
+                );
                 this.toggle_command_palette(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleMissionControl, window, cx| {
