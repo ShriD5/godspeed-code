@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-30 | The thread details card shows 5-hour, weekly and context limits (`310c128552`, `d7935f135f`) | PR #TBD |
+| 2026-10-30 | The thread details card shows 5-hour, weekly and context limits (`310c128552`, `d7935f135f`) | PR #68 |
 | 2026-10-30 | Stop always completes, and an agent that ignores it can be force stopped (`6b1245cced`, `36d4d711b7`, `6d12bb1e9f`) | queued (check Stop on a Claude/Codex run that ignores the interrupt; Godspeed has no force-stop) |
 | 2026-10-30 | See and stop the dev servers a thread started (`a27ec88bfa`) | queued (with the T3-GAPS process-list row) |
 | 2026-10-30 | Claude command approvals show the command, not Claude's description (`5eebf77b37`); Open diff shows Claude edits as a diff (`eb565e13ab`, `441a4ebd65`) | queued (check the Bash approval card and edit tool rows) |
