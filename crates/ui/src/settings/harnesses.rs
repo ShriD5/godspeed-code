@@ -113,6 +113,7 @@ pub fn cli_name(harness: HarnessId) -> &'static str {
         HarnessId::Devin => "devin",
         HarnessId::Grok => "grok",
         HarnessId::Hermes => "hermes",
+        HarnessId::Fx => "fx",
         HarnessId::Pi => "pi",
         HarnessId::Muse => "muse",
         HarnessId::Opencode => "opencode",
@@ -925,6 +926,14 @@ impl HarnessesPage {
                                 enabled,
                                 descriptor.can_install,
                             )))
+                            .into_any_element(),
+                    );
+                }
+                if installed && harness == HarnessId::Fx {
+                    meta.push(
+                        div()
+                            .text_color(theme.text_muted)
+                            .child("Configure your model provider with fx login or fx setup.")
                             .into_any_element(),
                     );
                 }

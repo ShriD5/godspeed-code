@@ -16,6 +16,8 @@ pub enum HarnessId {
     Grok,
     /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
     Hermes,
+    /// Vercel fx, driven by its native ACP server.
+    Fx,
     /// The Pi coding agent (pi.dev), driven over its native JSONL RPC protocol.
     Pi,
     /// Meta's Muse Code, driven natively over MSP (the Muse Session
@@ -111,13 +113,14 @@ fn intern_acp_agent_id(id: &str) -> Result<&'static str, String> {
 impl HarnessId {
     /// Every built-in harness, in registry order (registry agents are
     /// dynamic and not listed).
-    pub const BUILT_IN: [HarnessId; 11] = [
+    pub const BUILT_IN: [HarnessId; 12] = [
         HarnessId::ClaudeCode,
         HarnessId::Codex,
         HarnessId::Cursor,
         HarnessId::Devin,
         HarnessId::Grok,
         HarnessId::Hermes,
+        HarnessId::Fx,
         HarnessId::Pi,
         HarnessId::Muse,
         HarnessId::Opencode,
@@ -134,6 +137,7 @@ impl HarnessId {
             HarnessId::Devin => "devin",
             HarnessId::Grok => "grok",
             HarnessId::Hermes => "hermes",
+            HarnessId::Fx => "fx",
             HarnessId::Pi => "pi",
             HarnessId::Muse => "muse",
             HarnessId::Opencode => "opencode",

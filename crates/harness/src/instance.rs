@@ -54,6 +54,7 @@ pub fn build_driver(
         HarnessId::Devin => acp(crate::AcpHarness::devin()),
         HarnessId::Grok => acp(crate::AcpHarness::grok()),
         HarnessId::Hermes => acp(crate::AcpHarness::hermes()),
+        HarnessId::Fx => acp(crate::AcpHarness::fx()),
         HarnessId::Antigravity => acp(crate::AcpHarness::antigravity()),
         HarnessId::Mock | HarnessId::Acp(_) => return None,
     })

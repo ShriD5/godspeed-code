@@ -900,6 +900,23 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::AcpHarness::hermes().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::hermes()) as Arc<dyn Harness>)),
     );
+    // fx over its native ACP server (`fx acp`); models and effort come
+    // from the session.
+    registry.register_lazy(
+        HarnessDescriptor {
+            instances: Vec::new(),
+            id: HarnessId::Fx,
+            name: "fx".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            can_install: false,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::AcpHarness::fx().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::fx()) as Arc<dyn Harness>)),
+    );
     // Native Pi RPC. Thinking levels are discovered per model.
     registry.register_lazy(
         HarnessDescriptor {
@@ -1061,6 +1078,7 @@ mod tests {
                 HarnessId::Devin,
                 HarnessId::Grok,
                 HarnessId::Hermes,
+                HarnessId::Fx,
                 HarnessId::Pi,
                 HarnessId::Muse,
                 HarnessId::Opencode,

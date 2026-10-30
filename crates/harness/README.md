@@ -16,6 +16,7 @@ pinned Antigravity archive.
 | [Grok](https://docs.x.ai/developers/release-notes) | `curl -fsSL https://x.ai/cli/install.sh \| bash` | `npm.cmd install -g @xai-official/grok` |
 | [Hermes](https://hermes-agent.nousresearch.com/docs/getting-started/installation) | `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash` | `irm https://hermes-agent.nousresearch.com/install.ps1 \| iex` |
 | [Devin](https://cli.devin.ai/) | macOS, when brew resolves: `brew install --cask devin-cli`; otherwise `curl -fsSL https://cli.devin.ai/install.sh \| bash` | `irm https://static.devin.ai/cli/setup.ps1 \| iex` |
+| [fx](https://fx.sh/docs) | `curl -fsSL https://fx.sh/setup.sh \| bash` | Manual setup (no native Windows installer) |
 | Antigravity | Existing verified 1.1.1 archive in `acp::antigravity_archive`; no shell command | Same archive path on supported architectures |
 
 Unix shell commands run through `sh -c`, with PATH augmented from the user's login
@@ -135,7 +136,7 @@ which beats PATH detection; the config dir (exported as the provider's own varia
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GROK_HOME`, `HERMES_HOME`,
 `PI_CODING_AGENT_DIR`, `GEMINI_HOME`, `GEMINI_CLI_HOME`, `COPILOT_HOME`) beats an
 extra var of the same name, which beats the chat's worktree env and the engine's
-own environment. Cursor, Devin, Muse and OpenCode have no config-dir variable;
+own environment. Cursor, Devin, fx, Muse and OpenCode have no config-dir variable;
 use env vars there. OpenCode shares one server across chats, so per-run env reaches
 it only through its own config.
 
@@ -143,3 +144,22 @@ A chat records its instance id beside its harness (`ChatConfig.instance`,
 `RunRequest.instance`); chats without one run on the default instance exactly as
 before. Usage, receipts and telemetry attribute by provider; receipts add the
 instance name. Telemetry counts registry agents as `other`.
+
+# fx
+
+fx uses its native `fx acp` server. Install on macOS/Linux with
+`curl -fsSL https://fx.sh/setup.sh | bash`, then run `fx login` or `fx setup`
+in a terminal to configure the model provider. Godspeed detects PATH and
+`~/.local/bin/fx`; `FX_EXECUTABLE` overrides the executable.
+
+Models and reasoning levels come from ACP. The provider selector is excluded
+from model discovery. Explicit model selections are sent to fx and errors
+propagate instead of silently running a different model. Skills use the existing
+host discovery for `.agents/skills`, `.claude/skills`, and `.fx/skills`.
+
+Godspeed writes fx's `ask` policy before every prompt, including resumed sessions:
+some fx releases report ask while retaining a saved automatic policy. Godspeed then
+decides permissions: Supervised presents requests to the user; Full access
+approves them. Streaming, tool calls, cancellation and session loading use the
+shared ACP driver. Login and updates remain CLI-managed; native Windows has no
+one-click installer.

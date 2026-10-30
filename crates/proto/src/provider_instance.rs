@@ -227,6 +227,7 @@ pub fn config_dir_env(harness: HarnessId) -> Option<&'static str> {
         },
         HarnessId::Cursor
         | HarnessId::Devin
+        | HarnessId::Fx
         | HarnessId::Muse
         | HarnessId::Opencode
         | HarnessId::Mock => return None,
