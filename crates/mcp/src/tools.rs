@@ -1958,6 +1958,7 @@ impl Tools {
                 "name": conductor.name,
                 "purpose": conductor.purpose,
                 "folder": conductor.folder,
+                "instructions": conductor.instructions,
                 "mainChatId": conductor.main_chat_id,
             },
             "yourDepth": depth,

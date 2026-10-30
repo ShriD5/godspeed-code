@@ -814,6 +814,7 @@ mod tests {
             space_ids: vec![],
             config: None,
             notes: String::new(),
+            instructions: String::new(),
             archived: false,
             created_at: at(0),
         });

@@ -259,6 +259,62 @@ pub fn sidebar_entries(
         .collect()
 }
 
+/// What an empty conductor chat shows before the first message.
+pub struct ConductorBlank {
+    pub name: String,
+    pub summary: &'static str,
+    pub job: String,
+    pub hint: &'static str,
+}
+
+const BLANK_SUMMARY: &str = "A conductor is one long-lived chat for a folder of repos. You talk only to it. It starts and steers sub-agents, then reports back with a short verdict, and it keeps that thread across sessions.";
+
+const BLANK_HINT: &str = "Standing instructions are in the session menu at the top right. Edit them any time. The conductor is told when they change.";
+
+pub fn conductor_blank(conductor: &Conductor) -> ConductorBlank {
+    let job = conductor
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .filter(|purpose| !purpose.is_empty())
+        .map(|purpose| format!("Responsible for {purpose}."))
+        .unwrap_or_else(|| {
+            "No specific job yet. Say what it should own, such as reviewing pull requests on one repo."
+                .into()
+        });
+    ConductorBlank {
+        name: conductor.name.clone(),
+        summary: BLANK_SUMMARY,
+        job,
+        hint: BLANK_HINT,
+    }
+}
+
+/// The explanation for a conductor's main chat while it has no messages and
+/// no sub-agents yet. `None` once the transcript is still loading, or once
+/// the chat has something to show.
+pub fn conductor_blank_for(
+    chat_id: &str,
+    transcript_ready: bool,
+    transcript_empty: bool,
+    conductors: &[Conductor],
+    chats: &[Chat],
+) -> Option<ConductorBlank> {
+    if !transcript_ready || !transcript_empty {
+        return None;
+    }
+    let conductor = conductors
+        .iter()
+        .find(|conductor| !conductor.archived && conductor.main_chat_id == chat_id)?;
+    let has_child = chats.iter().any(|chat| {
+        !chat.archived && chat.parent_chat_id.as_deref() == Some(chat_id)
+    });
+    if has_child {
+        return None;
+    }
+    Some(conductor_blank(conductor))
+}
+
 /// The line under a conductor's name.
 pub fn repo_summary(count: usize) -> String {
     match count {
@@ -289,6 +345,7 @@ mod tests {
             space_ids: vec!["s1".into()],
             config: None,
             notes: String::new(),
+            instructions: String::new(),
             archived: false,
             created_at: at(0),
         }
@@ -456,5 +513,23 @@ mod tests {
         assert_eq!(repo_summary(0), "No git repos yet");
         assert_eq!(repo_summary(1), "1 repo");
         assert_eq!(repo_summary(3), "3 repos");
+    }
+
+    #[test]
+    fn an_empty_main_chat_explains_the_conductor_and_its_job() {
+        let mut conductor = conductor();
+        conductor.purpose = Some("Review pull requests on api".into());
+        let chats = vec![chat("main", None, 0)];
+        let blank = conductor_blank_for("main", true, true, &[conductor.clone()], &chats).unwrap();
+        assert_eq!(blank.name, "Acme");
+        assert!(blank.summary.contains("long-lived"));
+        assert!(blank.summary.contains("sub-agents"));
+        assert_eq!(blank.job, "Responsible for Review pull requests on api.");
+        assert!(blank.hint.contains("top right"));
+        assert!(conductor_blank_for("main", false, true, &[conductor.clone()], &chats).is_none());
+        assert!(conductor_blank_for("main", true, false, &[conductor.clone()], &chats).is_none());
+        let with_child = vec![chat("main", None, 0), chat("a", Some("main"), 1)];
+        assert!(conductor_blank_for("main", true, true, &[conductor], &with_child).is_none());
+        assert!(conductor_blank_for("plain", true, true, &[], &chats).is_none());
     }
 }

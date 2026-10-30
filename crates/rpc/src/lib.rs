@@ -421,6 +421,9 @@ pub mod methods {
     pub const GET_CONDUCTOR_NOTES: &str = "GetConductorNotes";
     /// `{id, notes}` → `{}`. Refuses notes over `MAX_NOTES_BYTES`.
     pub const SET_CONDUCTOR_NOTES: &str = "SetConductorNotes";
+    /// `{id, instructions}` → `{changed}`. Refuses empty text and text over
+    /// `MAX_INSTRUCTIONS_BYTES`. A change also queues a notice to the main chat.
+    pub const SET_CONDUCTOR_INSTRUCTIONS: &str = "SetConductorInstructions";
     /// `{id}` → `ConductorNode[]`: the main chat and every sub-agent below it.
     pub const GET_CONDUCTOR_TREE: &str = "GetConductorTree";
     /// Stream of `Conductor[]`: every conductor row, archived included.

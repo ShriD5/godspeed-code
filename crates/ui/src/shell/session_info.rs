@@ -493,6 +493,14 @@ impl Shell {
             .tooltip(crate::settings::widgets::text_tooltip(label))
         });
 
+        let instruction_conductor = {
+            let state = self.state.read(cx);
+            state
+                .conductors
+                .iter()
+                .find(|conductor| !conductor.archived && conductor.main_chat_id == chat.id)
+                .map(|conductor| conductor.id.clone())
+        };
         let worktree = self.render_session_info_worktree(&theme, cx);
 
         // ── Turn it into a zoomie.
@@ -531,6 +539,17 @@ impl Shell {
             .child(project_row)
             .children(branch_row)
             .children(limit_row)
+            .children(instruction_conductor.map(|id| {
+                popover::picker_row(&theme, false, false, "session-info-instructions")
+                    .id("session-info-instructions")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.close_session_info_overlay(cx);
+                        this.open_conductor_instructions(id.clone(), cx);
+                    }))
+                    .child(popover::picker_icon_slot(row_glyph(icons::PEN, &theme)))
+                    .child("Edit instructions")
+                    .into_any_element()
+            }))
             .children(worktree)
             .children(schedule)
             .children(actions);
