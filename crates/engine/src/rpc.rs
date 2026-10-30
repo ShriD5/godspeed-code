@@ -2437,6 +2437,12 @@ impl RpcService for EngineRpc {
             }
             self.diff_sync
                 .note_user_activity(method == methods::PROBE_SYNC);
+            // A terminal may build: resume the slot pool's leak checks.
+            if matches!(method, methods::OPEN_TERMINAL | methods::RUN_PROJECT_ACTION)
+                && let Some(slots) = &self.build_slots
+            {
+                slots.note_live();
+            }
         }
         if matches!(
             method,

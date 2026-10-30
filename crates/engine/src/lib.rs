@@ -438,10 +438,18 @@ impl EngineCore {
         let turn_limits = limit_recovery.clone();
         let telemetry = Telemetry::open(data_dir);
         let build_slots = BuildSlots::open(data_dir);
+        // Leak checks run only while something may build.
+        build_slots.set_live_probe({
+            let runs = live_run_probe(&sessions);
+            let terminals = terminals.clone();
+            Arc::new(move || runs() || terminals.any_open())
+        });
+        let turn_slots = build_slots.clone();
         let turn_telemetry = telemetry.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
             turn_limits.note_turn_start(chat_id);
+            turn_slots.note_live();
             turn_telemetry.note_activity(false);
         }));
         let input_telemetry = telemetry.clone();
