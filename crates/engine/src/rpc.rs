@@ -2428,9 +2428,13 @@ impl RpcService for EngineRpc {
             }
             return self.forward(&target, method, params).await;
         }
-        // Any call from a client is app activity: the PR watcher keeps polling.
-        if let Some(watch) = &self.pr_watch {
-            watch.note_activity();
+        // Only a person acting is app activity. An open but unattended
+        // window keeps polling on its own; counting that kept the PR watch
+        // at full speed forever.
+        if crate::user_activity::is_user_activity(method) {
+            if let Some(watch) = &self.pr_watch {
+                watch.note_activity();
+            }
         }
         if matches!(
             method,

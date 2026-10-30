@@ -16,7 +16,10 @@
 //!   auto-merge, only once checks are green and the PR is approved.
 //! - **Polite polling.** One PR at a time every [`BASE_INTERVAL`], doubling
 //!   on errors up to 15 minutes, 15 minutes on a rate limit; slower after
-//!   half an hour without app activity and paused after two hours.
+//!   half an hour without user activity and paused after two hours. Only a
+//!   person acting counts ([`crate::user_activity`]) or a run being live: an
+//!   open window's own background refreshes never kept the watch awake.
+//!   Between polls the loop sleeps until the next one is due.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -56,7 +59,17 @@ const SEEN_CAP: usize = 1000;
 pub(crate) const MESSAGE_CAP: usize = 16 * 1024;
 const COMMENT_CHARS: usize = 1500;
 const MAX_COMMENTS: usize = 20;
+/// Shortest sleep between loop passes.
 const LOOP_TICK: Duration = Duration::from_secs(15);
+/// Longest sleep while watching: a PR set or registered meanwhile wakes the
+/// loop at once, so this only bounds clock drift.
+const MAX_LOOP_SLEEP: Duration = Duration::from_secs(15 * 60);
+/// While paused, how often the loop looks whether a run went live (a person
+/// returning wakes it at once).
+const PAUSED_RECHECK: Duration = Duration::from_secs(5 * 60);
+
+/// Whether any agent run is live; it keeps the watch at full speed.
+pub type LiveProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -333,6 +346,15 @@ pub(crate) enum Idle {
     Active,
     Slow,
     Paused,
+}
+
+/// Sleep until `next` is due, within [`LOOP_TICK`]..[`MAX_LOOP_SLEEP`];
+/// nothing to poll sleeps the longest.
+pub(crate) fn loop_sleep(next: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Duration {
+    next.map_or(MAX_LOOP_SLEEP, |at| {
+        (at - now).to_std().unwrap_or(Duration::ZERO)
+    })
+    .clamp(LOOP_TICK, MAX_LOOP_SLEEP)
 }
 
 pub(crate) fn idle_level(since_activity: Duration) -> Idle {
@@ -739,6 +761,15 @@ impl WatchBook {
         true
     }
 
+    /// When the earliest enabled watch is next due (`None`: nothing to poll).
+    pub fn next_due(&self) -> Option<DateTime<Utc>> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.enabled && !entry.stopped)
+            .map(|entry| entry.next_poll_at.unwrap_or(DateTime::<Utc>::MIN_UTC))
+            .min()
+    }
+
     pub fn due(&self, now: DateTime<Utc>) -> Vec<String> {
         self.entries
             .iter()
@@ -841,6 +872,7 @@ struct Inner {
     workspace: WorkspaceHost,
     inbox: watch::Sender<Vec<AttentionItem>>,
     last_activity: Mutex<Instant>,
+    live: Mutex<Option<LiveProbe>>,
     wake: Notify,
     cancel: CancellationToken,
     tasks: TaskTracker,
@@ -860,6 +892,7 @@ impl PrWatchService {
                 workspace,
                 inbox: watch::channel(items).0,
                 last_activity: Mutex::new(Instant::now()),
+                live: Mutex::new(None),
                 wake: Notify::new(),
                 cancel: CancellationToken::new(),
                 tasks: TaskTracker::new(),
@@ -881,7 +914,14 @@ impl PrWatchService {
         let _ = tokio::time::timeout(Duration::from_secs(5), self.inner.tasks.wait()).await;
     }
 
-    /// Someone is using the app: keep polling at full speed.
+    /// Treat a live agent run like activity: an agent waiting on CI keeps
+    /// the watch at full speed even with nobody at the keyboard.
+    pub fn set_live_probe(&self, probe: LiveProbe) {
+        *lock(&self.inner.live) = Some(probe);
+    }
+
+    /// Someone acted in the app ([`crate::user_activity::is_user_activity`]):
+    /// keep polling at full speed. Background calls must not land here.
     pub fn note_activity(&self) {
         let was_paused = idle_level(lock(&self.inner.last_activity).elapsed()) == Idle::Paused;
         *lock(&self.inner.last_activity) = Instant::now();
@@ -959,7 +999,22 @@ impl PrWatchService {
 
 impl Inner {
     fn idle(&self) -> Idle {
-        idle_level(lock(&self.last_activity).elapsed())
+        let live = lock(&self.live).clone().is_some_and(|probe| probe());
+        let mut last = lock(&self.last_activity);
+        if live {
+            // The idle clock starts when the last run ends.
+            *last = Instant::now();
+        }
+        idle_level(last.elapsed())
+    }
+
+    /// How long the loop may sleep before the next pass.
+    fn next_sleep(&self, idle: Idle) -> Duration {
+        if idle == Idle::Paused {
+            return PAUSED_RECHECK;
+        }
+        let next = lock(&self.book).next_due();
+        loop_sleep(next, Utc::now())
     }
 
     fn persist(&self) {
@@ -990,10 +1045,11 @@ impl Inner {
                     self.poll(&url, idle).await;
                 }
             }
+            let sleep = self.next_sleep(self.idle());
             tokio::select! {
                 _ = self.cancel.cancelled() => return,
                 _ = self.wake.notified() => {}
-                _ = tokio::time::sleep(LOOP_TICK) => {}
+                _ = tokio::time::sleep(sleep) => {}
             }
         }
     }
@@ -1070,6 +1126,32 @@ mod tests {
 
     const URL: &str = "https://github.com/acme/widgets/pull/7";
     const HEAD: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
+    fn test_hosts(dir: &Path) -> (DocHost, WorkspaceHost) {
+        let store = Arc::new(zeron_sync::DocsStore::open(dir).unwrap());
+        let doc_host = DocHost::new(
+            store.clone(),
+            crate::doc_host::DocHostConfig {
+                device_id: "dev".into(),
+                default_harness: zeron_proto::HarnessId::Mock,
+                edge: None,
+            },
+        );
+        let workspace = WorkspaceHost::open(
+            store,
+            crate::workspace_host::WorkspaceHostConfig {
+                device_id: "dev".into(),
+                device_name: "Dev".into(),
+                platform: "macos".into(),
+                org_id: "org".into(),
+                user_id: "user".into(),
+                edge: None,
+                local_only: true,
+            },
+        )
+        .unwrap();
+        (doc_host, workspace)
+    }
 
     fn now() -> DateTime<Utc> {
         "2026-10-28T10:00:00Z".parse().unwrap()
@@ -1182,6 +1264,77 @@ mod tests {
         assert_eq!(idle_level(Duration::from_secs(60)), Idle::Active);
         assert_eq!(idle_level(SLOW_AFTER), Idle::Slow);
         assert_eq!(idle_level(PAUSE_AFTER), Idle::Paused);
+    }
+
+    #[test]
+    fn the_loop_sleeps_until_the_next_poll_is_due() {
+        let at = now();
+        assert_eq!(loop_sleep(None, at), MAX_LOOP_SLEEP, "nothing to poll");
+        assert_eq!(
+            loop_sleep(Some(at + TimeDelta::seconds(90)), at),
+            BASE_INTERVAL
+        );
+        assert_eq!(
+            loop_sleep(Some(at - TimeDelta::seconds(5)), at),
+            LOOP_TICK,
+            "overdue"
+        );
+        assert_eq!(
+            loop_sleep(Some(at + TimeDelta::hours(3)), at),
+            MAX_LOOP_SLEEP
+        );
+
+        let mut book = WatchBook::default();
+        assert_eq!(book.next_due(), None);
+        book.set(&SetPullRequestWatch {
+            url: URL.into(),
+            chat_id: None,
+            enabled: true,
+            auto_merge: None,
+        });
+        assert_eq!(
+            book.next_due(),
+            Some(DateTime::<Utc>::MIN_UTC),
+            "never polled: due now"
+        );
+        book.entries[0].next_poll_at = Some(at + TimeDelta::seconds(90));
+        assert_eq!(book.next_due(), Some(at + TimeDelta::seconds(90)));
+        book.entries[0].enabled = false;
+        assert_eq!(book.next_due(), None, "a watch turned off is never due");
+    }
+
+    #[tokio::test]
+    async fn background_calls_let_the_watch_idle_and_live_runs_keep_it_awake() {
+        let dir = tempfile::tempdir().unwrap();
+        let (doc_host, workspace) = test_hosts(dir.path());
+        let service = PrWatchService::open(dir.path(), doc_host, workspace);
+        // Long quiet: paused.
+        *lock(&service.inner.last_activity) = Instant::now() - PAUSE_AFTER;
+        assert_eq!(service.inner.idle(), Idle::Paused);
+        assert_eq!(service.inner.next_sleep(Idle::Paused), PAUSED_RECHECK);
+        // Only a person acting resumes it; the RPC layer classifies.
+        assert!(!crate::user_activity::is_user_activity(
+            zeron_rpc::methods::LIST_PULL_REQUEST_WATCHES
+        ));
+        assert!(crate::user_activity::is_user_activity(
+            zeron_rpc::methods::QUEUE_COMMAND
+        ));
+        service.note_activity();
+        assert_eq!(service.inner.idle(), Idle::Active);
+        // A live run counts as activity and restarts the idle clock.
+        *lock(&service.inner.last_activity) = Instant::now() - PAUSE_AFTER;
+        let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let probe = live.clone();
+        service.set_live_probe(Arc::new(move || {
+            probe.load(std::sync::atomic::Ordering::Relaxed)
+        }));
+        assert_eq!(service.inner.idle(), Idle::Active);
+        live.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            service.inner.idle(),
+            Idle::Active,
+            "idle counts from the run's end"
+        );
     }
 
     #[test]

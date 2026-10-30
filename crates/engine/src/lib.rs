@@ -66,6 +66,7 @@ pub mod titles;
 mod transcript_history;
 pub mod uploads;
 pub mod usage_history;
+mod user_activity;
 pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
@@ -143,6 +144,21 @@ pub(crate) fn now_ms() -> i64 {
 
 pub(crate) fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// "Is any run on this engine working or waiting on input?" for background
+/// services that relax when nothing runs. Reads the status watch, so it holds
+/// no sessions handle (the sessions engine holds those services' listeners).
+pub(crate) fn live_run_probe(sessions: &SessionsEngine) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    let statuses = sessions.watch_sessions();
+    Arc::new(move || {
+        statuses.borrow().iter().any(|session| {
+            matches!(
+                session.status,
+                zeron_proto::SessionStatus::Working | zeron_proto::SessionStatus::AwaitingInput
+            )
+        })
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -492,6 +508,8 @@ impl EngineCore {
             pr_watch::PrWatchService::open(data_dir, doc_host.clone(), workspace.clone());
         attention.attach_pull_requests(pr_watch.clone());
         attention.start();
+        // A live run keeps the watch at full speed.
+        pr_watch.set_live_probe(live_run_probe(&sessions));
         pr_watch.start();
         limit_recovery.start();
         let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());
