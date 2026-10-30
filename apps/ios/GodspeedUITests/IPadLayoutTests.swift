@@ -63,10 +63,11 @@ final class IPadLayoutTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         snapshot(app, "ipad-settings")
         // Regression: action sheets on iPad need an anchor (popover) or UIKit throws.
-        let signOut = app.staticTexts["Sign Out"].firstMatch
+        // The demo workspace labels sign-out "Leave Sample Data".
+        let signOut = app.staticTexts["Leave Sample Data"].firstMatch
         for _ in 0..<5 where !signOut.isHittable { app.swipeUp() }
         signOut.tap()
-        XCTAssertTrue(app.staticTexts["Sign out?"].waitForExistence(timeout: 5), "sign-out sheet shows as a popover")
+        XCTAssertTrue(app.staticTexts["Leave sample data?"].waitForExistence(timeout: 5), "sign-out sheet shows as a popover")
         XCTAssertEqual(app.state, .runningForeground)
     }
 }
