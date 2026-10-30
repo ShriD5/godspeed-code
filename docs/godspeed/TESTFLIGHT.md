@@ -37,7 +37,9 @@ Done once:
 
    The same file already holds `REVIEW_DEMO_EMAIL` / `REVIEW_DEMO_PASSWORD`.
 4. **Allow the demo account** on the edge: `/admin/access` → "Allow an email directly" →
-   `app-review@godspeed-code.pages.dev` (skip if it's already listed under "Approved here").
+   `app-review@godspeed-code.pages.dev`, or from a terminal
+   `cd edge && node scripts/access.mjs allow app-review@godspeed-code.pages.dev` (skip if it's
+   already listed under "Approved here").
 5. **Run the pipeline** (from the repo root, on the Mac with the Distribution certificate):
 
    ```sh
@@ -70,6 +72,8 @@ after the first approved one usually skip the full review.
 5. **Dismiss** hides a request; **Revoke** removes an approval; **Delete** erases an email
    entirely (privacy removal requests). **Allow an email directly** approves someone who isn't on
    the waitlist.
+6. Without a browser: `cd edge && node scripts/access.mjs approve|allow|revoke|dismiss|forget <email>`
+   signs a short admin session with the local WorkOS key and posts the same form.
 
 Approvals add to the `ALLOWED_EMAILS` secret, which keeps working (and is the only place for
 `@domain` entries). An approved person signs in with the exact email that was approved; if they

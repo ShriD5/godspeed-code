@@ -98,6 +98,10 @@ The landing page's "Join the iPhone beta" form posts to `POST /waitlist`
 - **Dismiss** hides a pending request; **Revoke** removes an approval;
   **Delete** erases every trace of an email (removal requests).
 
+From a terminal, `node scripts/access.mjs allow|approve|revoke|dismiss|forget <email>` does
+the same as the page (it signs a 10-minute admin session with the WorkOS key, as the owner by
+default; `--as` picks another admin).
+
 `ALLOWED_EMAILS` keeps working as before and is still the place for
 `@domain` entries; the page can't read or change it. On an edge with no
 secret, approving the first email here turns the gate on.
