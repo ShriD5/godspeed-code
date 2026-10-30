@@ -213,9 +213,12 @@ scripts/ios/asc-setup.sh status        # app record, builds, review state, publi
 scripts/ios/asc-setup.sh submit        # newest processed build → public group + beta review
 ```
 
-- **Signing:** automatic, team `QPUV967B5U`, `-allowProvisioningUpdates` with the App Store
-  Connect API key from `~/.config/outbound/keys.env` (`ASC_KEY_ID`, `ASC_ISSUER_ID`,
-  `ASC_KEY_PATH`; never printed). Xcode creates the distribution profiles and the App Group.
+- **Signing:** the archive signs automatically (team `QPUV967B5U`, `-allowProvisioningUpdates`
+  with the App Store Connect API key from `~/.config/outbound/keys.env`: `ASC_KEY_ID`,
+  `ASC_ISSUER_ID`, `ASC_KEY_PATH`, never printed). The export re-signs manually with the
+  keychain's "Apple Distribution: Devakumar N M" certificate and two App Store profiles
+  ("Godspeed iOS App Store", "Godspeed LiveActivity App Store") that `asc-setup.sh profiles`
+  recreates on every run: the API key isn't allowed Apple's cloud-managed distribution signing.
 - **Versions:** `MARKETING_VERSION` stays `1.0` in the project; the build number is a UTC
   timestamp (`YYYYMMDD.HHMM`) passed as `CURRENT_PROJECT_VERSION` at archive time, so every
   upload is higher than the last and the project file doesn't change.

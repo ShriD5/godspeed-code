@@ -12,6 +12,7 @@ or all at once:
     scripts/ios/asc-setup.sh beta-info     # test information + beta app review details
     scripts/ios/asc-setup.sh group         # the public beta group and its public link
     scripts/ios/asc-setup.sh submit        # newest valid build -> group + beta app review
+    scripts/ios/asc-setup.sh profiles      # App Store profiles for the local Apple Distribution cert
     scripts/ios/asc-setup.sh all           # caps, create-app, beta-info, group (not submit)
 
 Secrets and personal details never live in the repo:
@@ -26,7 +27,9 @@ Nothing secret is printed.
 Docs: docs/godspeed/TESTFLIGHT.md.
 """
 import argparse
+import base64
 import os
+import subprocess
 import sys
 import time
 
@@ -211,6 +214,72 @@ def step_caps():
         print(f"{identifier} ({bid['id']}): {', '.join(sorted(have | needed))}{' (added ' + ', '.join(sorted(missing)) + ')' if missing else ' (ok)'}")
 
 
+DIST_IDENTITY = "Apple Distribution: Devakumar N M (QPUV967B5U)"
+PROFILE_NAMES = {BUNDLE_ID: "Godspeed iOS App Store", EXT_BUNDLE_ID: "Godspeed LiveActivity App Store"}
+PROFILE_DIRS = [
+    os.path.expanduser("~/Library/Developer/Xcode/UserData/Provisioning Profiles"),
+    os.path.expanduser("~/Library/MobileDevice/Provisioning Profiles"),
+]
+
+
+def local_dist_serial() -> str:
+    """Serial of the Apple Distribution certificate in the login keychain."""
+    pem = subprocess.run(
+        ["security", "find-certificate", "-c", DIST_IDENTITY.split(" (")[0], "-p"], capture_output=True, text=True
+    ).stdout
+    if not pem:
+        sys.exit(f"'{DIST_IDENTITY}' isn't in the keychain")
+    out = subprocess.run(["openssl", "x509", "-noout", "-serial"], input=pem, capture_output=True, text=True).stdout
+    return out.strip().split("=", 1)[1].upper()
+
+
+def step_profiles():
+    """App Store provisioning profiles for the app and its extension, signed by
+    the local Apple Distribution certificate, installed for Xcode. The API key
+    can't use cloud-managed distribution signing, so the export signs
+    manually with these (testflight.sh writes the export options)."""
+    serial = local_dist_serial()
+    certs = get("/v1/certificates", **{"filter[certificateType]": "DISTRIBUTION,IOS_DISTRIBUTION", "limit": 50})["data"]
+    cert = next((c for c in certs if c["attributes"]["serialNumber"].upper().lstrip("0") == serial.lstrip("0")), None)
+    if not cert:
+        sys.exit("the keychain's Apple Distribution certificate isn't on the team (revoked?)")
+    for identifier, name in PROFILE_NAMES.items():
+        bid = find_bundle_id(identifier)
+        if not bid:
+            sys.exit(f"bundle id {identifier} missing; run caps first")
+        existing = get("/v1/profiles", **{"filter[name]": name, "limit": 10})["data"]
+        profile = None
+        for p in existing:
+            a = p["attributes"]
+            if a["profileState"] == "ACTIVE" and a["profileType"] == "IOS_APP_STORE":
+                profile = p
+            else:
+                call("DELETE", f"/v1/profiles/{p['id']}")
+        if profile:
+            # Regenerate so it carries the bundle id's current capabilities.
+            call("DELETE", f"/v1/profiles/{profile['id']}")
+        profile = post(
+            "/v1/profiles",
+            {
+                "data": {
+                    "type": "profiles",
+                    "attributes": {"name": name, "profileType": "IOS_APP_STORE"},
+                    "relationships": {
+                        "bundleId": rel("bundleIds", bid["id"]),
+                        "certificates": {"data": [{"type": "certificates", "id": cert["id"]}]},
+                    },
+                }
+            },
+        )["data"]
+        content = base64.b64decode(profile["attributes"]["profileContent"])
+        uuid = profile["attributes"]["uuid"]
+        for d in PROFILE_DIRS:
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, f"{uuid}.mobileprovision"), "wb") as f:
+                f.write(content)
+        print(f"profile '{name}' for {identifier}: {uuid} (expires {profile['attributes']['expirationDate'][:10]})")
+
+
 def step_create_app():
     app = find_app()
     if app:
@@ -390,7 +459,7 @@ def step_status():
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=["status", "caps", "create-app", "beta-info", "group", "submit", "all"])
+    p.add_argument("step", choices=["status", "caps", "profiles", "create-app", "beta-info", "group", "submit", "all"])
     p.add_argument("--build", help="build number (CFBundleVersion) to submit; default newest")
     args = p.parse_args()
     try:
@@ -398,6 +467,8 @@ def main():
             step_status()
         elif args.step == "caps":
             step_caps()
+        elif args.step == "profiles":
+            step_profiles()
         elif args.step == "create-app":
             step_create_app()
         elif args.step == "beta-info":

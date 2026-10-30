@@ -7,11 +7,13 @@
 #
 # - Build number: a UTC timestamp, YYYYMMDD.HHMM (always increasing; override
 #   with BUILD_NUMBER=…). MARKETING_VERSION stays as in the project (1.0).
-# - Signing: automatic, team QPUV967B5U, -allowProvisioningUpdates with the
-#   App Store Connect API key, so Xcode can create the distribution profiles
-#   and App Group on its own. The key comes from $GODSPEED_ASC_ENV (default
-#   ~/.config/outbound/keys.env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH) and
-#   is never printed.
+# - Signing: the archive uses automatic (development) signing with
+#   -allowProvisioningUpdates and the App Store Connect API key; the export
+#   re-signs manually with the keychain's Apple Distribution certificate and
+#   App Store profiles that `asc-setup.sh profiles` (re)creates first (the
+#   key isn't allowed cloud-managed distribution signing). The key comes from
+#   $GODSPEED_ASC_ENV (default ~/.config/outbound/keys.env: ASC_KEY_ID,
+#   ASC_ISSUER_ID, ASC_KEY_PATH) and is never printed.
 # - Heavy steps (cargo, xcodebuild) go through
 #   ~/.local/share/godspeed-ops/heavy.sh when it exists (one at a time on a
 #   16 GB Mac).
@@ -25,7 +27,7 @@ UPLOAD=1
 for arg in "$@"; do
   case "$arg" in
     --no-upload) UPLOAD=0 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -79,6 +81,10 @@ heavy xcodebuild archive \
 
 PLIST="$ARCHIVE/Products/Applications/Godspeed.app/Info.plist"
 echo "    $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST") $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST") ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST"))"
+
+echo "==> App Store provisioning profiles"
+"$ROOT/scripts/ios/asc-setup.sh" profiles > "$OUT/profiles.log" 2>&1 \
+  || { cat "$OUT/profiles.log"; echo "error: couldn't create the App Store profiles" >&2; exit 1; }
 
 OPTIONS="$OUT/ExportOptions.plist"
 cp "$ROOT/scripts/ios/ExportOptions.plist" "$OPTIONS"

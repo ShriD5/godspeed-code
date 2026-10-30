@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- App Store Connect export for scripts/ios/testflight.sh: signs with the
-     team's Apple Distribution identity (automatic signing) and uploads the
-     build. `testflight.sh --no-upload` swaps destination to "export" to write
-     the .ipa locally instead. -->
+<!-- App Store Connect export for scripts/ios/testflight.sh: signs manually
+     with the team's Apple Distribution certificate (in the keychain) and the
+     App Store profiles `scripts/ios/asc-setup.sh profiles` creates (the API
+     key can't use cloud-managed distribution signing), then uploads.
+     `testflight.sh --no-upload` swaps destination to "export" to write the
+     .ipa locally instead. -->
 <plist version="1.0">
 <dict>
 	<key>method</key>
@@ -13,7 +15,16 @@
 	<key>teamID</key>
 	<string>QPUV967B5U</string>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>site.shrithan.godspeed.ios</key>
+		<string>Godspeed iOS App Store</string>
+		<key>site.shrithan.godspeed.ios.LiveActivity</key>
+		<string>Godspeed LiveActivity App Store</string>
+	</dict>
 	<key>uploadSymbols</key>
 	<true/>
 	<key>manageAppVersionAndBuildNumber</key>
