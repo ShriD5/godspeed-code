@@ -14,7 +14,7 @@ use zeron_harness::{
     AcpHarness, CancellationToken, Harness, HarnessError, RunControls, SteerMessage,
 };
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
+    AccessMode, AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, SteeringMode,
     TodoItem, TodoStatus, ToolCall, UserInputAnswer,
 };
 
@@ -2624,4 +2624,114 @@ async fn permission_requests_follow_the_access_mode() {
     let outside = asked[1].approval.as_ref().unwrap();
     assert_eq!(outside.kind, ApprovalKind::FileChange);
     assert_eq!(outside.paths, ["/etc/hosts"]);
+}
+
+fn answering_controls(
+    answer: Option<&'static str>,
+) -> (RunControls, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let (controls, _steer, _token) = controls();
+    let asked: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let record = asked.clone();
+    let controls = RunControls {
+        request_input: Box::new(move |questions| {
+            let (tx, rx) = oneshot::channel();
+            record
+                .lock()
+                .unwrap()
+                .extend(questions.iter().map(|q| q.question.clone()));
+            if let Some(answer) = answer {
+                let _ = tx.send(
+                    questions
+                        .iter()
+                        .map(|q| UserInputAnswer {
+                            question_id: q.id.clone(),
+                            labels: vec![answer.into()],
+                        })
+                        .collect(),
+                );
+            }
+            rx
+        }),
+        ..controls
+    };
+    (controls, asked)
+}
+
+#[tokio::test]
+async fn fx_selects_models_and_enforces_policy_on_new_and_loaded_sessions() {
+    let harness = AcpHarness::fx().with_executable(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-fx.py"),
+    );
+    let models = harness.models().await.unwrap();
+    assert_eq!(
+        models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        vec!["model-a", "model-b"]
+    );
+    for resume in [None, Some("fx-session".to_string())] {
+        let mut req = request("hello");
+        req.model = Some("model-b".into());
+        req.resume = resume;
+        req.set_access_mode(AccessMode::Supervised);
+        let (control, sender, _) = controls();
+        drop(sender);
+        let events = run_to_end(&harness, req, control).await;
+        assert!(events.iter().any(|e| matches!(
+            e,
+            AgentEvent::Done {
+                status: DoneStatus::Completed,
+                ..
+            }
+        )));
+    }
+}
+
+#[tokio::test]
+async fn fx_rejected_model_never_falls_back_to_another_model() {
+    let harness = AcpHarness::fx().with_executable(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-fx.py"),
+    );
+    let mut req = request("hello");
+    req.model = Some("rejected-model".into());
+    let (control, sender, _) = controls();
+    drop(sender);
+    let stream = harness.run(req, control).await.unwrap();
+    let events = stream.collect::<Vec<_>>().await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Ok(AgentEvent::Done {
+            status: DoneStatus::Errored,
+            ..
+        })
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        Ok(AgentEvent::Done {
+            status: DoneStatus::Completed,
+            ..
+        })
+    )));
+}
+
+#[tokio::test]
+async fn fx_permissions_follow_godspeed_access_mode() {
+    for (access, answer, expected, question_count) in [
+        (AccessMode::Supervised, Some("No"), "deny", 1),
+        (AccessMode::Supervised, Some("Yes"), "allow", 1),
+        (AccessMode::FullAccess, Some("No"), "allow", 0),
+    ] {
+        let harness = AcpHarness::fx().with_executable(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-fx.py"),
+        );
+        let mut req = request("permission");
+        req.model = Some("model-b".into());
+        req.set_access_mode(access);
+        let (control, asked) = answering_controls(answer);
+        let events = run_to_end(&harness, req, control).await;
+        assert_eq!(asked.lock().unwrap().len(), question_count);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::TextDelta { text } if text == expected))
+        );
+    }
 }
