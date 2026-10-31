@@ -796,7 +796,7 @@ pub(crate) fn agent_accounts(now: i64) -> zeron_proto::AgentAccountsSnapshot {
                 "claude-1",
                 HarnessId::ClaudeCode,
                 "dev@example.com",
-                "Max 20x",
+                "Ultra",
                 true,
                 vec![
                     window("Session", 0.64, 2 * HOUR + 14 * MIN),

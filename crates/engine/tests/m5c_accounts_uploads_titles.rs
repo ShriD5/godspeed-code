@@ -229,7 +229,7 @@ async fn claude_slot_swap_round_trip() {
     let alice = &snapshot.accounts[0];
     assert_eq!(
         alice.plan_label.as_deref(),
-        Some("Max 20×"),
+        Some("Ultra"),
         "plan label parse"
     );
     assert_eq!(alice.display_name.as_deref(), Some("Test User"));

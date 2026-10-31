@@ -819,7 +819,7 @@ async fn an_opaque_pi_claude_token_is_identified_once_then_matched_by_token() {
     let pi = rows(&accounts.list(false).await.unwrap(), HarnessId::Pi);
     assert_eq!(pi.len(), 1);
     assert_eq!(pi[0].email.as_deref(), Some("claude@example.com"));
-    assert_eq!(pi[0].plan_label.as_deref(), Some("Claude Max 20×"));
+    assert_eq!(pi[0].plan_label.as_deref(), Some("Claude Ultra"));
     assert!(pi[0].active && pi[0].switchable);
     assert_eq!(server.hits("GET /api/oauth/profile"), 1);
     // The same token again: matched to its slot, no network.

@@ -580,7 +580,7 @@ fn accounts() -> zeron_proto::AgentAccountsSnapshot {
     };
     serde_json::from_value(json!({
         "accounts": [
-            {"id": "claude-1", "harness": "claude-code", "email": "dev@example.com", "planLabel": "Max 20x",
+            {"id": "claude-1", "harness": "claude-code", "email": "dev@example.com", "planLabel": "Ultra",
              "active": true, "usageWindows": [window("Session", 0.64, 134), window("Week", 0.38, 4560)],
              "usageFetchedAt": now.timestamp_millis() - 120_000, "authKind": "oauth", "switchable": true},
             {"id": "codex-1", "harness": "codex", "email": "dev@example.com", "planLabel": "Pro",
