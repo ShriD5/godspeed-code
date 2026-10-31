@@ -44,6 +44,8 @@ pub struct Tools {
     // Remember successful sends on this MCP connection so wait_for_turn after
     // wait:false also waits for a newly created chat with no session row yet.
     pending_turns: tokio::sync::Mutex<HashMap<String, Arc<PendingTurn>>>,
+    /// A desktop window can drive this chat's preview browser.
+    preview: bool,
 }
 
 fn chat_key_schema(extra: Value) -> Value {
@@ -234,12 +236,15 @@ fn catalog() -> Vec<ToolDef> {
             "Send messages to multiple independent chats concurrently. Prefer this to delegate parallel work to existing chats. Each request has send_message arguments; wait defaults to false. If wait=true, requests still run concurrently. Results preserve request order and include per-request errors; successful sends are not rolled back. Do not include dependent messages to the same chat.",
         ),
     ] {
-        let item_schema = tools
+        // The single tool documents every argument; repeating those
+        // descriptions here would double what the model reads for nothing.
+        let mut item_schema = tools
             .iter()
             .find(|tool| tool.name == single)
             .unwrap()
             .input_schema
             .clone();
+        strip_property_descriptions(&mut item_schema);
         tools.push(ToolDef {
             name, description,
             input_schema: json!({
@@ -285,6 +290,49 @@ fn catalog() -> Vec<ToolDef> {
     });
     tools.extend(crate::preview::catalog());
     tools
+}
+
+/// The server instructions every chat gets. Clients put them in the agent's
+/// prompt on every turn (Claude Code even when it defers the tool schemas),
+/// so they carry only what steers behaviour; argument details live in the
+/// tool schemas, which are read when a tool is used.
+const INSTRUCTIONS: &str = "\
+Godspeed runs coding agents in chats, each hosted on a device and optionally in a project (a \
+folder on that device). These tools drive the local Godspeed engine. Refer to a chat by id, unique \
+id prefix, or exact title; `whoami` names your own chat. Your messages are attributed to your chat, \
+and a chat cannot message itself. For one reply, use `send_message` with `wait: true`. To delegate \
+in parallel, use `create_chats` (a prompt per chat) or `send_messages`: they launch concurrently even \
+when your tool calls run one at a time. Or launch every chat with `wait: false`, then collect the \
+replies with `wait_for_turn`. Never wait for one worker before launching the next independent one. \
+`kind: chat` creates a standalone session in Sessions (no parent); `kind: side` creates a child of \
+a parent or of your chat. Side chats cannot create chats. Find hosts with `list_devices`, then \
+`list_projects`, `list_harnesses` and `list_models` for a device. Answer a chat that is \
+`awaitingInput` with `respond_to_input`.";
+
+/// Instructions for the tools that show things in the calling chat.
+const VISUAL_INSTRUCTIONS: &str = "\n\n\
+When a chart, table, diagram, dashboard or 3D view says more than prose, show it with \
+`show_visual` (a Luau script) before your final reply, and don't restate it there. Show an image \
+file (a screenshot, a rendered PNG) with `show_image`.";
+
+/// Instructions for the `preview_*` tools, when a window can serve them.
+const PREVIEW_INSTRUCTIONS: &str = "\n\n\
+To check UI you built, drive your chat's preview browser in the Godspeed window: `preview_open` a \
+local dev server, `preview_snapshot` for element refs, `preview_click` / `preview_type` / \
+`preview_scroll` by ref, `preview_wait` for a change, `preview_console` for errors, and \
+`preview_screenshot` to see it.";
+
+/// Drop each top-level property's `description`, keeping names, types,
+/// enums, defaults and bounds. `worktree` keeps its own: parallel chats
+/// editing one repository must pick it per request.
+fn strip_property_descriptions(schema: &mut Value) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for (name, property) in properties.iter_mut() {
+            if let Some(property) = property.as_object_mut().filter(|_| name != "worktree") {
+                property.remove("description");
+            }
+        }
+    }
 }
 
 const WORKTREE_ARG_DESCRIPTION: &str = "\
@@ -799,7 +847,29 @@ impl Tools {
         Self {
             godspeed,
             pending_turns: Default::default(),
+            preview: true,
         }
+    }
+
+    /// Offer the `preview_*` tools only when a window can serve them
+    /// (default: yes). Without one every preview call fails, so listing them
+    /// would only cost the agent prompt tokens on every turn.
+    pub fn with_preview(mut self, preview: bool) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// The server's `instructions`, which clients put in the agent's prompt
+    /// on every turn: only the parts for tools this chat is offered.
+    pub fn instructions(&self) -> String {
+        let mut text = String::from(INSTRUCTIONS);
+        if self.godspeed.origin().chat_id.is_some() {
+            text.push_str(VISUAL_INSTRUCTIONS);
+            if self.preview {
+                text.push_str(PREVIEW_INSTRUCTIONS);
+            }
+        }
+        text
     }
 
     /// The tools offered to this server's chat. Conductor tools are listed
@@ -823,11 +893,14 @@ impl Tools {
 
     fn callable(&self) -> impl Iterator<Item = ToolDef> {
         let in_chat = self.godspeed.origin().chat_id.is_some();
+        let preview = in_chat && self.preview;
         catalog().into_iter().filter(move |tool| {
+            if crate::preview::is_preview_tool(tool.name) {
+                return preview;
+            }
             in_chat
                 || (![SHOW_VISUAL, SHOW_IMAGE].contains(&tool.name)
-                    && !is_conductor_tool(tool.name)
-                    && !crate::preview::is_preview_tool(tool.name))
+                    && !is_conductor_tool(tool.name))
         })
     }
 
@@ -3193,6 +3266,84 @@ mod tests {
         assert_eq!(content[1]["type"], "text");
         assert!(reply["result"]["structuredContent"].get("$image").is_none());
         assert_eq!(reply["result"]["structuredContent"]["width"], 640);
+    }
+
+    #[tokio::test]
+    async fn preview_tools_and_their_instructions_need_a_window() {
+        let world = Arc::new(World::default());
+        let origin = Origin {
+            chat_id: Some("chat-alpha-1".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let windowed = tools(world.clone(), origin.clone());
+        assert!(windowed.instructions().contains("`preview_open`"));
+        assert!(windowed.instructions().contains("`show_visual`"));
+        let headless = tools(world.clone(), origin).with_preview(false);
+        assert!(!headless.has("preview_open"));
+        assert!(
+            !headless
+                .list()
+                .await
+                .iter()
+                .any(|t| t.name.starts_with("preview_"))
+        );
+        assert!(headless.has(SHOW_VISUAL) && headless.has("create_chat"));
+        assert!(!headless.instructions().contains("preview_"));
+        assert!(headless.instructions().contains("`show_visual`"));
+        // The initialize reply carries the instructions for this chat.
+        let init =
+            crate::jsonrpc::handle_request(&headless, json!(1), "initialize", json!({})).await;
+        assert_eq!(init["result"]["instructions"], headless.instructions());
+        let outside = tools(world, Origin::default());
+        assert!(!outside.instructions().contains("show_visual"));
+        assert!(!outside.instructions().contains("preview_"));
+    }
+
+    #[test]
+    fn batch_items_take_the_single_tools_arguments_without_their_prose() {
+        let tools = catalog();
+        let find = |name: &str| tools.iter().find(|t| t.name == name).unwrap();
+        for (batch, single) in [
+            ("create_chats", "create_chat"),
+            ("send_messages", "send_message"),
+        ] {
+            let items =
+                find(batch).input_schema["properties"]["requests"]["items"]["properties"].clone();
+            let props = find(single).input_schema["properties"].clone();
+            let names = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+            assert_eq!(names(&items), names(&props), "{batch}");
+            for (name, property) in items.as_object().unwrap() {
+                assert_eq!(
+                    property.get("description").is_some(),
+                    name == "worktree",
+                    "{batch}.{name}"
+                );
+                let mut documented = props[name].clone();
+                documented.as_object_mut().unwrap().remove("description");
+                let mut kept = property.clone();
+                kept.as_object_mut().unwrap().remove("description");
+                assert_eq!(kept, documented, "{batch}.{name}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_results_reach_the_model_as_compact_json() {
+        let world = Arc::new(World::default());
+        let tools = tools(world, Origin::default());
+        let reply = crate::jsonrpc::handle_request(
+            &tools,
+            json!(3),
+            "tools/call",
+            json!({ "name": "list_devices", "arguments": {} }),
+        )
+        .await;
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains('\n'), "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            reply["result"]["structuredContent"]
+        );
     }
 
     #[tokio::test]

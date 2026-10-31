@@ -854,6 +854,7 @@ pub fn tool_detail(
         });
     }
     let output = output?;
+    let output = display_output(output);
     let mut lines: Vec<SharedString> = output.lines().map(output_line).collect();
     // Trim trailing blank output lines so the block hugs its content.
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
@@ -873,6 +874,75 @@ pub fn tool_detail(
 /// Chars kept per output line. Lines clip rather than wrap, but each one is
 /// still shaped whole for selection — a minified megabyte must not be.
 const OUTPUT_LINE_MAX_CHARS: usize = 8 * 1024;
+
+/// Output as shown in a chip. Tool servers send JSON results compactly (it
+/// is what the agent reads, and indentation only costs tokens), so a long
+/// one-line JSON result is laid out one member per line here instead of
+/// being cut to its first line. Everything else is shown verbatim.
+fn display_output(output: &str) -> std::borrow::Cow<'_, str> {
+    let trimmed = output.trim();
+    if trimmed.len() <= CALL_WRAP_COLS
+        || trimmed.contains('\n')
+        || !(trimmed.starts_with('{') || trimmed.starts_with('['))
+    {
+        return std::borrow::Cow::Borrowed(output);
+    }
+    std::borrow::Cow::Owned(indent_json(trimmed))
+}
+
+/// Indent JSON text two spaces per level without parsing it, so a result
+/// cut short by the transcript's output cap still lays out.
+fn indent_json(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut depth = 0usize;
+    let (mut in_string, mut escaped) = (false, false);
+    let newline = |out: &mut String, depth: usize| {
+        out.push('\n');
+        out.extend(std::iter::repeat_n("  ", depth));
+    };
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '{' | '[' => {
+                out.push(c);
+                if matches!(chars.peek(), Some('}') | Some(']')) {
+                    out.push(chars.next().unwrap_or_default());
+                } else {
+                    depth += 1;
+                    newline(&mut out, depth);
+                }
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                newline(&mut out, depth);
+                out.push(c);
+            }
+            ',' => {
+                out.push(c);
+                newline(&mut out, depth);
+            }
+            ':' => out.push_str(": "),
+            c if c.is_whitespace() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
 
 /// One verbatim output line, cut to [`OUTPUT_LINE_MAX_CHARS`] with an ellipsis.
 fn output_line(line: &str) -> SharedString {
@@ -2377,7 +2447,7 @@ fn blob_detail(text: &str, is_diff: bool) -> Option<ToolDetail> {
         let diff: zeron_proto::ToolDiff = serde_json::from_str(text).ok()?;
         return tool_detail(None, Some(&diff), None);
     }
-    let mut lines: Vec<SharedString> = text.lines().map(output_line).collect();
+    let mut lines: Vec<SharedString> = display_output(text).lines().map(output_line).collect();
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
@@ -11770,6 +11840,23 @@ impl Render for Transcript {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn one_line_json_output_is_laid_out_per_member() {
+        let compact = r#"{"chats":[{"id":"a1","title":"Fix \"login\", {now} on the settings page","tags":[]},{"id":"b2"}],"count":2}"#;
+        assert_eq!(
+            display_output(compact),
+            "{\n  \"chats\": [\n    {\n      \"id\": \"a1\",\n      \"title\": \"Fix \\\"login\\\", {now} on the settings page\",\n      \"tags\": []\n    },\n    {\n      \"id\": \"b2\"\n    }\n  ],\n  \"count\": 2\n}"
+        );
+        // Cut short by the output cap: still laid out.
+        let cut = &compact[..compact.find("],").unwrap() + 1];
+        assert!(cut.len() > CALL_WRAP_COLS);
+        assert!(display_output(cut).ends_with("\"id\": \"b2\"\n    }\n  ]"));
+        // Short, multi-line, and non-JSON output stays verbatim.
+        assert_eq!(display_output(r#"{"ok":true}"#), r#"{"ok":true}"#);
+        let text = "plain text output that is long enough to pass the wrap width of eighty columns, surely";
+        assert_eq!(display_output(text), text);
+    }
+
     use super::*;
 
     #[test]
