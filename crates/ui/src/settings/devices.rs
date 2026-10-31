@@ -445,6 +445,24 @@ impl Render for DevicesPage {
     }
 }
 
+/// The demo recording shows saved servers without SSH.
+#[cfg(feature = "demo-fixture")]
+impl DevicesPage {
+    pub fn fixture_servers(
+        &mut self,
+        servers: Vec<(String, String, String, u64)>,
+        scroll: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.servers
+            .update(cx, |panel, cx| panel.fixture_rows(servers, cx));
+        self.scroll
+            .scroll
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(-scroll)));
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

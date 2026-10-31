@@ -1033,11 +1033,20 @@ impl PullRequestDetailPage {
             .activity_comments()
             .map(|comment| crate::pull_request_media::parse_description(&comment.body))
             .collect();
+        self.actions.watch = detail.watch.clone();
         self.detail = Some(detail);
         self.error = None;
         self.loading = false;
         self.actions.merge_options = Some(merge_options);
         self.actions.merge_loading = false;
+        cx.notify();
+    }
+
+    /// Scroll the page down `y` points, as a reader would.
+    pub(crate) fn fixture_demo_scroll(&mut self, y: f32, cx: &mut Context<Self>) {
+        self.scroll
+            .scroll
+            .set_offset(gpui::point(gpui::px(0.0), gpui::px(-y)));
         cx.notify();
     }
 }

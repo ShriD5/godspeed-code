@@ -26,6 +26,10 @@
 //! renderer does not draw: serve `GODSPEED_DEMO_PREVIEW_URL` (default
 //! `http://localhost:5173/pricing`) so the tab loads, and composite the
 //! page over the blank area afterwards.
+//!
+//! `stills` instead writes one named PNG per feature (the session card's
+//! Usage rows, PR review and merge with its watch, More agents from the ACP
+//! registry, saved servers, sidebar multi-select) for promo stills.
 use gpui::{AppContext, AsyncApp, Bounds, WindowBounds, WindowOptions, px, size};
 use serde_json::json;
 use std::{
@@ -335,12 +339,16 @@ fn seed(state: &mut state::AppState, project: &std::path::Path) {
         .join("fieldnotes-worktrees/feat-search")
         .to_string_lossy()
         .into_owned();
-    state
-        .chats
-        .iter_mut()
-        .find(|c| c.id == "search")
-        .unwrap()
-        .cwd = Some(worktree);
+    let search = state.chats.iter_mut().find(|c| c.id == "search").unwrap();
+    search.cwd = Some(worktree.clone());
+    search.source_context = Some(zeron_proto::ConversationSourceContext {
+        checkout_id: "fieldnotes-feat-search".into(),
+        repo_root: project.join("fieldnotes").to_string_lossy().into_owned(),
+        cwd: worktree,
+        branch: "feat/search".into(),
+        head_sha: None,
+        observed_at: now,
+    });
     // A conductor: one main chat steering three sub-agents.
     let mut main = chat(
         "launch",
@@ -688,11 +696,11 @@ fn pull_request() -> (
         "title": "Add full-text search to notes",
         "body": "Adds a `notes_fts` index and a search box in the sidebar.\n\n- GIN index on title and body\n- debounced search as you type\n- 18 new tests",
         "url": "https://github.com/fieldnotes-app/fieldnotes/pull/214",
-        "number": 214, "author": {"login": "fieldnotes-dev"},
+        "number": 214, "author": {"login": "maya-builds"},
         "baseRefName": "main", "baseRefOid": "4f1c2a9be0d8c7a6b5f4e3d2c1b0a9f8e7d6c5b4",
         "headRefName": "feat/search", "headRefOid": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
         "ci": {"state": "success", "totalCount": 3},
-        "viewerDidAuthor": true, "state": "OPEN", "isDraft": false,
+        "viewerDidAuthor": false, "state": "OPEN", "isDraft": false,
         "reviewDecision": "APPROVED", "mergeable": "MERGEABLE",
         "additions": 412, "deletions": 37,
         "reviews": [{"id": "r1", "author": {"login": "sam-reviews"}, "state": "APPROVED",
@@ -710,6 +718,9 @@ fn pull_request() -> (
             {"name": "e2e", "conclusion": "SUCCESS", "status": "COMPLETED"},
         ],
         "viewerLogin": "fieldnotes-dev",
+        "watch": {"url": "https://github.com/fieldnotes-app/fieldnotes/pull/214", "chatId": "search",
+                  "enabled": true, "autoMerge": true, "status": "watching",
+                  "lastEvent": "Checks passed: build, test, e2e"},
     }))
     .unwrap();
     let options = serde_json::from_value(json!({
@@ -996,6 +1007,84 @@ fn promo_script() -> Vec<(f32, Act)> {
     script
 }
 
+/// Settings → Providers → More agents: the public ACP registry, one installed.
+fn acp_registry() -> zeron_proto::AcpRegistrySnapshot {
+    serde_json::from_value(json!({
+        "agents": [
+            {"id": "github-copilot", "name": "GitHub Copilot CLI", "version": "1.4.0",
+             "description": "GitHub's coding agent in your terminal, over ACP.",
+             "publisher": "GitHub", "distribution": "npm", "installSize": 38_400_000,
+             "installedVersion": "1.4.0"},
+            {"id": "factory-droid", "name": "Factory Droid", "version": "0.22.3",
+             "description": "Factory's Droid agent for end-to-end software tasks.",
+             "publisher": "Factory", "distribution": "binary", "installSize": 61_200_000},
+            {"id": "gemini-cli", "name": "Gemini CLI", "version": "0.12.0",
+             "description": "Google's open-source agent that brings Gemini to the terminal.",
+             "publisher": "Google", "distribution": "npm", "installSize": 24_700_000},
+            {"id": "kimi-cli", "name": "Kimi CLI", "version": "0.48.0",
+             "description": "Moonshot AI's terminal agent, powered by Kimi models.",
+             "publisher": "Moonshot AI", "distribution": "binary", "installSize": 18_900_000},
+            {"id": "qwen-code", "name": "Qwen Code", "version": "0.1.4",
+             "description": "A command-line agent tuned for Qwen coder models.",
+             "publisher": "Qwen", "distribution": "npm", "installSize": 21_300_000},
+        ],
+        "fetchedAt": chrono::Utc::now().timestamp_millis() - 300_000,
+    }))
+    .unwrap()
+}
+
+/// One step of the stills script; `Snap` writes `<name>.png`.
+enum Still {
+    Chat(&'static str),
+    Accounts,
+    SessionUsage,
+    Worktree,
+    HideInfo,
+    PullRequest,
+    PullRequestScroll(f32),
+    ClosePane,
+    Providers(f32),
+    Servers(f32),
+    CloseSettings,
+    Select(&'static [&'static str]),
+    Snap(&'static str),
+}
+
+fn stills_script() -> Vec<Still> {
+    use Still::*;
+    vec![
+        Accounts,
+        Chat("search"),
+        SessionUsage,
+        Snap("usage"),
+        Worktree,
+        Snap("usage-worktree"),
+        HideInfo,
+        PullRequest,
+        Snap("pr-0"),
+        PullRequestScroll(220.0),
+        Snap("pr-220"),
+        PullRequestScroll(420.0),
+        Snap("pr-420"),
+        PullRequestScroll(640.0),
+        Snap("pr-640"),
+        ClosePane,
+        Providers(560.0),
+        Snap("agents-560"),
+        Providers(2000.0),
+        Snap("agents-end"),
+        CloseSettings,
+        Servers(0.0),
+        Snap("servers-0"),
+        Servers(2000.0),
+        Snap("servers-end"),
+        CloseSettings,
+        Chat("dark"),
+        Select(&["dark", "sync", "astro"]),
+        Snap("multi"),
+    ]
+}
+
 /// An ffmpeg concat list: each frame for as long as it was on screen.
 fn write_list(output: &std::path::Path, durations: &[f64]) -> std::io::Result<()> {
     let mut concat = std::fs::File::create(output.join("frames.txt"))?;
@@ -1017,7 +1106,8 @@ fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("warn").init();
     let output = PathBuf::from(std::env::args().nth(1).expect("frames directory"));
     std::fs::create_dir_all(&output)?;
-    let promo = std::env::args().nth(2).as_deref() == Some("promo");
+    let stills = std::env::args().nth(2).as_deref() == Some("stills");
+    let promo = stills || std::env::args().nth(2).as_deref() == Some("promo");
     let (width, height) = if promo {
         (1280.0, 800.0)
     } else {
@@ -1223,6 +1313,98 @@ fn main() -> anyhow::Result<()> {
                             s.fixture_demo_accounts(accounts(), cx);
                         })?;
                         pause(cx, 600).await;
+                    }
+                    if stills {
+                        for step in stills_script() {
+                            match step {
+                                Still::Snap(name) => {
+                                    // Let springs, fades and late layout settle.
+                                    pause(cx, 1500).await;
+                                    let any: gpui::AnyWindowHandle = window.into();
+                                    let frame = any.update(cx, |_, w, cx| {
+                                        w.draw(cx).clear();
+                                        w.render_to_image()
+                                    })??;
+                                    frame.save(output.join(format!("{name}.png")))?;
+                                    eprintln!("still {name} {}x{}", frame.width(), frame.height());
+                                    continue;
+                                }
+                                Still::Chat(id) => {
+                                    window
+                                        .update(cx, |s, _, cx| s.fixture_demo_open_chat(id, cx))?;
+                                    state.update(cx, |s, cx| {
+                                        let device = s.local_device_id.clone().unwrap();
+                                        let reset = match id {
+                                            "search" => search_transcript(&device),
+                                            _ => transcript(&device),
+                                        };
+                                        s.receive_transcript_frame(
+                                            zeron_doc::TranscriptFrame::Reset {
+                                                reset: serde_json::from_value(reset).unwrap(),
+                                            },
+                                            cx,
+                                        )
+                                        .unwrap();
+                                        cx.notify();
+                                    });
+                                }
+                                Still::Accounts => window.update(cx, |s, _, cx| {
+                                    s.fixture_demo_accounts(accounts(), cx)
+                                })?,
+                                Still::SessionUsage => window.update(cx, |s, _, cx| {
+                                    s.fixture_demo_session_usage(
+                                        zeron_proto::ContextUsage {
+                                            tokens: Some(84_300),
+                                            window: Some(200_000),
+                                        },
+                                        cx,
+                                    )
+                                })?,
+                                Still::Worktree => window
+                                    .update(cx, |s, _, cx| s.fixture_demo_worktree(false, cx))?,
+                                Still::HideInfo => window
+                                    .update(cx, |s, _, cx| s.fixture_demo_hide_session_info(cx))?,
+                                Still::PullRequest => window.update(cx, |s, w, cx| {
+                                    let (detail, options) = pull_request();
+                                    s.fixture_demo_pull_request(detail, options, w, cx)
+                                })?,
+                                Still::PullRequestScroll(y) => window.update(cx, |s, _, cx| {
+                                    s.fixture_demo_pull_request_scroll(y, cx)
+                                })?,
+                                Still::ClosePane => {
+                                    window.update(cx, |s, _, cx| s.fixture_demo_close_pane(cx))?
+                                }
+                                Still::Providers(y) => window.update(cx, |s, _, cx| {
+                                    s.fixture_demo_providers(acp_registry(), y, cx)
+                                })?,
+                                Still::Servers(y) => window.update(cx, |s, _, cx| {
+                                    s.fixture_demo_servers(
+                                        vec![
+                                            (
+                                                "dev@build-box".into(),
+                                                "build-box".into(),
+                                                "0.5.10".into(),
+                                                3 * 86_400 + 4 * 3_600,
+                                            ),
+                                            (
+                                                "ops@hetzner-arm".into(),
+                                                "hetzner-arm".into(),
+                                                "0.5.10".into(),
+                                                11 * 3_600,
+                                            ),
+                                        ],
+                                        y,
+                                        cx,
+                                    )
+                                })?,
+                                Still::CloseSettings => window
+                                    .update(cx, |s, _, cx| s.fixture_demo_close_settings(cx))?,
+                                Still::Select(ids) => window
+                                    .update(cx, |s, _, cx| s.fixture_demo_select_rows(ids, cx))?,
+                            }
+                            pause(cx, 300).await;
+                        }
+                        return Ok(());
                     }
                     let start = Instant::now();
                     let mut index = 0usize;
