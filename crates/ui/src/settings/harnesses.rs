@@ -1410,6 +1410,24 @@ impl Render for HarnessesPage {
     }
 }
 
+/// The demo recording lists the ACP registry without an engine.
+#[cfg(feature = "demo-fixture")]
+impl HarnessesPage {
+    pub fn fixture_registry(
+        &mut self,
+        registry: zeron_proto::AcpRegistrySnapshot,
+        scroll: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.acp = Loadable::Ready(registry);
+        self.acp_load_task = None;
+        self.scroll
+            .scroll
+            .set_offset(gpui::point(px(0.0), px(-scroll)));
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[gpui::test]

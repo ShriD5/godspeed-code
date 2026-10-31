@@ -19935,6 +19935,68 @@ impl Shell {
     pub fn fixture_demo_open_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
         self.open_chat(chat_id.to_string(), cx);
     }
+    /// The session card with its Usage section: the account windows come
+    /// from `fixture_demo_accounts`, the context window from here.
+    pub fn fixture_demo_session_usage(
+        &mut self,
+        context: zeron_proto::ContextUsage,
+        cx: &mut Context<Self>,
+    ) {
+        self.state
+            .update(cx, |state, _| state.context_usage = Some(context));
+        self.show_session_info(cx);
+        cx.notify();
+    }
+    /// Settings → Providers with the ACP registry listed, scrolled down `scroll`.
+    pub fn fixture_demo_providers(
+        &mut self,
+        registry: zeron_proto::AcpRegistrySnapshot,
+        scroll: f32,
+        cx: &mut Context<Self>,
+    ) {
+        // Opening recreates the page, so fill it after.
+        self.open_settings(SettingsSection::Harnesses, cx);
+        if self.harnesses_page.is_none() {
+            let state = self.state.clone();
+            self.harnesses_page = Some(cx.new(|cx| HarnessesPage::new(state, cx)));
+        }
+        if let Some(page) = self.harnesses_page.clone() {
+            page.update(cx, |page, cx| page.fixture_registry(registry, scroll, cx));
+        }
+    }
+    /// Settings → Devices with saved servers that answered their check:
+    /// `(user@host, hostname, version, uptime seconds)`.
+    pub fn fixture_demo_servers(
+        &mut self,
+        servers: Vec<(String, String, String, u64)>,
+        scroll: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if self.devices_page.is_none() {
+            let state = self.state.clone();
+            self.devices_page = Some(cx.new(|cx| DevicesPage::new(state, cx)));
+        }
+        if let Some(page) = self.devices_page.clone() {
+            page.update(cx, |page, cx| page.fixture_servers(servers, scroll, cx));
+        }
+        self.open_settings(SettingsSection::Devices, cx);
+    }
+    /// Cmd-click these sidebar rows: the bulk bar shows for the selection.
+    pub fn fixture_demo_select_rows(&mut self, ids: &[&str], cx: &mut Context<Self>) {
+        let _ = self.sidebar_selection.clear();
+        for id in ids {
+            self.sidebar_selection.toggle(id);
+        }
+        self.sidebar_selection_origin = self.state.read(cx).selected_chat.clone();
+        cx.notify();
+    }
+    /// Scroll the open pull request page down `y` points.
+    pub fn fixture_demo_pull_request_scroll(&mut self, y: f32, cx: &mut Context<Self>) {
+        if let Some(tab) = self.chat_pull_requests.get(&self.chat_pull_request_seq) {
+            tab.page
+                .update(cx, |page, cx| page.fixture_demo_scroll(y, cx));
+        }
+    }
     /// The sidebar's Zoomies section reads this snapshot (no engine needed).
     pub fn fixture_demo_zoomies(
         &mut self,

@@ -1336,6 +1336,42 @@ impl Render for ServersPanel {
     }
 }
 
+/// The demo recording shows saved servers that answered their check.
+#[cfg(feature = "demo-fixture")]
+impl ServersPanel {
+    /// `(user@host, hostname, version, uptime seconds)` per server.
+    pub fn fixture_rows(
+        &mut self,
+        servers: Vec<(String, String, String, u64)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.loaded_from = self.data_dir(cx);
+        self.latest_linux = servers.first().map(|(_, _, version, _)| version.clone());
+        self.rows = servers
+            .into_iter()
+            .map(|(target, hostname, version, uptime)| {
+                let probe = ServerProbe::parse(&format!(
+                    "os=Linux\narch=x86_64\ndistro=Ubuntu 24.04 LTS\nhostname={hostname}\n\
+                     glibc=2.39\ncurl=yes\nsha256=yes\nsystemd_user=yes\nlinger=yes\n\
+                     service=systemd\ninstalled={version}\nrunning=yes\nuptime={uptime}\nsession=yes\n"
+                ))
+                .expect("fixture probe");
+                ServerRow {
+                    saved: SavedServer {
+                        target,
+                        hostname: Some(hostname),
+                        version: Some(version),
+                        added_at_ms: 0,
+                    },
+                    status: RowStatus::Ready(probe),
+                    busy: None,
+                }
+            })
+            .collect();
+        cx.notify();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
