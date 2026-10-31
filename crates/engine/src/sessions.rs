@@ -367,6 +367,9 @@ struct Inner {
     /// Loopback IPC port this engine serves, once known (0 = not serving):
     /// what the injected `godspeed mcp` server dials back into.
     ipc_port: std::sync::atomic::AtomicU16,
+    /// The desktop window serving `preview_*` actions, shared with every RPC
+    /// service. A run started with no window attached gets no preview tools.
+    preview_driver: crate::preview_driver::PreviewDriverHub,
     journal: Arc<RunJournal>,
     registry: Arc<HarnessRegistry>,
     /// Set-once (first wins), cleared on runtime retirement: sessions and
@@ -455,6 +458,7 @@ impl SessionsEngine {
                 shutting_down: std::sync::atomic::AtomicBool::new(false),
                 cancelled_sends: Mutex::new(HashMap::new()),
                 ipc_port: std::sync::atomic::AtomicU16::new(0),
+                preview_driver: Default::default(),
                 journal,
                 registry,
                 doc_host: Mutex::new(None),
@@ -487,6 +491,11 @@ impl SessionsEngine {
         self.inner
             .ipc_port
             .store(port, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The window attachment point for the `preview_*` tools, one per engine.
+    pub(crate) fn preview_driver(&self) -> crate::preview_driver::PreviewDriverHub {
+        self.inner.preview_driver.clone()
     }
 
     /// The loopback IPC port recorded by [`Self::set_ipc_port`], if any.
@@ -1993,24 +2002,24 @@ impl Inner {
     /// mcp` subcommand, dialing the engine's IPC port and stamped with the
     /// originating chat + device so the agent's side chats link back here.
     /// None when the engine serves no port or its executable is unknown.
+    ///
+    /// With no window attached (a headless engine) every `preview_*` tool
+    /// fails, so the server leaves them out (`GODSPEED_PREVIEW=0`) rather than
+    /// spend prompt tokens on them every turn. Decided once per process: the
+    /// tool list stays fixed for the run, which keeps the prompt cache intact.
     fn zeron_mcp(&self, chat_id: &str) -> Option<zeron_proto::McpServer> {
         let port = self.ipc_port.load(std::sync::atomic::Ordering::Relaxed);
         if port == 0 {
             return None;
         }
         let command = std::env::current_exe().ok()?.to_str()?.to_owned();
-        Some(zeron_proto::McpServer {
-            name: "godspeed".into(),
+        Some(zeron_mcp_server(
             command,
-            args: vec!["mcp".into()],
-            env: [
-                ("GODSPEED_IPC_PORT".to_owned(), port.to_string()),
-                ("GODSPEED_CHAT_ID".to_owned(), chat_id.to_owned()),
-                ("GODSPEED_DEVICE_ID".to_owned(), self.device_id.clone()),
-            ]
-            .into_iter()
-            .collect(),
-        })
+            port,
+            chat_id,
+            &self.device_id,
+            self.preview_driver.attached(),
+        ))
     }
 
     fn workspace(&self) -> Option<crate::workspace_host::WorkspaceHost> {
@@ -2840,6 +2849,32 @@ fn cursor_unstarted_history(
         "The preceding user messages may not have reached a Cursor checkpoint before startup stopped. Retain this JSON as conversation history; do not rerun prior tools or side effects. Respond to the current message.\n{}",
         serde_json::json!({"previousUserMessages": previous, "currentUserMessage": prompt})
     ))
+}
+
+/// The `godspeed mcp` server entry for a run of `chat_id` (see [`Inner::zeron_mcp`]).
+fn zeron_mcp_server(
+    command: String,
+    port: u16,
+    chat_id: &str,
+    device_id: &str,
+    preview_window: bool,
+) -> zeron_proto::McpServer {
+    let mut env: std::collections::BTreeMap<String, String> = [
+        ("GODSPEED_IPC_PORT".to_owned(), port.to_string()),
+        ("GODSPEED_CHAT_ID".to_owned(), chat_id.to_owned()),
+        ("GODSPEED_DEVICE_ID".to_owned(), device_id.to_owned()),
+    ]
+    .into_iter()
+    .collect();
+    if !preview_window {
+        env.insert(zeron_proto::MCP_PREVIEW_ENV.to_owned(), "0".to_owned());
+    }
+    zeron_proto::McpServer {
+        name: "godspeed".into(),
+        command,
+        args: vec!["mcp".into()],
+        env,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4282,6 +4317,18 @@ async fn drive_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mcp_server_leaves_preview_tools_out_without_a_window() {
+        let windowed =
+            super::zeron_mcp_server("/bin/godspeed".into(), 27654, "chat-1", "dev-1", true);
+        assert_eq!(windowed.args, ["mcp"]);
+        assert_eq!(windowed.env["GODSPEED_CHAT_ID"], "chat-1");
+        assert!(!windowed.env.contains_key(zeron_proto::MCP_PREVIEW_ENV));
+        let headless =
+            super::zeron_mcp_server("/bin/godspeed".into(), 27654, "chat-1", "dev-1", false);
+        assert_eq!(headless.env[zeron_proto::MCP_PREVIEW_ENV], "0");
+    }
 
     #[test]
     fn cursor_recovery_converts_rich_messages_before_json_encoding() {

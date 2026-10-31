@@ -870,6 +870,9 @@ impl EngineRpc {
             capabilities: zeron_proto::capabilities::current(),
         };
         let github = GitHubCli::new().with_store(repos.data_dir());
+        // One window attachment per engine, seen by every service and by the
+        // session engine (which offers preview tools only with a window).
+        let preview_driver = sessions.preview_driver();
         Self {
             voice: sessions.voice_manager(),
             sessions,
@@ -903,7 +906,7 @@ impl EngineRpc {
             chat_lifecycle: None,
             worktree_cleanup: None,
             telemetry: None,
-            preview_driver: Default::default(),
+            preview_driver,
             build_slots: None,
             engine_info,
         }

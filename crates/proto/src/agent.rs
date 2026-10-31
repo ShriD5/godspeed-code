@@ -476,6 +476,11 @@ impl RunRequest {
     }
 }
 
+/// Environment variable the engine sets to `0` on its injected `godspeed mcp`
+/// server when no desktop window is attached to drive the preview browser:
+/// the server then leaves the `preview_*` tools out. Unset means offer them.
+pub const MCP_PREVIEW_ENV: &str = "GODSPEED_PREVIEW";
+
 /// A stdio MCP server the harness should add to the agent's session, on top
 /// of whatever the user configured. Each driver spells it in its own dialect
 /// (Claude `--mcp-config`, ACP `session/new` `mcpServers`, Codex
