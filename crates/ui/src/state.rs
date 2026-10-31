@@ -300,14 +300,26 @@ impl EngineHandle {
     /// Must run on the tokio runtime (`Tokio::spawn`): both transports spawn
     /// tokio tasks.
     pub async fn bootstrap(config: EngineBootConfig) -> anyhow::Result<EngineHandle> {
+        Self::bootstrap_with(config, None).await
+    }
+
+    /// [`Self::bootstrap`], optionally serving IPC on a listener the caller
+    /// already bound to `config.ipc_port`. Owning the port rules out a daemon
+    /// on it, so there is nothing to probe; tests use this to hold their port
+    /// from the start instead of releasing a "free" one for anyone to take.
+    async fn bootstrap_with(
+        config: EngineBootConfig,
+        ipc_listener: Option<tokio::net::TcpListener>,
+    ) -> anyhow::Result<EngineHandle> {
         // Invariant: at most one bootstrap in this process runs probe+embed at
         // a time. The winner binds the deferred IPC listener before releasing
         // the gate, so a concurrent viewport's probe finds it and attaches as
         // Remote instead of racing it for the data dir.
         static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _gate = BOOTSTRAP_GATE.lock().await;
+        let probe_daemon = ipc_listener.is_none();
 
-        if let Some(handle) = Self::attach_to_daemon(config.ipc_port).await {
+        if probe_daemon && let Some(handle) = Self::attach_to_daemon(config.ipc_port).await {
             return Ok(handle);
         }
 
@@ -337,7 +349,9 @@ impl EngineHandle {
                         return Err(err.into());
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    if let Some(handle) = Self::attach_to_daemon(engine_config.ipc_port).await {
+                    if probe_daemon
+                        && let Some(handle) = Self::attach_to_daemon(engine_config.ipc_port).await
+                    {
                         return Ok(handle);
                     }
                 }
@@ -368,8 +382,14 @@ impl EngineHandle {
         //
         // Best-effort — losing the bind race with another engine costs other
         // viewports, not this one.
-        let ipc_task = match zeron_engine::serve_ipc(engine_config.ipc_port, service.clone()).await
-        {
+        let served = match ipc_listener {
+            Some(listener) => Ok(tokio::spawn(zeron_rpc::serve_ws_listener(
+                listener,
+                service.clone(),
+            ))),
+            None => zeron_engine::serve_ipc(engine_config.ipc_port, service.clone()).await,
+        };
+        let ipc_task = match served {
             Ok(task) => Some(task),
             Err(err) => {
                 tracing::warn!(
@@ -4006,19 +4026,25 @@ mod tests {
         zeron_engine::EngineProfile::local(dir.path()).unwrap();
         std::fs::create_dir(dir.path().join("profiles")).unwrap();
         std::fs::write(dir.path().join("profiles/local"), b"not a directory").unwrap();
-        let port = free_port().await;
+        // Hand bootstrap a listener already bound: releasing a "free" port
+        // and asking bootstrap to bind it again let any process on the host
+        // take the port in between, and then answer the final check below.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
 
-        let error = match EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        {
+        let bootstrap = EngineHandle::bootstrap_with(
+            EngineBootConfig {
+                data_dir: dir.path().to_path_buf(),
+                ipc_port: port,
+                edge_url: "http://127.0.0.1:1".into(),
+                edge_token: None,
+                org_id: None,
+                workos_client_id: Some("client_test".into()),
+                default_harness: HarnessId::Mock,
+            },
+            Some(listener),
+        );
+        let error = match bootstrap.await {
             Ok(handle) => {
                 handle.shutdown().await;
                 panic!("a corrupt local store must fail bootstrap")
@@ -4027,12 +4053,19 @@ mod tests {
         };
 
         assert!(!format!("{error:#}").is_empty());
-        assert!(
-            tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_err(),
-            "failed bootstrap must release the IPC listener"
-        );
+        // Binding the port again succeeds only once nothing listens on it.
+        // Wait for that rather than test it once: a child process another
+        // thread forks at this instant holds a copy of every open descriptor,
+        // the closed listener included, until it execs microseconds later. A
+        // listener bootstrap really leaked never releases and still fails.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "failed bootstrap must release the IPC listener"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]
