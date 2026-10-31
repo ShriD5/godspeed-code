@@ -75,6 +75,8 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Chat | Inline video: play video attachments and video in replies | `apps/web/src/components/media/MediaVideoPlayer.tsx` | MISSING | low |
 | Desktop | See and stop the dev servers a thread started | `apps/web/src/components/chat/ThreadDetailsPanel.tsx` (#22542 `a27ec88bfa`) | MISSING: no per-chat process list | med |
 | Chat | Stop always completes; force-stop an agent that ignores Stop | `apps/server` (#27252 `6b1245cced`) | MISSING: one Stop, no force escalation in the UI | med |
+| Sidebar | Pin favourite projects to the top; archive old projects out of the list | #26154 `ffaa1dba76` | MISSING: chats can be pinned inside a project (`shell/spaces.rs`), projects cannot | med |
+| Chat | Context meter marks where Claude auto-compacts | #22654 `159a914d6b`; #27892 `961026c6c9` | PARTIAL: meter and token counts (`crates/ui/src/context_usage.rs`), no auto-compact mark | low |
 | Sidebar | Turn a No project thread into a project | #26767 `58e60bf5e8` | MISSING | low |
 | Chat | Related threads: link threads to each other, see them in the details panel | `apps/web/src/components/chat/ThreadRelationshipsControl.tsx` | MISSING: session card only (`crates/ui/src/shell/session_info.rs`) | low |
 | Terminal | Split a terminal side by side or stacked; split horizontally or vertically | `apps/web/src/components/ThreadTerminalDrawer.tsx` ("Split Terminal Horizontally", "Single / Stacked / Side by side"); `packages/shared/src/keybindings.ts` (`terminal.split`) | MISSING: one terminal per tab (`crates/ui/src/terminal/panel.rs`) | med |
@@ -212,6 +214,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
 | Factory Droid, GitHub Copilot CLI, Gemini CLI and Kimi CLI as ACP agents through the registry (generic ACP driver; Droid elicitation forms and Copilot subagent routing not ported) | #62 |

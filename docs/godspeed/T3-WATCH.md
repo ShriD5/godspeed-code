@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@32ecd71726 (2026-10-30)
+Reviewed T3 through: pingdotgg/t3code@79f1fadfc6 (2026-10-31)
 
 ## Rules
 
@@ -23,6 +23,15 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #84 |
+| 2026-10-31 | The context meter marks where Claude actually auto-compacts (window minus 33k) and fills against the limit (`159a914d6b`, `961026c6c9`) | queued (Godspeed's meter has no auto-compact mark; needs the threshold from the Claude driver) |
+| 2026-10-31 | Pin favourite projects and archive old ones (`ffaa1dba76`) | queued (Godspeed pins chats within a project, not projects) |
+| 2026-10-31 | Commands that exit 0 no longer show as failed (`469afd8b53`); cancelled ACP tool calls stop showing as running (`076aacca16`); Claude NotebookEdit names the notebook (`3a9640c3eb`) | queued (check our command and ACP tool rows for the same cases) |
+| 2026-10-31 | Pick the model and its effort from one control (`c96c1b69f5`); picker Show more row (`2359643cff`); hide Ultrathink from Claude effort (`85bd3f2a2a`) | skipped (Godspeed's compact picker already shows model, effort and fast traits together) |
+| 2026-10-31 | Side chats beside the main thread (`50c1c5dc53`) | skipped (Godspeed has side chats) |
+| 2026-10-31 | Claude MCP elicitations on the approval card (`ff55c19baa`) | skipped (Godspeed already answers Claude elicitations from an input card: `answer_elicitation`) |
+| 2026-10-31 | Message bubble shapes for media, files, pasted text and stacked bursts (`b8397e5caf`, `1da41f9499`, `e57ae5a0bf`, `f012fa210d`, `d6d2433609`); GitHub star prompt (`d92c437baa`) | skipped (T3's web look) |
+| 2026-10-31 | ~370 other commits: Pi/Codex/OpenCode/Antigravity/Cursor fixes, Markdown and timeline perf, Bitbucket/GitLab/Forgejo/Azure fixes, SSH, preview browser, usage pricing, mobile, CI and release | skipped (internal/minor) |
 | 2026-10-30 | The thread details card shows 5-hour, weekly and context limits (`310c128552`, `d7935f135f`) | PR #68 |
 | 2026-10-30 | Stop always completes, and an agent that ignores it can be force stopped (`6b1245cced`, `36d4d711b7`, `6d12bb1e9f`) | queued (check Stop on a Claude/Codex run that ignores the interrupt; Godspeed has no force-stop) |
 | 2026-10-30 | See and stop the dev servers a thread started (`a27ec88bfa`) | queued (with the T3-GAPS process-list row) |

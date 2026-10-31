@@ -1018,7 +1018,7 @@ impl AgentAccounts {
                     // snapshot when no probe has succeeded yet.
                     plan_label: snapshot
                         .and_then(|usage| usage.plan_label.clone())
-                        .or_else(|| slot.profile.plan.clone()),
+                        .or_else(|| slot.profile.plan.as_deref().map(current_plan_label)),
                     active,
                     usage_windows: snapshot
                         .map(|usage| usage.windows.clone())
@@ -1053,7 +1053,7 @@ impl AgentAccounts {
                     id: slot_id_for(harness, &u.account_key),
                     harness,
                     email: Some(u.profile.email.clone()),
-                    plan_label: u.profile.plan.clone(),
+                    plan_label: u.profile.plan.as_deref().map(current_plan_label),
                     active: true,
                     usage_windows: Vec::new(),
                     usage_fetched_at: None,
@@ -3157,7 +3157,7 @@ fn slot_id_for(harness: HarnessId, account_key: &str) -> String {
     crate::repos::hex(&digest)[..16].to_string()
 }
 
-/// Pretty plan label from Claude's org type + rate-limit tier ("Max 20×").
+/// Pretty plan label from Claude's org type + rate-limit tier ("Ultra").
 fn claude_plan(org_type: Option<&str>, tier: Option<&str>) -> Option<String> {
     let base = match org_type {
         Some("claude_max") => "Max",
@@ -3181,10 +3181,26 @@ fn claude_plan(org_type: Option<&str>, tier: Option<&str>) -> Option<String> {
             && stem.as_bytes().get(stem.len() - digits.len() - 1) == Some(&b'_');
         (!digits.is_empty() && preceded).then_some(digits)
     });
-    Some(match mult {
-        Some(mult) => format!("{base} {mult}×"),
-        None => base.to_string(),
+    Some(match (base, mult.as_deref()) {
+        // Anthropic renamed Max 5× to Max and Max 20× to Ultra.
+        ("Max", Some("5") | None) => base.to_string(),
+        ("Max", Some("20")) => "Ultra".to_string(),
+        (_, Some(mult)) => format!("{base} {mult}×"),
+        (_, None) => base.to_string(),
     })
+}
+
+/// A plan label saved before the Max 5× / Max 20× rename, shown under its current name.
+fn current_plan_label(label: &str) -> String {
+    let (prefix, plan) = label
+        .strip_prefix("Claude ")
+        .map_or(("", label), |plan| ("Claude ", plan));
+    let plan = match plan {
+        "Max 5×" => "Max",
+        "Max 20×" => "Ultra",
+        plan => plan,
+    };
+    format!("{prefix}{plan}")
 }
 
 fn codex_plan(plan: Option<&str>) -> Option<String> {
@@ -4207,7 +4223,15 @@ mod tests {
     fn plan_labels() {
         assert_eq!(
             claude_plan(Some("claude_max"), Some("default_claude_max_20x")).as_deref(),
-            Some("Max 20×")
+            Some("Ultra")
+        );
+        assert_eq!(
+            claude_plan(Some("claude_max"), Some("default_claude_max_5x")).as_deref(),
+            Some("Max")
+        );
+        assert_eq!(
+            claude_plan(Some("claude_max"), None).as_deref(),
+            Some("Max")
         );
         assert_eq!(
             claude_plan(Some("claude_pro"), None).as_deref(),
@@ -4218,6 +4242,10 @@ mod tests {
             Some("Team")
         );
         assert_eq!(claude_plan(Some("free"), None), None);
+        assert_eq!(current_plan_label("Max 20×"), "Ultra");
+        assert_eq!(current_plan_label("Claude Max 5×"), "Claude Max");
+        assert_eq!(current_plan_label("Claude Max 20×"), "Claude Ultra");
+        assert_eq!(current_plan_label("Pro"), "Pro");
         assert_eq!(codex_plan(Some("plus")).as_deref(), Some("ChatGPT Plus"));
         assert_eq!(codex_plan(Some("free")).as_deref(), Some("ChatGPT Free"));
         assert_eq!(codex_plan(None), None);
