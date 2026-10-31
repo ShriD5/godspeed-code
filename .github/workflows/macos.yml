@@ -102,7 +102,7 @@ jobs:
           # Pinned release, verified against a checksum.
           version=0.9.146
           sha256=39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8
-          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$RUNNER_TEMP/nextest.tar.gz" \
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/nextest.tar.gz" \
             "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$version/cargo-nextest-$version-universal-apple-darwin.tar.gz"
           echo "$sha256  $RUNNER_TEMP/nextest.tar.gz" | shasum -a 256 -c -
           # macOS 26 runners ship rustup from the system package manager, so
