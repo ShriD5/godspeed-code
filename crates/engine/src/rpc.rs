@@ -5031,14 +5031,23 @@ mod tests {
             format!("http://{}/archive.zip", listener.local_addr().unwrap()).into_boxed_str(),
         );
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut headers = Vec::new();
-            let mut buf = [0; 4096];
-            while !headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let count = socket.read(&mut buf).await.unwrap();
-                assert!(count > 0, "archive request closed before its headers");
-                headers.extend_from_slice(&buf[..count]);
-            }
+            // Serve the archive request; skip any other connection. The port
+            // came from the OS, and another process on the host can still
+            // probe it (a "free" port it once picked) before the download.
+            let mut socket = loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut headers = Vec::new();
+                let mut buf = [0; 4096];
+                while !headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    match socket.read(&mut buf).await {
+                        Ok(count) if count > 0 => headers.extend_from_slice(&buf[..count]),
+                        _ => break,
+                    }
+                }
+                if headers.starts_with(b"GET /archive.zip ") {
+                    break socket;
+                }
+            };
             socket
                 .write_all(
                     format!(
