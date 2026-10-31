@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #TBD |
+| 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #84 |
 | 2026-10-31 | The context meter marks where Claude actually auto-compacts (window minus 33k) and fills against the limit (`159a914d6b`, `961026c6c9`) | queued (Godspeed's meter has no auto-compact mark; needs the threshold from the Claude driver) |
 | 2026-10-31 | Pin favourite projects and archive old ones (`ffaa1dba76`) | queued (Godspeed pins chats within a project, not projects) |
 | 2026-10-31 | Commands that exit 0 no longer show as failed (`469afd8b53`); cancelled ACP tool calls stop showing as running (`076aacca16`); Claude NotebookEdit names the notebook (`3a9640c3eb`) | queued (check our command and ACP tool rows for the same cases) |
