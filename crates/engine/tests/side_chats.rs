@@ -199,6 +199,8 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
     assert_eq!(mcp.env["GODSPEED_IPC_PORT"], "27699");
     assert_eq!(mcp.env["GODSPEED_CHAT_ID"], "side");
     assert_eq!(mcp.env["GODSPEED_DEVICE_ID"], core.device_id);
+    // No window is attached to this engine, so the preview tools stay out.
+    assert_eq!(mcp.env[zeron_proto::MCP_PREVIEW_ENV], "0");
     assert!(request.prompt.contains("PINEAPPLE"));
     assert!(!request.prompt.contains("unfinished turn"));
     assert_eq!(source.doc().read_entries().unwrap().len(), 4);

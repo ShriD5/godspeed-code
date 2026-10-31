@@ -34,6 +34,9 @@ pub struct McpConfig {
     pub ipc_port: u16,
     /// The chat whose agent spawned this server, when injected by the engine.
     pub origin: Origin,
+    /// Whether a desktop window can serve the `preview_*` tools. The engine
+    /// sets `GODSPEED_PREVIEW=0` when none is attached; unset means yes.
+    pub preview: bool,
 }
 
 impl McpConfig {
@@ -44,9 +47,11 @@ impl McpConfig {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(27654);
+        let preview = std::env::var(zeron_proto::MCP_PREVIEW_ENV).map_or(true, |v| v.trim() != "0");
         Self {
             ipc_port,
             origin: Origin::from_env(),
+            preview,
         }
     }
 }
@@ -54,6 +59,6 @@ impl McpConfig {
 /// Run the MCP server on this process's stdin/stdout until stdin closes.
 pub async fn run(config: McpConfig) -> anyhow::Result<()> {
     let godspeed = Godspeed::new(format!("ws://127.0.0.1:{}", config.ipc_port), config.origin);
-    let tools = Tools::new(std::sync::Arc::new(godspeed));
+    let tools = Tools::new(std::sync::Arc::new(godspeed)).with_preview(config.preview);
     serve_stdio(std::sync::Arc::new(tools)).await
 }
