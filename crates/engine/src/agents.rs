@@ -40,6 +40,7 @@ pub fn preview_next_fire(
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -126,6 +127,8 @@ struct Inner {
 struct FileWatchTask {
     roots: Vec<PathBuf>,
     debounce: Duration,
+    /// Per root: the OS watch is installed (its go-live rescan arrived).
+    live: Arc<[AtomicBool]>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -311,6 +314,20 @@ impl Agents {
     /// Revision counter for `WatchAgents`.
     pub fn watch(&self) -> watch::Receiver<u64> {
         self.inner.revision.subscribe()
+    }
+
+    /// Whether every file-watch trigger of `agent_id` has its OS watch
+    /// installed, so a change made now is seen. False while the watch hub is
+    /// still applying a registration, and for agents without file watches.
+    pub fn file_watches_live(&self, agent_id: &str) -> bool {
+        let prefix = format!("{agent_id}:");
+        let watches = lock(&self.inner.watches);
+        let mut tasks = watches
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .peekable();
+        tasks.peek().is_some()
+            && tasks.all(|(_, task)| task.live.iter().all(|root| root.load(Ordering::Acquire)))
     }
 
     pub fn list(&self) -> Result<Vec<AgentSummary>, EngineError> {
@@ -1316,9 +1333,11 @@ impl Inner {
             let inner = self.clone();
             let task_roots = roots.clone();
             let trigger = key.clone();
+            let live: Arc<[AtomicBool]> = roots.iter().map(|_| AtomicBool::new(false)).collect();
+            let task_live = live.clone();
             let task = tokio::spawn(async move {
                 inner
-                    .watch_files(agent_id, trigger, task_roots, debounce)
+                    .watch_files(agent_id, trigger, task_roots, debounce, task_live)
                     .await;
             });
             watches.insert(
@@ -1326,6 +1345,7 @@ impl Inner {
                 FileWatchTask {
                     roots,
                     debounce,
+                    live,
                     task,
                 },
             );
@@ -1338,6 +1358,7 @@ impl Inner {
         watch_key: String,
         roots: Vec<PathBuf>,
         debounce: Duration,
+        live: Arc<[AtomicBool]>,
     ) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
         let registering = roots.clone();
@@ -1346,12 +1367,18 @@ impl Inner {
             let hub = FsWatchHub::global();
             registering
                 .iter()
-                .map(|root| {
+                .enumerate()
+                .map(|(index, root)| {
                     let tx = tx.clone();
+                    let live = live.clone();
                     hub.watch(root, notify::RecursiveMode::Recursive, move |event| {
-                        // The hub's go-live rescan is not a change.
-                        if event.need_rescan() || matches!(event.kind, notify::EventKind::Access(_))
-                        {
+                        // The hub's go-live rescan is not a change; it says the
+                        // OS watch is installed.
+                        if event.need_rescan() {
+                            live[index].store(true, Ordering::Release);
+                            return;
+                        }
+                        if matches!(event.kind, notify::EventKind::Access(_)) {
                             return;
                         }
                         for path in &event.paths {
