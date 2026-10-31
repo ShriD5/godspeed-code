@@ -348,6 +348,32 @@ fn binary_version_with(path: &Path, timeout: std::time::Duration) -> Option<semv
     version
 }
 
+/// Spawn `command`, retrying while the kernel reports its executable busy.
+///
+/// Linux refuses to exec a file that any process holds open for writing
+/// (`ETXTBSY`). A file this process just wrote, such as an extracted install
+/// or a test's fake CLI, can still be open in a child that another thread
+/// forked before the write was closed: the inherited descriptor only closes
+/// when that child calls exec, microseconds later. A bounded retry outlasts
+/// that window; any other spawn error is returned at once.
+#[cfg(not(windows))]
+pub(crate) fn spawn_retrying_busy(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn probe_version(path: &Path, timeout: std::time::Duration) -> Probe {
     #[cfg(not(windows))]
     let probe = || -> Probe {
@@ -365,8 +391,8 @@ fn probe_version(path: &Path, timeout: std::time::Duration) -> Probe {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
-        let Ok(mut child) = command.spawn() else {
-            // ETXTBSY while an updater is still writing the file, EAGAIN, …
+        let Ok(mut child) = spawn_retrying_busy(&mut command) else {
+            // Still busy after the retry window (an updater mid-write), EAGAIN, …
             return Probe::Inconclusive;
         };
         fn reader(pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
@@ -870,6 +896,32 @@ mod tests {
         }
         assert_eq!(binary_version(&first).unwrap().to_string(), "1.0.0+aaa");
         assert_eq!(newest_candidate(vec![first.clone(), second]), Some(first));
+    }
+
+    /// A fake CLI still open for writing elsewhere (here: this test's own
+    /// handle, closed shortly after) is ETXTBSY on Linux until the writer
+    /// closes; the spawn waits that out instead of failing the probe.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_waits_out_a_briefly_busy_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("busy");
+        let mut file = std::fs::File::create(&path).unwrap();
+        std::io::Write::write_all(&mut file, b"#!/bin/sh\necho codex-cli 3.1.4\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            drop(file);
+        });
+        let output = spawn_retrying_busy(
+            std::process::Command::new(&path).stdout(std::process::Stdio::piped()),
+        )
+        .expect("spawned once the writer closed")
+        .wait_with_output()
+        .unwrap();
+        closer.join().unwrap();
+        assert_eq!(output.stdout, b"codex-cli 3.1.4\n");
     }
 
     #[cfg(unix)]
