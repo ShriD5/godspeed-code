@@ -128,6 +128,7 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Agents | Child-thread approvals appear in the parent thread with the child's name and Approve / Decline, answerable without switching threads | `apps/web/src/components/chat/ChildThreadApprovals.tsx`; `packages/client-runtime/src/state/threadRequests.ts` (`createChildThreadApprovalsAtom`) (`70f475f511`) | PARTIAL: the lanes card shows a child's Needs approval status and opens it in the right pane (`ui/src/shell/session_lanes.rs`); no inline card in the parent composer | Med |
 | Source control | Mark ready for review, back to draft, close, reopen; delete the branch after merge | `pullRequest.ts` (actions `ready`, `draft`, `close`, `reopen`, `delete-branch`) | MISSING: `gh pr create --draft` only (`source_control.rs`) | Med |
 | Source control | Update a PR branch from its base (merge or rebase) | `pullRequest.ts` (action `update-branch`, `updateMethods`) | MISSING | Med |
 | Source control | Request reviewers, see reviewer candidates, set labels | `PullRequestProvider.ts` (`setReviewerRequest`, `listReviewerCandidates`, `setLabels`) | MISSING (PARITY section 13 agrees) | Med |
@@ -214,6 +215,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Worktree chats still get a branch when the repo has a plain branch named like the prefix (`godspeed` flattens to `godspeed-<name>`), and a branch nested under a candidate name counts as taken | #TBD |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
