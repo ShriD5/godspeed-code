@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-02 | Claude threads no longer join the Claude Code session that launched T3: its session id, messaging socket and token, and effort are dropped from the agent's environment (`47f2c8d29e`) | PR #TBD |
+| 2026-11-02 | Claude threads no longer join the Claude Code session that launched T3: its session id, messaging socket and token, and effort are dropped from the agent's environment (`47f2c8d29e`) | PR #87 |
 | 2026-11-02 | Threads show a divider when you switch model or effort between messages (`c65f8d552b`) | queued (Godspeed keeps only the chat's current config; needs the model and effort recorded per turn) |
 | 2026-11-02 | Approval cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`) | queued (`claude/wire.rs` ignores `control_cancel_request`, so the card waits forever) |
 | 2026-11-02 | Managed policy file for organization-wide configuration (`d897d3f3f0`) | queued (T3-GAPS row; Theo hyped it) |

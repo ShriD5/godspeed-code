@@ -217,7 +217,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
-| Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #TBD |
+| Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
