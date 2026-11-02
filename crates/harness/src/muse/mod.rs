@@ -450,7 +450,14 @@ impl Harness for MuseHarness {
                 _ = consumer.closed() => Ok(()),
             };
             if let Err(error) = result {
-                let status = runner.host.child.try_wait().ok().flatten();
+                // The first symptom of a crash is usually the pipe's ("Muse
+                // stdout closed"), racing the exit itself: give the exit a
+                // moment so the message names the crash (as the Pi driver does).
+                let status =
+                    tokio::time::timeout(Duration::from_millis(250), runner.host.child.wait())
+                        .await
+                        .ok()
+                        .and_then(Result::ok);
                 runner.norm.error = Some(if status.is_some() {
                     crate::crash_message("Muse", status, &runner.host.tail)
                 } else {
