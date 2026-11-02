@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@4f55b0e1 (2026-10-31)
+Synced through: zeronsh/zeron@2500e8b3 (2026-11-01)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -63,6 +63,10 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     `Vec<BackgroundTask>`, so older peers would fail to read new rows. Needs a wire
     decision (new key, or keep the count beside the list) and a merge with Godspeed's
     count users; 26 files conflict.
+- Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
+  restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
+  binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
+  (dfbb6876); its git identity XDG fix lives in `credentials.rs` (cc7da5c2).
 - Partly ported (2026-10-27): f65c5bc6 and d8a14b35 brought the shared header parser and the
   desktop rows; their iOS/Android captions wait for inline marks and a workspace snapshot in
   the mobile layout (Android needs cc7da5c2).
