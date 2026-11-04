@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@79f1fadfc6 (2026-10-31)
+Reviewed T3 through: pingdotgg/t3code@8b44f42b14 (2026-11-04)
 
 ## Rules
 
@@ -23,6 +23,15 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-04 | Threads show a divider when you switch model or effort between turns (`c65f8d552b`) | PR pending |
+| 2026-11-04 | Claude model list comes from what Claude Code reports (`dd69b31665`); the context meter knows the window for models outside the catalog (`7fd859aeef`) | queued (Godspeed's Claude catalog is static in `harness/src/claude/catalog.rs`) |
+| 2026-11-04 | Generated commit/PR text and turn diffs survive user git config: colour, `log.showSignature`, `diff.suppressBlankEmpty`, `diff.submodule=log`, `diff.relative` (`50106efdd9`, `5815442128`, `4a09502b38`, `35af84977d`, `0673e7e610`, `e86dc78d62`) | queued (Godspeed passes `--no-color` but no `-c` overrides for the rest; one change covering the engine's git helper) |
+| 2026-11-04 | ACP final agent message without a trailing newline is no longer dropped (`6d80df55bb`); ACP Always allow no longer cancels when only allow-once is offered (`21e4f980ca`) | queued (check `harness/src/acp` framing and permission option mapping) |
+| 2026-11-04 | Refresh button on provider status banners (`e27e12d9b4`); copied code blocks keep blank lines (`b7ab02e0f6`); images from MCP tool outputs shown (`d51bc58f5e`) | queued (small UI checks) |
+| 2026-11-04 | A failed or cancelled worktree add deletes its new branch (`48c8cf787e`, `c3c15f7d36`) | skipped (Godspeed keeps the branch on purpose, like `git worktree add`, and picks a free name on retry) |
+| 2026-11-04 | Kiro as an ACP provider (`55e2538561`, `8c9945d44d`, `8198b2ed5e`) | skipped (ACP registry agents already cover new ACP CLIs) |
+| 2026-11-04 | GitHub star prompt and confetti (`5d3d78ab93`, `cefb544af3`) | skipped (growth tactic) |
+| 2026-11-04 | ~310 other commits: server recovery perf, Pi/Codex/OpenCode/Cursor/Antigravity fixes, forge (GitLab/Forgejo/Azure) fixes, Tailscale, managed policy, secret providers, emoji-safe truncation, mobile, marketing, evals and CI | skipped (internal/minor) |
 | 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #84 |
 | 2026-10-31 | The context meter marks where Claude actually auto-compacts (window minus 33k) and fills against the limit (`159a914d6b`, `961026c6c9`) | queued (Godspeed's meter has no auto-compact mark; needs the threshold from the Claude driver) |
 | 2026-10-31 | Pin favourite projects and archive old ones (`ffaa1dba76`) | queued (Godspeed pins chats within a project, not projects) |
