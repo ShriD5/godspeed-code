@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-04 | Threads show a divider when you switch model or effort between turns (`c65f8d552b`) | PR pending |
+| 2026-11-04 | Threads show a divider when you switch model or effort between turns (`c65f8d552b`) | PR #88 |
 | 2026-11-04 | Claude model list comes from what Claude Code reports (`dd69b31665`); the context meter knows the window for models outside the catalog (`7fd859aeef`) | queued (Godspeed's Claude catalog is static in `harness/src/claude/catalog.rs`) |
 | 2026-11-04 | Generated commit/PR text and turn diffs survive user git config: colour, `log.showSignature`, `diff.suppressBlankEmpty`, `diff.submodule=log`, `diff.relative` (`50106efdd9`, `5815442128`, `4a09502b38`, `35af84977d`, `0673e7e610`, `e86dc78d62`) | queued (Godspeed passes `--no-color` but no `-c` overrides for the rest; one change covering the engine's git helper) |
 | 2026-11-04 | ACP final agent message without a trailing newline is no longer dropped (`6d80df55bb`); ACP Always allow no longer cancels when only allow-once is offered (`21e4f980ca`) | queued (check `harness/src/acp` framing and permission option mapping) |
