@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@79f1fadfc6 (2026-10-31)
+Reviewed T3 through: pingdotgg/t3code@337c5858c3 (2026-11-05)
 
 ## Rules
 
@@ -23,6 +23,13 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-05 | Antigravity prompts that go silent mid-turn time out after 15 minutes instead of staying Working; open tools and approvals pause the clock (`3f905cac2e`) | PR #N |
+| 2026-11-05 | Agents ask for secrets with `request_secret` instead of in chat (`9e85538535`, `7f782b4d6d`) | queued (T3-GAPS secret card row; needs an MCP tool, a private input card and a keychain-held reference) |
+| 2026-11-05 | MCP Apps render from Claude tool calls (`a21d788752`) | queued (new T3-GAPS row; Godspeed renders `show_visual` but not MCP App UI resources) |
+| 2026-11-05 | Optionally clone repos into ghq-style `<host>/<owner>/<repo>` folders (`707dcdaa16`) | queued (new T3-GAPS row; `project_transfer.rs` clones into one flat folder) |
+| 2026-11-05 | Older pending questions stay answerable when history pages (`c15e49a77c`); Codex shared usage limits offer the recovery options (`935818e422`) | skipped (T3's history paging; Godspeed keeps every pending input card and already maps Codex limits through `limits::event_from_text`) |
+| 2026-11-05 | Sidebar shows Setting up during worktree setup (`b3041a8cb9`); Changes totals name the comparison base (`199cb5b6a9`) | queued (check the session row during worktree creation and the diff header's base label) |
+| 2026-11-05 | ~40 other commits: Effect/crypto refactors, relay and tunnel restarts, mobile iOS/Android fixes, browser tab limit, sibling wakeups, stopped-run history, evals, CI | skipped (internal/minor) |
 | 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #84 |
 | 2026-10-31 | The context meter marks where Claude actually auto-compacts (window minus 33k) and fills against the limit (`159a914d6b`, `961026c6c9`) | queued (Godspeed's meter has no auto-compact mark; needs the threshold from the Claude driver) |
 | 2026-10-31 | Pin favourite projects and archive old ones (`ffaa1dba76`) | queued (Godspeed pins chats within a project, not projects) |

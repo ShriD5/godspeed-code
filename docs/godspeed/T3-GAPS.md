@@ -128,6 +128,8 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
+| Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
 | Source control | Mark ready for review, back to draft, close, reopen; delete the branch after merge | `pullRequest.ts` (actions `ready`, `draft`, `close`, `reopen`, `delete-branch`) | MISSING: `gh pr create --draft` only (`source_control.rs`) | Med |
 | Source control | Update a PR branch from its base (merge or rebase) | `pullRequest.ts` (action `update-branch`, `updateMethods`) | MISSING | Med |
 | Source control | Request reviewers, see reviewer candidates, set labels | `PullRequestProvider.ts` (`setReviewerRequest`, `listReviewerCandidates`, `setLabels`) | MISSING (PARITY section 13 agrees) | Med |
@@ -153,7 +155,7 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 | Orchestration | Delegated tasks with a task id: check status, cancel, and the child wakes the parent on completion or question | `orchestrator/tools.ts` (`task_status`, `task_cancel`); `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`; `apps/server/src/orchestration-v2/ThreadManagementService.ts` | PARTIAL: `create_chat` + `wait_for_turn` only (PARITY section 4) | High |
 | Orchestration | Delegate a child to another linked machine, and it reports back | `apps/server/src/peer/RemoteDelegation.ts`; orchestrator `t3_environment_links` | PARTIAL: `create_chat` takes a `device` (`crates/mcp/src/tools.rs`); no wake-back | Med |
 | Orchestration | Agent schedules, lists, pauses, deletes and runs always-on tasks | `orchestrator/tools.ts` (`schedule_task`, `list_scheduled_tasks`, `delete_scheduled_task`); `thread/tools.ts` (`run_scheduled_task_now`) | MISSING: MCP has about 16 tools and none schedule (`crates/mcp/src/tools.rs`) | Med |
-| Orchestration | Agent asks the user for a secret in a private card and gets a one-use reference; the model never sees the value | `orchestrator/tools.ts` (`request_secret`) | MISSING (PARITY section 3) | Med |
+| Orchestration | Agent asks the user for a secret in a private card and gets a one-use reference; the model never sees the value | `orchestrator/tools.ts` (`request_secret`); agents told to use it instead of asking in chat (`9e85538535`) | MISSING (PARITY section 3) | Med |
 | Orchestration | Agent moves its own thread into a new worktree on a new branch | `apps/server/src/mcp/toolkits/worktree/tools.ts` (`t3_worktree_handoff`, `t3_worktree_status`, `t3_worktree_list`) | MISSING (PARITY section 12: "no handoff") | Med |
 | Orchestration | Webhook tasks verify an HMAC signature and dedupe deliveries | `apps/server/src/scheduledTasks/webhookVerification.ts`; `webhookDedupe.ts` | MISSING: no verification (signature headers are only redacted in `crates/engine/src/agents/prompt.rs`) | Med |
 | Orchestration | Tailscale: serve the engine on the tailnet directly, pick an exit node | `packages/tailscale/src/tailscale.ts`; `apps/server/src/environment/DirectEndpoints.ts` | PARTIAL: Tailscale peers are offered as servers to set up ("Run on a server"); devices still talk through the edge, not directly over the tailnet | Low |
@@ -214,6 +216,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Antigravity turns that go silent mid-prompt end with an error after 15 minutes instead of staying Working (open tools and approvals pause the clock) | #N |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
