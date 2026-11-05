@@ -2658,7 +2658,7 @@ impl AppState {
     /// An `unsaved` chat is a hand-started side chat nothing has written yet:
     /// it opens no doc until its first send mints it (see
     /// [`Self::unsaved_side_chat_create`]).
-    pub(crate) fn side_chat_state(
+    pub(crate) fn independent_chat_state(
         parent: &Entity<Self>,
         chat: Chat,
         unsaved: bool,
@@ -2683,6 +2683,15 @@ impl AppState {
         state.select_chat(Some(chat.id), cx);
         state.watch_clock_transitions(cx);
         state
+    }
+
+    pub(crate) fn side_chat_state(
+        parent: &Entity<Self>,
+        chat: Chat,
+        unsaved: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::independent_chat_state(parent, chat, unsaved, cx)
     }
 
     /// This is a side chat's state whose chat its first send has yet to mint.
