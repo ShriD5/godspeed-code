@@ -78,6 +78,9 @@ const DEFAULT_MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 // The one-file server unpacks on launch. A local cold probe took 1.903s, but
 // slower disks need substantially more headroom than the generic 10s budget.
 const ANTIGRAVITY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(90);
+// Antigravity can leave a prompt open with no further updates; open tools and
+// approvals pause the bound.
+const ANTIGRAVITY_PROMPT_IDLE: Option<Duration> = Some(Duration::from_secs(15 * 60));
 /// Per-agent configuration: which binary to spawn and what to tell the picker.
 struct AcpAgentSpec {
     id: HarnessId,
@@ -140,6 +143,11 @@ struct AcpAgentSpec {
     /// Agent-specific advice appended to the stall error chip: what a wedge
     /// usually means for THIS agent and what the user can check.
     stall_hint: &'static str,
+    /// Bound on a running prompt's silence: no message, thought, tool or plan
+    /// update and no agent request while no tool call is open. `None`
+    /// disables. Unlike `prompt_stall` it covers a prompt that went quiet
+    /// after starting.
+    prompt_idle: Option<Duration>,
     /// the agent advertises every effort as its own model id (`…-low`,
     /// `…-high`) instead of a `thought_level` option: discovered variants fold
     /// into one row with a ladder, and a run sends the variant for its level.
@@ -268,6 +276,7 @@ fn grok_spec() -> AcpAgentSpec {
         stall_hint: "The agent process is likely wedged — a stale shared leader \
              process or a hung startup check; godspeed launches it with --no-leader \
              and --no-auto-update to avoid both.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
@@ -345,6 +354,7 @@ fn devin_spec() -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "The agent process is likely wedged.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
@@ -375,6 +385,7 @@ fn fx_spec() -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "Check fx's provider configuration.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
@@ -452,6 +463,7 @@ fn hermes_spec() -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "The agent process is likely wedged.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
@@ -1158,6 +1170,7 @@ fn antigravity_spec() -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "The agent process is likely wedged.",
+        prompt_idle: ANTIGRAVITY_PROMPT_IDLE,
         effort_in_model_id: true,
         // the personal oauth method is only the first-run default; sign-in
         // preserves any method already selected in antigravity's settings.
@@ -1347,6 +1360,7 @@ fn registry_spec(launch: &RegistryAgentLaunch) -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "The agent process is likely wedged.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
@@ -2584,6 +2598,7 @@ impl Harness for AcpHarness {
             resend_unstarted: self.spec.drops_unstarted_cancelled_prompt,
             prompt_stall: self.spec.prompt_stall,
             stall_hint: self.spec.stall_hint,
+            prompt_idle: self.spec.prompt_idle,
             effort_in_model_id: self.spec.effort_in_model_id,
             auth_method: self.spec.auth_method,
             sessions_root: self.sessions_root.clone(),
@@ -2631,6 +2646,7 @@ struct Session {
     resend_unstarted: bool,
     prompt_stall: Option<Duration>,
     stall_hint: &'static str,
+    prompt_idle: Option<Duration>,
     effort_in_model_id: bool,
     auth_method: Option<&'static str>,
     /// Sessions-root override for the subagent transcript tail (tests).
@@ -3891,6 +3907,14 @@ fn prompt_like_request(
 }
 
 /// Track tools to avoid prompting into an unowned self-continued turn.
+fn idle_label(idle: Duration) -> String {
+    match idle.as_secs() {
+        secs if secs >= 60 && secs % 60 == 0 => format!("{} min", secs / 60),
+        0 => format!("{}ms", idle.as_millis()),
+        secs => format!("{secs}s"),
+    }
+}
+
 fn track_open_tools(ev: &AgentEvent, open_tools: &mut std::collections::HashSet<String>) {
     match ev {
         AgentEvent::ToolCall { id, .. } => {
@@ -4165,6 +4189,7 @@ async fn run_session(session: Session) {
         resend_unstarted,
         prompt_stall,
         stall_hint,
+        prompt_idle,
         effort_in_model_id,
         auth_method,
         sessions_root,
@@ -4184,7 +4209,24 @@ async fn run_session(session: Session) {
         interrupt,
         turn: turn_control,
     } = controls;
-    let request_input = std::sync::Arc::new(request_input);
+    // Questions and approvals still waiting on the user pause `prompt_idle`.
+    let open_requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let request_input: std::sync::Arc<RequestInputFn> = {
+        let open = std::sync::Arc::clone(&open_requests);
+        std::sync::Arc::new(Box::new(move |questions| {
+            let answer = request_input(questions);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let open = std::sync::Arc::clone(&open);
+            tokio::spawn(async move {
+                if let Ok(answers) = answer.await {
+                    let _ = tx.send(answers);
+                }
+                open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            });
+            rx
+        }))
+    };
     let rules = ConfigRules {
         harness,
         effort_in_model_id,
@@ -4411,6 +4453,17 @@ async fn run_session(session: Session) {
     };
     let mut prompt_stall_deadline: Option<tokio::time::Instant> =
         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+    // `GODSPEED_ACP_PROMPT_IDLE_MS` overrides the spec's bound; 0 disables.
+    let prompt_idle: Option<Duration> = match std::env::var("GODSPEED_ACP_PROMPT_IDLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(0) => None,
+        Some(ms) => Some(Duration::from_millis(ms)),
+        None => prompt_idle,
+    };
+    // The running prompt's last progress, for `prompt_idle`.
+    let mut prompt_progress_at = tokio::time::Instant::now();
     // The text of the prompt in flight (re-sent by a preempt when the agent
     // drops an unstarted cancelled prompt).
     let mut current_prompt_text = prompt_transform(request.reasoning, &request.prompt);
@@ -4811,6 +4864,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = texts.join("\n\n");
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -4860,7 +4914,10 @@ async fn run_session(session: Session) {
                             | Some("agent_thought_chunk")
                             | Some("tool_call")
                             | Some("tool_call_update")
-                            | Some("plan") => progress_seq = prompt_seq,
+                            | Some("plan") => {
+                                progress_seq = prompt_seq;
+                                prompt_progress_at = tokio::time::Instant::now();
+                            }
                             _ => {}
                         }
                     }
@@ -4928,6 +4985,7 @@ async fn run_session(session: Session) {
                 }
                 Some(Incoming::Request { id, method, params }) => {
                     prompt_stall_deadline = None;
+                    prompt_progress_at = tokio::time::Instant::now();
                     for ev in handle_server_request_live(
                         &client,
                         id,
@@ -5092,6 +5150,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -5142,6 +5201,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -5219,6 +5279,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -5350,6 +5411,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -5474,6 +5536,47 @@ async fn run_session(session: Session) {
                         result: None,
                         error: Some(format!(
                             "{agent_name} is unresponsive — the run was closed."
+                        )),
+                        session_id: Some(session_id.clone()),
+                    },
+                )
+                .await;
+                break 'main;
+            },
+
+            // Prompt-idle watchdog: the prompt started, then went quiet with
+            // nothing open that could explain it (a long tool, an approval
+            // waiting on the user). Close the run so the next message starts
+            // a fresh agent process on the same session.
+            _ = tokio::time::sleep_until(
+                prompt_progress_at + prompt_idle.unwrap_or_default(),
+            ), if prompt_idle.is_some() && turn.is_some() && !interrupted && !stopping => {
+                if !open_tools.is_empty()
+                    || open_requests.load(std::sync::atomic::Ordering::SeqCst) > 0
+                {
+                    prompt_progress_at = tokio::time::Instant::now();
+                    continue;
+                }
+                let idle = prompt_idle.unwrap_or_default();
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::Error {
+                        message: format!(
+                            "{agent_name} stopped responding: no updates for {}. \
+                             Send a message to continue the chat.",
+                            idle_label(idle),
+                        ),
+                    },
+                )
+                .await;
+                done_current = true;
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::Done {
+                        status: DoneStatus::Errored,
+                        result: None,
+                        error: Some(format!(
+                            "{agent_name} went silent mid-turn — the run was closed."
                         )),
                         session_id: Some(session_id.clone()),
                     },
