@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-05 | Antigravity prompts that go silent mid-turn time out after 15 minutes instead of staying Working; open tools and approvals pause the clock (`3f905cac2e`) | PR #N |
+| 2026-11-05 | Antigravity prompts that go silent mid-turn time out after 15 minutes instead of staying Working; open tools and approvals pause the clock (`3f905cac2e`) | PR #91 |
 | 2026-11-05 | Agents ask for secrets with `request_secret` instead of in chat (`9e85538535`, `7f782b4d6d`) | queued (T3-GAPS secret card row; needs an MCP tool, a private input card and a keychain-held reference) |
 | 2026-11-05 | MCP Apps render from Claude tool calls (`a21d788752`) | queued (new T3-GAPS row; Godspeed renders `show_visual` but not MCP App UI resources) |
 | 2026-11-05 | Optionally clone repos into ghq-style `<host>/<owner>/<repo>` folders (`707dcdaa16`) | queued (new T3-GAPS row; `project_transfer.rs` clones into one flat folder) |
