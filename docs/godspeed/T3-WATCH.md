@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-06 | `/clear` starts a fresh provider session in the same chat; the send carries the request and the thread marks "New session" (`99e361e415`, `e139768a7e`) | PR #TBD |
+| 2026-11-06 | `/clear` starts a fresh provider session in the same chat; the send carries the request and the thread marks "New session" (`99e361e415`, `e139768a7e`) | PR #94 |
 | 2026-11-06 | Scheduled tasks can run in one thread with a fresh session each run (`4aab23cd72`); tasks link to their thread (`4a087861d0`) | queued (always-on agents could set `FRESH_SESSION_OPTION` per run once `/clear` lands) |
 | 2026-11-06 | Project actions a user opted in stop when their thread settles (`dd059b40bc`) | queued (Godspeed project actions keep running after the turn) |
 | 2026-11-06 | Command output keeps text after an unterminated OSC, drops escape bytes with intermediates, and keeps colours past underline styles (`e4ff8433ee`, `cd890ba346`, `a7f6c68fe9`) | queued (check the tool-output ANSI parser against the same inputs) |
