@@ -3223,11 +3223,6 @@ impl SavedViewportCache {
 pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
-    /// Focus handle for the reading surface itself. Clicking the transcript
-    /// focuses it (via `track_focus`), enabling reading-mode key scrolling.
-    /// A dedicated handle keeps those keys out of the composer's dispatch path,
-    /// so typing there is never intercepted.
-    scroll_focus: gpui::FocusHandle,
     rows: Vec<Row>,
     /// Find in thread: needle, matches over every row, the current one.
     pub(crate) find: Option<crate::transcript_find::FindState>,
@@ -3707,7 +3702,6 @@ impl Transcript {
         let mut this = Self {
             state,
             list,
-            scroll_focus: cx.focus_handle(),
             rows: Vec::new(),
             last_source: None,
             conductor_cards: Vec::new(),
@@ -6342,29 +6336,24 @@ impl Transcript {
         }
     }
 
-    /// Reading-mode keyboard paging for the transcript list. This is scoped to
-    /// when the list itself owns focus (`scroll_focus`): while the composer (a
-    /// sibling subtree) is focused this handler is not in the key dispatch
-    /// path at all, and a focused child popup (image menu, lightbox, ...) is
-    /// filtered out by the `is_focused` guard so it keeps its own key handling.
-    /// This only ADDS a keyboard path — mouse wheel/touch and markdown text
-    /// selection are untouched.
-    fn on_reading_key(
+    /// Reading-mode keyboard paging for the transcript list. The shell calls
+    /// this only while its main navigation scope owns focus (i.e. after the
+    /// user clicks the transcript), never while the composer is focused, so
+    /// typing there is never intercepted. Returns true when the keystroke was
+    /// consumed. This only ADDS a keyboard path — mouse wheel/touch and
+    /// markdown text selection are untouched.
+    pub(crate) fn on_reading_key(
         &mut self,
         event: &gpui::KeyDownEvent,
-        window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if !self.scroll_focus.is_focused(window) {
-            return;
-        }
+    ) -> bool {
         let keystroke = &event.keystroke;
         let m = keystroke.modifiers;
         let key = keystroke.key.as_str();
         // Leave Control/Fn combinations — and anything not listed below —
         // alone, so other shortcuts and IME keep working unchanged.
         if m.control || m.function {
-            return;
+            return false;
         }
         // gpui's ListState exposes the viewport bounds and a pixel `scroll_by`,
         // so "one viewport height" is exact rather than a row estimate. Keep a
@@ -6372,7 +6361,7 @@ impl Transcript {
         let viewport = f32::from(self.list.viewport_bounds().size.height);
         let page = (viewport - READING_PAGE_OVERLAP_PX).max(READING_PAGE_MIN_PX);
 
-        let handled = if key == "space" && !m.platform && !m.alt {
+        if key == "space" && !m.platform && !m.alt {
             // Space pages down; Shift+Space back up.
             self.page_scroll(if m.shift { -page } else { page }, cx);
             true
@@ -6398,9 +6387,6 @@ impl Transcript {
             true
         } else {
             false
-        };
-        if handled {
-            cx.stop_propagation();
         }
     }
 
@@ -11136,19 +11122,9 @@ impl Render for Transcript {
             list_el.into_any_element()
         };
         let root = div()
-            .id("transcript-reading-root")
             .relative()
             .size_full()
             .min_h_0()
-            // Make the reading surface focusable on click so keyboard paging
-            // is scoped to it (never the composer). A focused child popup is
-            // filtered out inside `on_reading_key`. `tab_stop(false)` keeps the
-            // whole transcript out of the Tab order.
-            .track_focus(&self.scroll_focus)
-            .tab_stop(false)
-            .on_key_down(
-                cx.listener(|this, event, window, cx| this.on_reading_key(event, window, cx)),
-            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(Self::on_selection_mouse_down),

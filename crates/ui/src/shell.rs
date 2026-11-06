@@ -11953,6 +11953,20 @@ impl Shell {
                 this.capture_navigation_focus(false, false, window, cx);
             }))
             .on_key_down(|event, _, cx| navigation_focus::copy_transcript_selection(event, cx))
+            // Reading-mode paging lives in the main navigation scope: clicking
+            // the transcript focuses `navigation_focus.main`, while a focused
+            // composer (or the right pane) leaves it unfocused, so typing and
+            // other panes are never intercepted.
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if this.navigation_focus.main.is_focused(window) {
+                    let transcript = this.transcript.clone();
+                    let handled = transcript
+                        .update(cx, |transcript, cx| transcript.on_reading_key(event, cx));
+                    if handled {
+                        cx.stop_propagation();
+                    }
+                }
+            }))
             .relative()
             .flex_1()
             .min_w_0()
