@@ -130,6 +130,9 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 |---|---|---|---|---|
 | Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
 | Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
+| Chat | Divider in the thread when the model or effort changes between messages ("Opus 5.5 high → Sonnet 5.5") | `apps/server/src/orchestration-v2/modelSwitch.ts`; `apps/web/src/components/chat/V2LifecycleRow.tsx` (`ModelSwitchRow`) | MISSING: only the chat's current config is kept (`proto/src/entities.rs` `ChatConfig`) | med |
+| Agents | Claude approval cards close when Claude withdraws the request | `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts` (`cancelWithdrawnRequest`) | MISSING: `control_cancel_request` is ignored (`harness/src/claude/wire.rs`) | med |
+| Settings | Managed policy: an organization-wide file that pins T3 settings | T3 `d897d3f3f0` | MISSING: no policy layer | med |
 | Source control | Mark ready for review, back to draft, close, reopen; delete the branch after merge | `pullRequest.ts` (actions `ready`, `draft`, `close`, `reopen`, `delete-branch`) | MISSING: `gh pr create --draft` only (`source_control.rs`) | Med |
 | Source control | Update a PR branch from its base (merge or rebase) | `pullRequest.ts` (action `update-branch`, `updateMethods`) | MISSING | Med |
 | Source control | Request reviewers, see reviewer candidates, set labels | `PullRequestProvider.ts` (`setReviewerRequest`, `listReviewerCandidates`, `setLabels`) | MISSING (PARITY section 13 agrees) | Med |
@@ -217,6 +220,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 | Feature | Godspeed PR |
 |---|---|
 | Antigravity turns that go silent mid-prompt end with an error after 15 minutes instead of staying Working (open tools and approvals pause the clock) | #91 |
+| Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
@@ -232,3 +236,4 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 | Sub-agents in their own worktree: MCP `create_chat` / `create_chats` `worktree` (`new`, `parent`, existing path or branch) | #59 |
 | Worktree cleanup policies (merged, untouched 7/14/30 days; changes always kept) and a worktree storage view with Delete now / Delete all eligible | #59 |
 | Remote machines over SSH and Tailscale: Settings → Devices → "Run on a server" installs the headless engine on a Linux server with the user's own ssh (BatchMode, no passwords), verifies the GitHub release sha256, signs it in (`godspeed login --stdin-code`), runs it as a systemd user service (nohup + cron fallback), shows status with Update / Stop / Start / Uninstall; Linux release tarballs and `manifest-linux.json` on every `v*` tag (`crates/remote`, `crates/ui/src/settings/servers.rs`, `.github/workflows/release-linux.yml`). Password prompts and direct tailnet connections are not ported on purpose. **e2e pending a VPS** (TEST-CHECKLIST §15e). | #61 |
+| A divider between turns when the model or effort changed (`claude-opus-5-5 → claude-sonnet-5-5`, `Effort high → xhigh`), read from the turn stamps (`crates/ui/src/model_switch.rs`) | #88 |
