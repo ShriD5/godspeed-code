@@ -512,6 +512,7 @@ fn model_rows_map_efforts_and_fall_back_to_the_cli_ladder() {
 #[test]
 fn launch_settings_follow_the_sandbox_and_approval_posture() {
     let mut request = RunRequest {
+        instance: None,
         prompt: "p".into(),
         harness: None,
         model: Some("default".into()),

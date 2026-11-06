@@ -46,6 +46,9 @@ chrono-tz = "0.10"
 
 same-file = "1"
 tempfile.workspace = true
+# `show_image` reads a shown image's size from its header (already in the
+# tree with these decoders via zeron-ui).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 [target.'cfg(windows)'.dependencies]
 dunce = "1"
@@ -53,6 +56,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+# The client cargo and rustc use, for the shared build slots' pool tests.
+jobserver = "0.1"
 zeron-mcp.workspace = true
 zeron-harness = { workspace = true, features = ["installer-fixture"] }
 # Paused-clock tests (the 30-minute idle reaper).

@@ -173,6 +173,9 @@ pub(super) struct ChildChatRow {
     pub change_request: Option<zeron_proto::ChangeRequestSummary>,
     /// The harness it runs on, drawn as the sidebar's brand mark.
     pub harness: Option<zeron_proto::HarnessId>,
+    /// Its branch, when it works on another one than the parent (its own
+    /// worktree, e.g. MCP `create_chat` with `worktree: "new"`).
+    pub branch: Option<SharedString>,
     activity: DateTime<Utc>,
 }
 
@@ -183,12 +186,22 @@ pub(super) fn child_chat_rows(
     chat_id: &str,
     now: DateTime<Utc>,
 ) -> Vec<ChildChatRow> {
+    let parent_branch = state
+        .chats
+        .iter()
+        .find(|chat| chat.id == chat_id)
+        .and_then(|chat| chat.branch.as_deref());
     let mut rows: Vec<ChildChatRow> = state
         .chats
         .iter()
         .filter(|chat| !chat.archived && chat.parent_chat_id.as_deref() == Some(chat_id))
         .map(|chat| {
             let activity = chat.last_message_at.unwrap_or(chat.created_at);
+            let branch = chat
+                .branch
+                .as_deref()
+                .filter(|branch| !branch.is_empty() && Some(*branch) != parent_branch)
+                .map(|branch| SharedString::from(branch.to_owned()));
             ChildChatRow {
                 chat_id: chat.id.clone(),
                 device_id: chat.device_id.clone(),
@@ -197,6 +210,7 @@ pub(super) fn child_chat_rows(
                 time_ago: zeron_proto::view::format_time_ago(activity, now).into(),
                 change_request: state.change_request_for_chat(chat).cloned(),
                 harness: chat.config.as_ref().map(|config| config.harness),
+                branch,
                 activity,
             }
         })
@@ -264,6 +278,25 @@ fn time_label(text: SharedString, theme: &Theme) -> gpui::Div {
         .text_size(crate::typography::ui_rems(11.0))
         .text_color(theme.text_muted)
         .child(text)
+}
+
+/// A side chat's own branch: the git-branch glyph and the name, cut short.
+fn branch_label(branch: SharedString, theme: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .max_w(px(140.0))
+        .flex()
+        .items_center()
+        .gap(px(3.0))
+        .text_size(crate::typography::ui_rems(11.0))
+        .text_color(theme.text_muted)
+        .child(
+            icon(icons::GIT_BRANCH)
+                .size(px(11.0))
+                .flex_none()
+                .text_color(theme.text_muted),
+        )
+        .child(div().min_w_0().truncate().child(branch))
 }
 
 /// A row's title, dissolving at its right edge like the sidebar's.
@@ -593,6 +626,7 @@ impl Shell {
                     .inset_0(),
                 )
             })
+            .children(row.branch.clone().map(|branch| branch_label(branch, theme)))
             .children(row.change_request.clone().map(|summary| {
                 crate::change_requests::pull_request_badge(
                     format!("{key}-pr").into(),
@@ -900,6 +934,27 @@ mod tests {
         assert_eq!(rows[0].title.as_ref(), "New side chat");
         assert_eq!(rows[1].title.as_ref(), "Investigate caching");
         assert_eq!(rows[0].status, ChatIndicator::Idle);
+    }
+
+    #[test]
+    fn a_side_chat_on_its_own_branch_shows_it() {
+        let mut state = AppState::new();
+        let mut main = chat("main", None, 60);
+        main.branch = Some("feat/lead".into());
+        let mut own = chat("own", Some("main"), 5);
+        own.branch = Some("godspeed/brave-otter".into());
+        let mut shared = chat("shared", Some("main"), 4);
+        shared.branch = Some("feat/lead".into());
+        state.apply_chats(vec![main, own, shared, chat("plain", Some("main"), 3)]);
+        let rows = child_chat_rows(&state, "main", Utc::now());
+        let branch = |id: &str| {
+            rows.iter()
+                .find(|r| r.chat_id == id)
+                .and_then(|r| r.branch.as_ref().map(|b| b.to_string()))
+        };
+        assert_eq!(branch("own").as_deref(), Some("godspeed/brave-otter"));
+        assert_eq!(branch("shared"), None, "the parent's checkout");
+        assert_eq!(branch("plain"), None);
     }
 
     #[test]

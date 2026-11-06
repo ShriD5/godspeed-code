@@ -2,6 +2,9 @@
 mod storage;
 #[path = "browser-fixture/transcript_links.rs"]
 mod transcript_links;
+#[cfg(target_os = "macos")]
+#[path = "browser-fixture/agent_preview.rs"]
+mod agent_preview;
 #[cfg(target_os = "linux")]
 #[path = "browser-fixture/linux.rs"]
 mod linux;
@@ -170,7 +173,12 @@ fn main() -> anyhow::Result<()> {
             let mut request = [0; 4096];
             let n = stream.read(&mut request).unwrap_or(0);
             let request = String::from_utf8_lossy(&request[..n]);
-            let (title, html) = if request.starts_with("GET /two ") {
+            let (title, html) = if request.starts_with("GET /agent ") {
+                (
+                    "Greeter",
+                    "<h1>Greeter</h1><label for='name'>Name</label><input id='name' placeholder='Your name'><button id='go' onclick=\"var n=document.getElementById('name').value;document.getElementById('out').textContent='Hello, '+n;console.log('greeted',n)\">Greet</button><p id='out'></p><script>console.warn('agent fixture ready')</script>",
+                )
+            } else if request.starts_with("GET /two ") {
                 (
                     "Details",
                     "<a href='/'>Back to overview</a><h1>A closer look.</h1><p>Independent navigation, right beside your work.</p>",
@@ -235,6 +243,10 @@ fn main() -> anyhow::Result<()> {
                         "profile": storage_profile, "url": url, "status": "pass"
                     }))?)?;
                     return Ok(());
+                }
+                #[cfg(target_os = "macos")]
+                if std::env::var_os("GODSPEED_AGENT_PREVIEW_FIXTURE_ONLY").is_some() {
+                    return agent_preview::exercise(window, &_origin, &output, cx).await;
                 }
                 if std::env::var_os("GODSPEED_TRANSCRIPT_LINK_FIXTURE_ONLY").is_some() {
                     return transcript_links::exercise(window, state.clone(), &_origin, &output, cx).await;
@@ -364,6 +376,15 @@ fn main() -> anyhow::Result<()> {
                     let deadline = std::time::Instant::now() + Duration::from_secs(5);
                     while !first.read_with(cx, |b,_| b.page.title == "Unexpected page click") {
                         anyhow::ensure!(std::time::Instant::now() < deadline, "page mouse input was not restored after menu dismissal"); pause(cx,50).await;
+                    }
+                    // That click made the page AppKit's first responder. A click on
+                    // GPUI content must take it back, or keys keep reaching the page
+                    // before the focused GPUI input.
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_focused()), "page click did not take keyboard focus");
+                    first.read_with(cx, |b,_| b.fixture_click((left*0.5) as f64,(top+150.) as f64));
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while first.read_with(cx, |b,_| b.fixture_focused()) {
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "page kept keyboard focus after a click on GPUI content"); pause(cx,50).await;
                     }
                     first.read_with(cx, |b,_| b.fixture_eval("document.title = 'Fieldnotes'"));
                 }
@@ -528,6 +549,12 @@ fn main() -> anyhow::Result<()> {
                 let before = first.read_with(cx, |b, _| b.page.url.clone());
                 window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("javascript:alert(1)", w, cx)))?;
                 anyhow::ensure!(first.read_with(cx, |b, _| b.page.url == before), "unsupported address navigated");
+                // A local path says where files open instead of loading a made-up host.
+                window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("/Users/me/Documents/mockup.html", w, cx)))?;
+                anyhow::ensure!(first.read_with(cx, |b, _| b.page.url == before), "local path navigated");
+                pause(cx, 300).await; capture_frame(window, &output, "browser-local-file-light", cx).await?;
+                cx.update(|cx| appearance::set_mode(appearance::AppearanceMode::Dark, cx));
+                pause(cx, 600).await; capture_frame(window, &output, "browser-local-file-dark", cx).await?;
                 window.update(cx, |shell, w, cx| shell.fixture_close_browser(first_id, w, cx))?;
                 pause(cx, 200).await;
                 anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "closed tab retained its native view");

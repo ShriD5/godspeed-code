@@ -229,7 +229,7 @@ async fn claude_slot_swap_round_trip() {
     let alice = &snapshot.accounts[0];
     assert_eq!(
         alice.plan_label.as_deref(),
-        Some("Max 20×"),
+        Some("Ultra"),
         "plan label parse"
     );
     assert_eq!(alice.display_name.as_deref(), Some("Test User"));
@@ -967,6 +967,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         .expect("set branch");
 
     let request = zeron_proto::RunRequest {
+        instance: None,
         mcp: None,
         prompt: "please fix the login flow".into(),
         harness: None,
@@ -1015,6 +1016,7 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         .rename_chat(chat_id, "My Custom Name")
         .expect("rename");
     let request = zeron_proto::RunRequest {
+        instance: None,
         mcp: None,
         prompt: "another request".into(),
         harness: None,

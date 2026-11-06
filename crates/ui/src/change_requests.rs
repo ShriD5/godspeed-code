@@ -14,6 +14,23 @@ use zeron_proto::{
 
 use crate::theme::Theme;
 
+/// Pull requests this device's engine is watching; their badges wear an eye.
+static WATCHED: std::sync::LazyLock<std::sync::RwLock<HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn set_watched_pull_requests(urls: impl IntoIterator<Item = String>) {
+    let mut watched = WATCHED.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+    watched.clear();
+    watched.extend(urls);
+}
+
+pub(crate) fn is_watched_pull_request(url: &str) -> bool {
+    WATCHED
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(url)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChangeRequestBadgeTone {
     Open,
@@ -195,7 +212,15 @@ fn render_badge_model(
     let color = model.tone.color(theme);
     let tooltip_model = model.clone();
     let composer = surface == ChangeRequestBadgeSurface::Composer;
-    let accessible_label = format!("Open pull request {}: {}", model.number, model.title);
+    let watched = is_watched_pull_request(&url);
+    let accessible_label = if watched {
+        format!(
+            "Open pull request {}: {} (watched)",
+            model.number, model.title
+        )
+    } else {
+        format!("Open pull request {}: {}", model.number, model.title)
+    };
 
     div()
         .debug_selector({
@@ -252,6 +277,16 @@ fn render_badge_model(
                 .font_family(theme.font_mono.clone())
                 .child(crate::popover::search_highlight(model.number, query, theme)),
         )
+        // Watched: failed checks, reviews and conflicts wake the chat.
+        .when(watched, |el| {
+            el.child(
+                crate::icons::icon(crate::icons::EYE)
+                    .debug_selector(|| "pull-request-badge-watched".into())
+                    .size(px(if composer { 11.0 } else { 10.0 }))
+                    .flex_none()
+                    .text_color(color.opacity(0.85)),
+            )
+        })
         .into_any_element()
 }
 

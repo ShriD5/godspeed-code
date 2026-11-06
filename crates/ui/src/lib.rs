@@ -16,6 +16,7 @@ mod account_usage;
 pub mod add_to_device;
 pub mod app_menus;
 pub mod app_update;
+pub(crate) mod app_visibility;
 pub mod appearance;
 mod approval_view;
 pub mod appshots;
@@ -25,6 +26,7 @@ pub mod badges;
 pub mod browser;
 pub mod change_requests;
 pub mod changes;
+pub mod citations;
 mod comment_ui;
 pub mod comments;
 pub mod composer;
@@ -33,6 +35,7 @@ mod composer_markdown;
 pub mod conductor;
 mod context_usage;
 mod dictation;
+pub mod dock_badge;
 pub mod edge_fade;
 pub mod rounded_clip;
 pub mod file_icons;
@@ -50,6 +53,7 @@ pub mod links;
 pub mod loaders;
 pub mod markdown;
 pub mod mission_control;
+pub(crate) mod model_switch;
 pub mod motion;
 mod new_thread_background_effects;
 mod new_thread_background_image;
@@ -71,10 +75,12 @@ pub mod pull_requests;
 pub mod queue;
 pub mod rail;
 pub mod receipt;
+pub(crate) mod reply_images;
 mod roll_text;
 pub mod running_pill;
 pub mod settings;
 pub mod shell;
+pub mod smooth_scroll;
 pub mod sound;
 pub mod speedster;
 pub mod state;
@@ -95,6 +101,7 @@ pub mod usage_history;
 pub mod visuals;
 pub mod voice;
 mod workspace_links;
+pub mod zoomies;
 
 /// Building a macOS gpui platform (even a headless one) reads the keyboard
 /// layout, and macOS 27 aborts the process when two threads do that at once.
@@ -195,7 +202,12 @@ pub fn run_app(config: UiConfig) {
         gpui_tokio::init_from_handle(cx, runtime_handle);
         gpui_base::init(cx);
         let data_dir = config.boot().data_dir.clone();
-        let ui_settings = settings::UiSettings::load(&data_dir);
+        let mut ui_settings = settings::UiSettings::load(&data_dir);
+        // Older keymaps stored custom combos as the recording layout typed
+        // them; convert against the layout, which only the app can read.
+        ui_settings
+            .keymap
+            .adopt_layout_neutral(&settings::key_equivalents(cx));
         settings::init(ui_settings.clone(), data_dir.clone(), cx);
         let font_availability = typography::register_fonts(cx);
         // Typography first: theme installation reads the effective family, so
@@ -234,7 +246,12 @@ pub fn run_app(config: UiConfig) {
         appshots::set_enabled(ui_settings.appshots_enabled);
         terminal::panel::init(cx);
         app_menus::init(cx);
-        app_update::AppUpdate::init(config.boot().edge_url, data_dir.clone(), cx);
+        app_update::AppUpdate::init(
+            zeron_update::DEFAULT_FEED_URL.to_owned(),
+            ui_settings.auto_update_enabled,
+            data_dir.clone(),
+            cx,
+        );
         cx.register_url_scheme("godspeed").detach();
 
         let state = cx.new(|cx| {
@@ -263,7 +280,9 @@ pub fn run_app(config: UiConfig) {
         })
         .detach();
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
+        app_visibility::init(cx);
         speedster::init(state.clone(), cx);
+        dock_badge::init(state.clone(), cx);
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).
@@ -298,6 +317,17 @@ pub fn run_app(config: UiConfig) {
         // synchronously, so `set_menus` reads the final bindings for the ⌘-key
         // equivalents (gpui snapshots the keymap at set time).
         cx.set_menus(app_menus::app_menus());
+        // Switching keyboard layout moves the keys behind ⌘-shortcuts (AZERTY
+        // reaches ⌘1 as ⌘&): rebind against the new layout, then refresh the
+        // menu bar's snapshot of the keymap and redraw the hints that name
+        // those keys.
+        cx.on_keyboard_layout_change(|cx| {
+            let settings = settings::current(cx);
+            shell::apply_keymap(cx, &settings.keymap, settings.composer_send_behavior);
+            cx.set_menus(app_menus::app_menus());
+            cx.refresh_windows();
+        })
+        .detach();
         cx.activate(true);
     });
 }

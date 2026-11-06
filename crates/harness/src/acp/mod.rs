@@ -3,7 +3,8 @@
 //!
 //! KEPT ONLY for agents built ground-up on ACP: Grok ([`AcpHarness::grok`],
 //! `grok agent stdio`), Devin ([`AcpHarness::devin`], `devin acp`) and Hermes
-//! ([`AcpHarness::hermes`], `hermes acp`) and Antigravity
+//! ([`AcpHarness::hermes`], `hermes acp`), fx ([`AcpHarness::fx`],
+//! `fx acp`) and Antigravity
 //! ([`AcpHarness::antigravity`], Google's `agy_acp_server`, installed from its
 //! pinned release archive). Pi, Claude, Codex and Cursor use native drivers
 //! ([`crate::ClaudeHarness`], [`crate::CodexHarness`], [`crate::CursorHarness`])
@@ -77,6 +78,9 @@ const DEFAULT_MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 // The one-file server unpacks on launch. A local cold probe took 1.903s, but
 // slower disks need substantially more headroom than the generic 10s budget.
 const ANTIGRAVITY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(90);
+// Antigravity can leave a prompt open with no further updates; open tools and
+// approvals pause the bound.
+const ANTIGRAVITY_PROMPT_IDLE: Option<Duration> = Some(Duration::from_secs(15 * 60));
 /// Per-agent configuration: which binary to spawn and what to tell the picker.
 struct AcpAgentSpec {
     id: HarnessId,
@@ -139,6 +143,11 @@ struct AcpAgentSpec {
     /// Agent-specific advice appended to the stall error chip: what a wedge
     /// usually means for THIS agent and what the user can check.
     stall_hint: &'static str,
+    /// Bound on a running prompt's silence: no message, thought, tool or plan
+    /// update and no agent request while no tool call is open. `None`
+    /// disables. Unlike `prompt_stall` it covers a prompt that went quiet
+    /// after starting.
+    prompt_idle: Option<Duration>,
     /// the agent advertises every effort as its own model id (`…-low`,
     /// `…-high`) instead of a `thought_level` option: discovered variants fold
     /// into one row with a ladder, and a run sends the variant for its level.
@@ -267,6 +276,7 @@ fn grok_spec() -> AcpAgentSpec {
         stall_hint: "The agent process is likely wedged — a stale shared leader \
              process or a hung startup check; godspeed launches it with --no-leader \
              and --no-auto-update to avoid both.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
@@ -344,12 +354,50 @@ fn devin_spec() -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "The agent process is likely wedged.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
         hidden_commands: &[],
         drops_unstarted_cancelled_prompt: false,
     }
+}
+
+fn fx_spec() -> AcpAgentSpec {
+    AcpAgentSpec {
+        id: HarnessId::Fx,
+        display_name: "fx",
+        executable: "fx",
+        env_override: "FX_EXECUTABLE",
+        args: &["acp"],
+        npm_package: None,
+        archive: None,
+        extra_paths: fx_install_paths,
+        cli_executable: "fx",
+        cli_extra_paths: fx_install_paths,
+        install_hint: "Install with `curl -fsSL https://fx.sh/setup.sh | bash`, then configure a provider with `fx`. Set FX_EXECUTABLE for a custom installation.",
+        models: Vec::new,
+        steering_mode: SteeringMode::TurnBoundary,
+        reasoning_levels: &[],
+        prompt_transform: identity_transform,
+        effort_values: default_effort_values,
+        ladder_extras: &[],
+        prompt_complete_extension: false,
+        prompt_stall: None,
+        stall_hint: "Check fx's provider configuration.",
+        prompt_idle: None,
+        effort_in_model_id: false,
+        auth_method: None,
+        skill_dirs: Vec::new,
+        hidden_commands: &[],
+        drops_unstarted_cancelled_prompt: false,
+    }
+}
+
+fn fx_install_paths() -> Vec<PathBuf> {
+    crate::executable::home_dir()
+        .map(|home| vec![home.join(".local/bin/fx")])
+        .unwrap_or_default()
 }
 
 fn hermes_install_paths() -> Vec<PathBuf> {
@@ -415,6 +463,7 @@ fn hermes_spec() -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "The agent process is likely wedged.",
+        prompt_idle: None,
         effort_in_model_id: false,
         auth_method: None,
         skill_dirs: Vec::new,
@@ -1121,6 +1170,7 @@ fn antigravity_spec() -> AcpAgentSpec {
         prompt_complete_extension: false,
         prompt_stall: None,
         stall_hint: "The agent process is likely wedged.",
+        prompt_idle: ANTIGRAVITY_PROMPT_IDLE,
         effort_in_model_id: true,
         // the personal oauth method is only the first-run default; sign-in
         // preserves any method already selected in antigravity's settings.
@@ -1255,11 +1305,75 @@ pub struct AcpHarness {
     models_cache: crate::catalog::Catalog,
     workspace_commands: crate::skills::CommandDiscovery,
     devin_models: std::sync::Arc<devin_models::Catalog>,
+    /// A registry-installed agent's launch (program + its ACP arguments),
+    /// used unless an explicit executable overrides it.
+    registry_launch: Option<(PathBuf, Vec<String>)>,
+    /// Environment every process of this agent gets (the registry entry's
+    /// own env, then a provider instance's), beneath a run's own env.
+    base_env: std::collections::BTreeMap<String, String>,
+}
+
+/// A registry-installed ACP agent, as [`AcpHarness::registry_agent`] launches it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryAgentLaunch {
+    pub id: zeron_proto::AcpAgentId,
+    pub name: String,
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+fn leak(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
+}
+
+fn registry_spec(launch: &RegistryAgentLaunch) -> AcpAgentSpec {
+    let display_name = leak(launch.name.clone());
+    let executable = leak(
+        launch
+            .program
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| launch.id.as_str().to_string()),
+    );
+    AcpAgentSpec {
+        id: HarnessId::Acp(launch.id),
+        display_name,
+        executable,
+        env_override: "",
+        args: &[],
+        npm_package: None,
+        archive: None,
+        extra_paths: Vec::new,
+        cli_executable: executable,
+        cli_extra_paths: Vec::new,
+        install_hint: leak(format!(
+            "{display_name} is not installed; install it from Settings → Providers → More agents"
+        )),
+        // Discovered from the agent's own session (`models` / config options).
+        models: Vec::new,
+        steering_mode: SteeringMode::TurnBoundary,
+        reasoning_levels: &[],
+        prompt_transform: identity_transform,
+        effort_values: default_effort_values,
+        ladder_extras: &[],
+        prompt_complete_extension: false,
+        prompt_stall: None,
+        stall_hint: "The agent process is likely wedged.",
+        prompt_idle: None,
+        effort_in_model_id: false,
+        auth_method: None,
+        skill_dirs: Vec::new,
+        hidden_commands: &[],
+        drops_unstarted_cancelled_prompt: false,
+    }
 }
 
 impl AcpHarness {
     fn with_spec(spec: AcpAgentSpec) -> Self {
         Self {
+            registry_launch: None,
+            base_env: Default::default(),
             spec,
             executable: None,
             sessions_root: None,
@@ -1287,9 +1401,32 @@ impl AcpHarness {
         Self::with_spec(grok_spec())
     }
 
+    /// fx native ACP server.
+    pub fn fx() -> Self {
+        Self::with_spec(fx_spec())
+    }
+
     /// Hermes Agent (`hermes acp`) — Nous Research's native ACP server.
     pub fn hermes() -> Self {
         Self::with_spec(hermes_spec())
+    }
+
+    /// An agent installed from the ACP registry, driven by the generic ACP
+    /// driver: no curated catalog, turn-boundary steering, models and modes
+    /// discovered from its own session.
+    pub fn registry_agent(launch: RegistryAgentLaunch) -> Self {
+        let mut harness = Self::with_spec(registry_spec(&launch));
+        harness.base_env = launch.env;
+        harness.registry_launch = Some((launch.program, launch.args));
+        harness
+    }
+
+    /// Environment applied to every process of this agent (discovery,
+    /// sign-in and runs), beneath each run's own env — a provider instance's
+    /// config dir and extra variables.
+    pub fn with_env(mut self, env: std::collections::BTreeMap<String, String>) -> Self {
+        self.base_env.extend(env);
+        self
     }
 
     /// google antigravity over its acp server (`agy_acp_server`).
@@ -1390,6 +1527,9 @@ impl AcpHarness {
         }
         if let Some(home) = gemini_home {
             cmd.env("GEMINI_HOME", home);
+        }
+        for (name, value) in &self.base_env {
+            cmd.env(name, value);
         }
         if let Some(browser) = browser {
             cmd.env("BROWSER", browser);
@@ -1557,7 +1697,12 @@ impl AcpHarness {
             return crate::executable::validate_native_override(p)
                 .map(|program| Launch::Program(program, spec_args));
         }
-        if let Some(p) = std::env::var_os(self.spec.env_override)
+        if let Some((program, args)) = &self.registry_launch {
+            return Ok(Launch::Program(program.clone(), args.clone()));
+        }
+        if let Some(p) = (!self.spec.env_override.is_empty())
+            .then(|| std::env::var_os(self.spec.env_override))
+            .flatten()
             && !p.is_empty()
         {
             return crate::executable::validate_native_override(&PathBuf::from(p))
@@ -1602,6 +1747,14 @@ impl AcpHarness {
         block_on_install: bool,
     ) -> Result<(PathBuf, Vec<String>), HarnessError> {
         match self.resolve_launch()? {
+            Launch::Program(program, args)
+                if self.executable.is_none() && self.registry_launch.is_some() =>
+            {
+                let (program, mut launch_args) =
+                    crate::adapter_install::launch_for_entry(&program)?;
+                launch_args.extend(args);
+                Ok((program, launch_args))
+            }
             Launch::Program(program, args) => Ok((program, args)),
             Launch::Managed {
                 pin,
@@ -1704,12 +1857,22 @@ impl AcpHarness {
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
         self.configure_adapter_environment(&mut cmd, &exe);
-        crate::apply_run_env(&mut cmd, env);
+        for (name, value) in &self.base_env {
+            cmd.env(name, value);
+        }
+        crate::apply_run_env(
+            &mut cmd,
+            env,
+            cwd.filter(|c| !c.is_empty()).map(std::path::Path::new),
+        );
         if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
             cmd.current_dir(cwd);
         }
         if self.spec.id == HarnessId::Antigravity {
-            cmd.env("GEMINI_HOME", antigravity_paths::home()?);
+            // A provider instance's config dir relocates GEMINI_HOME.
+            if !env.contains_key("GEMINI_HOME") && !self.base_env.contains_key("GEMINI_HOME") {
+                cmd.env("GEMINI_HOME", antigravity_paths::home()?);
+            }
             match noop_browser() {
                 Ok(browser) => {
                     cmd.env("BROWSER", browser);
@@ -1993,7 +2156,10 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
 
     let model_select: Vec<&Value> = config_options
         .iter()
-        .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))
+        .find(|o| {
+            o.get("category").and_then(Value::as_str) == Some("model")
+                && o.get("id").and_then(Value::as_str) != Some("provider")
+        })
         .and_then(|o| o.get("options").and_then(Value::as_array))
         .map(|opts| opts.iter().collect())
         .unwrap_or_default();
@@ -2198,6 +2364,9 @@ impl Harness for AcpHarness {
         if let Some(p) = &self.executable {
             return crate::executable::validate_native_override(p).is_ok();
         }
+        if let Some((program, _)) = &self.registry_launch {
+            return program.is_file();
+        }
         if let Some(p) = std::env::var_os(self.spec.env_override)
             && !p.is_empty()
         {
@@ -2214,6 +2383,9 @@ impl Harness for AcpHarness {
     }
 
     fn executable_path(&self) -> Option<PathBuf> {
+        if let Some((program, _)) = &self.registry_launch {
+            return Some(self.executable.clone().unwrap_or_else(|| program.clone()));
+        }
         if self.spec.id == HarnessId::Antigravity {
             return match self.resolve_launch().ok()? {
                 Launch::Program(program, _) => Some(program),
@@ -2303,6 +2475,9 @@ impl Harness for AcpHarness {
         &self,
         cwd: &std::path::Path,
     ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+        if self.id() == HarnessId::Fx {
+            return crate::skills::discover(self.id(), cwd).await.map(Some);
+        }
         let (mut skills, commands) = tokio::try_join!(
             crate::skills::discover(self.id(), cwd),
             self.workspace_commands
@@ -2423,6 +2598,7 @@ impl Harness for AcpHarness {
             resend_unstarted: self.spec.drops_unstarted_cancelled_prompt,
             prompt_stall: self.spec.prompt_stall,
             stall_hint: self.spec.stall_hint,
+            prompt_idle: self.spec.prompt_idle,
             effort_in_model_id: self.spec.effort_in_model_id,
             auth_method: self.spec.auth_method,
             sessions_root: self.sessions_root.clone(),
@@ -2470,6 +2646,7 @@ struct Session {
     resend_unstarted: bool,
     prompt_stall: Option<Duration>,
     stall_hint: &'static str,
+    prompt_idle: Option<Duration>,
     effort_in_model_id: bool,
     auth_method: Option<&'static str>,
     /// Sessions-root override for the subagent transcript tail (tests).
@@ -3578,9 +3755,10 @@ fn effort_variant_id(
         .get("configOptions")
         .and_then(Value::as_array)
         .and_then(|options| {
-            options
-                .iter()
-                .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))
+            options.iter().find(|o| {
+                o.get("category").and_then(Value::as_str) == Some("model")
+                    && o.get("id").and_then(Value::as_str) != Some("provider")
+            })
         })
         .and_then(|o| o.get("options").and_then(Value::as_array))
         .map(|choices| {
@@ -3729,6 +3907,14 @@ fn prompt_like_request(
 }
 
 /// Track tools to avoid prompting into an unowned self-continued turn.
+fn idle_label(idle: Duration) -> String {
+    match idle.as_secs() {
+        secs if secs >= 60 && secs % 60 == 0 => format!("{} min", secs / 60),
+        0 => format!("{}ms", idle.as_millis()),
+        secs => format!("{secs}s"),
+    }
+}
+
 fn track_open_tools(ev: &AgentEvent, open_tools: &mut std::collections::HashSet<String>) {
     match ev {
         AgentEvent::ToolCall { id, .. } => {
@@ -3797,6 +3983,41 @@ async fn select_session_config(
             request
                 .model_options
                 .insert("speed".into(), Value::String("fast".into()));
+        }
+    }
+    if rules.harness == HarnessId::Fx {
+        // fx can report ask while retaining a saved automatic policy. Always
+        // write it before prompting, including after session/load.
+        request_draining(
+            client,
+            incoming,
+            "session/set_config_option",
+            json!({"sessionId": session_id, "configId": "mode", "value": "ask"}),
+        )
+        .await?;
+        if let Some(model) = request.model.as_deref() {
+            request_draining(
+                client,
+                incoming,
+                "session/set_config_option",
+                json!({"sessionId": session_id, "configId": "model", "value": model}),
+            )
+            .await?;
+        }
+        // Both provider and model carry category=model. Only the model
+        // selector should participate in model discovery/selection.
+        if let Some(options) = session_response
+            .get_mut("configOptions")
+            .and_then(Value::as_array_mut)
+        {
+            options.retain(|option| option.get("id").and_then(Value::as_str) != Some("mode"));
+            for option in options {
+                if option.get("category").and_then(Value::as_str) == Some("model")
+                    && option.get("id").and_then(Value::as_str) != Some("model")
+                {
+                    option["category"] = json!("other");
+                }
+            }
         }
     }
     // ACP has had two model-selection surfaces. Newer config-option agents
@@ -3895,8 +4116,10 @@ async fn select_session_config(
                     }
                 }
                 Err(e) => {
-                    if matches!(rules.harness, HarnessId::Antigravity | HarnessId::Devin)
-                        && requested_model.is_some()
+                    if matches!(
+                        rules.harness,
+                        HarnessId::Antigravity | HarnessId::Devin | HarnessId::Fx
+                    ) && requested_model.is_some()
                         && is_model_config_option(&options_snapshot, &config_id)
                     {
                         return Err(HarnessError::Protocol(format!(
@@ -3966,6 +4189,7 @@ async fn run_session(session: Session) {
         resend_unstarted,
         prompt_stall,
         stall_hint,
+        prompt_idle,
         effort_in_model_id,
         auth_method,
         sessions_root,
@@ -3985,7 +4209,24 @@ async fn run_session(session: Session) {
         interrupt,
         turn: turn_control,
     } = controls;
-    let request_input = std::sync::Arc::new(request_input);
+    // Questions and approvals still waiting on the user pause `prompt_idle`.
+    let open_requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let request_input: std::sync::Arc<RequestInputFn> = {
+        let open = std::sync::Arc::clone(&open_requests);
+        std::sync::Arc::new(Box::new(move |questions| {
+            let answer = request_input(questions);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let open = std::sync::Arc::clone(&open);
+            tokio::spawn(async move {
+                if let Ok(answers) = answer.await {
+                    let _ = tx.send(answers);
+                }
+                open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            });
+            rx
+        }))
+    };
     let rules = ConfigRules {
         harness,
         effort_in_model_id,
@@ -4212,6 +4453,17 @@ async fn run_session(session: Session) {
     };
     let mut prompt_stall_deadline: Option<tokio::time::Instant> =
         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+    // `GODSPEED_ACP_PROMPT_IDLE_MS` overrides the spec's bound; 0 disables.
+    let prompt_idle: Option<Duration> = match std::env::var("GODSPEED_ACP_PROMPT_IDLE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        Some(0) => None,
+        Some(ms) => Some(Duration::from_millis(ms)),
+        None => prompt_idle,
+    };
+    // The running prompt's last progress, for `prompt_idle`.
+    let mut prompt_progress_at = tokio::time::Instant::now();
     // The text of the prompt in flight (re-sent by a preempt when the agent
     // drops an unstarted cancelled prompt).
     let mut current_prompt_text = prompt_transform(request.reasoning, &request.prompt);
@@ -4314,6 +4566,65 @@ async fn run_session(session: Session) {
         };
     }
 
+    // The agent is gone: its stdout hit EOF, or it exited and the drain
+    // window closed. A prompt response written before the exit is already
+    // resolved by the reader, but the select can reach the exit first (both
+    // are ready at once when the response and EOF land in one read). Settle
+    // the turn with that response, an error answer (a quota or context
+    // error) included, so only a prompt the agent never answered falls
+    // through to the crash-message bookkeeping below (stderr tail intact).
+    macro_rules! settle_turn_at_exit {
+        () => {
+            if let Some(mut fut) = turn.take()
+                && let Ok(res) = tokio::time::timeout(Duration::from_millis(50), &mut fut).await
+                && !res
+                    .as_ref()
+                    .is_err_and(crate::jsonrpc::is_transport_failure)
+            {
+                let (prev, _next) = rotate(&mut assistant_message_id);
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::AssistantMessageCompleted {
+                        assistant_message_id: prev,
+                    },
+                )
+                .await;
+                if let Some(usage) = usage_from_response(&res) {
+                    let _ = send(&event_tx, usage).await;
+                }
+                let (status, mut error) = stop_outcome(&res, interrupted);
+                if !interrupted
+                    && auth_method.is_some()
+                    && res.as_ref().is_err_and(is_auth_required)
+                {
+                    error = Some(not_signed_in(agent_name));
+                }
+                done_current = true;
+                if interrupted {
+                    done_after_interrupt = true;
+                }
+                // Same limit vocabulary as a turn settled while the agent lives.
+                if status == DoneStatus::Errored
+                    && let Some(limit) = error
+                        .as_deref()
+                        .and_then(|text| crate::limits::event_from_text(text, chrono::Utc::now()))
+                {
+                    let _ = send(&event_tx, limit).await;
+                }
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::Done {
+                        status,
+                        result: None,
+                        error,
+                        session_id: Some(session_id.clone()),
+                    },
+                )
+                .await;
+            }
+        };
+    }
+
     let mut child_exit = None;
     let mut exit_drain_deadline = None;
     'main: loop {
@@ -4339,7 +4650,10 @@ async fn run_session(session: Session) {
                 exit_drain_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(200));
             },
             _ = tokio::time::sleep_until(exit_drain_deadline.unwrap_or_else(tokio::time::Instant::now)),
-                if exit_drain_deadline.is_some() => break 'main,
+                if exit_drain_deadline.is_some() => {
+                settle_turn_at_exit!();
+                break 'main;
+            },
 
             res = async { turn.as_mut().expect("guarded by if").await }, if turn.is_some() => {
                 turn = None;
@@ -4550,6 +4864,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = texts.join("\n\n");
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -4599,7 +4914,10 @@ async fn run_session(session: Session) {
                             | Some("agent_thought_chunk")
                             | Some("tool_call")
                             | Some("tool_call_update")
-                            | Some("plan") => progress_seq = prompt_seq,
+                            | Some("plan") => {
+                                progress_seq = prompt_seq;
+                                prompt_progress_at = tokio::time::Instant::now();
+                            }
                             _ => {}
                         }
                     }
@@ -4667,6 +4985,7 @@ async fn run_session(session: Session) {
                 }
                 Some(Incoming::Request { id, method, params }) => {
                     prompt_stall_deadline = None;
+                    prompt_progress_at = tokio::time::Instant::now();
                     for ev in handle_server_request_live(
                         &client,
                         id,
@@ -4684,41 +5003,9 @@ async fn run_session(session: Session) {
                 Some(Incoming::Eof) | None => {
                     // The turn ends via a request RESPONSE, which races EOF
                     // through a different channel than notifications: an agent
-                    // exiting right after its final response must read as a
-                    // clean finish, not a crash. The response (if any) is
-                    // already resolved by the reader before it sends Eof.
-                    // Only a RESOLVED response is a clean finish; a request
-                    // failed by the reader's EOF cleanup falls through to the
-                    // crash-message bookkeeping below (stderr tail intact).
-                    if let Some(mut fut) = turn.take()
-                        && let Ok(res @ Ok(_)) =
-                            tokio::time::timeout(Duration::from_millis(50), &mut fut).await
-                    {
-                        let (prev, _next) = rotate(&mut assistant_message_id);
-                        let _ = send(
-                            &event_tx,
-                            AgentEvent::AssistantMessageCompleted { assistant_message_id: prev },
-                        )
-                        .await;
-                        if let Some(usage) = usage_from_response(&res) {
-                            let _ = send(&event_tx, usage).await;
-                        }
-                        let (status, error) = stop_outcome(&res, interrupted);
-                        done_current = true;
-                        if interrupted {
-                            done_after_interrupt = true;
-                        }
-                        let _ = send(
-                            &event_tx,
-                            AgentEvent::Done {
-                                status,
-                                result: None,
-                                error,
-                                session_id: Some(session_id.clone()),
-                            },
-                        )
-                        .await;
-                    }
+                    // exiting right after its final response must end the turn
+                    // with that response, not read as a crash.
+                    settle_turn_at_exit!();
                     break 'main;
                 }
             },
@@ -4863,6 +5150,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -4913,6 +5201,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -4990,6 +5279,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -5121,6 +5411,7 @@ async fn run_session(session: Session) {
                         prompt_complete_extension.then(|| format!("godspeed-p{prompt_seq}"));
                     prompt_stall_deadline =
                         prompt_stall.map(|d| tokio::time::Instant::now() + d);
+                    prompt_progress_at = tokio::time::Instant::now();
                     current_prompt_text = text.clone();
                     turn = Some(prompt_turn(
                         client.clone(),
@@ -5245,6 +5536,47 @@ async fn run_session(session: Session) {
                         result: None,
                         error: Some(format!(
                             "{agent_name} is unresponsive — the run was closed."
+                        )),
+                        session_id: Some(session_id.clone()),
+                    },
+                )
+                .await;
+                break 'main;
+            },
+
+            // Prompt-idle watchdog: the prompt started, then went quiet with
+            // nothing open that could explain it (a long tool, an approval
+            // waiting on the user). Close the run so the next message starts
+            // a fresh agent process on the same session.
+            _ = tokio::time::sleep_until(
+                prompt_progress_at + prompt_idle.unwrap_or_default(),
+            ), if prompt_idle.is_some() && turn.is_some() && !interrupted && !stopping => {
+                if !open_tools.is_empty()
+                    || open_requests.load(std::sync::atomic::Ordering::SeqCst) > 0
+                {
+                    prompt_progress_at = tokio::time::Instant::now();
+                    continue;
+                }
+                let idle = prompt_idle.unwrap_or_default();
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::Error {
+                        message: format!(
+                            "{agent_name} stopped responding: no updates for {}. \
+                             Send a message to continue the chat.",
+                            idle_label(idle),
+                        ),
+                    },
+                )
+                .await;
+                done_current = true;
+                let _ = send(
+                    &event_tx,
+                    AgentEvent::Done {
+                        status: DoneStatus::Errored,
+                        result: None,
+                        error: Some(format!(
+                            "{agent_name} went silent mid-turn — the run was closed."
                         )),
                         session_id: Some(session_id.clone()),
                     },

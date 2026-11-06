@@ -425,6 +425,7 @@ pub(crate) fn seed(
             checkout_id: source_context.as_ref().map(|s| s.checkout_id.clone()),
             source_context: source_context.clone(),
             config: Some(ChatConfig {
+                instance: None,
                 harness: demo.harness,
                 model: Some(demo.model.into()),
                 reasoning: Some(demo.reasoning),
@@ -533,6 +534,7 @@ pub(crate) fn seed_states(doc: &mut RegistryDoc, now: i64) -> Result<(), zeron_d
         checkout_id: None,
         source_context: None,
         config: Some(ChatConfig {
+            instance: None,
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
             reasoning: Some(ReasoningLevel::High),
@@ -794,7 +796,7 @@ pub(crate) fn agent_accounts(now: i64) -> zeron_proto::AgentAccountsSnapshot {
                 "claude-1",
                 HarnessId::ClaudeCode,
                 "dev@example.com",
-                "Max 20x",
+                "Ultra",
                 true,
                 vec![
                     window("Session", 0.64, 2 * HOUR + 14 * MIN),

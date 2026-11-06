@@ -1,0 +1,241 @@
+{
+ "version": "1.0.0",
+ "agents": [
+  {
+   "id": "factory-droid",
+   "name": "Factory Droid",
+   "version": "0.251.0",
+   "description": "Factory Droid - AI coding agent powered by Factory AI",
+   "website": "https://factory.ai/product/cli",
+   "authors": [
+    "Factory AI"
+   ],
+   "license": "proprietary",
+   "license_url": "https://factory.ai/legal/terms",
+   "distribution": {
+    "npx": {
+     "package": "droid@0.251.0",
+     "args": [
+      "exec",
+      "--output-format",
+      "acp-daemon"
+     ],
+     "env": {
+      "DROID_DISABLE_AUTO_UPDATE": "true",
+      "FACTORY_DROID_AUTO_UPDATE_ENABLED": "false"
+     }
+    }
+   }
+  },
+  {
+   "id": "github-copilot-cli",
+   "name": "Copilot",
+   "version": "1.0.105",
+   "description": "GitHub's AI pair programmer",
+   "repository": "https://github.com/github/copilot-cli",
+   "website": "https://github.com/features/copilot/cli/",
+   "authors": [
+    "GitHub"
+   ],
+   "license": "proprietary",
+   "license_url": "https://github.com/github/copilot-cli/blob/main/LICENSE.md",
+   "distribution": {
+    "npx": {
+     "package": "@github/copilot@1.0.105",
+     "args": [
+      "--acp"
+     ]
+    }
+   }
+  },
+  {
+   "id": "gemini",
+   "name": "Gemini CLI",
+   "version": "0.66.0",
+   "description": "Google's official CLI for Gemini",
+   "repository": "https://github.com/google-gemini/gemini-cli",
+   "website": "https://geminicli.com",
+   "authors": [
+    "Google"
+   ],
+   "license": "Apache-2.0",
+   "license_url": "https://github.com/google-gemini/gemini-cli/blob/main/LICENSE",
+   "distribution": {
+    "npx": {
+     "package": "@google/gemini-cli@0.66.0",
+     "args": [
+      "--acp"
+     ]
+    }
+   }
+  },
+  {
+   "id": "kimi",
+   "name": "Kimi CLI",
+   "version": "1.52.0",
+   "description": "Moonshot AI's coding assistant",
+   "repository": "https://github.com/MoonshotAI/kimi-cli",
+   "website": "https://moonshotai.github.io/kimi-cli/",
+   "authors": [
+    "Moonshot AI"
+   ],
+   "license": "MIT",
+   "license_url": "https://github.com/MoonshotAI/kimi-cli/blob/main/LICENSE",
+   "distribution": {
+    "binary": {
+     "darwin-aarch64": {
+      "archive": "https://github.com/MoonshotAI/kimi-cli/releases/download/1.52.0/kimi-1.52.0-aarch64-apple-darwin.tar.gz",
+      "cmd": "./kimi",
+      "args": [
+       "acp"
+      ],
+      "sha256": "43fe091f70bbf8860974200f9021a05689a020857cc9926d56f1505f0d0d5cb8"
+     },
+     "linux-aarch64": {
+      "archive": "https://github.com/MoonshotAI/kimi-cli/releases/download/1.52.0/kimi-1.52.0-aarch64-unknown-linux-gnu.tar.gz",
+      "cmd": "./kimi",
+      "args": [
+       "acp"
+      ],
+      "sha256": "9e06eea96273600aed485b1f0bedda95b7084db4f22cf28614fe20138933507a"
+     },
+     "linux-x86_64": {
+      "archive": "https://github.com/MoonshotAI/kimi-cli/releases/download/1.52.0/kimi-1.52.0-x86_64-unknown-linux-gnu.tar.gz",
+      "cmd": "./kimi",
+      "args": [
+       "acp"
+      ],
+      "sha256": "a676204f7804ed5dae87652a9d66f578e0718d5026c9cb1bfa32b9a5eace4208"
+     },
+     "windows-aarch64": {
+      "archive": "https://github.com/MoonshotAI/kimi-cli/releases/download/1.52.0/kimi-1.52.0-aarch64-pc-windows-msvc.zip",
+      "cmd": "./kimi.exe",
+      "args": [
+       "acp"
+      ],
+      "sha256": "7c77cd413e7a3a59416c171a45ee4ff50534869b331469138aad84b9e3acb6c0"
+     },
+     "windows-x86_64": {
+      "archive": "https://github.com/MoonshotAI/kimi-cli/releases/download/1.52.0/kimi-1.52.0-x86_64-pc-windows-msvc.zip",
+      "cmd": "./kimi.exe",
+      "args": [
+       "acp"
+      ],
+      "sha256": "2c269e15e152b9f28ac1556795280f90a2c9860ff44c60c628c3fce4dd4c58a7"
+     }
+    }
+   }
+  },
+  {
+   "id": "unpinned-binary",
+   "name": "Unpinned",
+   "version": "1.0.0",
+   "description": "no sha",
+   "distribution": {
+    "binary": {
+     "darwin-aarch64": {
+      "archive": "https://example.com/u.tar.gz",
+      "cmd": "./u"
+     }
+    }
+   }
+  },
+  {
+   "id": "python-only",
+   "name": "Python Only",
+   "version": "0.1.0",
+   "description": "uvx",
+   "distribution": {
+    "uvx": {
+     "package": "python-only==0.1.0"
+    }
+   }
+  },
+  {
+   "id": "bad-http-archive",
+   "name": "Bad",
+   "version": "1.0.0",
+   "description": "",
+   "distribution": {
+    "binary": {
+     "darwin-aarch64": {
+      "archive": "http://example.com/a.tar.gz",
+      "cmd": "./a",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    }
+   }
+  },
+  {
+   "id": "bad-floating-npm",
+   "name": "Bad",
+   "version": "1.0.0",
+   "description": "",
+   "distribution": {
+    "npx": {
+     "package": "left-pad@latest"
+    }
+   }
+  },
+  {
+   "id": "bad-path-escape",
+   "name": "Bad",
+   "version": "1.0.0",
+   "description": "",
+   "distribution": {
+    "binary": {
+     "darwin-aarch64": {
+      "archive": "https://example.com/a.tar.gz",
+      "cmd": "../../bin/sh",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    }
+   }
+  },
+  {
+   "id": "bad-env-loader",
+   "name": "Bad",
+   "version": "1.0.0",
+   "description": "",
+   "distribution": {
+    "npx": {
+     "package": "x@1.0.0",
+     "env": {
+      "NODE_OPTIONS": "--require /tmp/evil.js"
+     }
+    }
+   }
+  },
+  {
+   "id": "Bad-Id",
+   "name": "Bad",
+   "version": "1.0.0",
+   "description": "",
+   "distribution": {
+    "binary": {
+     "darwin-aarch64": {
+      "archive": "https://example.com/a.tar.gz",
+      "cmd": "./a",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     }
+    }
+   }
+  },
+  {
+   "id": "bad-sha",
+   "name": "Bad",
+   "version": "1.0.0",
+   "description": "",
+   "distribution": {
+    "binary": {
+     "darwin-aarch64": {
+      "archive": "https://example.com/a.tar.gz",
+      "cmd": "./a",
+      "sha256": "xyz"
+     }
+    }
+   }
+  }
+ ],
+ "extensions": []
+}

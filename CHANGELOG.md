@@ -4,9 +4,202 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+## 0.5.11 (2026-11-06)
+
+### Added
+
+- **Open a chat in its own window.** Right-click a session and choose "Open in New Window" for a
+  composer-only window with its own scroll and selection. Reopening the same chat focuses its
+  window, and the window closes if the chat is deleted.
+- **Model and effort switches show in the chat.** A thin divider marks the turn where you changed
+  model or effort, naming only what changed.
+- **iPhone beta waitlist.** The website has a "Join the iPhone beta" form and a privacy page, and
+  approved emails get cloud access within a minute, without a redeploy.
+
 ### Changed
 
-- Always-on agents are now called Zoomies.
+- **Search keeps its index on disk.** Message search moved to SQLite full-text search: less memory,
+  about half the indexing work while a reply streams, and the same results. The new index builds in
+  the background on first launch; search keeps working meanwhile.
+- **Less idle work, again.** Dev-server port detection for the preview ran `lsof` twice and `ps`
+  once every two seconds, forever; it now checks every two seconds only while something could start
+  a server (an agent running, a terminal or preview open, or you active) and once a minute
+  otherwise. The Telegram delivery loop sleeps until a bot has work.
+- **Fewer tokens per turn.** Godspeed's own tool instructions are shorter, preview tools are only
+  offered when a window can show them, and tool results go to the model as compact JSON.
+- **Claude's renamed Max and Ultra plans** show correctly in usage.
+- **Streaming chats use less memory** (Loro 1.17, from Zeron), and PR watches no longer run git in
+  every project (from Zeron).
+
+### Fixed
+
+- An agent that hits a usage limit and exits right away now shows the limit, instead of "exited
+  unexpectedly".
+- Claude chats no longer inherit the session of a Claude Code window that launched Godspeed (which
+  could also override the chat's chosen effort).
+- Antigravity turns that go silent for 15 minutes end with an error instead of staying "Working"
+  forever.
+- Worktree chats can start in repos that have a local branch named like the branch prefix.
+- Agents can start Cursor chats with model ids the model list doesn't name (such as
+  `grok-4.7-high`); Cursor's CLI checks them.
+- If you open Godspeed from an account whose cloud refuses a second organization, it continues in
+  the existing one.
+
+## 0.5.10 (2026-10-30)
+
+### Added
+
+- **Usage in the session card.** The thread details card shows how much is left in each limit
+  window of the chat's account (5-hour first, then weekly) and how full the context window is,
+  with reset times on hover. It reuses the usage data the composer gauge already loads.
+- **fx as a provider.** `fx acp` runs through the ACP driver like the other agents (from Zeron).
+
+### Changed
+
+- **Much less background work while you're away.** With 10 chats open in their own worktrees,
+  Godspeed now starts about 25 `git` processes in 10 idle minutes instead of 375. Diffs refresh
+  when you come back, when a turn ends or when files change, with a safety check every 15 minutes
+  only while you're active; build output in `target/` and `node_modules/` no longer triggers
+  refreshes. The PR watch backs off properly when you're away, and build-slot checks stop when
+  nothing can build.
+- **A calmer Dock buddy.** The speedster falls asleep on a still frame after 45 seconds of quiet
+  instead of animating forever. While agents work it keeps running, capped at 4 fps on battery,
+  in Low Power Mode or when every window is hidden. A waiting alert settles after a minute.
+- **Lighter redraws.** A running zoomie animates only its own row instead of redrawing the whole
+  window, and Mission Control repaints only the card that moves.
+- **Quieter launch.** The empty-chat check at launch is cheaper, agent update checks wait 90
+  seconds and are reused for 6 hours, and usage meters don't refresh while no window is visible.
+
+### Fixed
+
+- One slow agent CLI no longer stalls every other agent lookup while its version is checked, and a
+  failed version check is retried instead of cached until restart (from Zeron).
+- Direct device links over Tailscale (MTU 1280) now carry data: WebRTC packets may fragment (from Zeron).
+
+## 0.5.9 (2026-10-29)
+
+### Added
+
+- **Review and merge from the PR pane.** Approve, request changes or comment; reply to review
+  threads and resolve or unresolve them; merge with the methods the repository allows (after a
+  confirmation that names the repository, PR, base, head and method, and only if the branch hasn't
+  moved); enable or disable auto-merge; mark a draft ready; close or reopen. Each action shows
+  progress and GitHub's reason when it refuses (for example "Review required by branch
+  protection"). Uses your `gh` login; GitHub only for now.
+- **PR watch that wakes the chat.** A watched pull request is polled every 90 seconds (backing off
+  on errors and rate limits, pausing when the app is idle). Newly failed checks (with the failing
+  log tail), new review comments and a new merge conflict are queued into the PR's chat and shown in
+  Needs you. On by default for PRs a Godspeed chat opened, toggled per PR from the PR pane; the
+  sidebar badge shows an eye on watched PRs. Each event is reported once, the agent's own comments
+  never wake it, and wakes are capped per PR per hour. Optional per-PR "auto-merge when green"
+  turns on GitHub auto-merge once checks pass and the PR is approved; nothing is ever approved for
+  you.
+- **More agents from the ACP registry.** Settings → Providers → More agents lists the public ACP
+  agent registry (name, publisher, version, install size) and installs, updates or uninstalls an
+  agent in one click, into Godspeed's own data folder. Factory Droid, GitHub Copilot CLI, Gemini
+  CLI and Kimi CLI run through the ACP driver like any other provider. Registry data is treated as
+  untrusted: nothing runs unless it is pinned to a checksum (SHA-256 for binaries; exact npm
+  versions checked against npm's sha512, installed without lifecycle scripts).
+- **Several instances of one agent.** Each provider can have named instances with their own
+  binary, config dir (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …), env vars, default and custom models
+  and account. Secret-looking env values go to the OS keychain, never to settings or logs. Pick an
+  instance in the model picker, where it lists under its provider; existing chats keep the default
+  instance. Receipts name the instance; usage and telemetry still count by provider.
+- **Run on a server.** Settings → Devices → "Run on a server…" installs the headless engine on a
+  Linux machine over your own SSH (keys, agent and `~/.ssh/config`; never a password), or on a
+  Tailscale machine picked from a list. It checks the connection (with clear host-key and auth
+  errors), downloads the release for the server's arch from GitHub and verifies its sha256,
+  installs into `~/.godspeed/app` without sudo, signs the server into your workspace (you sign in
+  in the browser and paste the code) and starts it as a `systemd --user` service with lingering
+  (or a `nohup` supervisor plus `@reboot` cron). The server then shows up as a device to start
+  chats on, so agents keep running with the laptop closed. Saved servers show Online, version and
+  uptime, with Update, Stop, Start and Uninstall; re-running setup or checking status never
+  restarts a running engine. `godspeed login --stdin-code [--org ID]` is the sign-in it drives.
+- **Linux release builds.** Every `v*` release gets `godspeed-<v>-linux-x86_64.tar.gz` and
+  `-linux-aarch64.tar.gz` with sha256 files and a `manifest-linux.json`, built by GitHub Actions.
+  Linux installs update from that manifest; a release whose Linux build isn't uploaded yet is
+  skipped instead of downloaded unverified.
+- **Sub-agents in their own worktree.** MCP `create_chat` and `create_chats` take `worktree`:
+  `"new"` starts the chat in a fresh git worktree on its own branch, off the parent's branch or a
+  named `base`, set up like the app's worktrees (copied .env files, ports, setup commands);
+  `"parent"` (the default) shares the parent's checkout; or name an existing worktree by folder or
+  branch. Conductor caps still apply, and a refused chat leaves no worktree behind. A side chat on
+  its own branch shows it on the parent's card (ported from T3 Code).
+- **Worktree cleanup and storage.** Settings → General → Worktrees can delete worktrees whose
+  branch is merged, or that sat untouched for 7, 14 or 30 days (both off by default), running their
+  teardown commands. Worktrees with uncommitted changes, unpushed commits or a running chat are
+  always kept. A storage list shows every Godspeed worktree with its size on disk, branch, last
+  activity, state and chat, with "Delete now" and "Delete all eligible" (ported from T3 Code).
+- **Select several sessions at once.** Cmd-click or Shift-click sidebar rows (Cmd+A in the sidebar
+  takes them all, Esc lets go) and settle, snooze, mark read or unread, pin, archive or delete them
+  together from the bar at the foot of the sidebar. Cmd+Z undoes a whole batch (ported from T3 Code).
+- **Prompt recall and stash.** Up in an empty composer brings back the prompts you sent in that chat
+  (Down goes forward again). Cmd+S sets the draft aside, attachments included, and the "Stashed"
+  chip brings it back or deletes it; stashes stay on this Mac across restarts. Rebind it in
+  Settings → Shortcuts (ported from T3 Code).
+- **Dock badge** with the number of chats waiting on an approval or an answer. Turn it off in
+  Settings → Appearance → "Show badge on Dock icon".
+
+### Changed
+
+- **Parallel agents share build slots.** Agents and terminals run their cargo and make builds
+  through one shared jobserver, so three or four agents building at once no longer start a rustc
+  per core each (in testing, peak rustc processes went from 24 to 9 and memory from 4.7 GB to
+  2.0 GB). Your own `CARGO_BUILD_JOBS`, `MAKEFLAGS` or `build.jobs` still win. sccache is used
+  when it's installed. Settings → General → Builds shows the slots.
+
+### Fixed
+
+- A chat whose worktree folder was deleted gets it recreated before its next turn, instead of
+  failing.
+
+## 0.5.8 (2026-10-28)
+
+### Added
+
+- **Anonymous usage ping.** Once a day, on days you use it, Godspeed sends an anonymous ping:
+  version, platform, and how much you used it (chats, turns, approvals, zoomie runs, harness mix,
+  token totals, estimated spend at API prices). No prompts, code, paths, names or account details;
+  the install id is random and separate from the device id. On by default with a one-time notice;
+  turn it off in Settings → General → Privacy, or with `GODSPEED_TELEMETRY=0` or `DO_NOT_TRACK=1`.
+  Field-by-field list: [docs/PRIVACY.md](docs/PRIVACY.md).
+- A private admin dashboard on the edge (`/admin`) for the maintainers, over those pings.
+- **Agents drive the preview browser.** In-chat agents get ten `preview_*` tools (open, navigate,
+  snapshot with element refs, screenshot they can see, click, type, scroll, read-only eval, console,
+  wait) on their chat's own preview tab, to check the UI they build. Local dev servers open freely;
+  other sites need network access in the chat's mode or your approval. The tab shows "Agent is using
+  the preview" with a Stop button. macOS for now; details in [docs/mcp.md](docs/mcp.md#agent-preview-tools).
+- **Create zoomies from Home.** A ⚡ chip in the new-chat composer adds a "When" row: pick a preset
+  or type a schedule in plain English ("weekdays at 6pm", "every 30 min", "tomorrow 9am"), see the
+  next run live, and send. "Run this on a schedule…" turns any chat into a zoomie, the sidebar has a
+  Zoomies section, and the palette has "New zoomie…".
+
+### Fixed
+
+- Cursor usage bars match the pools on Cursor's spending page. Contributed by @devnm21.
+- The app icon is the gold Hermes again in every build.
+
+## 0.5.7 (2026-10-27)
+
+### Added
+
+- **In-app updates.** Godspeed checks for new releases on launch and every few hours, downloads and
+  verifies them (checksum, Apple signature from the same team, notarization; never a downgrade), and
+  shows "Godspeed X is ready · Restart". Settings → General → Updates turns it off or checks now.
+- **Dictation on iPhone.** A mic button in the chat composer types what you say, live, using Apple's
+  on-device speech recognition. The keyboard's own dictation no longer cuts off mid-sentence.
+- Side chats are titled from the conversation they branched from (ported from T3 Code).
+
+### Changed
+
+- Always-on agents are now called **Zoomies**.
+- Caught up with Zeron through `3d2f1e64`.
+
+### Fixed
+
+- Sending a message from the iPhone no longer restarts the Mac's Claude session (and kills its
+  background tasks): phone sends use the chat's access mode, and a session with background work is
+  kept until that work finishes.
 
 ## 0.5.6 (2026-10-26)
 

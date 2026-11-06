@@ -809,6 +809,7 @@ impl DemoHost {
                 })
                 .sum();
             let stats = zeron_doc::TurnStats {
+                instance: None,
                 harness: config
                     .as_ref()
                     .and_then(|c| serde_json::to_value(c.harness).ok())

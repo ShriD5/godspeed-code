@@ -785,7 +785,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
-        crate::apply_run_env(&mut cmd, &request.env);
+        crate::apply_run_env(&mut cmd, &request.env, crate::run_cwd(&request));
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
@@ -2620,6 +2620,7 @@ mod tests {
     #[test]
     fn access_modes_pick_policy_and_sandbox() {
         let mut request = RunRequest {
+            instance: None,
             prompt: String::new(),
             harness: None,
             model: None,

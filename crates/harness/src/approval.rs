@@ -139,6 +139,7 @@ mod tests {
     fn unsupported_modes_are_refused_with_the_supported_ones_named() {
         use zeron_proto::{HarnessId, RunRequest, SandboxLevel};
         let mut request = RunRequest {
+            instance: None,
             prompt: String::new(),
             harness: None,
             model: None,

@@ -6,6 +6,8 @@
 
 <p align="center">One native app for every AI coding agent. Rust + GPUI.</p>
 
+<p align="center"><a href="https://godspeed-code.pages.dev"><b>Website</b></a> · <a href="https://github.com/ShriD5/godspeed-code/releases/latest/download/Godspeed-macos-arm64.dmg">Download for macOS</a></p>
+
 <p align="center">
   <a href="https://github.com/ShriD5/godspeed-code/actions/workflows/ui-tests.yml"><img src="https://github.com/ShriD5/godspeed-code/actions/workflows/ui-tests.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/ShriD5/godspeed-code/releases/latest"><img src="https://img.shields.io/github/v/release/ShriD5/godspeed-code" alt="Latest release"></a>
@@ -51,7 +53,7 @@ the features listed below on top. If you like this app, go star Zeron.
 
 All of that at the same speed: cold start is 65 ms for both, and memory after a 400-chat workload is
 within 1 MiB ([benchmark](docs/godspeed/BENCHMARKS-ZERON.md)). Zeron is still ahead on Windows and
-Linux builds and a shipped iPhone app (Godspeed's is in development). Full comparison and issue list:
+Linux builds and a shipped iPhone app (Godspeed's is in TestFlight beta). Full comparison and issue list:
 [VS-ZERON.md](docs/godspeed/VS-ZERON.md).
 
 ## Download
@@ -66,7 +68,8 @@ Releases from 0.3.0 on are signed with a Developer ID and notarized by Apple, so
 normally. (0.1.0 and 0.2.0 were unsigned; for those, use System Settings → Privacy & Security →
 **Open Anyway**.)
 
-There is no auto-update yet. Download new releases from the
+Godspeed updates itself: it checks for new releases, verifies the download (sha256, code signature,
+Gatekeeper) and offers to restart into it. Release notes are on the
 [releases page](https://github.com/ShriD5/godspeed-code/releases).
 
 ## iPhone app
@@ -74,11 +77,14 @@ There is no auto-update yet. Download new releases from the
 Godspeed for iOS follows and drives your Mac's chats from your phone: transcripts, the composer,
 approvals and voice. Agents keep running on the Mac (or a headless server); the phone is a remote.
 
-- **Status:** in development. A TestFlight beta is next; until then, build it from source.
+- **Status:** public beta on TestFlight. Cloud sync is invite-only, so
+  [join the waitlist](https://godspeed-code.pages.dev/#iphone) and you'll get the TestFlight link
+  once your email is approved.
 - **Needs:** cloud sync. On the Mac, choose **Enable sync** in the account menu and sign in, then
-  sign in with the same account on the phone.
-- **Build it:** see [apps/ios/README.md](apps/ios/README.md) (Xcode 26+, Rust iOS targets). Open
-  `apps/ios/Godspeed.xcodeproj`, pick your iPhone and press Run.
+  sign in with the same account on the phone. No Mac? **Look around with sample data** on the
+  sign-in screen.
+- **Build it yourself:** see [apps/ios/README.md](apps/ios/README.md) (Xcode 26+, Rust iOS
+  targets). Releasing to TestFlight: [docs/godspeed/TESTFLIGHT.md](docs/godspeed/TESTFLIGHT.md).
 
 ## Supported agents
 
@@ -185,6 +191,13 @@ To run your own sync server instead, deploy `edge/` (a Cloudflare Worker with Du
 R2, see [edge/DEPLOY.md](edge/DEPLOY.md)) and set `GODSPEED_EDGE_URL` and
 `GODSPEED_WORKOS_CLIENT_ID`. An empty `GODSPEED_WORKOS_CLIENT_ID` turns sign-in off entirely.
 
+## Privacy
+
+Godspeed sends one anonymous usage ping a day (version, platform, how much you used it, token
+totals and estimated spend) so we know it's working. No prompts, code, paths, repo names or
+account details. Turn it off in Settings → General, or with `GODSPEED_TELEMETRY=0` or
+`DO_NOT_TRACK=1`. Exactly what's sent: [docs/PRIVACY.md](docs/PRIVACY.md).
+
 ## Docs
 
 - [Roadmap](docs/godspeed/ROADMAP.md)
@@ -193,6 +206,7 @@ R2, see [edge/DEPLOY.md](edge/DEPLOY.md)) and set `GODSPEED_EDGE_URL` and
 - [Parity with T3 Code](docs/godspeed/PARITY-T3.md)
 - [Architecture](ARCHITECTURE.md) (inherited from Zeron)
 - [Agent installation](crates/harness/README.md)
+- [Privacy: the anonymous usage ping](docs/PRIVACY.md)
 - [Changelog](CHANGELOG.md)
 
 ## Contributing

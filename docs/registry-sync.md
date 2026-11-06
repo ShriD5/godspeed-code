@@ -111,7 +111,13 @@ The legacy snapshot is retained for rollback.
 - Presence stays ephemeral: in-memory map in the DO, 15s beats, 45s freshness window,
   same relay-probe fallback and deaf-socket tripwire in the host.
 - Per-device push attribution (`pushOutcomes`) is on `/registry/:orgId/stats` from day one —
-  the only per-device surface that made the 2026-08-05 incident debuggable.
+  the only per-device surface that made the 2026-08-05 incident debuggable. Counts live in
+  memory and are stored at most once a minute (approximate across evictions).
+- Write budget (free plan: 100k SQLite rows written/day, account-wide): the `rows` table has
+  no secondary index, and a batch that only moves a session's `updatedAt` heartbeat (10 s
+  engine touch) is applied in memory, broadcast with `seq: 0` (rows apply, no cursor
+  moves) and acked; it is stored once `updatedAt` is 30 s past the stored value or with the
+  next real change, so a stored row stays inside the 45 s staleness window.
 - Nightly R2 backup of the row table (seq-monotonic guard), `/registry/:orgId/rows` repair
   read, `POST /registry/:orgId/reset` operator wipe (fleet re-seeds automatically).
 - Legacy `/workspace/*` routes remain for older engine builds; nothing new joins them.

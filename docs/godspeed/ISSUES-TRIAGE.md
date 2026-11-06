@@ -61,6 +61,7 @@ models; GitLab; ACP registry + Cline/omp/DeepSeek harnesses; cloud agent session
 (T3 15644, 20 reactions); Windows polish; Linux `.desktop`; Homebrew cask; Intel build without
 voice; i18n.
 
-Already handled by Godspeed: no telemetry (T3 4123, 19 reactions), plugin skills (T3 5622, 16),
+Already handled by Godspeed: telemetry with an easy off switch and no content (T3 4123, 19
+reactions; see docs/PRIVACY.md), plugin skills (T3 5622, 16),
 OpenCode context limit (T3 8388), remembered model, git actions (Z#473), chat import (Z#743),
 approvals.

@@ -1,12 +1,18 @@
-//! The in-memory inverted index: one document per transcript entry, a
-//! sorted term dictionary for prefix lookups, and per-term postings sorted
-//! by document so an entry re-streamed in place updates without a rebuild.
+//! The legacy in-memory inverted index: one document per transcript entry,
+//! a sorted term dictionary for prefix lookups, and per-term postings sorted
+//! by document. It now serves only while a first launch migrates its file
+//! into the on-disk index ([`super::db`]), and as the reference the new
+//! index's results are tested against. The scoring helpers here are shared
+//! by both, so the two rank identically.
 //!
 //! Scoring is BM25 over two fields (prose, and tool titles/commands at
 //! [`TOOL_WEIGHT`]), with prefix matches discounted against exact ones, then
 //! a recency boost. Matching works per query term over the dictionary range
 //! that starts with it, so a one-character query is a short range walk plus
 //! a dense pass over its postings.
+
+// Building and updating run only in tests now (the reference index).
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
@@ -102,7 +108,7 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
     }
 }
 
-fn content_hash(message: &MessageText) -> u64 {
+pub(crate) fn content_hash(message: &MessageText) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325;
     fnv1a(&mut hash, &[message.role as u8]);
     fnv1a(&mut hash, &message.created_at.to_le_bytes());
@@ -113,7 +119,7 @@ fn content_hash(message: &MessageText) -> u64 {
 }
 
 /// `text` cut to at most `max` bytes on a char boundary.
-fn capped(text: &str, max: usize) -> &str {
+pub(crate) fn capped(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
     }
@@ -121,7 +127,7 @@ fn capped(text: &str, max: usize) -> &str {
 }
 
 /// Per-term frequencies of one document, prose and tool fields apart.
-fn term_counts(text: &str, tools: &str) -> (HashMap<String, (u16, u16)>, u32) {
+pub(crate) fn term_counts(text: &str, tools: &str) -> (HashMap<String, (u16, u16)>, u32) {
     let mut counts: HashMap<String, (u16, u16)> = HashMap::new();
     let mut len = 0u32;
     let mut term = String::new();
@@ -144,6 +150,127 @@ fn term_counts(text: &str, tools: &str) -> (HashMap<String, (u16, u16)>, u32) {
         }
     }
     (counts, len)
+}
+
+/// One idf for a term's whole prefix expansion, from its summed document
+/// frequency capped at the corpus: a rare completion must not outrank the
+/// exact word just for being rare.
+pub(crate) fn idf(n: f32, df: f32) -> f32 {
+    let df = df.min(n);
+    (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+}
+
+/// An exact token match counts fully; a longer completion less, more so the
+/// more of it the term leaves unsaid.
+pub(crate) fn quality(token_len: usize, term_len: usize) -> f32 {
+    if token_len == term_len {
+        1.0
+    } else {
+        0.5 + 0.4 * term_len as f32 / token_len as f32
+    }
+}
+
+/// BM25 term saturation over both fields, tools at [`TOOL_WEIGHT`].
+pub(crate) fn bm25(text_tf: u16, tool_tf: u16, len: f32, average: f32) -> f32 {
+    let tf = f32::from(text_tf) + TOOL_WEIGHT * f32::from(tool_tf);
+    tf * (BM25_K1 + 1.0) / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * len / average))
+}
+
+pub(crate) fn recency(created_at: i64, now_ms: i64) -> f32 {
+    let age_days = (now_ms - created_at).max(0) as f32 / 86_400_000.0;
+    1.0 + RECENCY_BOOST * (-age_days / RECENCY_HALF_LIFE_DAYS).exp2()
+}
+
+/// Scores one document from its own text, given corpus statistics: the same
+/// arithmetic, in the same order, as [`Index::search`].
+pub(crate) struct Scorer {
+    idf: Vec<f32>,
+    average: f32,
+}
+
+impl Scorer {
+    /// `dfs[i]`: documents with a token starting with the `i`th term.
+    pub(crate) fn new(docs: u64, total_len: u64, dfs: &[u64]) -> Self {
+        let n = docs as f32;
+        Self {
+            idf: dfs.iter().map(|&df| idf(n, df as f32)).collect(),
+            average: (total_len as f32 / n).max(1.0),
+        }
+    }
+
+    /// One posting's contribution for the `term`th query term.
+    pub(crate) fn posting(
+        &self,
+        term: usize,
+        token_len: usize,
+        term_len: usize,
+        text_tf: u16,
+        tool_tf: u16,
+        len: f32,
+    ) -> f32 {
+        let weight = self.idf[term] * quality(token_len, term_len);
+        weight * bm25(text_tf, tool_tf, len, self.average)
+    }
+
+    /// The document's score, or `None` when some term prefixes none of its
+    /// tokens.
+    pub(crate) fn score(&self, doc: &Doc, terms: &[String], now_ms: i64) -> Option<f32> {
+        let (counts, _) = term_counts(&doc.text, &doc.tools);
+        let len = doc.len as f32;
+        let mut total = 0f32;
+        for (term, &idf) in terms.iter().zip(&self.idf) {
+            let mut best: Option<f32> = None;
+            for (token, &(text_tf, tool_tf)) in &counts {
+                if !token.starts_with(term.as_str()) {
+                    continue;
+                }
+                let weight = idf * quality(token.len(), term.len());
+                let s = weight * bm25(text_tf, tool_tf, len, self.average);
+                best = Some(best.map_or(s, |b: f32| b.max(s)));
+            }
+            total += best?;
+        }
+        Some(total * recency(doc.created_at, now_ms))
+    }
+}
+
+/// Whether a token of `doc` starts with `term`.
+pub(crate) fn doc_has_prefix(doc: &Doc, term: &str) -> bool {
+    let mut lowered = String::new();
+    [&*doc.text, &*doc.tools].into_iter().any(|source| {
+        token_ranges(source).any(|(start, end)| {
+            normalize(&source[start..end], &mut lowered);
+            lowered.starts_with(term)
+        })
+    })
+}
+
+/// Hits from documents in rank order, honouring the filter, the per-chat cap
+/// and the limit.
+pub(crate) fn collect_hits<'a>(
+    ranked: impl Iterator<Item = (&'a Doc, f32)>,
+    terms: &[String],
+    options: &SearchOptions,
+) -> Vec<MessageSearchHit> {
+    let mut per_chat: HashMap<&str, usize> = HashMap::new();
+    let mut hits = Vec::new();
+    for (doc, score) in ranked {
+        if options.chat_filter.is_some_and(|accept| !accept(&doc.chat)) {
+            continue;
+        }
+        if let Some(cap) = options.per_chat {
+            let seen = per_chat.entry(&doc.chat).or_default();
+            if *seen >= cap {
+                continue;
+            }
+            *seen += 1;
+        }
+        hits.push(hit(doc, terms, score));
+        if hits.len() >= options.limit {
+            break;
+        }
+    }
+    hits
 }
 
 impl Index {
@@ -330,15 +457,10 @@ impl Index {
             // One idf for the whole expansion (its summed document
             // frequency, capped at the corpus): a rare completion must not
             // outrank the exact word just for being rare.
-            let df = (expansions.iter().map(|(_, list)| list.len()).sum::<usize>() as f32).min(n);
-            let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+            let df = expansions.iter().map(|(_, list)| list.len()).sum::<usize>() as f32;
+            let idf = idf(n, df);
             for (token, list) in expansions {
-                let quality = if token.len() == term.len() {
-                    1.0
-                } else {
-                    0.5 + 0.4 * term.len() as f32 / token.len() as f32
-                };
-                let weight = idf * quality;
+                let weight = idf * quality(token.len(), term.len());
                 for posting in list {
                     let doc = posting.doc as usize;
                     let state = matched[doc];
@@ -347,10 +469,7 @@ impl Index {
                     }
                     // Postings never point at removed slots.
                     let len = self.docs[doc].as_ref().map_or(1, |d| d.len) as f32;
-                    let tf = f32::from(posting.text_tf) + TOOL_WEIGHT * f32::from(posting.tool_tf);
-                    let norm = tf * (BM25_K1 + 1.0)
-                        / (tf + BM25_K1 * (1.0 - BM25_B + BM25_B * len / average));
-                    let s = weight * norm;
+                    let s = weight * bm25(posting.text_tf, posting.tool_tf, len, average);
                     if state == round {
                         matched[doc] = round + 1;
                         best[doc] = s;
@@ -374,39 +493,24 @@ impl Index {
             .filter(|&doc| matched[doc as usize] == all)
             .filter_map(|doc| {
                 let created_at = self.docs[doc as usize].as_ref()?.created_at;
-                let age_days = (options.now_ms - created_at).max(0) as f32 / 86_400_000.0;
-                let recency = 1.0 + RECENCY_BOOST * (-age_days / RECENCY_HALF_LIFE_DAYS).exp2();
-                Some((doc, score[doc as usize] * recency))
+                Some((
+                    doc,
+                    score[doc as usize] * recency(created_at, options.now_ms),
+                ))
             })
             .collect();
         ranked.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-
-        let mut per_chat: HashMap<&str, usize> = HashMap::new();
-        let mut hits = Vec::new();
-        for (slot, score) in ranked {
-            let Some(doc) = self.docs[slot as usize].as_ref() else {
-                continue;
-            };
-            if options.chat_filter.is_some_and(|accept| !accept(&doc.chat)) {
-                continue;
-            }
-            if let Some(cap) = options.per_chat {
-                let seen = per_chat.entry(&doc.chat).or_default();
-                if *seen >= cap {
-                    continue;
-                }
-                *seen += 1;
-            }
-            hits.push(hit(doc, &terms, score));
-            if hits.len() >= options.limit {
-                break;
-            }
-        }
-        hits
+        collect_hits(
+            ranked
+                .into_iter()
+                .filter_map(|(slot, score)| Some((self.docs[slot as usize].as_ref()?, score))),
+            &terms,
+            options,
+        )
     }
 }
 
-fn hit(doc: &Doc, terms: &[String], score: f32) -> MessageSearchHit {
+pub(crate) fn hit(doc: &Doc, terms: &[String], score: f32) -> MessageSearchHit {
     let (field, (snippet, ranges)) = if let Some(found) = snippet(&doc.text, terms) {
         (MessageSearchField::Text, found)
     } else if let Some(found) = snippet(&doc.tools, terms) {

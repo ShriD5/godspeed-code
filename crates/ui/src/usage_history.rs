@@ -1320,3 +1320,15 @@ mod tests {
         assert_eq!(activity_label(&UsageAmount::default()), "");
     }
 }
+
+/// The demo recording shows a usage history without an engine.
+#[cfg(feature = "demo-fixture")]
+impl UsageHistoryView {
+    pub fn fixture_set_data(&mut self, data: UsageHistory, cx: &mut Context<Self>) {
+        self.range = data.range;
+        self.data = Some(data);
+        self.loading = false;
+        self.error = None;
+        cx.notify();
+    }
+}

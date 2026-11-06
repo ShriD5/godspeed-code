@@ -9,7 +9,7 @@ pub(super) const COMBO: &str = "mod-f";
 const BAR_WIDTH: f32 = 360.0;
 
 pub(super) struct FindBar {
-    input: Entity<ComposerInput>,
+    pub(super) input: Entity<ComposerInput>,
     case_sensitive: bool,
     previous_focus: Option<FocusHandle>,
     focus_pending: bool,

@@ -1,5 +1,5 @@
-//! User-message caption review fixture: a chat that received a message from
-//! another chat, in an isolated, offline shell.
+//! Message caption review fixture: a chat that messaged another, then
+//! received that chat's reply, in an isolated, offline shell.
 //! With `--capture <dir>` it saves the transcript at rest and with the
 //! sender caption hovered, then quits; GODSPEED_PALETTE_LIGHT=1 renders the
 //! light theme.
@@ -40,7 +40,17 @@ fn entries() -> serde_json::Value {
     );
     json!([
         text("u0", "user", 0, "Profile the render loop on Linux and Windows and tell me where the frame time goes."),
-        text("a0", "assistant", 1, "Linux is done: layout is 61% of the frame, paint 22%. I've asked the Windows chat to run the same matrix and report back."),
+        // The agent messages the Windows chat (by title): the call reads as
+        // the message it sent, not a tool.
+        {"id": "a0", "role": "assistant", "createdAt": at(1), "deviceId": "local", "status": "complete",
+            "parts": [
+                {"id": "t", "kind": "text", "text": "Linux is done: layout is 61% of the frame, paint 22%. I'll ask the Windows chat to run the same matrix."},
+                {"id": "k1", "kind": "tool", "isError": false, "resolved": true,
+                    "call": {"kind": "mcp", "server": "godspeed", "tool": "send_message", "input": {
+                        "chat": "zgui prod: Windows platform (WING-PC)",
+                        "text": "Run the render-loop matrix on current main (layout, paint, present per frame) and report the split. Linux: layout 61%, paint 22%."}}},
+                {"id": "t2", "kind": "text", "text": "It'll report back here."},
+            ]},
         text("u1", "user", 2, "Carry on from here and draft the summary table."),
         text("a1", "assistant", 3, "Here's the Linux half; the Windows column fills in when its results arrive."),
         text("u2", "user", 4, &routed),

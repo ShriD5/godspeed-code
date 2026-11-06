@@ -641,6 +641,8 @@ impl FilesSurface {
             | ComposerInputEvent::PastedText { .. }
             | ComposerInputEvent::PastedLongText(_)
             | ComposerInputEvent::OpenAttachment(_)
+            | ComposerInputEvent::AnnotationHovered(_)
+            | ComposerInputEvent::RecallStep { .. }
             | ComposerInputEvent::CursorMoved
             | ComposerInputEvent::ViewportChanged => {}
         });

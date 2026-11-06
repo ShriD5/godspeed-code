@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
 use std::sync::{Arc, Mutex};
-use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry, SubagentStatus};
 use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::{
     AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SteeringMode,
+    SteeringMode, ToolCall,
 };
 use zeron_rpc::methods;
 
@@ -159,6 +159,7 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
             "side",
             HarnessId::Mock,
             RunRequest {
+                instance: None,
                 mcp: None,
                 prompt: "What did I ask you to remember?".into(),
                 harness: Some(HarnessId::Mock),
@@ -198,6 +199,8 @@ async fn fork_is_frozen_durable_idempotent_and_has_an_independent_provider_sessi
     assert_eq!(mcp.env["GODSPEED_IPC_PORT"], "27699");
     assert_eq!(mcp.env["GODSPEED_CHAT_ID"], "side");
     assert_eq!(mcp.env["GODSPEED_DEVICE_ID"], core.device_id);
+    // No window is attached to this engine, so the preview tools stay out.
+    assert_eq!(mcp.env[zeron_proto::MCP_PREVIEW_ENV], "0");
     assert!(request.prompt.contains("PINEAPPLE"));
     assert!(!request.prompt.contains("unfinished turn"));
     assert_eq!(source.doc().read_entries().unwrap().len(), 4);
@@ -390,6 +393,124 @@ async fn forking_a_side_chat_can_land_as_a_sibling_under_the_main_chat() {
     assert_eq!(nested.parent_chat_id.as_deref(), Some("side"));
 }
 
+/// A subagent still running in the source keeps running, and reporting,
+/// there only: its copied chip settles `failed` with its ref intact, and a
+/// copied question settles answered. The source keeps both as they are.
+#[tokio::test]
+async fn a_fork_settles_the_running_subagent_chips_it_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = EngineCore::assemble(
+        dir.path(),
+        Arc::new(HarnessRegistry::new()),
+        HarnessId::Mock,
+        None,
+    )
+    .unwrap();
+    core.workspace
+        .create_chat("main", None, Some(&core.device_id), None, None)
+        .unwrap();
+    let chip = |id: &str, status| MessagePart::Tool {
+        id: id.into(),
+        call: ToolCall::Unknown {
+            name: "Agent: scout".into(),
+            input: None,
+        },
+        is_error: false,
+        resolved: true,
+        output: None,
+        diff: None,
+        output_ref: None,
+        output_bytes: None,
+        diff_ref: None,
+        diff_stats: None,
+        subagent_ref: Some(format!("main--sub--{id}")),
+        subagent_status: Some(status),
+        subagent_tail: None,
+    };
+    core.doc_host
+        .open("main")
+        .unwrap()
+        .doc()
+        .push_message(&SessionMessageEntry {
+            parts: vec![
+                chip("running", SubagentStatus::Running),
+                chip("done", SubagentStatus::Done),
+                MessagePart::Input {
+                    id: "a1-input".into(),
+                    request_id: "q-1".into(),
+                    questions: vec![zeron_proto::UserInputQuestion {
+                        id: "q1".into(),
+                        header: "Pick".into(),
+                        question: "Which one?".into(),
+                        options: vec!["a".into(), "b".into()],
+                        prefill: None,
+                        multiline: false,
+                        multi_select: false,
+                        approval: None,
+                    }],
+                    resolved: false,
+                },
+            ],
+            ..message("a1", MessageRole::Assistant, "", MessageStatus::Complete)
+        })
+        .unwrap();
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            methods::FORK_SIDE_CHAT,
+            serde_json::json!({ "chatId": "side", "sourceChatId": "main" }),
+        )
+        .await
+        .unwrap();
+    // Each chip's (subagentRef, subagentStatus), then each question's `resolved`.
+    let settled = |chat: &str| {
+        let parts: Vec<_> = core
+            .doc_host
+            .open(chat)
+            .unwrap()
+            .doc()
+            .read_entries()
+            .unwrap()
+            .into_iter()
+            .flat_map(|e| e.parts)
+            .collect();
+        let chips: Vec<_> = parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::Tool {
+                    subagent_ref,
+                    subagent_status,
+                    ..
+                } => Some((subagent_ref.clone(), *subagent_status)),
+                _ => None,
+            })
+            .collect();
+        let questions: Vec<_> = parts
+            .iter()
+            .filter_map(|p| match p {
+                MessagePart::Input { resolved, .. } => Some(*resolved),
+                _ => None,
+            })
+            .collect();
+        (chips, questions)
+    };
+    let chips = |first| {
+        vec![
+            (Some("main--sub--running".to_owned()), Some(first)),
+            (
+                Some("main--sub--done".to_owned()),
+                Some(SubagentStatus::Done),
+            ),
+        ]
+    };
+    assert_eq!(settled("side"), (chips(SubagentStatus::Failed), vec![true]));
+    assert_eq!(
+        settled("main"),
+        (chips(SubagentStatus::Running), vec![false])
+    );
+    core.shutdown().await;
+}
+
 /// One turn through the engine; returns the request the provider received.
 async fn side_turn(
     core: &EngineCore,
@@ -410,6 +531,7 @@ async fn side_turn(
             chat,
             HarnessId::Mock,
             RunRequest {
+                instance: None,
                 mcp: None,
                 prompt: prompt.into(),
                 harness: Some(HarnessId::Mock),
@@ -620,6 +742,7 @@ async fn warm_side_chat_sends_owed_fork_history_once() {
         .await
         .unwrap();
     let request = |prompt: &str| RunRequest {
+        instance: None,
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),
@@ -807,6 +930,7 @@ async fn orphaned_history_steer_still_owes_the_history() {
         .await
         .unwrap();
     let request = |prompt: &str| RunRequest {
+        instance: None,
         mcp: None,
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),

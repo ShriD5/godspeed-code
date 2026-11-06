@@ -38,16 +38,15 @@ fi
 mkdir -p "$CONTENTS/Resources/licenses"
 cp "$ROOT/crates/voice/NOTICE.md" "$CONTENTS/Resources/licenses"/parakeet-v3.txt
 
-if [[ ! -f "$CONTENTS/Resources/godspeed.icns" ]]; then
-  ICONSET="$DEV_ROOT/godspeed-dev.iconset"
-  mkdir -p "$ICONSET"
-  for size in 16 32 128 256 512; do
-    sips -z "$size" "$size" "$ROOT/dist/macos/icon-1024.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-    retina=$((size * 2))
-    sips -z "$retina" "$retina" "$ROOT/dist/macos/icon-1024.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-  done
-  iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/godspeed.icns"
-fi
+ICONSET="$DEV_ROOT/godspeed-dev.iconset"
+rm -rf "$ICONSET" && mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$ROOT/dist/macos/icon-1024.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  retina=$((size * 2))
+  sips -z "$retina" "$retina" "$ROOT/dist/macos/icon-1024.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/godspeed.icns"
+rm -rf "$ICONSET"
 
 # A real Apple Development identity gives TCC a stable signing requirement
 # across rebuilds. Set GODSPEED_DEV_CODESIGN_IDENTITY explicitly when more than

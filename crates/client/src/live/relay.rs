@@ -32,6 +32,7 @@ const LIVENESS_WARMUP_MS: i64 = 60_000;
 pub(crate) fn deadline(method: &str) -> Duration {
     match method {
         methods::CREATE_WORKTREE => Duration::from_secs(120),
+        methods::LIST_WORKTREE_STORAGE | methods::CLEAN_WORKTREES => Duration::from_secs(10 * 60),
         methods::LIST_MODELS => Duration::from_secs(100),
         methods::UPLOAD_COMMIT => Duration::from_secs(150),
         _ => CALL_TIMEOUT,

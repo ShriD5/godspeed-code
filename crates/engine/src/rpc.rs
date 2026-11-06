@@ -38,7 +38,10 @@
 //! - Uploads (§3.7): `UploadChunk {uploadId, data, seq?}`,
 //!   `UploadCommit {uploadId, fileName}` → `{path}`,
 //!   `ReadAttachmentChunk {path, offset}` → `{name, mimeType, data, nextOffset,
-//!   done}` (path-jailed to the uploads dir + workspace-known chat cwds).
+//!   done}` (path-jailed to the uploads dir + workspace-known chat cwds),
+//!   `ReadChatImageChunk {chatId, path, offset}` → the same reply, for an image
+//!   a reply names in Markdown (jailed to that one chat's working folder, no
+//!   link followed).
 //!
 //! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
 //!
@@ -53,13 +56,18 @@
 
 mod agents;
 mod attention;
+mod pull_requests;
 mod chat_lifecycle;
+mod worktree_cleanup;
 mod conductor;
 mod git_actions;
 mod limit_recovery;
 mod message_search;
+mod preview_agent;
 mod project_transfer;
 mod telegram;
+mod build_slots;
+mod telemetry;
 mod usage_history;
 mod voice_chat;
 mod voice_remote;
@@ -395,6 +403,45 @@ struct OpenTerminalParams {
 /// Matches the UI canvas panel key (`AppState::panel_session_key`).
 const CANVAS_TERMINAL_PREFIX: &str = "space-canvas:";
 
+/// The folder a chat with this `cwd` may show reply images from (see
+/// `chat_image_root`), as configured: the jail matches a reply's path against
+/// it raw or canonical. Fails closed: no folder of its own (a legacy
+/// projectless chat runs in home), a relative or missing folder, and any
+/// folder that is `home` or above it, or holds one of `data` (Godspeed's own
+/// dirs), are refused, comparing canonical forms. A scratch folder is
+/// resolved under `scratch_root`, never created: only a run creates it.
+fn chat_image_folder(
+    cwd: Option<&str>,
+    scratch_root: &std::path::Path,
+    home: &std::path::Path,
+    data: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, &'static str> {
+    let cwd = cwd
+        .filter(|cwd| !zeron_proto::projectless::is_home_cwd(cwd))
+        .ok_or("the chat has no working folder of its own")?;
+    let folder = if zeron_proto::projectless::is_scratch_cwd(cwd) {
+        scratch_root.join(cwd.trim().rsplit('/').next().unwrap_or_default())
+    } else {
+        std::path::PathBuf::from(crate::repos::expand_home(cwd)?)
+    };
+    if !folder.is_absolute() {
+        return Err("the chat's folder is not an absolute path");
+    }
+    let canonical =
+        std::fs::canonicalize(&folder).map_err(|_| "the chat's folder doesn't exist")?;
+    let home = std::fs::canonicalize(home).map_err(|_| "this host's home folder is unknown")?;
+    if home.starts_with(&canonical)
+        || canonical.parent().is_none()
+        || data
+            .iter()
+            .filter_map(|dir| std::fs::canonicalize(dir).ok())
+            .any(|dir| dir.starts_with(&canonical))
+    {
+        return Err("the chat works in the home folder, above it, or around Godspeed's data");
+    }
+    Ok(folder)
+}
+
 /// A cwd the user (or a project-less chat) meant as "host home", not a folder.
 fn meaningful_cwd(cwd: Option<String>) -> Option<String> {
     cwd.filter(|cwd| {
@@ -535,6 +582,15 @@ struct ReadAttachmentChunkParams {
     offset: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadChatImageChunkParams {
+    chat_id: String,
+    path: String,
+    #[serde(default)]
+    offset: u64,
+}
+
 const _: () = assert!(zeron_proto::VISUAL_MAX_BYTES == zeron_visual::MAX_SCRIPT_BYTES);
 const _: () = assert!(zeron_proto::VISUAL_MAX_ASSETS == zeron_visual::assets::MAX_ASSETS);
 const _: () = assert!(zeron_proto::VISUAL_MAX_ASSET_BYTES == zeron_visual::assets::MAX_ASSET_BYTES);
@@ -553,11 +609,24 @@ struct PublishVisualParams {
     assets: std::collections::BTreeMap<String, String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishImageParams {
+    chat_id: String,
+    /// The file name shown with the image.
+    name: String,
+    /// The image file, base64.
+    data: String,
+}
+
 fn no_turn_for_visual() -> RpcError {
-    RpcError::Failed(
-        "This chat has no running turn on this device; show_visual only works from inside a turn."
-            .into(),
-    )
+    no_turn_for("show_visual")
+}
+
+fn no_turn_for(tool: &str) -> RpcError {
+    RpcError::Failed(format!(
+        "This chat has no running turn on this device; {tool} only works from inside a turn."
+    ))
 }
 
 /// Decode and bound a visual's assets.
@@ -766,8 +835,14 @@ pub struct EngineRpc {
     agents: Option<crate::agents::Agents>,
     telegram: Option<crate::telegram::Telegram>,
     attention: Option<crate::attention::AttentionService>,
+    pr_watch: Option<crate::pr_watch::PrWatchService>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
+    worktree_cleanup: Option<crate::worktree_cleanup::WorktreeCleanupService>,
+    telemetry: Option<crate::Telemetry>,
+    /// Shared by every clone: the window attached as the preview driver.
+    preview_driver: crate::preview_driver::PreviewDriverHub,
+    build_slots: Option<crate::BuildSlots>,
     engine_info: EngineInfo,
 }
 
@@ -795,6 +870,9 @@ impl EngineRpc {
             capabilities: zeron_proto::capabilities::current(),
         };
         let github = GitHubCli::new().with_store(repos.data_dir());
+        // One window attachment per engine, seen by every service and by the
+        // session engine (which offers preview tools only with a window).
+        let preview_driver = sessions.preview_driver();
         Self {
             voice: sessions.voice_manager(),
             sessions,
@@ -823,8 +901,13 @@ impl EngineRpc {
             agents: None,
             telegram: None,
             attention: None,
+            pr_watch: None,
             limit_recovery: None,
             chat_lifecycle: None,
+            worktree_cleanup: None,
+            telemetry: None,
+            preview_driver,
+            build_slots: None,
             engine_info,
         }
     }
@@ -898,11 +981,31 @@ impl EngineRpc {
         self
     }
 
+    /// Attach the anonymous telemetry settings (`GetTelemetrySettings`).
+    /// Attach the shared build slots (`GetBuildSlotsSettings`).
+    pub fn with_build_slots(mut self, build_slots: crate::BuildSlots) -> Self {
+        self.build_slots = Some(build_slots);
+        self
+    }
+
+    pub fn with_telemetry(mut self, telemetry: crate::Telemetry) -> Self {
+        self.telemetry = Some(telemetry);
+        self
+    }
+
     pub fn with_chat_lifecycle(
         mut self,
         lifecycle: crate::chat_lifecycle::ChatLifecycleService,
     ) -> Self {
         self.chat_lifecycle = Some(lifecycle);
+        self
+    }
+
+    pub fn with_worktree_cleanup(
+        mut self,
+        cleanup: crate::worktree_cleanup::WorktreeCleanupService,
+    ) -> Self {
+        self.worktree_cleanup = Some(cleanup);
         self
     }
 
@@ -932,6 +1035,12 @@ impl EngineRpc {
         self
     }
 
+    /// Attach the pull request watcher (`ListPullRequestWatches` …).
+    pub fn with_pr_watch(mut self, watch: crate::pr_watch::PrWatchService) -> Self {
+        self.pr_watch = Some(watch);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn with_github(mut self, github: GitHubCli) -> Self {
         self.github = github;
@@ -942,6 +1051,12 @@ impl EngineRpc {
         self.auth
             .as_ref()
             .ok_or_else(|| RpcError::Failed("auth unavailable".into()))
+    }
+
+    fn acp_agents(&self) -> Result<std::sync::Arc<crate::acp_agents::AcpAgents>, RpcError> {
+        self.registry
+            .acp_agents()
+            .ok_or_else(|| RpcError::Failed("the ACP registry is unavailable".into()))
     }
 
     fn updater(&self) -> Result<&zeron_update::Updater, RpcError> {
@@ -1026,10 +1141,49 @@ impl EngineRpc {
         self.file_search_root(p).await
     }
 
+    /// The one folder a chat's reply images (`![alt](path)`) may come from:
+    /// its working folder on this host. Refused, failing closed, when the chat
+    /// runs elsewhere, has no folder of its own, or works in the home folder,
+    /// above it, or around Godspeed's own data — so a reply can never show an
+    /// image from all of home, or another chat's attachments.
+    fn chat_image_root(&self, chat_id: &str) -> Result<std::path::PathBuf, RpcError> {
+        let refused = |why: &str| RpcError::BadParams(why.into());
+        let chat = self
+            .workspace
+            .chat(chat_id)
+            .map_err(|e| RpcError::Failed(e.to_string()))?
+            .ok_or_else(|| refused("chat not found"))?;
+        if chat.device_id != self.doc_host.device_id() {
+            return Err(refused("chat belongs to another device"));
+        }
+        let home = session_home_dir().map_err(refused)?;
+        // The data dir always exists; uploads and scratch may live elsewhere.
+        let data = [
+            self.repos.data_dir().to_path_buf(),
+            self.uploads.dir().to_path_buf(),
+            self.repos.scratch_root(),
+        ];
+        chat_image_folder(
+            chat.cwd.as_deref(),
+            &self.repos.scratch_root(),
+            &home,
+            &data,
+        )
+        .map_err(refused)
+    }
+
     /// Accept only a checkout already named by a local chat or contained in a
     /// local space. Remote clients must not turn this RPC into an arbitrary path probe.
+    ///
+    /// Clients watch a chat's `sourceContext.repoRoot`, which the engine
+    /// captured from that chat's own checkout, so it is accepted like the
+    /// chat's cwd without asking git. That root is canonical (`\\?\C:\…` on
+    /// Windows) and never equals the cwd there, so before this every watch
+    /// ran `git worktree list` once per local space, and a chat outside every
+    /// space failed and was retried that way for as long as it stayed open.
     async fn change_request_root(&self, cwd: &str) -> Result<std::path::PathBuf, RpcError> {
         let requested = std::path::PathBuf::from(cwd);
+        let unknown = || RpcError::BadParams("cwd is not a known checkout on this device".into());
         let local_device = self.doc_host.device_id();
         let mut chats_rx = self.workspace.watch_chats();
         let mut spaces_rx = self.workspace.watch_spaces();
@@ -1038,9 +1192,20 @@ impl EngineRpc {
             let chats = chats_rx.borrow_and_update().clone();
             if chats.iter().any(|chat| {
                 chat.device_id == local_device
-                    && chat.cwd.as_deref().map(std::path::Path::new) == Some(requested.as_path())
+                    && (chat.cwd.as_deref().map(std::path::Path::new) == Some(requested.as_path())
+                        || chat.source_context.as_ref().is_some_and(|source| {
+                            std::path::Path::new(&source.repo_root) == requested.as_path()
+                        }))
             }) {
-                return Ok(requested);
+                // A removed worktree is still named by its chats; it has no
+                // checkout to resolve and no PR to watch. Checked only once a
+                // chat names the path, so an unknown path's answer never
+                // depends on whether it exists.
+                return if crate::repos::Repos::path_exists(&requested).await {
+                    Ok(requested)
+                } else {
+                    Err(unknown())
+                };
             }
 
             let spaces = spaces_rx.borrow_and_update().clone();
@@ -1048,10 +1213,16 @@ impl EngineRpc {
                 .iter()
                 .filter(|space| space.device_id == local_device)
             {
-                if let Some(checkout) = self
-                    .repos
-                    .workspace_checkout(std::path::Path::new(&space.path), &requested)
-                    .await
+                let space_path = std::path::Path::new(&space.path);
+                // `git worktree list` in a plain folder walks every parent
+                // directory looking for a repository first.
+                if !space.git_detected {
+                    if let Some(folder) = self.repos.same_folder(space_path, &requested).await {
+                        return Ok(folder);
+                    }
+                    continue;
+                }
+                if let Some(checkout) = self.repos.workspace_checkout(space_path, &requested).await
                 {
                     return Ok(checkout);
                 }
@@ -1066,9 +1237,7 @@ impl EngineRpc {
                 _ = tokio::time::sleep_until(deadline) => break,
             }
         }
-        Err(RpcError::BadParams(
-            "cwd is not a known checkout on this device".into(),
-        ))
+        Err(unknown())
     }
 
     /// Most-recent-first paths the current chat actually touched, followed by
@@ -1441,20 +1610,7 @@ impl EngineRpc {
             .collect();
         let repos: Vec<String> = match repo_path {
             Some(path) => vec![path],
-            None => {
-                let device = self.workspace.device_id().to_string();
-                let mut paths: Vec<String> = self
-                    .workspace
-                    .read_spaces()
-                    .map_err(failed)?
-                    .into_iter()
-                    .filter(|space| space.device_id == device && space.git_detected)
-                    .map(|space| space.path)
-                    .collect();
-                paths.sort();
-                paths.dedup();
-                paths
-            }
+            None => crate::worktree_cleanup::local_repo_paths(&self.workspace).map_err(failed)?,
         };
         let mut orphans: Vec<zeron_proto::OrphanWorktree> = Vec::new();
         for repo in repos {
@@ -1801,6 +1957,9 @@ fn forward_deadline(method: &str) -> std::time::Duration {
             Duration::from_secs(15 * 60)
         }
         methods::INSTALL_HARNESS => Duration::from_secs(15 * 60),
+        // Archives up to 1 GiB, or a large npm tree, plus verification.
+        methods::INSTALL_ACP_AGENT => Duration::from_secs(25 * 60),
+        methods::LIST_ACP_REGISTRY => Duration::from_secs(90),
         // A full fleet of enabled providers is checked two at a time; each
         // provider may need both a CLI probe and a network request.
         methods::CHECK_HARNESS_UPDATES => Duration::from_secs(4 * 60),
@@ -1808,6 +1967,10 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         // queueing, verification, and the relayed response itself.
         methods::APPLY_HARNESS_UPDATE => Duration::from_secs(20 * 60),
         methods::CREATE_WORKTREE => Duration::from_secs(120),
+        // Sizes walk whole checkouts; a clean runs every teardown.
+        methods::LIST_WORKTREE_STORAGE | methods::CLEAN_WORKTREES => Duration::from_secs(10 * 60),
+        // A thread write checks ownership first; each `gh` call may take 60 s.
+        methods::PERFORM_CHANGE_REQUEST_ACTION => Duration::from_secs(150),
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
         _ => Duration::from_secs(30),
@@ -1828,6 +1991,7 @@ fn forwardable(method: &str) -> bool {
         || worktree_env::handles(method)
         || telegram::handles(method)
         || attention::handles(method)
+        || pull_requests::handles(method)
         || limit_recovery::handles(method)
         || conductor::handles(method)
     {
@@ -1850,6 +2014,12 @@ fn forwardable(method: &str) -> bool {
             | methods::GET_TITLE_SETTINGS
             | methods::SET_TITLE_SETTINGS
             | methods::SET_HARNESS_ENABLED
+            | methods::LIST_ACP_REGISTRY
+            | methods::INSTALL_ACP_AGENT
+            | methods::UNINSTALL_ACP_AGENT
+            | methods::LIST_PROVIDER_INSTANCES
+            | methods::SAVE_PROVIDER_INSTANCE
+            | methods::DELETE_PROVIDER_INSTANCE
             | methods::LIST_MODELS
             | methods::LIST_SKILLS
             | methods::LIST_COMMANDS
@@ -1900,6 +2070,11 @@ fn forwardable(method: &str) -> bool {
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
             | methods::LIST_ORPHAN_WORKTREES
+            | methods::LIST_WORKTREE_STORAGE
+            | methods::CLEAN_WORKTREES
+            | methods::GET_WORKTREE_CLEANUP_SETTINGS
+            | methods::SET_WORKTREE_CLEANUP_SETTINGS
+            | methods::RESOLVE_WORKTREE
             // Project Actions live in the owning engine's private profile store.
             | methods::LIST_PROJECT_ACTIONS
             | methods::UPSERT_PROJECT_ACTION
@@ -1937,6 +2112,7 @@ fn forwardable(method: &str) -> bool {
             | methods::UPLOAD_CHUNK
             | methods::UPLOAD_COMMIT
             | methods::READ_ATTACHMENT_CHUNK
+            | methods::READ_CHAT_IMAGE_CHUNK
             // Updates report/apply on the device whose binary they concern.
             | methods::UPDATE_STATUS
             | methods::APPLY_UPDATE
@@ -2278,6 +2454,26 @@ impl RpcService for EngineRpc {
             }
             return self.forward(&target, method, params).await;
         }
+        // Only a person acting is app activity. An open but unattended
+        // window keeps polling on its own; counting that kept the PR watch
+        // at full speed forever.
+        if crate::user_activity::is_user_activity(method) {
+            if let Some(watch) = &self.pr_watch {
+                watch.note_activity();
+            }
+            self.diff_sync
+                .note_user_activity(method == methods::PROBE_SYNC);
+            // Someone may look at the previews list: keep it current.
+            if let Some(previews) = &self.previews {
+                previews.note_activity();
+            }
+            // A terminal may build: resume the slot pool's leak checks.
+            if matches!(method, methods::OPEN_TERMINAL | methods::RUN_PROJECT_ACTION)
+                && let Some(slots) = &self.build_slots
+            {
+                slots.note_live();
+            }
+        }
         if matches!(
             method,
             methods::SIGN_OUT
@@ -2306,6 +2502,9 @@ impl RpcService for EngineRpc {
         if attention::handles(method) {
             return self.attention_rpc(method, params);
         }
+        if pull_requests::handles(method) {
+            return self.pull_request_rpc(method, params).await;
+        }
         if message_search::handles(method) {
             return self.message_search_rpc(params).await;
         }
@@ -2317,6 +2516,18 @@ impl RpcService for EngineRpc {
         }
         if chat_lifecycle::handles(method) {
             return self.chat_lifecycle_rpc(method, params);
+        }
+        if worktree_cleanup::handles(method) {
+            return self.worktree_cleanup_rpc(method, params).await;
+        }
+        if build_slots::handles(method) {
+            return self.build_slots_rpc(method, params);
+        }
+        if telemetry::handles(method) {
+            return self.telemetry_rpc(method, params);
+        }
+        if preview_agent::handles(method) {
+            return self.preview_agent_rpc(method, params).await;
         }
         if conductor::handles(method) {
             return self.conductor_rpc(method, params);
@@ -2364,6 +2575,65 @@ impl RpcService for EngineRpc {
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors())
+            }
+            methods::LIST_ACP_REGISTRY => {
+                #[derive(Deserialize, Default)]
+                #[serde(default, rename_all = "camelCase")]
+                struct Params {
+                    force: bool,
+                }
+                let p: Params = parse_params(params).unwrap_or_default();
+                let acp = self.acp_agents()?;
+                RpcReply::value(&acp.snapshot(p.force).await)
+            }
+            methods::INSTALL_ACP_AGENT | methods::UNINSTALL_ACP_AGENT => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    agent_id: String,
+                }
+                let p: Params = parse_params(params)?;
+                let acp = self.acp_agents()?;
+                let id = zeron_proto::AcpAgentId::new(&p.agent_id).map_err(RpcError::Failed)?;
+                if method == methods::INSTALL_ACP_AGENT {
+                    let installed = acp.install(&p.agent_id).await.map_err(RpcError::Failed)?;
+                    // An update must not swap the binary under a live run:
+                    // new runs pick up the new driver, live ones keep theirs.
+                    self.registry.register_acp_agent(&installed);
+                } else {
+                    let _lease = self.registry.update_lease(HarnessId::Acp(id)).await;
+                    acp.uninstall(&p.agent_id).map_err(RpcError::Failed)?;
+                    self.registry.unregister(HarnessId::Acp(id));
+                }
+                RpcReply::value(&acp.snapshot(false).await)
+            }
+            methods::LIST_PROVIDER_INSTANCES => {
+                RpcReply::value(&self.registry.provider_instances().list())
+            }
+            methods::SAVE_PROVIDER_INSTANCE => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    instance: zeron_proto::ProviderInstance,
+                }
+                let p: Params = parse_params(params)?;
+                self.registry
+                    .save_instance(p.instance)
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&self.registry.provider_instances().list())
+            }
+            methods::DELETE_PROVIDER_INSTANCE => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Params {
+                    harness: HarnessId,
+                    id: String,
+                }
+                let p: Params = parse_params(params)?;
+                self.registry
+                    .delete_instance(p.harness, &p.id)
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&self.registry.provider_instances().list())
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
@@ -2557,9 +2827,19 @@ impl RpcService for EngineRpc {
                     let mut entry = entry.clone();
                     // Historical approvals belong to the source runtime; they
                     // must never block or send answers from the new composer.
+                    // So does a subagent still running there: nothing in the
+                    // fork would ever settle its copied chip, so the copy
+                    // settles the chip `failed`, like run end and the restart
+                    // sweep; the subagent's doc stays the source's.
                     for part in &mut entry.parts {
-                        if let zeron_doc::MessagePart::Input { resolved, .. } = part {
-                            *resolved = true;
+                        match part {
+                            zeron_doc::MessagePart::Input { resolved, .. } => *resolved = true,
+                            zeron_doc::MessagePart::Tool {
+                                subagent_status, ..
+                            } if *subagent_status == Some(zeron_doc::SubagentStatus::Running) => {
+                                *subagent_status = Some(zeron_doc::SubagentStatus::Failed);
+                            }
+                            _ => {}
                         }
                     }
                     target
@@ -2857,7 +3137,9 @@ impl RpcService for EngineRpc {
                     .as_ref()
                     .ok_or_else(|| RpcError::Failed("Preview discovery unavailable".into()))?;
                 let catalog = previews.catalog().clone();
-                let changes = catalog.subscribe();
+                // The guard keeps discovery at full cadence while this list
+                // is watched (an open browser pane).
+                let (changes, watching) = previews.watch();
                 let chats = self.workspace.watch_chats();
                 let workspace = self.workspace.clone();
                 // This subscription stays on the viewing device. A remote chat
@@ -2902,7 +3184,11 @@ impl RpcService for EngineRpc {
                         let value = serde_json::to_value(snapshot).ok()?;
                         Some((value, (changes, chats, false, workspace, catalog, chat_id)))
                     },
-                );
+                )
+                .map(move |value| {
+                    let _watching = &watching;
+                    value
+                });
                 Ok(RpcReply::Stream(Box::pin(stream)))
             }
             methods::WATCH_CHATS => {
@@ -3128,12 +3414,19 @@ impl RpcService for EngineRpc {
             methods::WATCH_CHECKOUT_CHANGE_REQUEST => {
                 let p: CheckoutChangeRequestParams = parse_params(params)?;
                 let cwd = self.change_request_root(&p.cwd).await?;
+                let watch = self.pr_watch.clone();
                 let stream = self
                     .change_requests
                     .watch_for_branch(&cwd, p.branch.as_deref())
                     .await
                     .map_err(|error| RpcError::Failed(error.to_string()))?
-                    .filter_map(|status| async move { serde_json::to_value(status).ok() });
+                    .filter_map(move |status| {
+                        // A chat's own worktree gaining an open PR starts its watch.
+                        if let Some(watch) = &watch {
+                            watch.observe_checkout(&status);
+                        }
+                        async move { serde_json::to_value(status).ok() }
+                    });
                 Ok(RpcReply::Stream(stream.boxed()))
             }
             methods::GET_CHANGE_REQUEST_REPOSITORY => {
@@ -3228,7 +3521,7 @@ impl RpcService for EngineRpc {
                     base_ref_oid: Option<String>,
                 }
                 let p: P = parse_params(params)?;
-                let value = self
+                let mut value = self
                     .github
                     .detail_request(
                         &p.url,
@@ -3239,6 +3532,14 @@ impl RpcService for EngineRpc {
                     )
                     .await
                     .map_err(change_request_rpc_error)?;
+                // The PR pane shows this engine's watch beside the detail.
+                if method == methods::GET_CHANGE_REQUEST
+                    && let Some(watch) = &self.pr_watch
+                    && let Some(url) = value["url"].as_str()
+                    && let Some(state) = watch.list().into_iter().find(|w| w.url == url)
+                {
+                    value["watch"] = serde_json::to_value(state).unwrap_or_default();
+                }
                 RpcReply::value(&value)
             }
             // One-shot scoped capture for the Changes pane: `branch` diffs the
@@ -4260,6 +4561,17 @@ impl RpcService for EngineRpc {
                 .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&chunk)
             }
+            methods::READ_CHAT_IMAGE_CHUNK => {
+                let p: ReadChatImageChunkParams = parse_params(params)?;
+                let root = self.chat_image_root(&p.chat_id)?;
+                let chunk = tokio::task::spawn_blocking(move || {
+                    crate::uploads::read_chat_image_chunk(&p.path, p.offset, &root)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::BadParams(e.to_string()))?;
+                RpcReply::value(&chunk)
+            }
             methods::PUBLISH_VISUAL => {
                 let p: PublishVisualParams = parse_params(params)?;
                 let title: String = p
@@ -4328,6 +4640,48 @@ impl RpcService for EngineRpc {
                     "title": title,
                     "checkedInteractions": report.interactions,
                     "printed": report.logs,
+                }))
+            }
+            methods::PUBLISH_IMAGE => {
+                use base64::Engine as _;
+                let p: PublishImageParams = parse_params(params)?;
+                if !self.sessions.has_run(&p.chat_id) {
+                    return Err(no_turn_for("show_image"));
+                }
+                // Bounded before decoding: base64 is 4 bytes per 3.
+                if p.data.len() > zeron_proto::IMAGE_MAX_BYTES.div_ceil(3) * 4 {
+                    return Err(RpcError::BadParams(format!(
+                        "an image is at most {} MB",
+                        zeron_proto::IMAGE_MAX_BYTES / (1024 * 1024)
+                    )));
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&p.data)
+                    .map_err(|e| RpcError::BadParams(format!("image data is not base64: {e}")))?;
+                let id = format!("img:{}", crate::new_id());
+                let uploads = self.uploads.clone();
+                let (stored_id, name) = (id.clone(), p.name);
+                let image = tokio::task::spawn_blocking(move || {
+                    uploads.store_shown_image(&stored_id, &name, &bytes)
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?
+                .map_err(|e| RpcError::BadParams(e.to_string()))?;
+                let event = AgentEvent::GeneratedImage {
+                    id: id.clone(),
+                    path: image.path.clone(),
+                    name: image.name.clone(),
+                    mime_type: image.mime_type.clone(),
+                };
+                if !self.sessions.inject_event(&p.chat_id, event) {
+                    let _ = std::fs::remove_file(&image.path);
+                    return Err(no_turn_for("show_image"));
+                }
+                RpcReply::value(&serde_json::json!({
+                    "id": id,
+                    "name": image.name,
+                    "mimeType": image.mime_type,
+                    "bytes": image.size,
                 }))
             }
             methods::FETCH_TOOL_BLOB => {
@@ -4700,14 +5054,23 @@ mod tests {
             format!("http://{}/archive.zip", listener.local_addr().unwrap()).into_boxed_str(),
         );
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut headers = Vec::new();
-            let mut buf = [0; 4096];
-            while !headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                let count = socket.read(&mut buf).await.unwrap();
-                assert!(count > 0, "archive request closed before its headers");
-                headers.extend_from_slice(&buf[..count]);
-            }
+            // Serve the archive request; skip any other connection. The port
+            // came from the OS, and another process on the host can still
+            // probe it (a "free" port it once picked) before the download.
+            let mut socket = loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut headers = Vec::new();
+                let mut buf = [0; 4096];
+                while !headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    match socket.read(&mut buf).await {
+                        Ok(count) if count > 0 => headers.extend_from_slice(&buf[..count]),
+                        _ => break,
+                    }
+                }
+                if headers.starts_with(b"GET /archive.zip ") {
+                    break socket;
+                }
+            };
             socket
                 .write_all(
                     format!(
@@ -5037,6 +5400,61 @@ mod tests {
                 RpcError::Capability(code) if code == expected
             ));
         }
+    }
+
+    #[test]
+    fn chat_image_folders_fail_closed() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("code").join("app");
+        let data = home.path().join(".godspeed");
+        let scratch_root = data.join("scratch");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(scratch_root.join("2026-10-25-a1b2c3d4")).unwrap();
+        let data_dirs = [
+            data.clone(),
+            data.join("orgs").join("o").join("u").join("uploads"),
+            scratch_root.clone(),
+        ];
+        let folder =
+            |cwd: Option<&str>| chat_image_folder(cwd, &scratch_root, home.path(), &data_dirs);
+        assert_eq!(
+            folder(Some(&project.to_string_lossy())),
+            Ok(project.clone())
+        );
+        assert_eq!(
+            folder(Some("~/.godspeed/scratch/2026-10-25-a1b2c3d4")),
+            Ok(scratch_root.join("2026-10-25-a1b2c3d4"))
+        );
+        let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        let missing = text(&home.path().join("gone"));
+        let home_text = text(home.path());
+        let above_home = text(home.path().parent().unwrap());
+        // `/`, or the drive (`C:\`) on Windows, where `/` isn't absolute.
+        let root = text(home.path().ancestors().last().unwrap());
+        let data_text = text(&data);
+        let scratch_text = text(&scratch_root);
+        for (cwd, why) in [
+            (None, "no working folder of its own"),
+            (Some("~"), "no working folder of its own"),
+            (Some(""), "no working folder of its own"),
+            (Some("relative/app"), "not an absolute path"),
+            (Some(missing.as_str()), "doesn't exist"),
+            (
+                Some("~/.godspeed/scratch/2026-10-25-zzzz9999"),
+                "doesn't exist",
+            ),
+            (Some(home_text.as_str()), "home folder, above it"),
+            (Some(above_home.as_str()), "home folder, above it"),
+            (Some(root.as_str()), "home folder, above it"),
+            (Some(data_text.as_str()), "around Godspeed's data"),
+            (Some(scratch_text.as_str()), "around Godspeed's data"),
+            (Some("~/.godspeed/scratch/."), "around Godspeed's data"),
+            (Some("~/.godspeed/scratch/.."), "around Godspeed's data"),
+        ] {
+            let error = folder(cwd).expect_err(&format!("{cwd:?}"));
+            assert!(error.contains(why), "{cwd:?}: {error}");
+        }
+        assert!(!scratch_root.join("2026-10-25-zzzz9999").exists());
     }
 
     #[test]

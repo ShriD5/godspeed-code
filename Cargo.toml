@@ -16,6 +16,7 @@ members = [
     "crates/engine",
     "crates/rpc",
     "crates/update",
+    "crates/remote",
     "crates/ui",
     "crates/syntax",
     "crates/markdown",
@@ -30,7 +31,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.6"
+version = "0.5.11"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -49,6 +50,7 @@ zeron-harness = { path = "crates/harness" }
 zeron-engine = { path = "crates/engine" }
 zeron-rpc = { path = "crates/rpc" }
 zeron-update = { path = "crates/update" }
+zeron-remote = { path = "crates/remote" }
 zeron-ui = { path = "crates/ui" }
 zeron-syntax = { path = "crates/syntax" }
 zeron-markdown = { path = "crates/markdown" }
@@ -62,7 +64,7 @@ zeron-visual = { path = "crates/visual" }
 zeron-visual-gpu = { path = "crates/visual-gpu" }
 
 # CRDT
-loro = "1.13"
+loro = "1.17"
 # Wire protocol for the SessionRoom DO rooms — official Rust twin of the npm
 # `loro-protocol` package the TS edge speaks (same monorepo, byte-identical
 # frames, cross-checked by its js_snapshots tests).
@@ -175,6 +177,12 @@ opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2
+# No debuginfo for dependencies: workspace crates keep full debug info, but
+# deps skip it. Measured on `cargo build -p zeron-harness --lib` (fresh
+# target, 4 jobs): ~15% less CPU time, ~16% lower peak rustc memory, 25%
+# smaller target dir. Matters most when several agents build at once.
+# (macOS already defaults dev builds to split-debuginfo = "unpacked".)
+debug = false
 
 # Scenes rasterize in software every frame the camera moves.
 [profile.dev.package.zeron-visual]

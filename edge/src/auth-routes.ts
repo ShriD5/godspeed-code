@@ -62,7 +62,7 @@ export const handleAuthRoute = async (
     } catch (e) {
       return authFailed(e);
     }
-    return gateWorkOsUser(env, exchanged.user) ?? json(exchanged.result);
+    return (await gateWorkOsUser(env, exchanged.user)) ?? json(exchanged.result);
   }
 
   if (parts[1] === "refresh" && parts.length === 2 && request.method === "POST") {
@@ -74,7 +74,7 @@ export const handleAuthRoute = async (
     }
     try {
       const refreshed = await refresh(env, apiKey, body.refreshToken, body.organizationId);
-      const denied = refreshed.user ? gateWorkOsUser(env, refreshed.user) : undefined;
+      const denied = refreshed.user ? await gateWorkOsUser(env, refreshed.user) : undefined;
       return denied ?? json(refreshed.result);
     } catch (e) {
       // Identify repeat offenders: a client with a rotated-out session

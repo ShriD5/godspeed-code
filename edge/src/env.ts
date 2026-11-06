@@ -1,3 +1,5 @@
+import type { TelemetryStore } from "./telemetry-store";
+
 export interface Env {
   SESSION_ROOMS: DurableObjectNamespace;
   DEVICE_ROOMS: DurableObjectNamespace;
@@ -10,8 +12,9 @@ export interface Env {
   CHAT_ROOMS: DurableObjectNamespace;
   BLOBS: R2Bucket;
   /** Release artifacts (headless tarballs, dmgs, latest.txt) served at
-   * /releases/* for the curl-install flow. Optional: unbound ⇒ /releases/*
-   * and /install.sh answer 404 (Godspeed's deployment, see DEPLOY.md). */
+   * /releases/* for the curl-install flow. Optional: unbound ⇒ /install.sh
+   * answers 404 and /releases/<asset> redirects to GitHub Releases
+   * (Godspeed's deployment, see DEPLOY.md). */
   RELEASES?: R2Bucket;
   WORKOS_CLIENT_ID: string;
   /** "workos" (verify AuthKit JWTs) or "dev" (bearer == userId, never prod). */
@@ -24,10 +27,34 @@ export interface Env {
    * matching the old apps/server dev-mode behavior. */
   WORKOS_API_KEY?: string;
   /** Invite list (wrangler secret): comma-separated emails and `@domain`
-   * entries, case-insensitive. Unset/empty ⇒ open (see allowlist.ts). */
+   * entries, case-insensitive. Emails approved on /admin/access are allowed
+   * too. Both empty ⇒ open (see allowlist.ts). */
   ALLOWED_EMAILS?: string;
   /** Workers rate limiting binding for /auth/* (per IP). Unbound ⇒ no limit. */
   AUTH_RATE_LIMITER?: RateLimiter;
+  /** Anonymous usage telemetry (src/telemetry.ts, docs/PRIVACY.md): the one
+   * SQLite Durable Object (`telemetry-v1`) holding the pings. Unbound ⇒ the
+   * ping endpoint answers 503 and /admin has nothing to show. */
+  TELEMETRY?: DurableObjectNamespace<TelemetryStore>;
+  /** Store instance name override (tests only; production uses the
+   * default `telemetry-v1`). */
+  TELEMETRY_STORE?: string;
+  /** Per-IP limit on `POST /telemetry/v1/ping`. Unbound ⇒ no limit. */
+  TELEMETRY_RATE_LIMITER?: RateLimiter;
+  /** Beta access store instance override (tests only; production uses
+   * `access-v1` on the TELEMETRY class, access-store.ts). */
+  ACCESS_STORE?: string;
+  /** Per-IP limit on `POST /waitlist`. Unbound ⇒ no limit. */
+  WAITLIST_RATE_LIMITER?: RateLimiter;
+  /** The public TestFlight link put in invite messages on /admin/access
+   * (a var). Unset ⇒ the message says the link is coming. */
+  TESTFLIGHT_URL?: string;
+  /** Admin dashboard (`/admin`) allowlist (wrangler secret): comma-separated
+   * exact emails. Unset/empty ⇒ nobody gets in. */
+  ADMIN_EMAILS?: string;
+  /** Optional GitHub token for the dashboard's stars/downloads fetch
+   * (unauthenticated calls share Cloudflare's egress rate limit). */
+  GITHUB_TOKEN?: string;
   /** APNs auth key (contents of AuthKey_XXXX.p8, wrangler secret) and its
    * key id. Unset ⇒ session notifications are decided and logged, not sent. */
   APNS_KEY_P8?: string;

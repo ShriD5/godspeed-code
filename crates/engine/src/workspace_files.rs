@@ -2527,14 +2527,25 @@ mod tests {
         limit: usize,
         cancel: &AtomicBool,
     ) -> Result<Vec<WorkspaceFileSearchMatch>, WorkspaceFilesError> {
-        super::search_workspace_blocking(
-            &WorkspaceSearch::new(),
-            root,
-            query,
-            include_ignored,
-            limit,
-            cancel,
-        )
+        let search = WorkspaceSearch::new();
+        // A fresh index scans in the background and a name search waits at
+        // most `NAME_SCAN_WAIT` for it, then answers from what is indexed so
+        // far. These tests check ranking, not that timeout: wait for the scan
+        // (a loaded runner can take longer than the search's budget).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !include_ignored
+            && matches!(
+                search.warm(root),
+                Ok(crate::workspace_search::IndexState::Building)
+            )
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "workspace index scan finishes"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        super::search_workspace_blocking(&search, root, query, include_ignored, limit, cancel)
     }
 
     #[test]

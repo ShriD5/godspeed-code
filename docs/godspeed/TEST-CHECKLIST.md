@@ -216,6 +216,51 @@ server running `godspeed headless`).
       device is gone (or left empty if it existed).
 - [ ] Subdirectory project (a monorepo package): adding it clones the repo and opens the package.
 
+## 15e. Run on a server (needs a VPS)
+
+Setup once: a Hetzner CX22 or DigitalOcean $6 box with **Ubuntu 24.04**, created with your SSH key
+(the provider's "SSH key" field), so `ssh root@<ip>` works without a password. Better: make a user
+(`adduser --disabled-password deploy`, copy `/root/.ssh/authorized_keys` to
+`/home/deploy/.ssh/`, `chown -R deploy: /home/deploy/.ssh`) and use `deploy@<ip>`. Then
+`sudo apt-get install -y libasound2t64` once (the binary links ALSA). Optional: install Tailscale
+on the box and the Mac. A release with Linux assets must exist (0.5.9 or later: the "Linux release"
+workflow uploads `godspeed-<v>-linux-x86_64.tar.gz` and `manifest-linux.json`).
+
+- [ ] Settings → Devices shows a Servers section with "Run on a server…". Click it.
+      Expect: the wizard; with Tailscale on the Mac, online Linux/Mac peers appear as chips
+      (phones don't), and a chip fills the host (keeping a typed `user@`).
+- [ ] Type a host you've never sshed to. Expect: "hasn't connected to … before. Run `ssh …` once in
+      Terminal". Do that, answer yes, retry.
+- [ ] Type `nobody@<ip>`. Expect: "didn't accept any of your SSH keys … never asks for passwords".
+- [ ] Type a wrong name / closed port. Expect: "doesn't resolve" / "connection was refused".
+- [ ] Test connection on the real box. Expect: "Connected to …: Ubuntu 24.04.x LTS · x86_64 ·
+      systemd user services".
+- [ ] Install Godspeed. Expect: about a minute, then a browser tab opens on the Godspeed sign-in
+      page. Sign in; paste the code shown into the wizard; Finish sign-in. A wrong code says the
+      server didn't accept it and lets you paste again.
+- [ ] Expect: "Godspeed <v> is running on <hostname> as a systemd user service". If it says
+      "run `sudo loginctl enable-linger deploy`", do that on the box.
+- [ ] Within a minute the box appears under Other devices (Online, Linux, v<v>), and in the
+      Servers row as "Online · v<v> · up 1m".
+- [ ] Start a chat on the server (device picker in the new-chat composer), with `claude` logged in
+      on the box (`npm i -g @anthropic-ai/claude-code`, `claude` once over ssh). Send a long task.
+- [ ] Close the laptop lid for 10 minutes, open it. Expect: the chat kept running on the server
+      and shows the full transcript; nothing restarted (Servers row uptime keeps counting).
+- [ ] Turn Wi-Fi off for a minute mid-run, back on. Expect: the chat catches up, no duplicate
+      messages, no "already has a writer" error; the phone can take over the same chat.
+- [ ] Run the wizard again on the same box. Expect: "Godspeed <v> was already running", the
+      engine's uptime does not reset, the running chat is untouched.
+- [ ] `ssh deploy@<ip> sudo reboot`. Expect: the engine is back (Online) a minute after boot.
+- [ ] Stop. Expect: "Stop running agents" asks first while the engine runs; then the row says
+      Stopped, the device goes offline, and it stays stopped after a reboot. Start brings it back.
+- [ ] After the next release: the row shows "<new> available"; within ~6 h of idle the server
+      updates itself (row version changes, uptime resets). Or Update → "Restart and update" now.
+- [ ] Uninstall → "Really uninstall". Expect: the row disappears; on the box
+      `~/.godspeed/app` and the unit are gone, `~/.godspeed` data stays.
+- [ ] No-systemd fallback (optional, e.g. a Docker or LXC box without a user manager): the wizard
+      reports "no systemd user services (nohup fallback)", start uses a `nohup` supervisor and an
+      `@reboot` cron line; Stop and Uninstall remove both.
+
 ## 16. Robustness
 
 - [ ] Quit mid-run and reopen. Expect: chat recovers, no duplicate messages.

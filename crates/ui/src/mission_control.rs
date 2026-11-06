@@ -10,6 +10,12 @@
 //! its halo and the working card's travelling current, and only asks the
 //! shared pulse clock for frames while it is on screen and something on it
 //! moves. Reduce Motion paints the resting frame and asks for none.
+//!
+//! Every card, and the header speedster, is its own cached view
+//! ([`CardView`], [`SpeedsterSprite`]): an animation frame notifies only the
+//! view that moves, never the board, and the cards around it reuse last
+//! frame's layout and paint. The board itself rebuilds on app-state changes
+//! and at most once a second for the elapsed labels.
 
 mod board;
 mod navigation;
@@ -24,8 +30,9 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use gpui::{
     AnyElement, App, Bounds, ContentMask, Context, Corners, Entity, EntityId, EventEmitter,
-    FocusHandle, Focusable, Hsla, KeyDownEvent, Pixels, SharedString, Subscription, Task, Window,
-    canvas, div, img, linear_color_stop, linear_gradient, point, prelude::*, px, size,
+    FocusHandle, Focusable, Hsla, KeyDownEvent, Pixels, SharedString, Subscription, Task,
+    WeakEntity, Window, canvas, div, img, linear_color_stop, linear_gradient, point, prelude::*,
+    px, size,
 };
 use serde_json::json;
 use zeron_proto::attention::BatchApproval;
@@ -37,7 +44,7 @@ use crate::icons::{self, icon};
 use crate::motion::{self, MotionSpec};
 use crate::popover;
 use crate::settings::widgets;
-use crate::speedster::{Frame, Mood, Observation, Speedster};
+use crate::speedster::{Conditions, Frame, Mood, Observation, Plan, Speedster};
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -108,13 +115,8 @@ fn frame_image(frame: Frame) -> Arc<gpui::Image> {
     .clone()
 }
 
-/// What keeps the speedster's frame clock awake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpeedsterPlan {
-    None,
-    Animate(Duration),
-    Wake(Instant),
-}
+/// How long a battery / Low Power Mode reading is trusted (the Dock's TTL).
+const POWER_TTL: Duration = Duration::from_secs(30);
 
 pub struct MissionControl {
     state: Entity<AppState>,
@@ -123,7 +125,10 @@ pub struct MissionControl {
     diffs: Vec<Entity<Changes>>,
     focus: FocusHandle,
     filter: Entity<ComposerInput>,
-    board: Board,
+    /// Shared, never cloned per render.
+    board: Arc<Board>,
+    /// One cached view per card on the board, by chat id.
+    cards: HashMap<String, Entity<CardView>>,
     dirty: bool,
     built_at: Option<Instant>,
     focused: Option<String>,
@@ -143,10 +148,16 @@ pub struct MissionControl {
     speedster: Speedster,
     mood: Mood,
     frame: usize,
-    plan: SpeedsterPlan,
+    plan: Plan,
+    /// Last power reading: (when, saving power).
+    power: Option<(Instant, bool)>,
+    /// The header mascot; frame steps repaint only it.
+    sprite: Entity<SpeedsterSprite>,
     speedster_task: Option<Task<()>>,
     task: Option<Task<()>>,
     error: Option<String>,
+    #[cfg(test)]
+    renders: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -186,6 +197,12 @@ impl MissionControl {
                 this.sync_speedster(cx);
                 cx.notify();
             }),
+            // Nobody can see a hidden window: the speedster holds still.
+            cx.observe_global::<crate::app_visibility::AppVisibility>(|this: &mut Self, cx| {
+                if this.sync_speedster(cx) {
+                    cx.notify();
+                }
+            }),
         ];
         subscriptions.extend(diffs.iter().map(|changes| {
             cx.observe(changes, |this: &mut Self, _, cx| {
@@ -198,7 +215,8 @@ impl MissionControl {
             diffs,
             focus: cx.focus_handle(),
             filter,
-            board: Board::default(),
+            board: Arc::default(),
+            cards: HashMap::new(),
             dirty: true,
             built_at: None,
             focused: None,
@@ -214,10 +232,19 @@ impl MissionControl {
             speedster: Speedster::new(Utc::now()),
             mood: Mood::Idle,
             frame: 0,
-            plan: SpeedsterPlan::None,
+            plan: Plan::None,
+            power: None,
+            sprite: cx.new(|_| SpeedsterSprite {
+                frame: Mood::Idle.frames()[0],
+                mood: Mood::Idle,
+                #[cfg(test)]
+                renders: 0,
+            }),
             speedster_task: None,
             task: None,
             error: None,
+            #[cfg(test)]
+            renders: 0,
             _subscriptions: subscriptions,
         };
         this.observe_speedster(cx);
@@ -267,8 +294,11 @@ impl MissionControl {
             .borrow_mut()
             .retain(|id, _| statuses.contains_key(id));
         self.statuses = statuses;
+        let shown: std::collections::HashSet<&str> =
+            board.cards().map(|card| card.chat_id.as_str()).collect();
+        self.cards.retain(|id, _| shown.contains(id.as_str()));
 
-        self.board = board;
+        self.board = Arc::new(board);
         self.dirty = false;
         self.built_at = Some(at);
         self.reconcile_focus();
@@ -409,65 +439,95 @@ impl MissionControl {
         self.sync_speedster(cx);
     }
 
+    fn power_saving(&mut self, now: Instant) -> bool {
+        match self.power {
+            Some((at, saving)) if now.saturating_duration_since(at) < POWER_TTL => saving,
+            _ => {
+                let saving = crate::speedster::power_saving_now();
+                self.power = Some((now, saving));
+                saving
+            }
+        }
+    }
+
     /// Re-read the mood and keep exactly one timer for its next frame or its
-    /// next transition (a transient ending, the nap starting).
-    fn sync_speedster(&mut self, cx: &mut Context<Self>) {
+    /// next transition, by the Dock's rules ([`Speedster::plan`]): asleep and
+    /// a settled alert hold still, working moods cap at 4 fps on battery or
+    /// in Low Power Mode, and nothing moves while Reduce Motion is on or no
+    /// window is visible. Frame steps go to the sprite alone; returns whether
+    /// the mood changed (the caption and the empty state read it).
+    fn sync_speedster(&mut self, cx: &mut Context<Self>) -> bool {
         let now = Instant::now();
         let mood = self.speedster.mood(now);
-        if mood != self.mood {
+        let changed = mood != self.mood;
+        if changed {
             self.mood = mood;
             self.frame = 0;
         }
-        let still = crate::motion::reduced_outside_window(cx);
-        if still {
+        let conditions = Conditions {
+            reduced_motion: crate::motion::reduced_outside_window(cx)
+                || !crate::app_visibility::is_visible(cx),
+            // Unlike the Dock, the header is only worth animating on screen
+            // (handled above), so a hidden window never animates it.
+            hidden: false,
+            power_saving: self.power_saving(now),
+        };
+        let plan = self.speedster.plan(now, conditions);
+        if !matches!(plan, Plan::Animate(_)) {
+            // Still: the mood's first frame (asleep: the one with the "z").
             self.frame = 0;
         }
-        let plan = match mood.frame_interval() {
-            Some(interval) if !still => SpeedsterPlan::Animate(interval),
-            _ => self
-                .speedster
-                .next_deadline(now)
-                .map_or(SpeedsterPlan::None, SpeedsterPlan::Wake),
-        };
-        if plan == self.plan {
-            return;
-        }
-        self.plan = plan;
-        self.speedster_task = match plan {
-            SpeedsterPlan::None => None,
-            SpeedsterPlan::Animate(interval) => Some(cx.spawn(async move |this, cx| {
-                loop {
-                    cx.background_executor().timer(interval).await;
-                    let alive = this.update(cx, |this, cx| {
-                        this.frame = (this.frame + 1) % this.mood.frames().len();
-                        let before = this.plan;
-                        this.sync_speedster(cx);
-                        cx.notify();
-                        this.plan == before
-                    });
-                    if !matches!(alive, Ok(true)) {
-                        break;
+        let (frame, mood) = (self.speedster_frame(), self.mood);
+        self.sprite
+            .update(cx, |sprite, cx| sprite.show(frame, mood, cx));
+        if plan != self.plan {
+            self.plan = plan;
+            self.speedster_task = match plan {
+                Plan::None => None,
+                Plan::Animate(interval) => Some(cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(interval).await;
+                        let alive = this.update(cx, |this, cx| {
+                            this.frame = (this.frame + 1) % this.mood.frames().len();
+                            let before = this.plan;
+                            if this.sync_speedster(cx) {
+                                cx.notify();
+                            }
+                            this.plan == before
+                        });
+                        if !matches!(alive, Ok(true)) {
+                            break;
+                        }
                     }
-                }
-            })),
-            SpeedsterPlan::Wake(at) => Some(cx.spawn(async move |this, cx| {
-                cx.background_executor()
-                    .timer(at.saturating_duration_since(Instant::now()))
-                    .await;
-                this.update(cx, |this, cx| {
-                    // This task is done: the same deadline may be armed again.
-                    this.plan = SpeedsterPlan::None;
-                    this.sync_speedster(cx);
-                    cx.notify();
-                })
-                .ok();
-            })),
-        };
+                })),
+                Plan::Wake(at) => Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(at.saturating_duration_since(Instant::now()))
+                        .await;
+                    this.update(cx, |this, cx| {
+                        // This task is done: the same deadline may be armed again.
+                        this.plan = Plan::None;
+                        if this.sync_speedster(cx) {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })),
+            };
+        }
+        changed
     }
 
     fn speedster_frame(&self) -> Frame {
         let frames = self.mood.frames();
         frames[self.frame % frames.len()]
+    }
+
+    fn set_hovered(&mut self, chat_id: &str, hovered: bool, cx: &mut Context<Self>) {
+        if hovered || self.hovered.as_deref() == Some(chat_id) {
+            self.hovered = hovered.then(|| chat_id.to_string());
+            cx.notify();
+        }
     }
 
     // ----- scrolling -----------------------------------------------------
@@ -766,40 +826,41 @@ fn paint_current(
 // Rendering
 // ---------------------------------------------------------------------------
 
-impl MissionControl {
-    fn render_speedster(&self, frame: Frame, size_px: f32, tone: Hsla) -> AnyElement {
-        // A soft disc of the mood's colour behind the mascot.
-        let glow = size_px * 0.86;
-        div()
-            .relative()
-            .flex_none()
-            .size(px(size_px))
-            .child(
-                div()
-                    .absolute()
-                    .top(px((size_px - glow) / 2.0))
-                    .left(px((size_px - glow) / 2.0))
-                    .size(px(glow))
-                    .rounded_full()
-                    .bg(tone.opacity(0.10))
-                    .shadow(vec![gpui::BoxShadow {
-                        color: tone.opacity(0.28),
-                        offset: point(px(0.0), px(0.0)),
-                        blur_radius: px(size_px * 0.35),
-                        spread_radius: px(0.0),
-                        inset: false,
-                    }]),
-            )
-            .child(
-                img(frame_image(frame))
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size(px(size_px)),
-            )
-            .into_any_element()
-    }
+/// The speedster on a soft disc of the mood's colour.
+fn render_speedster(frame: Frame, size_px: f32, tone: Hsla) -> AnyElement {
+    // A soft disc of the mood's colour behind the mascot.
+    let glow = size_px * 0.86;
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size_px))
+        .child(
+            div()
+                .absolute()
+                .top(px((size_px - glow) / 2.0))
+                .left(px((size_px - glow) / 2.0))
+                .size(px(glow))
+                .rounded_full()
+                .bg(tone.opacity(0.10))
+                .shadow(vec![gpui::BoxShadow {
+                    color: tone.opacity(0.28),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(size_px * 0.35),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }]),
+        )
+        .child(
+            img(frame_image(frame))
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(size_px)),
+        )
+        .into_any_element()
+}
 
+impl MissionControl {
     fn render_header(
         &self,
         totals: &Totals,
@@ -808,7 +869,6 @@ impl MissionControl {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let tone = mood_tone(self.mood, theme);
         let filtering = self.filter.focus_handle(cx).is_focused(window);
         let query_empty = self.query(cx).is_empty();
         let filter = div()
@@ -909,11 +969,13 @@ impl MissionControl {
                     .items_center()
                     .gap(px(18.0))
                     .when(!empty, |el| {
-                        el.child(self.render_speedster(
-                            self.speedster_frame(),
-                            SPEEDSTER_SIZE,
-                            tone,
-                        ))
+                        el.child(
+                            self.sprite.clone().cached(
+                                gpui::StyleRefinement::default()
+                                    .flex_none()
+                                    .size(px(SPEEDSTER_SIZE)),
+                            ),
+                        )
                     })
                     .child(title)
                     .child(filter)
@@ -924,7 +986,7 @@ impl MissionControl {
     }
 
     fn render_device(
-        &self,
+        &mut self,
         device: &DeviceGroup,
         card_width: f32,
         ix: &mut usize,
@@ -983,7 +1045,7 @@ impl MissionControl {
         for project in &device.projects {
             let mut cards = Vec::new();
             for card in &project.cards {
-                cards.push(self.render_card(card, *ix, card_width, theme, cx));
+                cards.push(self.card_element(card, *ix, card_width, cx));
                 *ix += 1;
             }
             projects.push(
@@ -1030,16 +1092,162 @@ impl MissionControl {
             .into_any_element()
     }
 
-    fn render_card(
-        &self,
+    /// The card's cached view, created on first sight and told only what
+    /// changed: an unchanged card reuses last frame's layout and paint.
+    fn card_element(
+        &mut self,
         card: &Card,
         ix: usize,
         width: f32,
-        theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let focused = self.focused.as_deref() == Some(card.chat_id.as_str());
-        let hovered = self.hovered.as_deref() == Some(card.chat_id.as_str());
+        let look = CardLook {
+            ix,
+            width,
+            focused: self.focused.as_deref() == Some(card.chat_id.as_str()),
+            hovered: self.hovered.as_deref() == Some(card.chat_id.as_str()),
+            settle_from: self.settles.get(&card.chat_id).copied(),
+            still: cx.reduce_motion(),
+        };
+        let view = match self.cards.get(&card.chat_id) {
+            Some(view) => {
+                view.update(cx, |view, cx| {
+                    // Compared in place: nothing is cloned for a card that
+                    // did not change.
+                    if view.props.look != look || view.props.card != *card {
+                        view.props = CardProps {
+                            card: card.clone(),
+                            look,
+                        };
+                        cx.notify();
+                    }
+                });
+                view.clone()
+            }
+            None => {
+                let props = CardProps {
+                    card: card.clone(),
+                    look,
+                };
+                let board = cx.entity().downgrade();
+                let card_bounds = self.card_bounds.clone();
+                let view = cx.new(|_| CardView {
+                    props,
+                    board,
+                    card_bounds,
+                    #[cfg(test)]
+                    renders: 0,
+                });
+                self.cards.insert(card.chat_id.clone(), view.clone());
+                view
+            }
+        };
+        view.cached(
+            gpui::StyleRefinement::default()
+                .flex_none()
+                .w(px(width))
+                .h(px(CARD_HEIGHT)),
+        )
+        .into_any_element()
+    }
+
+    fn render_empty(&self, theme: &Theme, cx: &App) -> AnyElement {
+        let query = self.query(cx);
+        let (frame, title, body) = if query.trim().is_empty() {
+            // Asleep, holding the frame with the "z" (the Dock's rule: a
+            // napping speedster never animates).
+            (
+                Mood::Sleeping.frames()[0],
+                "All quiet".to_string(),
+                "Nothing is running or finished in the last day. Start a chat and it lands here."
+                    .to_string(),
+            )
+        } else {
+            (
+                Frame::Idle1,
+                format!("Nothing matches \u{201c}{}\u{201d}", query.trim()),
+                "Try a title, project, branch, device or status.".to_string(),
+            )
+        };
+        div()
+            .id("mission-control-empty")
+            .py(px(72.0))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(10.0))
+            .child(render_speedster(frame, 132.0, theme.text_muted))
+            .child(
+                div()
+                    .mt(px(6.0))
+                    .text_size(crate::typography::ui_rems(16.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(SharedString::from(title)),
+            )
+            .child(
+                div()
+                    .max_w(px(360.0))
+                    .text_center()
+                    .text_size(crate::typography::ui_rems(13.0))
+                    .text_color(theme.text_muted)
+                    .child(SharedString::from(body)),
+            )
+            .into_any_element()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Card view (cached)
+// ---------------------------------------------------------------------------
+
+/// Everything a card draws from. The board hands a card new props only when
+/// they differ, so an unchanged card is never re-rendered.
+struct CardProps {
+    card: Card,
+    look: CardLook,
+}
+
+/// The board-side state a card's look depends on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CardLook {
+    ix: usize,
+    width: f32,
+    focused: bool,
+    hovered: bool,
+    settle_from: Option<Instant>,
+    /// Reduce Motion, so a toggle repaints the plate's resting frame.
+    still: bool,
+}
+
+/// One card as its own view: the plate's pulse frames notify this view
+/// alone, so a working card repaints itself, not the board or its
+/// neighbours.
+struct CardView {
+    props: CardProps,
+    board: WeakEntity<MissionControl>,
+    card_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    #[cfg(test)]
+    renders: usize,
+}
+
+impl Render for CardView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
+        crate::transcript::record_view_frame("mission-control-card");
+        let theme = &Theme::of(cx).for_popup();
+        let card = &self.props.card;
+        let CardLook {
+            ix,
+            width,
+            focused,
+            hovered,
+            settle_from,
+            still: _,
+        } = self.props.look;
         let tone = status_tone(card.status, theme);
         let plate = Plate {
             status: card.status,
@@ -1055,7 +1263,7 @@ impl MissionControl {
             fresh: card.fresh,
             focused,
             focus_ring: theme.accent.opacity(0.7),
-            settle_from: self.settles.get(&card.chat_id).copied(),
+            settle_from,
         };
         let view = cx.entity_id();
         let sink = self.card_bounds.clone();
@@ -1241,15 +1449,19 @@ impl MissionControl {
             .h(px(CARD_HEIGHT))
             .cursor_pointer()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                let next = hovered.then(|| hover_id.clone());
-                if *hovered || this.hovered.as_ref() == Some(&hover_id) {
-                    this.hovered = next;
-                    cx.notify();
-                }
+                let hovered = *hovered;
+                this.board
+                    .update(cx, |board, cx| board.set_hovered(&hover_id, hovered, cx))
+                    .ok();
             }))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.focused = Some(id.clone());
-                cx.emit(MissionControlEvent::OpenChat(id.clone()));
+                let id = id.clone();
+                this.board
+                    .update(cx, |board, cx| {
+                        board.focused = Some(id.clone());
+                        cx.emit(MissionControlEvent::OpenChat(id));
+                    })
+                    .ok();
             }))
             .child(plate_layer)
             .child(
@@ -1267,57 +1479,35 @@ impl MissionControl {
                     .child(div().flex_1())
                     .child(footer),
             )
-            .into_any_element()
     }
+}
 
-    fn render_empty(&self, theme: &Theme, cx: &App) -> AnyElement {
-        let query = self.query(cx);
-        let (frame, title, body) = if query.trim().is_empty() {
-            // The nap frames, breathing only while the speedster really naps.
-            let frames = Mood::Sleeping.frames();
-            let frame = if self.mood == Mood::Sleeping {
-                frames[self.frame % frames.len()]
-            } else {
-                frames[0]
-            };
-            (
-                frame,
-                "All quiet".to_string(),
-                "Nothing is running or finished in the last day. Start a chat and it lands here."
-                    .to_string(),
-            )
-        } else {
-            (
-                Frame::Idle1,
-                format!("Nothing matches \u{201c}{}\u{201d}", query.trim()),
-                "Try a title, project, branch, device or status.".to_string(),
-            )
-        };
-        div()
-            .id("mission-control-empty")
-            .py(px(72.0))
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(10.0))
-            .child(self.render_speedster(frame, 132.0, theme.text_muted))
-            .child(
-                div()
-                    .mt(px(6.0))
-                    .text_size(crate::typography::ui_rems(16.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(SharedString::from(title)),
-            )
-            .child(
-                div()
-                    .max_w(px(360.0))
-                    .text_center()
-                    .text_size(crate::typography::ui_rems(13.0))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(body)),
-            )
-            .into_any_element()
+/// The header speedster: frame steps notify this view alone.
+struct SpeedsterSprite {
+    frame: Frame,
+    mood: Mood,
+    #[cfg(test)]
+    renders: usize,
+}
+
+impl SpeedsterSprite {
+    fn show(&mut self, frame: Frame, mood: Mood, cx: &mut Context<Self>) {
+        if self.frame != frame || self.mood != mood {
+            self.frame = frame;
+            self.mood = mood;
+            cx.notify();
+        }
+    }
+}
+
+impl Render for SpeedsterSprite {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
+        let tone = mood_tone(self.mood, &Theme::of(cx).for_popup());
+        render_speedster(self.frame, SPEEDSTER_SIZE, tone)
     }
 }
 
@@ -1391,6 +1581,11 @@ impl popover::ScrollRailHost for MissionControl {
 
 impl Render for MissionControl {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
+        crate::transcript::record_view_frame("mission-control");
         crate::toast::take_error(&mut self.error, cx);
         self.refresh(cx);
         if std::mem::take(&mut self.focus_pending) {
@@ -1549,6 +1744,145 @@ mod tests {
             agent_run: None,
             conductor: None,
         }
+    }
+
+    fn working(chat_id: &str) -> Session {
+        Session {
+            last_completed_turn: None,
+            chat_id: chat_id.into(),
+            device_id: "mac".into(),
+            status: SessionStatus::Working,
+            started_at: Some(Utc::now() - TimeDelta::seconds(30)),
+            updated_at: Utc::now(),
+            running_subagents: 0,
+            background_tasks: 0,
+            awaiting_approval: false,
+        }
+    }
+
+    fn init(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+        });
+    }
+
+    /// Four working agents and two finished ones: the board the audit
+    /// measured, open in a window.
+    fn busy_board(
+        cx: &mut TestAppContext,
+    ) -> (Entity<MissionControl>, &mut gpui::VisualTestContext) {
+        init(cx);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, _| {
+            state.local_device_id = Some("mac".into());
+            state.chats = ["w1", "w2", "w3", "w4", "f1", "f2"].map(chat).to_vec();
+            state.sessions = ["w1", "w2", "w3", "w4"].map(working).to_vec();
+        });
+        cx.add_window_view(|_, cx| MissionControl::new(state, Vec::new(), cx))
+    }
+
+    fn draw(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+    }
+
+    /// Render counts over one second of pulse frames: (board renders, each
+    /// card's renders by id, sprite renders), and how often the board was
+    /// notified.
+    fn one_second_of_frames(
+        control: &Entity<MissionControl>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> (usize, HashMap<String, usize>, usize, usize) {
+        let notified = Rc::new(std::cell::Cell::new(0usize));
+        let count = notified.clone();
+        let _observe =
+            cx.update(|_, cx| cx.observe(control, move |_, _| count.set(count.get() + 1)));
+        control.update(cx, |control, cx| {
+            control.renders = 0;
+            control.sprite.update(cx, |sprite, _| sprite.renders = 0);
+            for card in control.cards.values() {
+                card.update(cx, |card, _| card.renders = 0);
+            }
+        });
+        // The test platform draws a dirty window as it parks, like a
+        // display frame would.
+        for _ in 0..30 {
+            cx.executor().advance_clock(Duration::from_millis(33));
+            cx.run_until_parked();
+        }
+        control.update(cx, |control, cx| {
+            let cards = control
+                .cards
+                .iter()
+                .map(|(id, card)| (id.clone(), card.read(cx).renders))
+                .collect();
+            (
+                control.renders,
+                cards,
+                control.sprite.read(cx).renders,
+                notified.get(),
+            )
+        })
+    }
+
+    /// The pulse clock notifies each working card's own view; the board is
+    /// never notified per frame, and finished cards are never re-rendered.
+    #[gpui::test]
+    fn a_pulse_frame_repaints_only_the_working_cards(cx: &mut TestAppContext) {
+        let (control, cx) = busy_board(cx);
+        draw(cx);
+        cx.run_until_parked();
+        draw(cx);
+        let (board, cards, sprite, notified) = one_second_of_frames(&control, cx);
+        eprintln!(
+            "mission control, 1 s of frames: board renders {board}, board notifies {notified}, \
+             sprite renders {sprite}, card renders {cards:?}"
+        );
+        assert_eq!(
+            notified, 0,
+            "no pulse or speedster frame may notify the board"
+        );
+        for id in ["w1", "w2", "w3", "w4"] {
+            let renders = cards[id];
+            assert!(
+                (20..=31).contains(&renders),
+                "working card {id} repaints itself at the 30 Hz pulse, got {renders}"
+            );
+        }
+        for id in ["f1", "f2"] {
+            assert_eq!(cards[id], 0, "finished card {id} is never re-rendered");
+        }
+        // Sprint (4 working) steps at 12 fps, on the sprite alone.
+        assert!((8..=13).contains(&sprite), "sprite renders {sprite}");
+    }
+
+    /// The header speedster follows the Dock's rules: animated while agents
+    /// work, still while Reduce Motion is on or no window is visible.
+    #[gpui::test]
+    fn the_header_speedster_holds_still_when_nobody_can_see_it(cx: &mut TestAppContext) {
+        let (control, cx) = busy_board(cx);
+        let interval = Mood::Sprint.frame_interval().unwrap();
+        control.read_with(cx, |control, _| {
+            assert_eq!(control.mood, Mood::Sprint);
+            assert_eq!(control.plan, Plan::Animate(interval));
+        });
+        cx.update(|_, cx| crate::app_visibility::set_visible(false, cx));
+        cx.run_until_parked();
+        control.read_with(cx, |control, _| {
+            assert!(
+                !matches!(control.plan, Plan::Animate(_)),
+                "{:?}",
+                control.plan
+            );
+            assert_eq!(control.frame, 0);
+        });
+        cx.update(|_, cx| crate::app_visibility::set_visible(true, cx));
+        cx.run_until_parked();
+        control.read_with(cx, |control, _| {
+            assert_eq!(control.plan, Plan::Animate(interval));
+        });
     }
 
     #[test]

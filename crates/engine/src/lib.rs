@@ -16,10 +16,12 @@ use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
 use zeron_sync::DocsStore;
 
 pub mod account_handoff;
+pub mod acp_agents;
 pub mod agent_accounts;
 pub mod agents;
 pub mod attention;
 pub mod auth;
+pub mod build_slots;
 mod change_request_store;
 pub mod change_requests;
 pub mod chat2_host;
@@ -42,9 +44,12 @@ pub mod limit_recovery;
 pub mod local_import;
 pub mod message_index;
 mod model_catalogs;
+pub mod preview_driver;
 pub mod profile;
 pub mod project_actions;
+pub mod pr_watch;
 pub mod project_transfer;
+pub mod provider_instances;
 pub mod registry;
 pub mod remote_terminals;
 pub mod repos;
@@ -54,16 +59,19 @@ pub mod sessions;
 pub mod source_control;
 pub mod spaces;
 pub mod telegram;
+pub mod telemetry;
 pub mod terminals;
 pub mod text_generation;
 pub mod titles;
 mod transcript_history;
 pub mod uploads;
 pub mod usage_history;
+mod user_activity;
 pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
 pub mod workspace_search;
+pub mod worktree_cleanup;
 pub mod worktree_env;
 mod worktree_settings;
 
@@ -95,11 +103,13 @@ pub use source_control::{
 };
 pub use spaces::SpacesSync;
 pub use telegram::Telegram;
+pub use build_slots::BuildSlots;
+pub use telemetry::{Telemetry, TelemetrySources};
 pub use terminals::Terminals;
 pub use text_generation::TextGenerator;
 pub use titles::TitleGenerator;
 pub use uploads::{AttachmentChunk, Uploads};
-pub use usage_history::{UsageDeps, UsageIndex, UsageLogRoots};
+pub use usage_history::{DayUsage, UsageDeps, UsageIndex, UsageLogRoots};
 pub use workspace_files::WorkspaceFiles;
 pub use worktree_env::{ProjectScope, WorktreeEnvironments};
 pub use workspace_host::{
@@ -134,6 +144,21 @@ pub(crate) fn now_ms() -> i64 {
 
 pub(crate) fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// "Is any run on this engine working or waiting on input?" for background
+/// services that relax when nothing runs. Reads the status watch, so it holds
+/// no sessions handle (the sessions engine holds those services' listeners).
+pub(crate) fn live_run_probe(sessions: &SessionsEngine) -> Arc<dyn Fn() -> bool + Send + Sync> {
+    let statuses = sessions.watch_sessions();
+    Arc::new(move || {
+        statuses.borrow().iter().any(|session| {
+            matches!(
+                session.status,
+                zeron_proto::SessionStatus::Working | zeron_proto::SessionStatus::AwaitingInput
+            )
+        })
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -182,11 +207,15 @@ pub struct EngineCore {
     pub telegram: Telegram,
     /// The "Needs you" inbox over every hosted chat and agent run.
     pub attention: AttentionService,
+    /// Watched pull requests that wake their chats (checks, reviews, conflicts).
+    pub pr_watch: pr_watch::PrWatchService,
     pub delegations: delegation::DelegationNotifications,
     /// Usage-limit recovery: Limited markers, held sends, resume at reset.
     pub limit_recovery: limit_recovery::LimitRecoveryService,
     /// Snooze wake and opt-in auto-settle for the chats hosted here.
     pub chat_lifecycle: chat_lifecycle::ChatLifecycleService,
+    /// Storage listing and the opt-in sweep of merged or untouched worktrees.
+    pub worktree_cleanup: worktree_cleanup::WorktreeCleanupService,
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
@@ -196,6 +225,13 @@ pub struct EngineCore {
     pub message_index: MessageIndex,
     /// Tokens and estimated cost over time (Settings → Usage history).
     pub usage_history: UsageIndex,
+    /// The anonymous once-a-day usage ping (docs/PRIVACY.md). Opened with
+    /// the core; sending starts with [`EngineRuntime::start_telemetry`].
+    pub telemetry: Telemetry,
+    /// The jobserver shared by every agent and terminal this engine starts
+    /// (Settings → General → Builds). Opened with the core; the pool starts
+    /// with [`EngineRuntime::start_build_slots`].
+    pub build_slots: BuildSlots,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -272,6 +308,8 @@ impl EngineCore {
         // This device's harness enablement (Settings → Providers) rides the
         // engine data dir — per-device, like the CLI installs it gates.
         registry.load_prefs(data_dir);
+        // Named provider instances and ACP-registry agents, same per-device home.
+        registry.load_providers(data_dir);
         let store = Arc::new(DocsStore::open(profile.store_root())?);
         let store_for_import = store.clone();
         let journal = Arc::new(RunJournal::open(profile.store_root().join("journals"))?);
@@ -337,6 +375,13 @@ impl EngineCore {
             terminals::link::SERVICE_PREFIX,
             Arc::new(terminals::link::Service::new(terminals.clone())),
         );
+        // Port discovery runs `lsof` and `ps`: full cadence only while a run
+        // or a terminal may be starting servers (or someone just acted).
+        previews.set_live_probe({
+            let runs = live_run_probe(&sessions);
+            let terminals = terminals.clone();
+            Arc::new(move || runs() || terminals.any_open())
+        });
         let uploads = Uploads::from_root_with_fallback(
             profile.uploads_root(),
             legacy_uploads_root.as_deref(),
@@ -398,19 +443,41 @@ impl EngineCore {
         // — and end any usage-limit marker: the chat is running again.
         let turn_diff = diff_sync.clone();
         let turn_limits = limit_recovery.clone();
+        let telemetry = Telemetry::open(data_dir);
+        let build_slots = BuildSlots::open(data_dir);
+        // Leak checks run only while something may build.
+        build_slots.set_live_probe({
+            let runs = live_run_probe(&sessions);
+            let terminals = terminals.clone();
+            Arc::new(move || runs() || terminals.any_open())
+        });
+        let turn_slots = build_slots.clone();
+        let turn_telemetry = telemetry.clone();
+        let turn_previews = previews.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
             turn_limits.note_turn_start(chat_id);
+            turn_slots.note_live();
+            turn_previews.note_activity();
+            turn_telemetry.note_activity(false);
+        }));
+        let input_telemetry = telemetry.clone();
+        sessions.set_input_listener(Arc::new(move |_chat_id| {
+            input_telemetry.note_activity(true);
         }));
         let limited = limit_recovery.clone();
         sessions.set_limit_listener(Arc::new(move |chat_id, signal| {
             limited.note_limited(chat_id, signal);
         }));
         // Turn ends stamp the "Latest turn" diff onto the turn's receipt.
+        // Turn ends also re-capture the chat's checkout: the safety net for
+        // watcher events dropped during the turn.
         let turn_files = diff_sync.clone();
         sessions.set_turn_files_listener(Arc::new(move |chat_id| {
+            turn_files.note_turn_end(chat_id);
             turn_files.turn_file_stats(chat_id)
         }));
+        diff_sync.set_live_probe(live_run_probe(&sessions));
         // Stamped turns feed the usage history; agent logs are read on demand.
         let usage_history = UsageIndex::open(
             data_dir,
@@ -458,10 +525,27 @@ impl EngineCore {
                 agents: agents.clone(),
             },
         );
+        let pr_watch =
+            pr_watch::PrWatchService::open(data_dir, doc_host.clone(), workspace.clone());
+        attention.attach_pull_requests(pr_watch.clone());
         attention.start();
+        // A live run keeps the watch at full speed.
+        pr_watch.set_live_probe(live_run_probe(&sessions));
+        pr_watch.start();
         limit_recovery.start();
         let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());
         chat_lifecycle.start();
+        let worktree_cleanup = worktree_cleanup::WorktreeCleanupService::open(
+            data_dir,
+            repos.clone(),
+            workspace.clone(),
+            worktree_env::WorktreeEnvironments::new(
+                repos.clone(),
+                terminals.clone(),
+                project_actions.clone(),
+            ),
+        );
+        worktree_cleanup.start();
         let delegations = delegation::DelegationNotifications::start(
             data_dir,
             workspace.clone(),
@@ -489,14 +573,18 @@ impl EngineCore {
             agents,
             telegram,
             attention,
+            pr_watch,
             delegations,
             limit_recovery,
             chat_lifecycle,
+            worktree_cleanup,
             device_id,
             local_import,
             chat_import,
             message_index,
             usage_history,
+            telemetry,
+            build_slots,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -634,11 +722,15 @@ impl EngineCore {
         .with_agents(self.agents.clone())
         .with_telegram(self.telegram.clone())
         .with_attention(self.attention.clone())
+        .with_pr_watch(self.pr_watch.clone())
         .with_limit_recovery(self.limit_recovery.clone())
         .with_chat_lifecycle(self.chat_lifecycle.clone())
+        .with_worktree_cleanup(self.worktree_cleanup.clone())
         .with_chat_import(self.chat_import.clone())
         .with_message_index(self.message_index.clone())
-        .with_usage_history(self.usage_history.clone());
+        .with_usage_history(self.usage_history.clone())
+        .with_telemetry(self.telemetry.clone())
+        .with_build_slots(self.build_slots.clone());
         if let Some(links) = self.links() {
             rpc = rpc.with_links(links);
         }
@@ -668,12 +760,16 @@ impl EngineCore {
     /// snapshot.
     pub async fn shutdown(&self) {
         // First: no new agent run or resume may start against a draining engine.
+        self.telemetry.shutdown().await;
+        self.build_slots.shutdown().await;
         self.telegram.shutdown().await;
         self.attention.shutdown().await;
+        self.pr_watch.shutdown().await;
         self.delegations.shutdown().await;
         self.agents.shutdown().await;
         self.limit_recovery.shutdown().await;
         self.chat_lifecycle.shutdown().await;
+        self.worktree_cleanup.shutdown().await;
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;
         // A run interruption transitions its chat to Idle, and Idle normally
@@ -789,6 +885,49 @@ impl EngineRuntime {
     pub async fn shutdown(&self) {
         self.disconnect_edge();
         self.core.shutdown().await;
+    }
+
+    /// Start the shared build-slot pool (unless turned off) and its leak
+    /// checks. Never from unit tests: it publishes process-wide state.
+    pub fn start_build_slots(&self) {
+        self.core.build_slots.start();
+    }
+
+    /// Start the anonymous daily usage ping to `{edge_url}/telemetry/v1/ping`
+    /// (unless it is turned off). `interactive` = the desktop app, whose
+    /// launch counts as use; the headless engine passes `false`.
+    pub fn start_telemetry(&self, edge_url: &str, interactive: bool) {
+        let core = &self.core;
+        let workspace = core.workspace.clone();
+        let device_id = core.device_id.clone();
+        let agents = core.agents.clone();
+        let sources = TelemetrySources {
+            usage: Some(core.usage_history.clone()),
+            chats_started: Some(Arc::new(move |from, to| {
+                workspace
+                    .read_chats()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|chat| chat.device_id == device_id)
+                    .filter(|chat| chat.created_at >= from && chat.created_at < to)
+                    .count() as u64
+            })),
+            zoomie_runs: Some(Arc::new(move |from, to| {
+                let filter = zeron_proto::agents::AgentRunFilter {
+                    include_archived: true,
+                    limit: Some(500),
+                    ..Default::default()
+                };
+                agents
+                    .list_runs(&filter)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|run| run.started_at)
+                    .filter(|started| *started >= from && *started < to)
+                    .count() as u64
+            })),
+        };
+        core.telemetry.start(edge_url, interactive, sources);
     }
 }
 
@@ -1021,7 +1160,7 @@ impl Engine {
             let terminals = core.terminals.clone();
             Arc::new(move || !sessions.any_active() && !terminals.any_open())
         };
-        let updater = zeron_update::Updater::spawn(config.edge_url.clone(), Some(quiescent));
+        let updater = zeron_update::Updater::spawn(zeron_update::DEFAULT_FEED_URL.to_owned(), Some(quiescent));
         if let Some(mut token_changes) = edge.as_ref().and_then(EdgeConfig::token_changes) {
             let updater_for_tokens = updater.clone();
             let wake = tokio::spawn(async move {
@@ -1089,6 +1228,8 @@ impl Engine {
             .ok_or_else(|| EngineError::Other("synced workspace profile is not ready".into()))?;
 
         let runtime = Self::assemble_runtime(&config, auth, profile).await?;
+        runtime.start_telemetry(&config.edge_url, false);
+        runtime.start_build_slots();
         // The desktop app or `godspeed update` may install a newer binary under
         // a running service; restart into it once no run or terminal is live.
         if let Some(updater) = runtime.core().updater() {

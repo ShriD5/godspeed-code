@@ -475,6 +475,13 @@ impl SessionDoc {
         Ok(())
     }
 
+    /// Whether the transcript has any message entry, without materializing
+    /// one: the list's length, not its contents. A torn entry counts — it is
+    /// still history that must never be overwritten.
+    pub fn has_message_entries(&self) -> bool {
+        !self.doc.get_list("messages").is_empty()
+    }
+
     /// Read all entries (continuations NOT joined — see `join_continuation_entries`).
     ///
     /// Malformed entries are SKIPPED, not fatal: a torn intermediate state
@@ -553,6 +560,56 @@ impl SessionDoc {
             first.id = root;
         }
         Ok(join_continuation_entries(entries))
+    }
+
+    /// The turn in flight, cheaply: `None` unless the last entry is still
+    /// streaming, else the trailing entries back to (and including) the
+    /// user message that started it, continuations joined. Decodes only
+    /// those entries, never the whole transcript (search indexes a live
+    /// reply from this while it streams, and the full transcript once the
+    /// turn ends). Bounded at `max_entries` from the end.
+    pub fn read_streaming_tail(
+        &self,
+        max_entries: usize,
+    ) -> Result<Option<Vec<SessionMessageEntry>>, DocError> {
+        use loro::{Container, ValueOrContainer};
+        let messages = self.doc.get_list("messages");
+        let len = messages.len();
+        let streaming = len > 0
+            && matches!(
+                messages.get(len - 1),
+                Some(ValueOrContainer::Container(Container::Map(map)))
+                    if matches!(
+                        map.get("status"),
+                        Some(ValueOrContainer::Value(LoroValue::String(s)))
+                            if s.as_str() == status_str(MessageStatus::Streaming)
+                    )
+            );
+        if !streaming {
+            return Ok(None);
+        }
+        let mut entries = Vec::new();
+        for index in (len.saturating_sub(max_entries)..len).rev() {
+            let Some(ValueOrContainer::Container(Container::Map(map))) = messages.get(index) else {
+                continue;
+            };
+            let Ok(entry) = entry_from_json(map.get_deep_value().to_json_value()) else {
+                continue;
+            };
+            let user = entry.role == MessageRole::User;
+            entries.push(entry);
+            if user {
+                break;
+            }
+        }
+        entries.reverse();
+        // A turn whose first segment is outside the window keeps its root id.
+        if let Some(first) = entries.first_mut()
+            && let Some(root) = first.continuation_of.take()
+        {
+            first.id = root;
+        }
+        Ok(Some(join_continuation_entries(entries)))
     }
 
     /// Read the commands ledger.
@@ -835,6 +892,36 @@ impl SessionDoc {
         status: Option<&str>,
         tail: Option<&str>,
     ) -> Result<bool, DocError> {
+        // Genus gate: subagent lifecycle only ever lands on a SPAWN call.
+        // Mis-keyed tagged traffic (a driver bug — claude's background shells
+        // settled through the subagent subtype, 2026-08-20) must not decorate
+        // an ordinary chip with a ref to a doc it never had.
+        let Some(part) = self.newest_tool_part(part_id).filter(is_spawn_part) else {
+            return Ok(false);
+        };
+        if let Some(r) = subagent_ref {
+            part.insert("subagentRef", r)?;
+        }
+        if let Some(s) = status {
+            part.insert("subagentStatus", s)?;
+        }
+        if let Some(t) = tail {
+            part.insert("subagentTail", t)?;
+        }
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Whether `part_id` is one of this doc's subagent SPAWN chips, the only
+    /// part a subagent doc may hang off (same lookup and gate as
+    /// [`Self::update_subagent_chip`]).
+    pub fn has_subagent_spawn(&self, part_id: &str) -> bool {
+        self.newest_tool_part(part_id)
+            .is_some_and(|part| is_spawn_part(&part))
+    }
+
+    /// The tool part with this id, searched from the NEWEST entry back.
+    fn newest_tool_part(&self, part_id: &str) -> Option<LoroMap> {
         let messages = self.doc.get_list("messages");
         for i in (0..messages.len()).rev() {
             let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
@@ -862,37 +949,11 @@ impl SessionDoc {
                     Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == part_id
                 );
                 if is_tool && id_matches {
-                    // Genus gate: subagent lifecycle only ever lands on a
-                    // SPAWN call. Mis-keyed tagged traffic (a driver bug —
-                    // claude's background shells settled through the
-                    // subagent subtype, 2026-08-20) must not decorate an
-                    // ordinary chip with a ref to a doc it never had.
-                    let is_spawn = part
-                        .get("call")
-                        .and_then(|v| match v {
-                            loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
-                            _ => None,
-                        })
-                        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
-                        .is_some_and(|c| c.is_subagent_spawn());
-                    if !is_spawn {
-                        return Ok(false);
-                    }
-                    if let Some(r) = subagent_ref {
-                        part.insert("subagentRef", r)?;
-                    }
-                    if let Some(s) = status {
-                        part.insert("subagentStatus", s)?;
-                    }
-                    if let Some(t) = tail {
-                        part.insert("subagentTail", t)?;
-                    }
-                    self.doc.commit();
-                    return Ok(true);
+                    return Some(part);
                 }
             }
         }
-        Ok(false)
+        None
     }
 
     /// Export a snapshot (persistence) — `ExportMode::Snapshot`.
@@ -901,6 +962,17 @@ impl SessionDoc {
             .export(ExportMode::Snapshot)
             .map_err(|e| DocError::Schema(e.to_string()))
     }
+}
+
+/// A tool part whose call is a subagent spawn ([`zeron_proto::ToolCall::is_subagent_spawn`]).
+fn is_spawn_part(part: &LoroMap) -> bool {
+    part.get("call")
+        .and_then(|v| match v {
+            loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
+            _ => None,
+        })
+        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
+        .is_some_and(|c| c.is_subagent_spawn())
 }
 
 fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Result<(), DocError> {
@@ -1540,6 +1612,18 @@ mod tests {
     use crate::parts::fold_event_into_parts;
 
     #[test]
+    fn has_message_entries_reads_the_length_only() {
+        let doc = SessionDoc::init("chat").unwrap();
+        assert!(!doc.has_message_entries());
+        let entry: SessionMessageEntry = serde_json::from_value(serde_json::json!({
+            "id": "m", "role": "user", "parts": [], "createdAt": 1, "deviceId": "d"
+        }))
+        .unwrap();
+        doc.push_message(&entry).unwrap();
+        assert!(doc.has_message_entries());
+    }
+
+    #[test]
     fn fork_seam_round_trips_through_the_doc() {
         let doc = SessionDoc::init("fork").unwrap();
         let seam = MessagePart::Fork {
@@ -1617,6 +1701,7 @@ mod tests {
         let writer = SegmentWriter::begin(&doc, "a", "owner", 1).unwrap();
         writer.finish(&parts, MessageStatus::Complete).unwrap();
         let stats = TurnStats {
+            instance: None,
             model: Some("claude-opus-5-5".into()),
             wait_ms: Some(2_000),
             ..Default::default()
@@ -1631,6 +1716,7 @@ mod tests {
         // The diff lands later and keeps what was stamped first.
         assert!(doc.set_turn_files("a", files.clone()).unwrap());
         let expected = TurnStats {
+            instance: None,
             files: Some(files),
             ..stats
         };
@@ -1911,6 +1997,10 @@ mod tests {
             ),
         ];
         w.sync(&parts).unwrap();
+        // The engine asks the same question before it opens a subagent doc.
+        assert!(doc.has_subagent_spawn("toolu_spawn"));
+        assert!(!doc.has_subagent_spawn("toolu_bash"));
+        assert!(!doc.has_subagent_spawn("toolu_elsewhere"));
         assert!(
             doc.update_subagent_chip(
                 "toolu_spawn",

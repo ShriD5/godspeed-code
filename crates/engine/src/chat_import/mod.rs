@@ -902,6 +902,7 @@ impl ChatImporter {
             // A chat whose source harness this app lacks keeps no config and
             // no resume id: it runs on the default harness, freshly.
             config: chat.harness.map(|harness| ChatConfig {
+                instance: None,
                 harness,
                 model: chat.model.clone(),
                 reasoning: chat.reasoning,

@@ -43,6 +43,31 @@ cargo run -p godspeed               # desktop app
 cargo run -p godspeed -- headless   # engine only
 ```
 
+### Building with several agents at once
+
+If you run several Godspeed agents on this repo at once (one worktree each), every `cargo build`
+starts one rustc per core by default, and the memory adds up fast: four builds on a 16 GB laptop is
+enough to make the machine swap. To keep it usable:
+
+- Leave **Settings → General → Builds → Share build slots across agents** on (it is on by default).
+  Godspeed runs one GNU-make-style jobserver and points every agent and terminal it starts at it
+  through `CARGO_MAKEFLAGS`, so all the builds share one pool of compile jobs. A build running
+  alone gets the same parallelism as before. If you set `CARGO_BUILD_JOBS`, `MAKEFLAGS` or
+  `build.jobs` yourself, your setting wins and the pool stays out of the way.
+- Install sccache (`brew install sccache`) and Godspeed sets `RUSTC_WRAPPER` for agents in Rust
+  projects, so worktrees share compiled dependencies instead of building them again.
+- Point worktrees at one shared `CARGO_TARGET_DIR` only if they're on the same branch. Otherwise
+  give each worktree its own target directory, or the builds keep invalidating each other's work.
+- The dev profile builds dependencies without debug info (`[profile.dev.package."*"]
+  debug = false`). Workspace crates keep full debug info. If you need to step into a dependency
+  in a debugger, override it locally for that crate.
+
+The macOS system `make` (3.81) can't read the pool's FIFO. If a build script pipes
+`CARGO_MAKEFLAGS` into `make` (the `cmake`, `openssl-src` and `jemalloc-sys` crates do), that
+`make` fails. Godspeed only shares the pool with Rust projects whose `Cargo.lock` has none of
+those crates, unless GNU make 4.4 or newer is first on `PATH`. Godspeed's own lockfile is
+eligible.
+
 ### Running a dev build next to an installed Godspeed
 
 The installed app holds the default data directory (`~/.godspeed`) and IPC port (27654). Give your

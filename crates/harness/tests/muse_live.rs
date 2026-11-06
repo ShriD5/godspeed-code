@@ -67,6 +67,7 @@ async fn start(
         turn: turn.clone(),
     };
     let request = RunRequest {
+        instance: None,
         prompt: prompt.into(),
         harness: None,
         model: None,

@@ -304,9 +304,11 @@ pub trait Harness: Send + Sync {
 }
 
 pub mod acp;
+pub mod acp_registry;
 pub(crate) mod adapter_install;
 pub mod approval;
 pub mod archive_install;
+pub mod build_env;
 mod catalog;
 mod catalog_failure;
 pub(crate) mod code_signature;
@@ -317,7 +319,9 @@ pub mod codex;
 pub mod cursor;
 pub(crate) mod executable;
 pub mod install;
+pub mod instance;
 pub mod limits;
+pub(crate) mod jsonl_tail;
 pub(crate) mod jsonrpc;
 pub mod mock;
 mod model_context;
@@ -351,14 +355,23 @@ pub fn compose_child_path(cmd: &mut process::Command, exe: &std::path::Path) {
 }
 
 /// The worktree environment the host resolved for a run (its ports and
-/// paths), for harnesses that start an agent process per chat.
+/// paths), for harnesses that start an agent process per chat — on top of
+/// the shared build environment for `cwd` ([`build_env`]), which yields to
+/// any build variable the run's env sets.
 pub(crate) fn apply_run_env(
     cmd: &mut process::Command,
     env: &std::collections::BTreeMap<String, String>,
+    cwd: Option<&std::path::Path>,
 ) {
+    build_env::apply(cmd.as_std_mut(), cwd, env);
     for (name, value) in env {
         cmd.env(name, value);
     }
+}
+
+/// A run's working directory, when it names one.
+pub(crate) fn run_cwd(request: &RunRequest) -> Option<&std::path::Path> {
+    (!request.cwd.is_empty()).then(|| std::path::Path::new(&request.cwd))
 }
 
 fn compose_path<'a>(
@@ -536,7 +549,7 @@ pub(crate) fn crash_message(
     }
 }
 
-pub use acp::AcpHarness;
+pub use acp::{AcpHarness, RegistryAgentLaunch};
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
 pub use cursor::CursorHarness;

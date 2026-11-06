@@ -45,6 +45,9 @@ pub(crate) fn noninteractive_git(cmd: &mut tokio::process::Command) {
 
 /// `branch.<name>.<key> = true` marks a branch Godspeed created for a worktree.
 const GODSPEED_CREATED_KEY: &str = "godspeedCreated";
+/// `branch.<name>.godspeedBase`: the commit a Godspeed branch started at, so
+/// cleanup can tell a merged branch from one that never moved.
+const GODSPEED_BASE_KEY: &str = "godspeedBase";
 /// Error prefix of a worktree removal refused for uncommitted work; callers
 /// confirm with the user and retry with `force`.
 pub const WORKTREE_DIRTY: &str = "Worktree has uncommitted changes";
@@ -389,7 +392,7 @@ impl Repos {
 
     /// Async existence probe with a timeout: a wedged network mount just reads
     /// as "gone" instead of hanging every caller.
-    async fn path_exists(path: &Path) -> bool {
+    pub(crate) async fn path_exists(path: &Path) -> bool {
         let path = path.to_path_buf();
         matches!(
             tokio::time::timeout(PATH_EXISTS_TIMEOUT, tokio::fs::metadata(path)).await,
@@ -1341,6 +1344,20 @@ impl Repos {
         .flatten()
     }
 
+    /// [`Self::workspace_checkout`] for a folder that is not a repository: it
+    /// has no linked worktrees, so only the folder itself matches, and no git
+    /// runs. Resolved on a disposable thread for the same dead-mount reason.
+    pub(crate) async fn same_folder(&self, folder: &Path, candidate: &Path) -> Option<PathBuf> {
+        let folder = folder.to_path_buf();
+        let candidate = candidate.to_path_buf();
+        disposable_worker("folder-auth", move || {
+            let candidate = std::fs::canonicalize(candidate).ok()?;
+            (std::fs::canonicalize(folder).ok()? == candidate).then_some(candidate)
+        })
+        .await
+        .flatten()
+    }
+
     /// Switch the checkout at `cwd` (a main folder OR a linked worktree) to
     /// `ref_name` — the t3code `switchRef` port: an existing local branch is
     /// checked out directly; a remote-only branch gets a local tracking
@@ -1508,7 +1525,8 @@ impl Repos {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let mut name = None;
+        let locals = self.local_branches(repo_path).await;
+        let mut chosen = None;
         for attempt in 0..50u64 {
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1520,18 +1538,22 @@ impl Repos {
                 ADJECTIVES[(seed % ADJECTIVES.len() as u64) as usize],
                 NOUNS[((seed / 31) % NOUNS.len() as u64) as usize]
             );
-            if !base.join(&candidate).exists() && !existing.contains(&branch_for(&candidate)?) {
-                name = Some(candidate);
+            if base.join(&candidate).exists() {
+                continue;
+            }
+            if let Some(branch) = free_branch_name(&branch_for(&candidate)?, &locals)
+                && !existing.contains(&branch)
+            {
+                chosen = Some((candidate, branch));
                 break;
             }
         }
-        let name =
-            name.ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
+        let (name, branch_name) = chosen
+            .ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
         let path = base.join(&name);
         #[cfg(windows)]
         validate_windows_worktree_path(&path.to_string_lossy())?;
         std::fs::create_dir_all(&base)?;
-        let branch_name = branch_for(&name)?;
         #[cfg(windows)]
         self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
             .await?;
@@ -1556,6 +1578,12 @@ impl Repos {
             .await
         {
             tracing::warn!(branch = %branch_name, error = %err, "worktree branch mark not written");
+        }
+        if let Ok(Some(start)) = self.head_sha(&path).await {
+            let mark = format!("branch.{branch_name}.{GODSPEED_BASE_KEY}");
+            let _ = self
+                .git(&["config", "--local", &mark, &start], Some(repo_path))
+                .await;
         }
         let checkout = self.checkout_identity(&path).await?;
         Ok(Worktree {
@@ -1662,6 +1690,19 @@ impl Repos {
         Ok(())
     }
 
+    async fn local_branches(&self, repo_path: &Path) -> HashSet<String> {
+        self.git(
+            &["for-each-ref", "--format=%(refname)", "refs/heads"],
+            Some(repo_path),
+        )
+        .await
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("refs/heads/"))
+        .map(str::to_string)
+        .collect()
+    }
+
     async fn branch_exists(&self, path: &Path, branch: &str) -> bool {
         self.git(
             &[
@@ -1713,16 +1754,14 @@ impl Repos {
         let mut hasher = Sha256::new();
         hasher.update(worktree_path.to_string_lossy().as_bytes());
         let suffix = &hex(&hasher.finalize())[..6];
-        let target = if self.branch_exists(worktree_path, &preferred).await {
-            format!("{preferred}-{suffix}")
-        } else {
-            preferred
-        };
-        if self.branch_exists(worktree_path, &target).await {
+        let locals = self.local_branches(worktree_path).await;
+        let Some(target) = free_branch_name(&preferred, &locals)
+            .or_else(|| free_branch_name(&format!("{preferred}-{suffix}"), &locals))
+        else {
             return Err(EngineError::Other(format!(
-                "Branch already exists: {target}"
+                "Branch already exists: {preferred}-{suffix}"
             )));
-        }
+        };
         self.git(
             &["branch", "-m", "--", &current, &target],
             Some(worktree_path),
@@ -1834,60 +1873,370 @@ impl Repos {
         repo_path: &Path,
         referenced: &[PathBuf],
     ) -> Result<Vec<zeron_proto::OrphanWorktree>, EngineError> {
-        let listing = self
-            .git(&["worktree", "list", "--porcelain"], Some(repo_path))
-            .await?;
-        // Canonical through the deepest part that exists: a chat cwd may
-        // point at a folder inside the worktree that is gone now, and
-        // `/var` vs `/private/var` must still compare equal.
-        let canonical = |path: &Path| {
-            for base in path.ancestors() {
-                if let Ok(resolved) = std::fs::canonicalize(base) {
-                    let rest = path.strip_prefix(base).unwrap_or(Path::new(""));
-                    return resolved.join(rest);
-                }
-            }
-            path.to_path_buf()
-        };
-        let referenced: Vec<PathBuf> = referenced.iter().map(|p| canonical(p)).collect();
-        let root = canonical(&self.inner.worktrees.root());
+        let referenced: Vec<PathBuf> = referenced.iter().map(|p| canonical_through_existing(p)).collect();
         let mut orphans = Vec::new();
-        // Blocks are blank-line separated; the first is the main checkout.
-        for block in listing.split("\n\n").skip(1) {
-            let mut path = None;
-            let mut branch = None;
-            for line in block.lines() {
-                if let Some(value) = line.strip_prefix("worktree ") {
-                    path = Some(PathBuf::from(value));
-                } else if let Some(value) = line.strip_prefix("branch ") {
-                    branch = Some(value.trim_start_matches("refs/heads/").to_string());
-                }
-            }
-            let Some(path) = path else {
-                continue;
-            };
-            let resolved = canonical(&path);
-            let ours = resolved.starts_with(&root)
-                || match &branch {
-                    Some(branch) => self.godspeed_created_branch(repo_path, branch).await,
-                    None => false,
-                };
-            if !ours || referenced.iter().any(|r| r.starts_with(&resolved)) {
+        for worktree in self.godspeed_worktrees(repo_path).await? {
+            let resolved = canonical_through_existing(Path::new(&worktree.path));
+            if referenced.iter().any(|r| r.starts_with(&resolved)) {
                 continue;
             }
-            let uncommitted = if path.exists() {
-                self.uncommitted_paths(&path).await
+            let uncommitted = if Path::new(&worktree.path).exists() {
+                self.uncommitted_paths(Path::new(&worktree.path)).await
             } else {
                 Some(0)
             };
             orphans.push(zeron_proto::OrphanWorktree {
-                repo_path: repo_path.to_string_lossy().into_owned(),
-                path: path.to_string_lossy().into_owned(),
-                branch,
                 dirty: uncommitted != Some(0),
+                ..worktree
             });
         }
         Ok(orphans)
+    }
+
+    /// Every checkout of `repo_path` as `git worktree list` reports it, the
+    /// main one first: (path, branch).
+    async fn checkouts(&self, repo_path: &Path) -> Result<Vec<(PathBuf, Option<String>)>, EngineError> {
+        Ok(self
+            .listed_worktrees(repo_path)
+            .await?
+            .into_iter()
+            .map(|listed| (listed.path, listed.branch))
+            .collect())
+    }
+
+    /// Godspeed's linked worktrees of `repo_path`: under the worktree root, or
+    /// on a branch it created. Never the main checkout. `dirty` is left false;
+    /// callers that need it ask [`Self::uncommitted_paths`].
+    pub async fn godspeed_worktrees(
+        &self,
+        repo_path: &Path,
+    ) -> Result<Vec<zeron_proto::OrphanWorktree>, EngineError> {
+        let root = canonical_through_existing(&self.inner.worktrees.root());
+        let mut ours = Vec::new();
+        for (path, branch) in self.checkouts(repo_path).await?.into_iter().skip(1) {
+            let mine = canonical_through_existing(&path).starts_with(&root)
+                || match &branch {
+                    Some(branch) => self.godspeed_created_branch(repo_path, branch).await,
+                    None => false,
+                };
+            if mine {
+                ours.push(zeron_proto::OrphanWorktree {
+                    repo_path: repo_path.to_string_lossy().into_owned(),
+                    path: path.to_string_lossy().into_owned(),
+                    branch,
+                    dirty: false,
+                });
+            }
+        }
+        Ok(ours)
+    }
+
+    /// The checkout of `repo_path` that `target` names: a folder of (or
+    /// inside) one of its checkouts, or a branch one has checked out.
+    pub async fn resolve_worktree(
+        &self,
+        repo_path: &Path,
+        target: &str,
+    ) -> Result<zeron_proto::ResolvedWorktree, EngineError> {
+        let target = target.trim();
+        let checkouts = self.checkouts(repo_path).await?;
+        let as_path = canonical_through_existing(Path::new(target));
+        let found = checkouts
+            .iter()
+            .enumerate()
+            .filter(|(_, (path, _))| Path::new(target).is_absolute() && as_path.starts_with(canonical_through_existing(path)))
+            // The deepest checkout wins: worktrees may live inside the repo.
+            .max_by_key(|(_, (path, _))| canonical_through_existing(path).components().count())
+            .or_else(|| {
+                let branch = target.trim_start_matches("refs/heads/");
+                checkouts
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (_, b))| b.as_deref() == Some(branch))
+            });
+        let Some((index, (path, branch))) = found else {
+            return Err(EngineError::Other(format!(
+                "No checkout of {} is at or on \"{target}\". Pass a worktree folder of this project, or a branch one of its worktrees has checked out.",
+                repo_path.display()
+            )));
+        };
+        let head = self.head_sha(path).await.ok().flatten();
+        Ok(zeron_proto::ResolvedWorktree {
+            path: path.to_string_lossy().into_owned(),
+            branch: branch.clone(),
+            head,
+            main: index == 0,
+        })
+    }
+
+    /// The default branch to judge "merged" against: `origin/HEAD`'s target
+    /// and its local namesake, else a local `main` or `master`. Each listed
+    /// ref exists.
+    pub async fn default_branch_refs(&self, repo_path: &Path) -> Vec<String> {
+        let mut refs = Vec::new();
+        if let Ok(Some(remote)) = self
+            .git_probe(&["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], Some(repo_path))
+            .await
+            && !remote.is_empty()
+        {
+            let local = remote.trim_start_matches("origin/").to_string();
+            refs.push(remote);
+            if self.branch_exists(repo_path, &local).await {
+                refs.push(local);
+            }
+            return refs;
+        }
+        for name in ["main", "master"] {
+            if self.branch_exists(repo_path, name).await {
+                refs.push(name.to_string());
+                break;
+            }
+        }
+        refs
+    }
+
+    /// Whether `branch` carries work of its own that is now in one of
+    /// `defaults`: merged (its tip is an ancestor), rebased (every commit has
+    /// an equal patch there) or squashed (its whole diff landed as one
+    /// commit). A branch that never moved off its start is not merged.
+    pub async fn branch_merged(&self, repo_path: &Path, branch: &str, defaults: &[String]) -> bool {
+        let Ok(Some(tip)) = self.git_probe(&["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}^{{commit}}")], Some(repo_path)).await else {
+            return false;
+        };
+        if !self.branch_moved(repo_path, branch, &tip).await {
+            return false;
+        }
+        for default in defaults {
+            let ancestor = self
+                .git_probe(&["merge-base", "--is-ancestor", &tip, default], Some(repo_path))
+                .await;
+            if matches!(ancestor, Ok(Some(_))) {
+                return true;
+            }
+            let Ok(base) = self.git(&["merge-base", default, &tip], Some(repo_path)).await else {
+                continue;
+            };
+            // Rebased: `git cherry` marks commits already upstream with `-`.
+            if let Ok(cherry) = self.git(&["cherry", default, &tip, &base], Some(repo_path)).await
+                && !cherry.is_empty()
+                && cherry.lines().all(|line| line.starts_with('-'))
+            {
+                return true;
+            }
+            // Squashed: one synthetic commit holding the branch's whole diff
+            // has an equal patch upstream.
+            let tree = format!("{tip}^{{tree}}");
+            let Ok(squashed) = self
+                .git(
+                    &["-c", "user.name=Godspeed", "-c", "user.email=godspeed@localhost", "commit-tree", &tree, "-p", &base, "-m", "squash probe"],
+                    Some(repo_path),
+                )
+                .await
+            else {
+                continue;
+            };
+            if let Ok(cherry) = self.git(&["cherry", default, &squashed, &base], Some(repo_path)).await
+                && cherry.starts_with('-')
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether `branch` (now at `tip`) moved since Godspeed created it: off
+    /// the start it recorded, else (older branches) any reflog entry past the
+    /// creation.
+    async fn branch_moved(&self, repo_path: &Path, branch: &str, tip: &str) -> bool {
+        let key = format!("branch.{branch}.{GODSPEED_BASE_KEY}");
+        if let Ok(Some(base)) = self.git_probe(&["config", "--get", &key], Some(repo_path)).await {
+            return base.trim() != tip;
+        }
+        self.git(&["reflog", "show", "--format=%H", &format!("refs/heads/{branch}")], Some(repo_path))
+            .await
+            .is_ok_and(|log| log.lines().count() > 1)
+    }
+
+    /// Commits reachable from `tip` (run in `checkout`) that are on no
+    /// remote and not in `defaults` (nor on any local branch, with
+    /// `or_branches`: a detached HEAD's work). `None` when git can't tell,
+    /// which callers treat as unpushed.
+    pub async fn unpushed_commits(
+        &self,
+        checkout: &Path,
+        tip: &str,
+        defaults: &[String],
+        or_branches: bool,
+    ) -> Option<usize> {
+        let mut args = vec!["rev-list", "--count", tip, "--not", "--remotes"];
+        if or_branches {
+            args.push("--branches");
+        }
+        args.extend(defaults.iter().map(String::as_str));
+        self.git(&args, Some(checkout)).await.ok()?.trim().parse().ok()
+    }
+
+    /// When anything last happened in a checkout: its newest commit, or a
+    /// change to its index or HEAD (staging, checkouts, resets).
+    pub async fn checkout_last_activity(&self, checkout: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+        let committed = self
+            .git(&["log", "-1", "--format=%ct"], Some(checkout))
+            .await
+            .ok()
+            .and_then(|secs| secs.trim().parse::<i64>().ok())
+            .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0));
+        let git_dir = self
+            .git(&["rev-parse", "--absolute-git-dir"], Some(checkout))
+            .await
+            .ok()
+            .map(PathBuf::from);
+        let touched = git_dir.and_then(|dir| {
+            ["index", "HEAD", "logs/HEAD"]
+                .iter()
+                .filter_map(|name| std::fs::metadata(dir.join(name)).ok()?.modified().ok())
+                .max()
+                .map(chrono::DateTime::<chrono::Utc>::from)
+        });
+        committed.max(touched)
+    }
+
+    /// Re-add the linked worktree of `repo_path` holding `cwd` after its
+    /// folder was deleted outside Godspeed: on the branch (or detached commit)
+    /// git still lists for it, else on `recorded` (root, branch) once git has
+    /// pruned the entry. A branch that no longer exists starts again from the
+    /// repository's HEAD. `None` when `cwd` is not inside a missing worktree
+    /// of this repository.
+    pub async fn recreate_missing_worktree(
+        &self,
+        repo_path: &Path,
+        cwd: &Path,
+        recorded: Option<(&Path, &str)>,
+    ) -> Result<Option<PathBuf>, EngineError> {
+        let _serialized = self.worktree_lock(repo_path).await;
+        if tokio::fs::try_exists(cwd).await.unwrap_or(true) {
+            return Ok(None);
+        }
+        let target = canonical_through_existing(cwd);
+        // Not a repository (or not one git can read): nothing to recreate.
+        let Ok(listed) = self.listed_worktrees(repo_path).await else {
+            return Ok(None);
+        };
+        // The first entry is the main checkout, never recreated.
+        let entry = listed
+            .iter()
+            .skip(1)
+            .map(|entry| (canonical_through_existing(&entry.path), entry))
+            .filter(|(root, _)| target.starts_with(root))
+            .max_by_key(|(root, _)| root.as_os_str().len())
+            .map(|(_, entry)| entry);
+        let (root, checkout) = match (entry, recorded) {
+            (Some(entry), _) => match (&entry.branch, &entry.head) {
+                (Some(branch), _) => (entry.path.clone(), WorktreeCheckout::Branch(branch.clone())),
+                (None, Some(head)) => {
+                    (entry.path.clone(), WorktreeCheckout::Detached(head.clone()))
+                }
+                (None, None) => return Ok(None),
+            },
+            (None, Some((root, branch)))
+                if !branch.is_empty() && target.starts_with(canonical_through_existing(root)) =>
+            {
+                (
+                    root.to_path_buf(),
+                    WorktreeCheckout::Branch(branch.to_string()),
+                )
+            }
+            _ => return Ok(None),
+        };
+        if tokio::fs::try_exists(&root).await.unwrap_or(true) {
+            return Ok(None);
+        }
+        // `--force` re-adds a registered but missing path. A global prune
+        // would also forget other deleted worktrees and the branches they
+        // were on, so a live checkout of the branch is refused here instead.
+        let path = root.to_string_lossy();
+        match &checkout {
+            WorktreeCheckout::Detached(head) => {
+                self.git(
+                    &["worktree", "add", "--force", "--detach", &path, head],
+                    Some(repo_path),
+                )
+                .await?;
+            }
+            WorktreeCheckout::Branch(branch) => {
+                for other in &listed {
+                    if other.path != root
+                        && other.branch.as_deref() == Some(branch.as_str())
+                        && tokio::fs::try_exists(&other.path).await.unwrap_or(true)
+                    {
+                        return Err(EngineError::Other(format!(
+                            "{branch} is checked out at {}",
+                            other.path.display()
+                        )));
+                    }
+                }
+                let local = format!("refs/heads/{branch}");
+                let exists = self
+                    .git(
+                        &["show-ref", "--verify", "--quiet", &local],
+                        Some(repo_path),
+                    )
+                    .await
+                    .is_ok();
+                if exists {
+                    self.git(
+                        &["worktree", "add", "--force", &path, branch],
+                        Some(repo_path),
+                    )
+                    .await?;
+                } else {
+                    self.git(
+                        &["worktree", "add", "--force", "-b", branch, &path],
+                        Some(repo_path),
+                    )
+                    .await?;
+                    let mark = format!("branch.{branch}.{GODSPEED_CREATED_KEY}");
+                    if let Err(err) = self
+                        .git(&["config", "--local", &mark, "true"], Some(repo_path))
+                        .await
+                    {
+                        tracing::warn!(%branch, error = %err, "worktree branch mark not written");
+                    }
+                }
+            }
+        }
+        Ok(Some(root))
+    }
+
+    /// Every worktree `git worktree list` names, the main checkout first.
+    async fn listed_worktrees(&self, repo_path: &Path) -> Result<Vec<ListedWorktree>, EngineError> {
+        let out = match self
+            .git(&["worktree", "list", "--porcelain", "-z"], Some(repo_path))
+            .await
+        {
+            Ok(out) => out,
+            // Git before 2.36 has no `-z`.
+            Err(_) => self
+                .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+                .await?
+                .replace('\n', "\0"),
+        };
+        let mut listed: Vec<ListedWorktree> = Vec::new();
+        for field in out.split('\0') {
+            if let Some(path) = field.strip_prefix("worktree ") {
+                listed.push(ListedWorktree {
+                    path: PathBuf::from(path),
+                    branch: None,
+                    head: None,
+                });
+            } else if let Some(entry) = listed.last_mut() {
+                if let Some(head) = field.strip_prefix("HEAD ") {
+                    entry.head = Some(head.to_string());
+                } else if let Some(branch) = field.strip_prefix("branch ") {
+                    entry.branch = Some(branch.trim_start_matches("refs/heads/").to_string());
+                }
+            }
+        }
+        Ok(listed)
     }
 
     // ── ListFolders ─────────────────────────────────────────────────────────
@@ -2028,6 +2377,30 @@ async fn disposable_worker<T: Send + 'static>(
 
 /// The blocking walk: ONE readdir of the target; `is_repo` is a cheap `.git`
 /// existence probe per directory entry.
+struct ListedWorktree {
+    path: PathBuf,
+    branch: Option<String>,
+    head: Option<String>,
+}
+
+enum WorktreeCheckout {
+    Branch(String),
+    Detached(String),
+}
+
+/// Canonical through the deepest part that exists: a chat cwd may point at a
+/// folder inside a worktree that is gone now, and `/var` vs `/private/var`
+/// must still compare equal.
+pub(crate) fn canonical_through_existing(path: &Path) -> PathBuf {
+    for base in path.ancestors() {
+        if let Ok(resolved) = std::fs::canonicalize(base) {
+            let rest = path.strip_prefix(base).unwrap_or(Path::new(""));
+            return resolved.join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
 fn list_folders_blocking(target: &Path) -> Result<FolderListing, EngineError> {
     let read = std::fs::read_dir(target).map_err(|e| match e.kind() {
         std::io::ErrorKind::PermissionDenied => {
@@ -2262,6 +2635,43 @@ fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
 ///
 /// This remains the shared entry point so RPC filtering and client-side
 /// filtering cannot disagree about Unicode case normalization.
+/// Bytes `root` takes on disk: allocated blocks of every file below it,
+/// symlinks not followed, hard links counted once. Blocking; run it off the
+/// async workers.
+pub fn dir_size_on_disk(root: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut seen: HashSet<(u64, u64)> = HashSet::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if meta.nlink() > 1 && !seen.insert((meta.dev(), meta.ino())) {
+                    continue;
+                }
+                total += meta.blocks() * 512;
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = &mut seen;
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 pub fn git_history_matches(query: &str, commit: &GitHistoryCommit) -> bool {
     let query = query.trim();
     if query.is_empty() {
@@ -2610,6 +3020,25 @@ pub fn worktree_branch_from_title(title: &str) -> String {
     branch_from_title(zeron_proto::DEFAULT_WORKTREE_BRANCH_PREFIX, title)
 }
 
+/// `desired`, or the name to create in its place, next to the local branches
+/// `locals`. Git stores branches as paths, so a branch at a parent path (a
+/// plain `godspeed` branch) blocks every branch under it: those flatten to a
+/// sibling (`godspeed-quiet-fox`). `None` when the name, or a branch nested
+/// under it, is taken.
+fn free_branch_name(desired: &str, locals: &HashSet<String>) -> Option<String> {
+    let blocked_by_parent = desired
+        .match_indices('/')
+        .any(|(at, _)| locals.contains(&desired[..at]));
+    let name = if blocked_by_parent {
+        desired.replace('/', "-")
+    } else {
+        desired.to_string()
+    };
+    let nested = format!("{name}/");
+    let taken = locals.contains(&name) || locals.iter().any(|local| local.starts_with(&nested));
+    (!taken).then_some(name)
+}
+
 /// [`worktree_branch_from_title`] under any branch prefix.
 pub fn branch_from_title(prefix: &str, title: &str) -> String {
     let mut slug = String::new();
@@ -2847,6 +3276,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn size_on_disk_counts_files_once_and_skips_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::write(root.join("a/one.bin"), vec![1u8; 64 * 1024]).unwrap();
+        std::fs::write(root.join("a/b/two.bin"), vec![2u8; 32 * 1024]).unwrap();
+        let alone = dir_size_on_disk(root);
+        assert!(alone >= 96 * 1024, "{alone}");
+        // A hard link is the same bytes; a symlinked folder isn't walked.
+        #[cfg(unix)]
+        {
+            std::fs::hard_link(root.join("a/one.bin"), root.join("a/again.bin")).unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            std::fs::write(elsewhere.path().join("huge.bin"), vec![3u8; 512 * 1024]).unwrap();
+            std::os::unix::fs::symlink(elsewhere.path(), root.join("link")).unwrap();
+            let with_links = dir_size_on_disk(root);
+            assert!(with_links < alone + 64 * 1024, "{alone} -> {with_links}");
+        }
+        assert_eq!(dir_size_on_disk(&root.join("missing")), 0);
+    }
+
+    #[test]
     fn windows_worktree_limit_counts_utf16_without_verbatim_prefix() {
         for prefix in ["C:/", "//?/C:/", "//server/share/", "//?/UNC/server/share/"] {
             let prefix_len = windows_git_worktree_path(prefix).encode_utf16().count();
@@ -2856,6 +3307,56 @@ mod tests {
         }
         assert!(validate_windows_worktree_path(&format!("C:/{}", "日本語".repeat(80))).is_ok());
         assert!(validate_windows_worktree_path(&format!("C:/{}", "😀".repeat(129))).is_err());
+    }
+
+    #[test]
+    fn branches_blocked_by_a_parent_or_nested_ref_get_a_free_name() {
+        let locals: HashSet<String> = ["godspeed", "main", "fix/login/old"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            free_branch_name("godspeed/quiet-fox", &locals).as_deref(),
+            Some("godspeed-quiet-fox")
+        );
+        assert_eq!(
+            free_branch_name("shri/quiet-fox", &locals).as_deref(),
+            Some("shri/quiet-fox")
+        );
+        assert_eq!(free_branch_name("main", &locals), None);
+        assert_eq!(free_branch_name("fix/login", &locals), None);
+        assert_eq!(free_branch_name("fix", &locals), None);
+    }
+
+    #[tokio::test]
+    async fn a_branch_named_like_the_prefix_does_not_block_worktrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let repos = Repos::with_worktrees_root(
+            &tmp.path().join("data"),
+            "test",
+            tmp.path().join("worktrees"),
+        );
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "Test"],
+            &["config", "user.email", "test@example.com"],
+            &["commit", "--allow-empty", "-m", "init"],
+            &["branch", "godspeed"],
+        ] {
+            repos.git(args, Some(&repo)).await.unwrap();
+        }
+
+        let worktree = repos.create_worktree(&repo, "main").await.unwrap();
+        assert_eq!(worktree.branch, format!("godspeed-{}", worktree.name));
+        assert!(repos.godspeed_created_branch(&repo, &worktree.branch).await);
+
+        let renamed = repos
+            .rename_worktree_branch(Path::new(&worktree.path), &worktree.branch, "Fix login")
+            .await
+            .unwrap();
+        assert_eq!(renamed, "godspeed-fix-login");
     }
 
     #[tokio::test]
@@ -3723,6 +4224,195 @@ tmpfs /run tmpfs rw 0 0
             .await;
         }
         assert!(repos.workspace_checkout(&root, &elsewhere).await.is_none());
+    }
+
+    async fn git_out(cwd: &Path, args: &[&str]) -> String {
+        let output = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .await
+            .expect("git spawns");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn deleted_worktree_is_recreated_on_its_branch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        let linked = tmp.path().join("linked");
+        let detached = tmp.path().join("detached");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        git(&root, &["init", "-b", "main"]).await;
+        git(&root, &["commit", "--allow-empty", "-m", "initial"]).await;
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                &linked.to_string_lossy(),
+            ],
+        )
+        .await;
+        std::fs::create_dir_all(linked.join("src")).expect("src dir");
+        std::fs::write(linked.join("src/lib.rs"), "fn main() {}").expect("write");
+        git(&linked, &["add", "."]).await;
+        git(&linked, &["commit", "-m", "feature work"]).await;
+        git(
+            &root,
+            &["worktree", "add", "--detach", &detached.to_string_lossy()],
+        )
+        .await;
+        let head = git_out(&detached, &["rev-parse", "HEAD"]).await;
+        std::fs::remove_dir_all(&linked).expect("delete linked");
+        std::fs::remove_dir_all(&detached).expect("delete detached");
+        let data = tmp.path().join("data");
+        let repos = Repos::with_worktrees_root(&data, "device", data.join("worktrees"));
+
+        let recreated = repos
+            .recreate_missing_worktree(&root, &linked.join("src"), None)
+            .await
+            .expect("recreated");
+        assert_eq!(
+            recreated.and_then(|path| std::fs::canonicalize(path).ok()),
+            std::fs::canonicalize(&linked).ok()
+        );
+        assert_eq!(
+            git_out(&linked, &["branch", "--show-current"]).await,
+            "feature"
+        );
+        assert!(linked.join("src/lib.rs").is_file());
+
+        repos
+            .recreate_missing_worktree(&root, &detached, None)
+            .await
+            .expect("recreated detached");
+        assert_eq!(git_out(&detached, &["rev-parse", "HEAD"]).await, head);
+        assert_eq!(git_out(&detached, &["branch", "--show-current"]).await, "");
+
+        assert_eq!(
+            repos
+                .recreate_missing_worktree(&root, &linked, None)
+                .await
+                .expect("present"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn pruned_worktree_comes_back_from_its_record() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        git(&root, &["init", "-b", "main"]).await;
+        git(&root, &["commit", "--allow-empty", "-m", "initial"]).await;
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "godspeed/gone",
+                &linked.to_string_lossy(),
+            ],
+        )
+        .await;
+        std::fs::remove_dir_all(&linked).expect("delete linked");
+        git(&root, &["worktree", "prune"]).await;
+        git(&root, &["branch", "-D", "godspeed/gone"]).await;
+        let data = tmp.path().join("data");
+        let repos = Repos::with_worktrees_root(&data, "device", data.join("worktrees"));
+
+        assert_eq!(
+            repos
+                .recreate_missing_worktree(&root, &linked, None)
+                .await
+                .expect("unknown"),
+            None,
+            "nothing says which branch it was on"
+        );
+        repos
+            .recreate_missing_worktree(&root, &linked, Some((&linked, "godspeed/gone")))
+            .await
+            .expect("recreated");
+        assert_eq!(
+            git_out(&linked, &["branch", "--show-current"]).await,
+            "godspeed/gone"
+        );
+        assert!(repos.godspeed_created_branch(&root, "godspeed/gone").await);
+        assert_eq!(
+            git_out(&linked, &["rev-parse", "HEAD"]).await,
+            git_out(&root, &["rev-parse", "HEAD"]).await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_branch_checked_out_elsewhere_is_not_taken_over() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        git(&root, &["init", "-b", "main"]).await;
+        git(&root, &["commit", "--allow-empty", "-m", "initial"]).await;
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                &linked.to_string_lossy(),
+            ],
+        )
+        .await;
+        std::fs::remove_dir_all(&linked).expect("delete linked");
+        git(&root, &["checkout", "--ignore-other-worktrees", "feature"]).await;
+        let data = tmp.path().join("data");
+        let repos = Repos::with_worktrees_root(&data, "device", data.join("worktrees"));
+
+        let err = repos
+            .recreate_missing_worktree(&root, &linked, None)
+            .await
+            .expect_err("feature is live in the main checkout");
+        assert!(
+            err.to_string().contains("feature is checked out at"),
+            "{err}"
+        );
+        assert!(!linked.exists());
+    }
+
+    #[tokio::test]
+    async fn missing_folders_outside_linked_worktrees_are_left_alone() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        git(&root, &["init", "-b", "main"]).await;
+        git(&root, &["commit", "--allow-empty", "-m", "initial"]).await;
+        let data = tmp.path().join("data");
+        let repos = Repos::with_worktrees_root(&data, "device", data.join("worktrees"));
+
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).expect("plain dir");
+        assert_eq!(
+            repos
+                .recreate_missing_worktree(&plain, &plain.join("gone"), None)
+                .await
+                .expect("not a repository"),
+            None
+        );
+        for cwd in [root.join("deleted-subfolder"), tmp.path().join("elsewhere")] {
+            assert_eq!(
+                repos
+                    .recreate_missing_worktree(&root, &cwd, None)
+                    .await
+                    .expect("no-op"),
+                None
+            );
+            assert!(!cwd.exists());
+        }
     }
 
     #[tokio::test]

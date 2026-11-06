@@ -396,6 +396,15 @@ impl Terminals {
             cmd.env("TERM", "xterm-256color");
             cmd.env("COLORTERM", "truecolor");
             cmd.env("TERM_PROGRAM", "Godspeed");
+            // Shared build slots / sccache (`crate::build_slots`); the
+            // terminal's own env, the login shell and cargo config win.
+            for (name, value) in
+                zeron_harness::build_env::vars_for(Some(std::path::Path::new(cwd)), |name| {
+                    environment.contains_key(name)
+                })
+            {
+                cmd.env(name, value);
+            }
             for (name, value) in environment {
                 cmd.env(name, value);
             }

@@ -148,3 +148,23 @@ impl Shell {
         )
     }
 }
+
+/// The demo recording opens a pull request beside the chat, filled in.
+#[cfg(feature = "demo-fixture")]
+impl Shell {
+    pub fn fixture_demo_pull_request(
+        &mut self,
+        detail: zeron_proto::ChangeRequestDetail,
+        merge_options: zeron_proto::pull_request_actions::ChangeRequestMergeOptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let url = detail.url.clone();
+        self.open_chat_pull_request(url, None, window, cx);
+        if let Some(tab) = self.chat_pull_requests.get(&self.chat_pull_request_seq) {
+            tab.page.update(cx, |page, cx| {
+                page.fixture_demo_detail(detail, merge_options, cx)
+            });
+        }
+    }
+}

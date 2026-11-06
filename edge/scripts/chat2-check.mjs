@@ -268,18 +268,21 @@ const ckpt = new Uint8Array(randomBytes(300 * 1024));
   const q = new Client("devQ", userA);
   await q.connect();
   await q.hello();
-  let quotaErr = null, acks = 0;
-  for (let i = 0; i < 305 && !quotaErr; i++) {
-    q.send(FRAME.push, { batchId: `q-${i}` }, new Uint8Array([1, 2, 3]));
-    const f = await Promise.race([q.next(FRAME.ack, 8000).catch(() => null), q.next(FRAME.error, 8000).catch(() => null)]);
-    if (f?.type === FRAME.error) quotaErr = { at: i, code: f.header.code, batchId: f.header.batchId };
-    else if (f?.type === FRAME.ack) acks++;
-  }
-  check("push quota trips at 300/min", quotaErr?.code === "quota" && acks === 300, JSON.stringify({ quotaErr, acks }));
+  // Pipelined like the real client: acks for a coalescing window arrive
+  // together, so waiting on each one would take a window per push.
+  const QUOTA = 1200;
+  for (let i = 0; i < QUOTA + 5; i++) q.send(FRAME.push, { batchId: `q-${i}` }, new Uint8Array([1, 2, 3]));
+  const deadline = Date.now() + 15000;
+  const count = (type) => q.inbox.filter((f) => f.type === type).length;
+  while (Date.now() < deadline && count(FRAME.ack) + count(FRAME.error) < QUOTA + 5) await new Promise((res) => setTimeout(res, 100));
+  const acks = count(FRAME.ack);
+  const firstErr = q.inbox.find((f) => f.type === FRAME.error);
+  const quotaErr = firstErr ? { at: Number(firstErr.header.batchId?.slice(2)), code: firstErr.header.code, batchId: firstErr.header.batchId } : null;
+  check(`push quota trips at ${QUOTA}/min`, quotaErr?.code === "quota" && acks === QUOTA, JSON.stringify({ quotaErr, acks }));
   check("quota error carries batchId (transient retry)", quotaErr?.batchId === `q-${quotaErr?.at}`, JSON.stringify(quotaErr));
   q.ws.close();
   const stats = await (await http(`/chat2/${chat}/stats`)).json();
-  check("stats: pushOutcomes attribution", stats.pushOutcomes?.devQ?.ok === 300 && stats.pushOutcomes?.devQ?.rejected >= 1 && stats.pushOutcomes?.devA?.ok >= 5, JSON.stringify(stats.pushOutcomes ?? {}));
+  check("stats: pushOutcomes attribution", stats.pushOutcomes?.devQ?.ok === 1200 && stats.pushOutcomes?.devQ?.rejected >= 1 && stats.pushOutcomes?.devA?.ok >= 5, JSON.stringify(stats.pushOutcomes ?? {}));
   check("stats: presence + sockets present", typeof stats.connectedSockets === "number" && typeof stats.presence === "object");
 }
 

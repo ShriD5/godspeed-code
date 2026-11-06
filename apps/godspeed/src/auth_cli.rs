@@ -77,8 +77,9 @@ fn account_status(scope: WorkspaceScope, auth: &AuthState) -> AccountStatus {
 }
 
 /// `godspeed login`: authenticate via the paste-code flow (and workspace
-/// onboarding), persist `session.json`, and exit.
-pub async fn login(config: EngineConfig) -> anyhow::Result<()> {
+/// onboarding), persist `session.json`, and exit. `org` selects a workspace
+/// by organization id afterwards.
+pub async fn login(config: EngineConfig, org: Option<String>) -> anyhow::Result<()> {
     std::fs::create_dir_all(&config.data_dir)?;
     let _lock = engine_lock(&config, "sign in")?;
     let auth = Engine::build_auth(&config).await;
@@ -102,6 +103,11 @@ pub async fn login(config: EngineConfig) -> anyhow::Result<()> {
         anyhow::bail!("godspeed login needs an interactive terminal");
     }
     zeron_engine::terminal_sign_in(&auth).await?;
+    if let Some(org) = org.as_deref()
+        && auth.state().org_id() != Some(org)
+    {
+        auth.select_org(org).await?;
+    }
     match auth.state() {
         AuthState::SignedIn { user, org_id } => {
             println!(
@@ -119,6 +125,106 @@ pub async fn login(config: EngineConfig) -> anyhow::Result<()> {
         _ => println!("Sign-in did not complete."),
     }
     Ok(())
+}
+
+/// `godspeed login --stdin-code [--org ID]`: the sign-in "Run on a server"
+/// drives over SSH. No terminal: the URL goes to stdout as
+/// `godspeed-login: url <url>`, the code the browser shows arrives on stdin
+/// (a rejected code is reported as `godspeed-login: error …` and another can
+/// follow), and the result is `godspeed-login: signed-in <email> <org>`,
+/// `already-signed-in …` or `dev-mode`. Takes the engine lock like `login`.
+pub async fn login_stdin_code(config: EngineConfig, org: Option<String>) -> anyhow::Result<()> {
+    std::fs::create_dir_all(&config.data_dir)?;
+    let _lock = engine_lock(&config, "sign in")?;
+    let auth = Engine::build_auth(&config).await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut out = std::io::stdout();
+    piped_sign_in(&auth, org.as_deref(), &mut rx, &mut out).await
+}
+
+/// The body of [`login_stdin_code`], over any line channel and writer.
+async fn piped_sign_in(
+    auth: &zeron_engine::Auth,
+    org: Option<&str>,
+    lines: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    out: &mut impl std::io::Write,
+) -> anyhow::Result<()> {
+    let report = |state: &AuthState| match state {
+        AuthState::SignedIn { user, org_id } => Some(format!(
+            "{} {}",
+            user.email,
+            org_id.as_deref().unwrap_or("-")
+        )),
+        _ => None,
+    };
+    if !auth.workos_enabled() {
+        writeln!(out, "godspeed-login: dev-mode")?;
+        return Ok(());
+    }
+    let current = auth.state();
+    if let AuthState::SignedIn { org_id, .. } = &current
+        && (org.is_none() || org_id.as_deref() == org)
+    {
+        writeln!(
+            out,
+            "godspeed-login: already-signed-in {}",
+            report(&current).unwrap_or_default()
+        )?;
+        return Ok(());
+    }
+    if matches!(auth.state(), AuthState::SignedOut) {
+        let url = auth.start_headless_sign_in();
+        writeln!(out, "godspeed-login: url {url}")?;
+        out.flush()?;
+        loop {
+            let Some(line) = lines.recv().await else {
+                anyhow::bail!("stdin closed before a sign-in code arrived");
+            };
+            let pasted = line.trim();
+            if pasted.is_empty() {
+                continue;
+            }
+            match auth.complete_sign_in(pasted).await {
+                Ok(()) => break,
+                Err(err) => {
+                    writeln!(out, "godspeed-login: error {err}")?;
+                    out.flush()?;
+                }
+            }
+        }
+    }
+    match (auth.state(), org) {
+        (AuthState::SignedIn { org_id, .. }, Some(want)) if org_id.as_deref() == Some(want) => {}
+        (AuthState::SignedIn { .. } | AuthState::NeedsOrganization { .. }, Some(want)) => {
+            auth.select_org(want).await?;
+        }
+        (AuthState::NeedsOrganization { .. }, None) => {
+            let orgs = auth.list_orgs().await?;
+            match orgs.as_slice() {
+                [only] => auth.select_org(&only.organization_id).await?,
+                _ => anyhow::bail!(
+                    "signed in, but no workspace was chosen — run `godspeed login` on this machine to pick one"
+                ),
+            }
+        }
+        _ => {}
+    }
+    match report(&auth.state()) {
+        Some(who) => {
+            writeln!(out, "godspeed-login: signed-in {who}")?;
+            Ok(())
+        }
+        None => anyhow::bail!("sign-in did not complete"),
+    }
 }
 
 /// `godspeed logout`: remove the persisted session.
@@ -287,6 +393,76 @@ mod tests {
             assert!(error.contains("while an engine is running"));
             assert!(error.contains("stop it first"));
         }
+    }
+
+    /// A closed channel holding `items`, like stdin with that input.
+    fn lines(items: &[&str]) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for item in items {
+            tx.send((*item).to_owned()).unwrap();
+        }
+        rx
+    }
+
+    #[tokio::test]
+    async fn piped_sign_in_reports_dev_mode_and_existing_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dev = config(dir.path());
+        dev.workos_client_id = None;
+        let auth = Engine::build_auth(&dev).await;
+        let mut out = Vec::new();
+        piped_sign_in(&auth, None, &mut lines(&[]), &mut out)
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "godspeed-login: dev-mode\n"
+        );
+
+        std::fs::write(
+            dir.path().join("session.json"),
+            r#"{"refreshToken":"refresh-1","user":{"id":"user-1","email":"user@example.com"},"orgId":"org-1"}"#,
+        )
+        .unwrap();
+        let auth = Engine::build_auth(&config(dir.path())).await;
+        for org in [None, Some("org-1")] {
+            let mut out = Vec::new();
+            piped_sign_in(&auth, org, &mut lines(&[]), &mut out)
+                .await
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(out).unwrap(),
+                "godspeed-login: already-signed-in user@example.com org-1\n"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn piped_sign_in_prints_the_url_and_reports_bad_codes() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = Engine::build_auth(&config(dir.path())).await;
+        let mut out = Vec::new();
+        let err = piped_sign_in(
+            &auth,
+            Some("org-1"),
+            &mut lines(&["", "not-a-code"]),
+            &mut out,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("stdin closed"), "{err}");
+        let out = String::from_utf8(out).unwrap();
+        let mut rows = out.lines();
+        let url = rows.next().unwrap();
+        assert!(url.starts_with("godspeed-login: url "), "{url}");
+        assert!(
+            url.contains("authorize") && url.contains("callback"),
+            "{url}"
+        );
+        let rejected = rows.next().unwrap();
+        assert!(rejected.starts_with("godspeed-login: error "), "{rejected}");
+        assert_eq!(rows.next(), None);
+        assert!(!dir.path().join("session.json").exists());
     }
 
     #[tokio::test]

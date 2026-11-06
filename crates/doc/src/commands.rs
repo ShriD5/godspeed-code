@@ -349,6 +349,7 @@ mod tests {
 
     fn run_request() -> RunRequest {
         RunRequest {
+            instance: None,
             mcp: None,
             prompt: "hello".into(),
             harness: None,

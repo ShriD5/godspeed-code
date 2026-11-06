@@ -143,7 +143,7 @@ impl PiHarness {
         if let Some(dir) = &self.agent_dir {
             cmd.env("PI_CODING_AGENT_DIR", dir);
         }
-        crate::apply_run_env(&mut cmd, env);
+        crate::apply_run_env(&mut cmd, env, Some(cwd));
         cmd.args(["--mode", "rpc", "--no-themes"])
             .args(args)
             .current_dir(cwd)

@@ -52,6 +52,19 @@ pub mod methods {
     pub const SET_TITLE_SETTINGS: &str = "SetTitleSettings";
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const LIST_MODELS: &str = "ListModels";
+    /// Settings → Providers → "More agents": the ACP registry as the target
+    /// device sees it (`{ force? }` → `AcpRegistrySnapshot`).
+    pub const LIST_ACP_REGISTRY: &str = "ListAcpRegistry";
+    /// Install or update one registry agent (`{ agentId }` → snapshot).
+    pub const INSTALL_ACP_AGENT: &str = "InstallAcpAgent";
+    pub const UNINSTALL_ACP_AGENT: &str = "UninstallAcpAgent";
+    /// Named provider instances on the target device (`→ [ProviderInstance]`;
+    /// secret env values are never included).
+    pub const LIST_PROVIDER_INSTANCES: &str = "ListProviderInstances";
+    /// `{ instance }` → the device's instances after the save.
+    pub const SAVE_PROVIDER_INSTANCE: &str = "SaveProviderInstance";
+    /// `{ harness, id }` → the device's instances after the delete.
+    pub const DELETE_PROVIDER_INSTANCE: &str = "DeleteProviderInstance";
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
@@ -218,6 +231,19 @@ pub mod methods {
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     /// `{repoPath?}` → `OrphanWorktree[]`: Godspeed worktrees no chat uses.
     pub const LIST_ORPHAN_WORKTREES: &str = "ListOrphanWorktrees";
+    /// `ListWorktreeStorageParams` → `WorktreeStorageEntry[]`: every Godspeed
+    /// worktree on the device with size, activity and cleanup verdict.
+    pub const LIST_WORKTREE_STORAGE: &str = "ListWorktreeStorage";
+    /// `CleanWorktreesParams` → `WorktreeCleanupReport`: delete every
+    /// eligible worktree now (decided afresh; changes are never lost).
+    pub const CLEAN_WORKTREES: &str = "CleanWorktrees";
+    /// `{}` → `WorktreeCleanupSettings`.
+    pub const GET_WORKTREE_CLEANUP_SETTINGS: &str = "GetWorktreeCleanupSettings";
+    /// `WorktreeCleanupSettings` → `WorktreeCleanupSettings`.
+    pub const SET_WORKTREE_CLEANUP_SETTINGS: &str = "SetWorktreeCleanupSettings";
+    /// `{repoPath, target}` → `ResolvedWorktree`: the checkout of the
+    /// repository at a path or on a branch (MCP `create_chat` `worktree`).
+    pub const RESOLVE_WORKTREE: &str = "ResolveWorktree";
     // Worktree environments: per-project config on the owning engine, and
     // per-worktree ports and sleep state on the device holding the worktree.
     /// `{spaceId}` → `WorktreeEnvironmentSnapshot`.
@@ -255,6 +281,15 @@ pub mod methods {
     pub const GET_CHANGE_REQUEST: &str = "GetChangeRequest";
     pub const POST_CHANGE_REQUEST_COMMENT: &str = "PostChangeRequestComment";
     pub const GET_CHANGE_REQUEST_DIFF: &str = "GetChangeRequestDiff";
+    /// One explicit review / thread / merge / state write on a pull request
+    /// (`zeron_proto::pull_request_actions::ChangeRequestAction`).
+    pub const PERFORM_CHANGE_REQUEST_ACTION: &str = "PerformChangeRequestAction";
+    /// The repository's allowed merge methods and the PR's auto-merge state.
+    pub const GET_CHANGE_REQUEST_MERGE_OPTIONS: &str = "GetChangeRequestMergeOptions";
+    /// Pull request watches on this engine (checks, reviews, conflicts).
+    pub const LIST_PULL_REQUEST_WATCHES: &str = "ListPullRequestWatches";
+    /// Turn one pull request's watch (and its auto-merge toggle) on or off.
+    pub const SET_PULL_REQUEST_WATCH: &str = "SetPullRequestWatch";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
     /// Permanently restore one chat-owned checkout to its current HEAD and
     /// remove only its untracked, non-ignored paths.
@@ -272,9 +307,26 @@ pub mod methods {
     pub const UPLOAD_CHUNK: &str = "UploadChunk";
     pub const UPLOAD_COMMIT: &str = "UploadCommit";
     pub const READ_ATTACHMENT_CHUNK: &str = "ReadAttachmentChunk";
+    /// One chunk of an image an agent's reply names in Markdown
+    /// (`![alt](path)`), read only from inside that chat's working folder.
+    pub const READ_CHAT_IMAGE_CHUNK: &str = "ReadChatImageChunk";
     /// Store an agent's HTML page and show it inline in that chat's live
     /// turn (`show_visual`). Local only: the calling agent runs on this device.
     pub const PUBLISH_VISUAL: &str = "PublishVisual";
+    /// Store an image file an agent shows and fold it into that chat's live
+    /// turn as an image part (`show_image`). Local only, like `PublishVisual`.
+    pub const PUBLISH_IMAGE: &str = "PublishImage";
+    /// Agents driving the in-app preview browser (`preview_*` MCP tools,
+    /// `zeron_proto::preview_agent`). All IPC-only: the browser lives in the
+    /// window attached to this engine.
+    /// `PreviewActParams {chatId, action}` → the action's result. Fails with
+    /// `PREVIEW_NEEDS_WINDOW` when no window is attached.
+    pub const PREVIEW_ACT: &str = "PreviewAct";
+    /// A desktop window attaches as the preview driver: a stream of
+    /// `PreviewDriverRequest`s for as long as it stays subscribed.
+    pub const WATCH_PREVIEW_DRIVER: &str = "WatchPreviewDriver";
+    /// The window's answer to one request: `PreviewDriverAnswer` → `{}`.
+    pub const ANSWER_PREVIEW_REQUEST: &str = "AnswerPreviewRequest";
     /// Lazy full-tool-output fetch from the R2 sidecar by doc-resident ref
     /// (chat2-sync A3). Edge-direct from any device — never relay-forwarded.
     pub const FETCH_TOOL_BLOB: &str = "FetchToolBlob";
@@ -395,6 +447,21 @@ pub mod methods {
     pub const GET_CHAT_LIFECYCLE_SETTINGS: &str = "GetChatLifecycleSettings";
     /// `ChatLifecycleSettings` → `ChatLifecycleSettings`.
     pub const SET_CHAT_LIFECYCLE_SETTINGS: &str = "SetChatLifecycleSettings";
+
+    // Anonymous usage telemetry (`zeron_proto::telemetry`, docs/PRIVACY.md):
+    // this engine's once-a-day ping and its off switch. IPC only.
+    /// `{}` → `TelemetrySettings`.
+    pub const GET_TELEMETRY_SETTINGS: &str = "GetTelemetrySettings";
+    /// `TelemetrySettingsUpdate` → `TelemetrySettings`.
+    pub const SET_TELEMETRY_SETTINGS: &str = "SetTelemetrySettings";
+
+    // Shared build slots and sccache (`zeron_proto::build_slots`): the
+    // jobserver this engine shares across the agents and terminals it
+    // starts. IPC only: it's this device's setting.
+    /// `{}` → `BuildSlotsSettings`.
+    pub const GET_BUILD_SLOTS_SETTINGS: &str = "GetBuildSlotsSettings";
+    /// `BuildSlotsSettingsUpdate` → `BuildSlotsSettings`.
+    pub const SET_BUILD_SLOTS_SETTINGS: &str = "SetBuildSlotsSettings";
 
     // Git write actions (ControlRpc, relay-forwardable — they run on the
     // device that owns the checkout). Params carry the checkout `cwd`.

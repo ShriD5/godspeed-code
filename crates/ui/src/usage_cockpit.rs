@@ -970,3 +970,10 @@ mod tests {
         assert!(assemble(&AgentAccountsSnapshot::default(), &[], None).is_empty());
     }
 }
+
+#[cfg(feature = "demo-fixture")]
+impl UsagePage {
+    pub fn fixture_history(&self) -> Entity<UsageHistoryView> {
+        self.history.clone()
+    }
+}

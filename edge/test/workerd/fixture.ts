@@ -4,6 +4,7 @@ export { DeviceRoom } from "../../src/device-room";
 export { ChatRoom } from "../../src/chat-room";
 export { PreviewRoom } from "../../src/preview-room";
 export { RegistryRoom } from "../../src/registry-room";
+export { TelemetryStore } from "../../src/telemetry-store";
 import { DurableObject } from "cloudflare:workers";
 
 /** Bare SQLite-backed DO; tests reach its real `ctx.storage.sql` via

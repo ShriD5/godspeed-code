@@ -7,6 +7,8 @@
 //! defaults, and loaded values are clamped so a hand-edited file can't wedge the
 //! layout.
 
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,8 +22,10 @@ pub mod accounts;
 pub mod agents;
 pub mod appearance;
 pub mod archived;
+pub mod build_slots;
 pub mod composer;
 pub mod devices;
+pub mod servers;
 pub mod files;
 pub mod harnesses;
 pub mod import;
@@ -30,12 +34,13 @@ pub mod question_timeout;
 pub mod shortcuts;
 pub mod telegram;
 pub mod thread_naming;
+pub mod telemetry;
 pub mod thread_lifecycle;
 pub mod usage_limits;
 pub mod wallpaper;
 pub mod wallpaper_colors;
 pub mod widgets;
-mod orphan_worktrees;
+mod worktree_storage;
 mod worktrees;
 
 /// Sidebar drag-resize bounds (px). The minimum keeps the sidebar options
@@ -547,6 +552,7 @@ impl SettingsStore {
 pub fn init(settings: UiSettings, data_dir: impl Into<PathBuf>, cx: &mut App) {
     let data_dir = data_dir.into();
     crate::dictation::init(data_dir.clone(), cx);
+    crate::composer::prompt_stash::init(data_dir.clone(), cx);
     cx.set_global(SettingsStore {
         current: settings,
         data_dir: data_dir.into(),
@@ -582,6 +588,19 @@ pub fn default_access_mode(cx: &App) -> zeron_proto::AccessMode {
     cx.try_global::<SettingsStore>()
         .map(|store| store.current.default_access_mode)
         .unwrap_or_default()
+}
+
+/// Read on every wheel notch, so without cloning the settings. Without a
+/// store (not the app) wheel input is left alone.
+pub fn smooth_scrolling(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_some_and(|store| store.current.smooth_scrolling)
+}
+
+pub fn set_smooth_scrolling(enabled: bool, cx: &mut App) {
+    update(SavePolicy::Immediate, cx, |settings| {
+        settings.smooth_scrolling = enabled;
+    });
 }
 
 /// Copy a selected image into Godspeed's device-local data directory and make it
@@ -802,6 +821,18 @@ pub fn animated_dock_icon(cx: &App) -> bool {
 pub fn set_animated_dock_icon(enabled: bool, cx: &mut App) {
     update(SavePolicy::Immediate, cx, |settings| {
         settings.animated_dock_icon = enabled;
+    });
+}
+
+/// Read without cloning the settings, like [`animated_dock_icon`].
+pub fn dock_badge(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_none_or(|store| store.current.dock_badge)
+}
+
+pub fn set_dock_badge(enabled: bool, cx: &mut App) {
+    update(SavePolicy::Immediate, cx, |settings| {
+        settings.dock_badge = enabled;
     });
 }
 
@@ -1072,7 +1103,7 @@ impl SkillCompletionSettings {
     }
 }
 
-pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 10] = [
+pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 11] = [
     (zeron_proto::HarnessId::Antigravity, "Antigravity"),
     (zeron_proto::HarnessId::ClaudeCode, "Claude Code"),
     (zeron_proto::HarnessId::Codex, "Codex"),
@@ -1080,6 +1111,7 @@ pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 10] = [
     (zeron_proto::HarnessId::Devin, "Devin"),
     (zeron_proto::HarnessId::Grok, "Grok"),
     (zeron_proto::HarnessId::Hermes, "Hermes"),
+    (zeron_proto::HarnessId::Fx, "fx"),
     (zeron_proto::HarnessId::Muse, "Muse Code"),
     (zeron_proto::HarnessId::Pi, "Pi"),
     (zeron_proto::HarnessId::Opencode, "OpenCode"),
@@ -1127,6 +1159,10 @@ pub struct UiSettings {
     pub sidebar_show_project_filter: bool,
     /// The Archived accordion below the active session list.
     pub sidebar_show_archived: bool,
+    /// The Zoomies section at the top of the sidebar's list.
+    pub sidebar_show_zoomies: bool,
+    /// Whether that section is expanded.
+    pub sidebar_zoomies_open: bool,
     /// The sidebar's "Star on GitHub" banner was dismissed (its close button
     /// or following the link). Device-local; never shown again once set.
     pub github_star_banner_dismissed: bool,
@@ -1209,6 +1245,9 @@ pub struct UiSettings {
     /// Settings → General "Conductor (preview)": shows the sidebar
     /// Conductor section and its commands. Off by default.
     pub conductor_preview: bool,
+    /// Settings → General "Check for updates automatically": scheduled
+    /// release checks, background download and install-on-quit. On by default.
+    pub auto_update_enabled: bool,
     /// The Settings section last viewed. ⌘, / Ctrl+,, the footer gear and the
     /// palette reopen it; links naming a section replace it. Files without
     /// it, or with a name this build does not know, open on General.
@@ -1310,6 +1349,11 @@ pub struct UiSettings {
     pub pause_animations_in_background: bool,
     /// The speedster mascot replaces the Dock icon and mirrors agent activity.
     pub animated_dock_icon: bool,
+    /// The Dock icon wears a badge with how many chats are waiting on you.
+    pub dock_badge: bool,
+    /// Mouse-wheel notches glide instead of jumping (`smooth_scroll`).
+    /// Trackpads already scroll smoothly; reduced motion overrides.
+    pub smooth_scrolling: bool,
     /// Stable native Codex voice id only; devices and microphone state are never persisted.
     #[serde(default)]
     pub codex_voice: Option<String>,
@@ -1341,6 +1385,8 @@ impl Default for UiSettings {
             sidebar_show_pull_request: true,
             sidebar_show_project_filter: true,
             sidebar_show_archived: true,
+            sidebar_show_zoomies: true,
+            sidebar_zoomies_open: true,
             github_star_banner_dismissed: false,
             chat_import_prompt_dismissed: false,
             last_space_id: None,
@@ -1367,6 +1413,7 @@ impl Default for UiSettings {
             keymap: KeymapConfig::default(),
             escape_stops_active_agent: false,
             conductor_preview: false,
+            auto_update_enabled: true,
             settings_section: crate::shell::SettingsSection::default(),
             composer_send_behavior: ComposerSendBehavior::default(),
             skills_in_slash_menu: false,
@@ -1419,6 +1466,8 @@ impl Default for UiSettings {
             reduce_motion: crate::motion::ReduceMotion::System,
             pause_animations_in_background: false,
             animated_dock_icon: true,
+            dock_badge: true,
+            smooth_scrolling: true,
             codex_voice: None,
             codex_voice_device: None,
             legacy_accent_color: None,
@@ -1480,6 +1529,7 @@ pub enum ShortcutId {
     ToggleDiffPane,
     ReopenClosedTab,
     MissionControl,
+    StashPrompt,
     JumpSession(usize),
 }
 
@@ -1510,6 +1560,7 @@ impl ShortcutId {
         ShortcutId::ToggleDiffPane,
         ShortcutId::ReopenClosedTab,
         ShortcutId::MissionControl,
+        ShortcutId::StashPrompt,
         ShortcutId::JumpSession(0),
         ShortcutId::JumpSession(1),
         ShortcutId::JumpSession(2),
@@ -1553,6 +1604,7 @@ impl ShortcutId {
             ShortcutId::ToggleDiffPane => "Toggle changes pane",
             ShortcutId::ReopenClosedTab => "Reopen closed tab",
             ShortcutId::MissionControl => "Open Mission Control",
+            ShortcutId::StashPrompt => "Stash prompt",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
         }
     }
@@ -1610,8 +1662,22 @@ impl ShortcutId {
             ShortcutId::ToggleDiffPane => "mod-shift-g",
             ShortcutId::ReopenClosedTab => "mod-shift-t",
             ShortcutId::MissionControl => "mod-shift-k",
+            // Shares Save file's key: see `shares_combo`.
+            ShortcutId::StashPrompt => "mod-s",
             ShortcutId::JumpSession(slot) => JUMP_DEFAULTS.get(slot).copied().unwrap_or(""),
         }
+    }
+
+    /// Whether `self` and `other` may hold the same combo. The prompt stash
+    /// only acts in the message composer and Save file only on an open
+    /// file's document, so one key serves both, as Cmd+S does in T3 Code; a
+    /// stash with nothing to stash passes the key on to Save file.
+    pub fn shares_combo(self, other: ShortcutId) -> bool {
+        matches!(
+            (self, other),
+            (ShortcutId::StashPrompt, ShortcutId::SaveFile)
+                | (ShortcutId::SaveFile, ShortcutId::StashPrompt)
+        )
     }
 
     /// The sidebar row this id jumps to, if it is a jump shortcut.
@@ -1654,11 +1720,17 @@ pub struct KeymapConfig {
     pub toggle_diff_pane: String,
     pub reopen_closed_tab: String,
     pub mission_control: String,
+    pub stash_prompt: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
     /// [`UiSettings::load`] discards the WHOLE file on a parse error, so a
     /// fixed-length array would let one malformed entry reset every unrelated
     /// setting. [`Self::healed`] restores the length instead.
     pub jump_session: Vec<String>,
+    /// Whether custom combos are stored in US keys, as every map this version
+    /// writes is. Older maps kept them as the recording layout typed them;
+    /// [`Self::adopt_layout_neutral`] converts those once. Absent means older.
+    #[serde(default)]
+    pub layout_neutral: bool,
 }
 
 /// Stable key for device-local preferences that belong to one workspace
@@ -1730,7 +1802,9 @@ impl Default for KeymapConfig {
             toggle_diff_pane: ShortcutId::ToggleDiffPane.default_combo().into(),
             reopen_closed_tab: ShortcutId::ReopenClosedTab.default_combo().into(),
             mission_control: ShortcutId::MissionControl.default_combo().into(),
+            stash_prompt: ShortcutId::StashPrompt.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
+            layout_neutral: true,
         }
     }
 }
@@ -1763,6 +1837,7 @@ impl KeymapConfig {
             ShortcutId::ToggleDiffPane => &self.toggle_diff_pane,
             ShortcutId::ReopenClosedTab => &self.reopen_closed_tab,
             ShortcutId::MissionControl => &self.mission_control,
+            ShortcutId::StashPrompt => &self.stash_prompt,
             ShortcutId::JumpSession(slot) => self
                 .jump_session
                 .get(slot)
@@ -1798,6 +1873,7 @@ impl KeymapConfig {
             ShortcutId::ToggleDiffPane => self.toggle_diff_pane = combo,
             ShortcutId::ReopenClosedTab => self.reopen_closed_tab = combo,
             ShortcutId::MissionControl => self.mission_control = combo,
+            ShortcutId::StashPrompt => self.stash_prompt = combo,
             ShortcutId::JumpSession(slot) => {
                 if slot < JUMP_SLOTS {
                     if self.jump_session.len() < JUMP_SLOTS {
@@ -1821,6 +1897,39 @@ impl KeymapConfig {
         while self.jump_session.len() < JUMP_SLOTS {
             self.jump_session
                 .push(JUMP_DEFAULTS[self.jump_session.len()].to_string());
+        }
+    }
+
+    /// Convert an older map's custom combos, kept as the recording layout
+    /// typed them (AZERTY "mod-&" for its ⌘1 key), to the US keys stored now
+    /// ("mod-1"), taking the active layout as the one that recorded them.
+    /// Defaults are US keys already. A custom chord keeps its key: a default
+    /// that now lands on it yields and arrives unbound, as a default added
+    /// after the file was written does in [`UiSettings::load`]. Runs once.
+    pub fn adopt_layout_neutral(&mut self, equivalents: &KeyEquivalents) {
+        if std::mem::replace(&mut self.layout_neutral, true) {
+            return;
+        }
+        let mut converted = Vec::new();
+        for id in ShortcutId::ALL {
+            let combo = self.get(id);
+            if combo.is_empty() || combo == id.default_combo() {
+                continue;
+            }
+            if let Some(us) = canonical_combo(combo, equivalents).filter(|us| us != combo) {
+                self.set(id, us.clone());
+                converted.push((id, us));
+            }
+        }
+        for id in ShortcutId::ALL {
+            let combo = self.get(id);
+            if combo == id.default_combo()
+                && converted
+                    .iter()
+                    .any(|(owner, us)| *owner != id && us == combo)
+            {
+                self.set(id, String::new());
+            }
         }
     }
 
@@ -1898,9 +2007,12 @@ pub fn conflicted_shortcuts(keymap: &KeymapConfig) -> Vec<ShortcutId> {
             let combo = keymap.get(id);
             id.available()
                 && !combo.is_empty()
-                && ShortcutId::ALL
-                    .into_iter()
-                    .any(|other| other.available() && other != id && keymap.get(other) == combo)
+                && ShortcutId::ALL.into_iter().any(|other| {
+                    other.available()
+                        && other != id
+                        && !id.shares_combo(other)
+                        && keymap.get(other) == combo
+                })
         })
         .collect()
 }
@@ -1956,9 +2068,156 @@ pub fn platform_combo_on(mac: bool, combo: &str) -> String {
         .join("-")
 }
 
-/// Human-readable combo for the shortcuts table ("mod-s" → "Cmd+S"/"Ctrl+S").
+/// Where the active keyboard layout puts shortcut keys: the US key a combo
+/// is written with → the key that layout types in its place. This is
+/// Apple's own relocation — an AZERTY Mac reaches ⌘1 as ⌘&, ⌘/ as ⌘: and
+/// ⌘[ as ⌘^ — which gpui ships as `get_key_equivalents` but applies only to
+/// bindings loaded with it. Empty on US layouts and off macOS.
+pub type KeyEquivalents = HashMap<char, char>;
+
+/// The active layout's [`KeyEquivalents`].
+pub fn key_equivalents(cx: &App) -> KeyEquivalents {
+    gpui::PlatformKeyboardMapper::get_key_equivalents(cx.keyboard_mapper().as_ref())
+        .map(|table| table.iter().map(|(&us, &here)| (us, here)).collect())
+        .unwrap_or_default()
+}
+
+thread_local! {
+    /// The table the keymap was last bound against, so displayed combos
+    /// name the key to press ([`display_combo`], [`badge_combo`]).
+    static BOUND_KEY_EQUIVALENTS: RefCell<KeyEquivalents> = RefCell::default();
+}
+
+/// Called by `shell::apply_keymap` with the table it just bound against.
+pub(crate) fn set_bound_key_equivalents(equivalents: KeyEquivalents) {
+    BOUND_KEY_EQUIVALENTS.set(equivalents);
+}
+
+/// The key `equivalents` puts in place of the US `key` — gpui's
+/// `MacKeyboardMapper::map_key_equivalent`, for Godspeed's own strings. Named
+/// keys ("tab", "f5") and characters the layout keeps pass through.
+pub fn localize_key<'a>(key: &'a str, equivalents: &KeyEquivalents) -> Cow<'a, str> {
+    let mut chars = key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(us), None) => equivalents
+            .get(&us)
+            .map_or(Cow::Borrowed(key), |here| Cow::Owned(here.to_string())),
+        _ => Cow::Borrowed(key),
+    }
+}
+
+/// The US key a combo stores for a key this layout reported: the inverse of
+/// [`localize_key`], so a recorded chord keeps the spelling its default uses
+/// (AZERTY ⌘& records as "mod-1") and conflict checks on stored combos still
+/// see one chord per key. `None` when the layout relocates `key` itself and
+/// nothing lands on it — AZERTY's @ key — since no stored combo reaches it.
+/// Two US keys sharing one target (Icelandic ] and }) resolve to the lower.
+pub fn canonical_key(key: &str, equivalents: &KeyEquivalents) -> Option<String> {
+    let mut chars = key.chars();
+    let (Some(here), None) = (chars.next(), chars.next()) else {
+        return Some(key.to_string());
+    };
+    if let Some(us) = equivalents
+        .iter()
+        .filter(|&(_, &target)| target == here)
+        .map(|(&us, _)| us)
+        .min()
+    {
+        return Some(us.to_string());
+    }
+    (!equivalents.contains_key(&here)).then(|| key.to_string())
+}
+
+/// Split a combo into its modifier prefix and key: ("mod-shift-", "/").
+fn split_combo(combo: &str) -> (&str, &str) {
+    // "-" is a key too: "mod--" is Mod+Minus.
+    let key_start = if combo.ends_with('-') {
+        combo.len() - 1
+    } else {
+        combo.rfind('-').map_or(0, |ix| ix + 1)
+    };
+    combo.split_at(key_start)
+}
+
+/// `combo` with its key localized ("mod-/" → "mod-:" on AZERTY), in either
+/// the stored ("mod-…") or the bindable ("cmd-…") spelling.
+pub fn localize_combo(combo: &str, equivalents: &KeyEquivalents) -> String {
+    let (modifiers, key) = split_combo(combo);
+    format!("{modifiers}{}", localize_key(key, equivalents))
+}
+
+/// The inverse of [`localize_combo`] (see [`canonical_key`]).
+pub fn canonical_combo(combo: &str, equivalents: &KeyEquivalents) -> Option<String> {
+    let (modifiers, key) = split_combo(combo);
+    canonical_key(key, equivalents).map(|key| format!("{modifiers}{key}"))
+}
+
+/// macOS French (AZERTY), as gpui_macos `keyboard.rs` lists it for
+/// `com.apple.keylayout.French` — the test platform has no layout table.
+#[cfg(test)]
+pub(crate) fn azerty_key_equivalents() -> KeyEquivalents {
+    [
+        ('!', '1'),
+        ('"', '%'),
+        ('#', '3'),
+        ('$', '4'),
+        ('%', '5'),
+        ('&', '7'),
+        ('(', '9'),
+        (')', '0'),
+        ('*', '8'),
+        ('.', ';'),
+        ('/', ':'),
+        ('0', 'à'),
+        ('1', '&'),
+        ('2', 'é'),
+        ('3', '"'),
+        ('4', '\''),
+        ('5', '('),
+        ('6', '§'),
+        ('7', 'è'),
+        ('8', '!'),
+        ('9', 'ç'),
+        (':', '°'),
+        (';', ')'),
+        ('<', '.'),
+        ('>', '/'),
+        ('@', '2'),
+        ('[', '^'),
+        ('\'', 'ù'),
+        ('\\', '`'),
+        (']', '$'),
+        ('^', '6'),
+        ('`', '<'),
+        ('{', '¨'),
+        ('|', '£'),
+        ('}', '*'),
+        ('~', '>'),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// `combo` as the bound layout types it: what the user has to press.
+fn bound_combo(combo: &str) -> String {
+    BOUND_KEY_EQUIVALENTS.with_borrow(|equivalents| localize_combo(combo, equivalents))
+}
+
+/// [`bound_combo`] for a bare key, for hints that spell their own modifiers.
+pub fn bound_key(key: &str) -> String {
+    BOUND_KEY_EQUIVALENTS.with_borrow(|equivalents| localize_key(key, equivalents).into_owned())
+}
+
+/// The stored (US-key) spelling of a chord read outside gpui's keymap, by
+/// the table the keymap is bound to (see [`canonical_combo`]).
+pub fn bound_canonical_combo(combo: &str) -> Option<String> {
+    BOUND_KEY_EQUIVALENTS.with_borrow(|equivalents| canonical_combo(combo, equivalents))
+}
+
+/// Human-readable combo for the shortcuts table ("mod-s" → "Cmd+S"/"Ctrl+S"),
+/// naming the key the active layout types for it.
 pub fn display_combo(combo: &str) -> String {
-    display_combo_on(cfg!(target_os = "macos"), combo)
+    display_combo_on(cfg!(target_os = "macos"), &bound_combo(combo))
 }
 
 /// [`display_combo`] for an explicit platform (see [`combo_from_keystroke_on`]).
@@ -1969,24 +2228,30 @@ pub fn display_combo_on(mac: bool, combo: &str) -> String {
             "mod" => if mac { "Cmd" } else { "Ctrl" }.to_string(),
             "alt" => if mac { "Opt" } else { "Alt" }.to_string(),
             "shift" => "Shift".to_string(),
-            other => {
-                let mut chars = other.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            }
+            other => key_label(other),
         })
         .collect::<Vec<_>>()
         .join("+")
+}
+
+/// A key as its keycap prints it: ASCII capitalized ("a" → "A", "tab" →
+/// "Tab"), a layout's own letters as typed — AZERTY's ⌘2 key is é, and "É"
+/// would read as Shift+é.
+fn key_label(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Compact combo for badge surfaces (the sidebar jump hints): macOS spells
 /// the modifiers as their key glyphs in canonical ⌃⌥⇧⌘ order and drops the
 /// separators ("⌘1", "⇧⌘A") — the form the model picker's ⌘N chips already
 /// use — while other platforms keep the textual [`display_combo`] ("Ctrl+1").
+/// Like [`display_combo`], the key is the one the active layout types.
 pub fn badge_combo(combo: &str) -> String {
-    badge_combo_on(cfg!(target_os = "macos"), combo)
+    badge_combo_on(cfg!(target_os = "macos"), &bound_combo(combo))
 }
 
 /// [`badge_combo`] for an explicit platform (see [`combo_from_keystroke_on`]).
@@ -2004,11 +2269,7 @@ pub fn badge_combo_on(mac: bool, combo: &str) -> String {
     {
         out.push(glyph);
     }
-    let mut chars = key.chars();
-    if let Some(first) = chars.next() {
-        out.extend(first.to_uppercase());
-        out.push_str(chars.as_str());
-    }
+    out.push_str(&key_label(key));
     out
 }
 
@@ -2086,6 +2347,8 @@ impl UiSettings {
             sidebar_show_pull_request,
             sidebar_show_project_filter,
             sidebar_show_archived,
+            sidebar_show_zoomies,
+            sidebar_zoomies_open,
             github_star_banner_dismissed,
             chat_import_prompt_dismissed,
             last_space_id,
@@ -2115,6 +2378,7 @@ impl UiSettings {
             appshot_destination,
             escape_stops_active_agent,
             conductor_preview,
+            auto_update_enabled,
             settings_section,
             appearance,
             git_history_columns,
@@ -2155,6 +2419,8 @@ impl UiSettings {
             reduce_motion,
             pause_animations_in_background,
             animated_dock_icon,
+            dock_badge,
+            smooth_scrolling,
             codex_voice,
             codex_voice_device,
             legacy_accent_color,
@@ -2291,7 +2557,8 @@ impl UiSettings {
                                     !candidate.is_empty()
                                         && !ShortcutId::ALL.iter().any(|other| {
                                             let existing = resolved.get(*other);
-                                            !existing.is_empty()
+                                            !id.shares_combo(*other)
+                                                && !existing.is_empty()
                                                 && platform_combo(existing)
                                                     == platform_combo(candidate)
                                         })
@@ -2309,13 +2576,21 @@ impl UiSettings {
                         .get_mut("keymap")
                         .and_then(serde_json::Value::as_object_mut)
                     {
-                        for (id, field) in [(ShortcutId::ToggleFiles, "toggleFiles")] {
+                        for (id, field) in [
+                            (ShortcutId::ToggleFiles, "toggleFiles"),
+                            (ShortcutId::StashPrompt, "stashPrompt"),
+                        ] {
                             let default = platform_combo(id.default_combo());
+                            // Save file may keep the stash's key (`shares_combo`).
+                            let shared = |other: &str| {
+                                id == ShortcutId::StashPrompt && other == "saveFile"
+                            };
                             let taken = !keymap.contains_key(field)
-                                && keymap.values().any(|existing| {
-                                    existing
-                                        .as_str()
-                                        .is_some_and(|combo| platform_combo(combo) == default)
+                                && keymap.iter().any(|(other, existing)| {
+                                    !shared(other)
+                                        && existing
+                                            .as_str()
+                                            .is_some_and(|combo| platform_combo(combo) == default)
                                 });
                             if taken {
                                 keymap.insert(field.into(), serde_json::json!(""));
@@ -2583,6 +2858,7 @@ mod tests {
         assert_eq!(loaded.reduce_motion, crate::motion::ReduceMotion::System);
         assert!(!loaded.pause_animations_in_background);
         assert!(loaded.animated_dock_icon);
+        assert!(loaded.smooth_scrolling);
         assert_eq!(loaded.sidebar_width, 300.0);
         assert!(!loaded.sound_enabled);
         for sound in [
@@ -3234,6 +3510,8 @@ mod tests {
             sidebar_show_pull_request: false,
             sidebar_show_project_filter: false,
             sidebar_show_archived: false,
+            sidebar_show_zoomies: false,
+            sidebar_zoomies_open: false,
             github_star_banner_dismissed: true,
             chat_import_prompt_dismissed: true,
             last_space_id: Some("space-1".into()),
@@ -3278,6 +3556,7 @@ mod tests {
             },
             escape_stops_active_agent: true,
             conductor_preview: true,
+            auto_update_enabled: false,
             settings_section: crate::shell::SettingsSection::Shortcuts,
             composer_send_behavior: ComposerSendBehavior::ModEnter,
             skills_in_slash_menu: true,
@@ -3359,6 +3638,8 @@ mod tests {
             reduce_motion: crate::motion::ReduceMotion::On,
             pause_animations_in_background: true,
             animated_dock_icon: false,
+            dock_badge: false,
+            smooth_scrolling: false,
             legacy_accent_color: None,
         };
         settings.save(dir.path()).unwrap();
@@ -3377,6 +3658,7 @@ mod tests {
         assert!(json.contains(r#""reduceMotion": "on""#));
         assert!(json.contains(r#""pauseAnimationsInBackground": true"#));
         assert!(json.contains(r#""animatedDockIcon": false"#));
+        assert!(json.contains(r#""smoothScrolling": false"#));
         assert!(json.contains(r#""terminalFontFamily": "installed:Menlo""#));
         assert!(json.contains(r#""terminalFontSize": 15.0"#));
         assert!(json.contains(r#""codeFontFamily": "geist""#));
@@ -4279,13 +4561,36 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_stash_arrives_on_cmd_s_unless_another_action_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"saveFile": "mod-s"}}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.keymap.stash_prompt, "mod-s");
+        assert_eq!(loaded.keymap.save_file, "mod-s");
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"saveFile": "mod-shift-s", "toggleSidebar": "mod-s"}}"#,
+        )
+        .unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.keymap.stash_prompt, "", "the user's own Cmd+S wins");
+        assert_eq!(loaded.keymap.toggle_sidebar, "mod-s");
+    }
+
+    #[test]
     fn defaults_are_distinct_physical_keys() {
         // Distinct STRINGS is not enough — two defaults could still resolve to
         // the same keystroke through `platform_combo`.
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = std::collections::HashMap::new();
         for id in ShortcutId::ALL {
             let bound = platform_combo(id.default_combo());
-            assert!(seen.insert(bound.clone()), "{bound:?} bound twice");
+            if let Some(owner) = seen.insert(bound.clone(), id) {
+                assert!(id.shares_combo(owner), "{bound:?} bound twice");
+            }
         }
     }
 
@@ -4486,6 +4791,114 @@ mod tests {
         // Elsewhere the textual form stands.
         assert_eq!(badge_combo_on(false, "mod-2"), "Ctrl+2");
         assert_eq!(badge_combo_on(false, "mod-shift-a"), "Ctrl+Shift+A");
+    }
+
+    #[test]
+    fn azerty_localizes_shortcuts_where_appkit_puts_them() {
+        let azerty = azerty_key_equivalents();
+        // The relocations an AZERTY Mac's own menus apply to these shortcuts.
+        for (us, here) in [
+            ("mod-1", "mod-&"),
+            ("mod-2", "mod-é"),
+            ("mod-/", "mod-:"),
+            ("mod-[", "mod-^"),
+            ("mod-]", "mod-$"),
+        ] {
+            assert_eq!(localize_combo(us, &azerty), here);
+        }
+        // Letters, named keys and keys AZERTY keeps in place stay put.
+        for combo in [
+            "mod-b",
+            "mod-shift-a",
+            "ctrl-tab",
+            "mod-enter",
+            "f5",
+            "mod-,",
+            "mod--",
+        ] {
+            assert_eq!(localize_combo(combo, &azerty), combo);
+        }
+        // So does every key on a US layout, and the bindable spelling
+        // localizes like the stored one.
+        assert_eq!(localize_combo("mod-1", &KeyEquivalents::default()), "mod-1");
+        assert_eq!(localize_combo("cmd-shift-/", &azerty), "cmd-shift-:");
+    }
+
+    #[test]
+    fn canonical_keys_invert_localization_on_every_reachable_key() {
+        let azerty = azerty_key_equivalents();
+        for here in azerty.values().copied().chain("abz,-=+?".chars()) {
+            let here = here.to_string();
+            let us = canonical_key(&here, &azerty).unwrap_or_else(|| panic!("{here} unreachable"));
+            assert_eq!(localize_key(&us, &azerty), here.as_str(), "{here} via {us}");
+        }
+        assert_eq!(canonical_key("tab", &azerty).as_deref(), Some("tab"));
+        assert_eq!(
+            canonical_combo("mod-alt-&", &azerty).as_deref(),
+            Some("mod-alt-1")
+        );
+        // AZERTY relocates @ and nothing lands on that key.
+        assert_eq!(canonical_key("@", &azerty), None);
+        // Two US keys sharing one target (Icelandic ] and }) take the lower.
+        let icelandic: KeyEquivalents = [(']', '´'), ('}', '´')].into_iter().collect();
+        assert_eq!(canonical_key("´", &icelandic).as_deref(), Some("]"));
+    }
+
+    #[test]
+    fn displayed_combos_name_the_key_the_bound_layout_types() {
+        let mac = cfg!(target_os = "macos");
+        set_bound_key_equivalents(azerty_key_equivalents());
+        assert_eq!(display_combo("mod-/"), display_combo_on(mac, "mod-:"));
+        assert_eq!(badge_combo("mod-1"), badge_combo_on(mac, "mod-&"));
+        assert_eq!(badge_combo("mod-b"), badge_combo_on(mac, "mod-b"));
+        set_bound_key_equivalents(KeyEquivalents::default());
+        assert_eq!(badge_combo("mod-1"), badge_combo_on(mac, "mod-1"));
+        // The layout's own letters read as their keycaps print them: ⌘é is
+        // no Shift chord.
+        assert_eq!(badge_combo_on(true, "mod-é"), "⌘é");
+        assert_eq!(display_combo_on(true, "mod-é"), "Cmd+é");
+        assert_eq!(badge_combo_on(true, "mod-shift-a"), "⇧⌘A");
+    }
+
+    #[test]
+    fn older_keymaps_adopt_us_keys_once() {
+        let azerty = azerty_key_equivalents();
+        // Recorded on AZERTY before combos were stored in US keys: ⌘& for
+        // Jump to session 1, and ⌘é — where Jump to session 2 now binds —
+        // for New session.
+        let mut keymap = KeymapConfig {
+            new_session: "mod-é".into(),
+            layout_neutral: false,
+            ..KeymapConfig::default()
+        };
+        keymap.set(ShortcutId::JumpSession(0), "mod-&".into());
+        keymap.adopt_layout_neutral(&azerty);
+        assert!(keymap.layout_neutral);
+        assert_eq!(keymap.get(ShortcutId::JumpSession(0)), "mod-1");
+        assert_eq!(keymap.get(ShortcutId::NewSession), "mod-2");
+        // The custom chord keeps its key; the default landing on it yields.
+        assert_eq!(keymap.get(ShortcutId::JumpSession(1)), "");
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-b");
+        // Converted maps already store US keys: later passes change nothing.
+        keymap.set(ShortcutId::NewSession, "mod-&".into());
+        keymap.adopt_layout_neutral(&azerty);
+        assert_eq!(keymap.get(ShortcutId::NewSession), "mod-&");
+    }
+
+    #[test]
+    fn keymaps_written_before_us_keys_load_as_older() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"newSession": "mod-é"}}"#,
+        )
+        .unwrap();
+        assert!(!UiSettings::load(dir.path()).keymap.layout_neutral);
+        // Fresh maps are US keys, and say so once saved.
+        let fresh = UiSettings::default();
+        assert!(fresh.keymap.layout_neutral);
+        fresh.save(dir.path()).unwrap();
+        assert!(UiSettings::load(dir.path()).keymap.layout_neutral);
     }
 
     #[test]

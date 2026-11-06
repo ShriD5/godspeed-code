@@ -51,7 +51,7 @@
 		</dict>
 	</dict>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Attach photos to messages.</string>
+	<string>Godspeed attaches the photos you pick to the message you are writing to your agent.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Godspeed uses the microphone to dictate messages, and for Codex voice calls you start (their audio streams to OpenAI through the ChatGPT account signed in to Codex on your host).</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -63,7 +63,7 @@
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Take photos to attach to messages.</string>
+	<string>Godspeed uses the camera when you take a photo to attach to a message to your agent.</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

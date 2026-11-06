@@ -120,6 +120,9 @@ const CLAUDE_LOOPBACK_SCOPES: &str = "org:create_api_key user:profile user:infer
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 /// The Cursor dashboard's current-period usage RPC (Connect-style POST).
 const CURSOR_CURRENT_PERIOD_USAGE: &str = "aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+/// The Grok Bot ("sand") quota: its own weekly window, separate from the plan's
+/// monthly buckets.
+const CURSOR_SAND_USAGE: &str = "aiserver.v1.DashboardService/GetSandUsageStatus";
 const CURSOR_DEFAULT_BACKEND: &str = "https://api2.cursor.sh";
 
 /// Claude Code stores these next to `claudeAiOauth` in the same credential
@@ -1018,7 +1021,7 @@ impl AgentAccounts {
                     // snapshot when no probe has succeeded yet.
                     plan_label: snapshot
                         .and_then(|usage| usage.plan_label.clone())
-                        .or_else(|| slot.profile.plan.clone()),
+                        .or_else(|| slot.profile.plan.as_deref().map(current_plan_label)),
                     active,
                     usage_windows: snapshot
                         .map(|usage| usage.windows.clone())
@@ -1053,7 +1056,7 @@ impl AgentAccounts {
                     id: slot_id_for(harness, &u.account_key),
                     harness,
                     email: Some(u.profile.email.clone()),
-                    plan_label: u.profile.plan.clone(),
+                    plan_label: u.profile.plan.as_deref().map(current_plan_label),
                     active: true,
                     usage_windows: Vec::new(),
                     usage_fetched_at: None,
@@ -2818,12 +2821,29 @@ impl AgentAccounts {
                 .json(&serde_json::json!({})),
         )
         .await?;
-        cursor_usage_window(&body)
-            .map(|window| UsageSnapshot {
-                windows: vec![window],
-                plan_label: None,
-            })
-            .ok_or_else(|| schema_error("cursor", &body))
+        let mut windows =
+            cursor_usage_windows(&body).ok_or_else(|| schema_error("cursor", &body))?;
+        // Best effort: a failed or absent Grok quota never hides the plan meters.
+        let sand = probe_json(
+            "cursor",
+            "grok",
+            self.inner
+                .http
+                .post(format!("{backend}/{CURSOR_SAND_USAGE}"))
+                .bearer_auth(&access_token)
+                .header("Connect-Protocol-Version", "1")
+                .json(&serde_json::json!({})),
+        )
+        .await
+        .ok();
+        // Cursor, Grok, Other: the weekly Grok quota sits between the two monthly pools.
+        if let Some(grok) = sand.as_ref().and_then(cursor_grok_window) {
+            windows.insert(1.min(windows.len()), grok);
+        }
+        Ok(UsageSnapshot {
+            windows,
+            plan_label: None,
+        })
     }
 
     /// Refresh a saved Claude slot's expired access token so its usage stays
@@ -3116,11 +3136,13 @@ fn harness_slug(harness: HarnessId) -> &'static str {
         HarnessId::Devin => "devin",
         HarnessId::Grok => "grok",
         HarnessId::Hermes => "hermes",
+        HarnessId::Fx => "fx",
         HarnessId::Pi => "pi",
         HarnessId::Muse => "muse",
         HarnessId::Opencode => "opencode",
         HarnessId::Antigravity => "antigravity",
         HarnessId::Mock => "mock",
+        HarnessId::Acp(agent) => agent.wire_name(),
     }
 }
 
@@ -3155,7 +3177,7 @@ fn slot_id_for(harness: HarnessId, account_key: &str) -> String {
     crate::repos::hex(&digest)[..16].to_string()
 }
 
-/// Pretty plan label from Claude's org type + rate-limit tier ("Max 20×").
+/// Pretty plan label from Claude's org type + rate-limit tier ("Ultra").
 fn claude_plan(org_type: Option<&str>, tier: Option<&str>) -> Option<String> {
     let base = match org_type {
         Some("claude_max") => "Max",
@@ -3179,10 +3201,26 @@ fn claude_plan(org_type: Option<&str>, tier: Option<&str>) -> Option<String> {
             && stem.as_bytes().get(stem.len() - digits.len() - 1) == Some(&b'_');
         (!digits.is_empty() && preceded).then_some(digits)
     });
-    Some(match mult {
-        Some(mult) => format!("{base} {mult}×"),
-        None => base.to_string(),
+    Some(match (base, mult.as_deref()) {
+        // Anthropic renamed Max 5× to Max and Max 20× to Ultra.
+        ("Max", Some("5") | None) => base.to_string(),
+        ("Max", Some("20")) => "Ultra".to_string(),
+        (_, Some(mult)) => format!("{base} {mult}×"),
+        (_, None) => base.to_string(),
     })
+}
+
+/// A plan label saved before the Max 5× / Max 20× rename, shown under its current name.
+fn current_plan_label(label: &str) -> String {
+    let (prefix, plan) = label
+        .strip_prefix("Claude ")
+        .map_or(("", label), |plan| ("Claude ", plan));
+    let plan = match plan {
+        "Max 5×" => "Max",
+        "Max 20×" => "Ultra",
+        plan => plan,
+    };
+    format!("{prefix}{plan}")
 }
 
 fn codex_plan(plan: Option<&str>) -> Option<String> {
@@ -3650,15 +3688,50 @@ fn claude_usage_windows(body: &serde_json::Value) -> Option<UsageSnapshot> {
     })
 }
 
-/// The billing-cycle window from Cursor's `GetCurrentPeriodUsage`. The blended
-/// percent is derived from spend/limit in cents: the payload's own
-/// `totalPercentUsed` disagrees with the number Cursor's UI narrates ("You've
-/// used 72% of your included usage" against `totalSpend`/`limit`, not the
-/// precomputed 11.5). proto3 JSON omits zero-valued fields, so an absent
-/// `limit` means unusable, not 0% — a synthetic 0% would render a healthy bar
-/// for an account whose usage nobody knows.
-fn cursor_usage_window(body: &serde_json::Value) -> Option<AgentUsageWindow> {
+/// `GetSandUsageStatus`: the Grok Bot plan's weekly quota. `usagePercent` is
+/// read on the same 0-100 scale as the plan buckets (observed 0.177784 an hour
+/// into a fresh period), not as a 0-1 fraction.
+fn cursor_grok_window(body: &serde_json::Value) -> Option<AgentUsageWindow> {
+    let percent = body.get("usagePercent").and_then(|v| v.as_f64())?;
+    Some(AgentUsageWindow {
+        label: zeron_proto::CURSOR_USAGE_GROK.to_string(),
+        used_fraction: (percent / 100.0).clamp(0.0, 1.0) as f32,
+        resets_at: body
+            .get("nextResetTimestampUtc")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc)),
+    })
+}
+
+/// Included-usage meters from Cursor's `GetCurrentPeriodUsage`.
+///
+/// cursor.com/dashboard/spending draws two pools: `autoPercentUsed` is
+/// "Cursor Models" and `apiPercentUsed` is "Other Models". `totalSpend /
+/// limit` is a different number — the old "you've used N% of your included
+/// usage" sentence — and it reads much higher than either pool. A Pro
+/// account at 3% and 5% was showing 64%. proto3 omits a zero percent, so
+/// one present pool implies the missing sibling is 0%.
+///
+/// Payloads with neither pool percent (older responses) fall back to
+/// spend/limit. An absent or zero `limit` stays unusable: a synthetic 0%
+/// would paint a healthy bar for an account whose usage nobody knows.
+fn cursor_usage_windows(body: &serde_json::Value) -> Option<Vec<AgentUsageWindow>> {
     let plan = body.get("planUsage")?;
+    let resets_at = json_ms(body.get("billingCycleEnd"));
+    let auto = plan.get("autoPercentUsed").and_then(|v| v.as_f64());
+    let api = plan.get("apiPercentUsed").and_then(|v| v.as_f64());
+    if auto.is_some() || api.is_some() {
+        let window = |label: &str, percent: f64| AgentUsageWindow {
+            label: label.to_string(),
+            used_fraction: (percent / 100.0) as f32,
+            resets_at,
+        };
+        return Some(vec![
+            window(zeron_proto::CURSOR_USAGE_CURSOR, auto.unwrap_or(0.0)),
+            window(zeron_proto::CURSOR_USAGE_OTHER, api.unwrap_or(0.0)),
+        ]);
+    }
     let limit = plan.get("limit").and_then(|v| v.as_f64())?;
     if limit <= 0.0 {
         return None;
@@ -3667,11 +3740,11 @@ fn cursor_usage_window(body: &serde_json::Value) -> Option<AgentUsageWindow> {
         .get("totalSpend")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
-    Some(AgentUsageWindow {
+    Some(vec![AgentUsageWindow {
         label: "Month".to_string(),
         used_fraction: (used / limit) as f32,
-        resets_at: json_ms(body.get("billingCycleEnd")),
-    })
+        resets_at,
+    }])
 }
 
 /// Unix-millis timestamp arriving as a JSON number or proto3 int64 string.
@@ -4186,7 +4259,15 @@ mod tests {
     fn plan_labels() {
         assert_eq!(
             claude_plan(Some("claude_max"), Some("default_claude_max_20x")).as_deref(),
-            Some("Max 20×")
+            Some("Ultra")
+        );
+        assert_eq!(
+            claude_plan(Some("claude_max"), Some("default_claude_max_5x")).as_deref(),
+            Some("Max")
+        );
+        assert_eq!(
+            claude_plan(Some("claude_max"), None).as_deref(),
+            Some("Max")
         );
         assert_eq!(
             claude_plan(Some("claude_pro"), None).as_deref(),
@@ -4197,6 +4278,10 @@ mod tests {
             Some("Team")
         );
         assert_eq!(claude_plan(Some("free"), None), None);
+        assert_eq!(current_plan_label("Max 20×"), "Ultra");
+        assert_eq!(current_plan_label("Claude Max 5×"), "Claude Max");
+        assert_eq!(current_plan_label("Claude Max 20×"), "Claude Ultra");
+        assert_eq!(current_plan_label("Pro"), "Pro");
         assert_eq!(codex_plan(Some("plus")).as_deref(), Some("ChatGPT Plus"));
         assert_eq!(codex_plan(Some("free")).as_deref(), Some("ChatGPT Free"));
         assert_eq!(codex_plan(None), None);
@@ -4246,10 +4331,104 @@ mod tests {
     }
 
     #[test]
-    fn cursor_usage_window_derives_percent_from_spend_not_total_percent() {
-        // Real payload flavor (observed shape): proto3 JSON with string int64
-        // cycle bounds. `totalPercentUsed` (11.53) contradicts the derived
-        // 28846/40000 = 72.1% that Cursor's own UI narrates — derive.
+    fn cursor_usage_windows_follow_the_spending_page_pools() {
+        // Spend/limit is 1288/2000 = 64.4%, which is the old included-usage
+        // sentence. The spending page's bars are the two pools.
+        let body = serde_json::json!({
+            "billingCycleEnd": "1771077734000",
+            "planUsage": {
+                "totalSpend": 1288,
+                "includedSpend": 1288,
+                "remaining": 712,
+                "limit": 2000,
+                "autoPercentUsed": 3.2,
+                "apiPercentUsed": 4.6,
+                "totalPercentUsed": 3.7,
+            },
+            "displayMessage": "You've used 64% of your included usage",
+        });
+        let windows = cursor_usage_windows(&body).expect("windows");
+        assert_eq!(
+            windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            ["Cursor", "Other"]
+        );
+        assert!((windows[0].used_fraction - 0.032).abs() < 1e-5);
+        assert!((windows[1].used_fraction - 0.046).abs() < 1e-5);
+        assert_eq!(
+            windows[0].resets_at,
+            Some(chrono::DateTime::<Utc>::from_timestamp_millis(1_771_077_734_000).unwrap())
+        );
+        assert_eq!(windows[1].resets_at, windows[0].resets_at);
+    }
+
+    #[test]
+    fn cursor_usage_windows_treat_an_omitted_pool_as_zero() {
+        // proto3 drops a 0% pool. The sibling that is present still draws both
+        // bars the spending page shows.
+        let windows = cursor_usage_windows(&serde_json::json!({
+            "planUsage": { "autoPercentUsed": 3.0, "limit": 2000, "totalSpend": 1288 },
+        }))
+        .expect("windows");
+        assert_eq!(windows[0].label, "Cursor");
+        assert!((windows[0].used_fraction - 0.03).abs() < 1e-6);
+        assert_eq!(windows[1].label, "Other");
+        assert_eq!(windows[1].used_fraction, 0.0);
+    }
+
+    #[test]
+    fn cursor_usage_windows_accept_either_pool_without_a_dollar_limit() {
+        for (plan, expected) in [
+            (serde_json::json!({"autoPercentUsed": 26.0}), [0.26, 0.0]),
+            (serde_json::json!({"apiPercentUsed": 5.0}), [0.0, 0.05]),
+            (serde_json::json!({"autoPercentUsed": 0.0}), [0.0, 0.0]),
+            (serde_json::json!({"apiPercentUsed": 0.0}), [0.0, 0.0]),
+        ] {
+            let windows = cursor_usage_windows(&serde_json::json!({"planUsage": plan}))
+                .expect("pool percentages do not need a dollar limit");
+            assert_eq!(windows.len(), 2);
+            for (window, fraction) in windows.iter().zip(expected) {
+                assert!((window.used_fraction - fraction).abs() < 1e-6);
+                assert_eq!(window.resets_at, None);
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_usage_windows_preserve_overage_and_numeric_reset() {
+        let windows = cursor_usage_windows(&serde_json::json!({
+            "billingCycleEnd": 1771077734000i64,
+            "planUsage": {"autoPercentUsed": 125.0, "apiPercentUsed": 0.0},
+        }))
+        .expect("windows");
+        assert_eq!(windows[0].used_fraction, 1.25);
+        assert_eq!(windows[1].used_fraction, 0.0);
+        for window in windows {
+            assert_eq!(
+                window.resets_at.unwrap().timestamp_millis(),
+                1_771_077_734_000
+            );
+        }
+        assert!(cursor_usage_windows(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn cursor_grok_window_is_weekly_percent() {
+        let window = cursor_grok_window(&serde_json::json!({
+            "usagePercent": 0.177784,
+            "nextResetTimestampUtc": "2026-11-04T18:46:22.484Z",
+        }))
+        .expect("window");
+        assert_eq!(window.label, "Grok");
+        assert!((window.used_fraction - 0.00177784).abs() < 1e-7);
+        assert_eq!(window.resets_at.unwrap().timestamp(), 1_793_817_982);
+        assert!(cursor_grok_window(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn cursor_usage_window_derives_percent_from_spend_when_pools_are_absent() {
+        // Older payloads have no pool percents. `totalPercentUsed` (11.53)
+        // is not spend/limit (28846/40000 = 72.1%); the fallback matches the
+        // included-usage sentence those responses carried.
         let body = serde_json::json!({
             "billingCycleStart": "1768399334000",
             "billingCycleEnd": "1771077734000",
@@ -4263,11 +4442,12 @@ mod tests {
             },
             "displayMessage": "You've used 72% of your included usage",
         });
-        let window = cursor_usage_window(&body).expect("window");
-        assert_eq!(window.label, "Month");
-        assert!((window.used_fraction - 0.72115).abs() < 1e-5);
+        let windows = cursor_usage_windows(&body).expect("windows");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].label, "Month");
+        assert!((windows[0].used_fraction - 0.72115).abs() < 1e-5);
         assert_eq!(
-            window.resets_at,
+            windows[0].resets_at,
             Some(chrono::DateTime::<Utc>::from_timestamp_millis(1_771_077_734_000).unwrap())
         );
     }
@@ -4276,18 +4456,21 @@ mod tests {
     fn cursor_usage_window_absent_limit_is_unusable_not_zero() {
         // proto3 JSON omits zero-valued fields: an account with no usage-based
         // spend simply lacks `limit` — never render a synthetic 0% bar.
-        assert!(cursor_usage_window(&serde_json::json!({ "planUsage": {} })).is_none());
-        assert!(cursor_usage_window(&serde_json::json!({ "planUsage": { "limit": 0 } })).is_none());
+        assert!(cursor_usage_windows(&serde_json::json!({ "planUsage": {} })).is_none());
+        assert!(
+            cursor_usage_windows(&serde_json::json!({ "planUsage": { "limit": 0 } })).is_none()
+        );
     }
 
     #[test]
     fn cursor_usage_window_no_spend_is_zero_percent() {
-        let window = cursor_usage_window(&serde_json::json!({
+        let windows = cursor_usage_windows(&serde_json::json!({
             "billingCycleEnd": 1771077734000i64,
             "planUsage": { "limit": 40000 },
         }))
-        .expect("window");
-        assert_eq!(window.used_fraction, 0.0);
+        .expect("windows");
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].used_fraction, 0.0);
     }
 
     #[test]
@@ -4483,6 +4666,106 @@ mod tests {
 #[cfg(test)]
 mod probe_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cursor_usage_probe_exchanges_key_and_returns_both_pools() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Exercise the actual HTTP probe with fake credentials and a local
+        // dashboard. No real account, Keychain, or provider requests.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let backend = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for (path, token, body) in [
+                (
+                    "auth/exchange_user_api_key",
+                    "test-key",
+                    serde_json::json!({"accessToken": "test-session"}),
+                ),
+                (
+                    CURSOR_CURRENT_PERIOD_USAGE,
+                    "test-session",
+                    serde_json::json!({
+                        "billingCycleEnd": "1771077734000",
+                        "planUsage": {"autoPercentUsed": 26.0, "apiPercentUsed": 5.0,
+                                      "totalSpend": 11400, "limit": 2000},
+                    }),
+                ),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0; 1024];
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0, "request ended before headers");
+                    request.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        // Both endpoints receive `{}`. Drain the body as well
+                        // so closing the socket cannot reset an unread request.
+                        if request.len() >= end + 4 + 2 {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(
+                    request.starts_with(&format!("post /{} http/1.1", path.to_ascii_lowercase()))
+                );
+                assert!(request.contains(&format!("authorization: bearer {token}\r\n")));
+                assert!(request.ends_with("\r\n\r\n{}"));
+                if path == CURSOR_CURRENT_PERIOD_USAGE {
+                    assert!(request.contains("connect-protocol-version: 1\r\n"));
+                }
+                socket
+                    .write_all(
+                        http_response(
+                            "200 OK",
+                            &[("Content-Type", "application/json")],
+                            &body.to_string(),
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                socket.shutdown().await.unwrap();
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = AgentAccounts::new(AgentAccountsConfig::isolated(dir.path()));
+        let detected = parse_cursor_auth(serde_json::json!({
+            "apiKey": "test-key", "email": "test@example.com", "backendUrl": backend,
+        }))
+        .unwrap();
+        let slot = Slot {
+            id: "test".into(),
+            harness: HarnessId::Cursor,
+            account_key: detected.account_key,
+            profile: detected.profile,
+            credentials: detected.credentials.unwrap(),
+            claude_config: None,
+            saved_at: 0,
+            created_at: None,
+            store_key: None,
+        };
+        let snapshot = tokio::time::timeout(Duration::from_secs(5), accounts.cursor_usage(&slot))
+            .await
+            .unwrap()
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(snapshot.windows.len(), 2);
+        assert_eq!(snapshot.windows[0].label, "Cursor");
+        assert_eq!(snapshot.windows[1].label, "Other");
+        assert!((snapshot.windows[0].used_fraction - 0.26).abs() < 1e-6);
+        assert!((snapshot.windows[1].used_fraction - 0.05).abs() < 1e-6);
+        for window in snapshot.windows {
+            assert_eq!(
+                window.resets_at.unwrap().timestamp_millis(),
+                1_771_077_734_000
+            );
+        }
+    }
 
     fn snapshot() -> UsageSnapshot {
         UsageSnapshot {

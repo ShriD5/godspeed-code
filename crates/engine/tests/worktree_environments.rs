@@ -513,6 +513,7 @@ async fn worktree_variables_reach_terminals_actions_and_agent_runs() {
         .rename_chat(chat, "Pre-titled")
         .unwrap();
     let request = RunRequest {
+        instance: None,
         mcp: None,
         prompt: "go".into(),
         harness: None,
@@ -759,6 +760,7 @@ async fn sleep_stops_dev_servers_and_frees_ports_and_wake_restores() {
         .rename_chat(chat, "Pre-titled")
         .unwrap();
     let request = RunRequest {
+        instance: None,
         mcp: None,
         prompt: "wake up".into(),
         harness: None,

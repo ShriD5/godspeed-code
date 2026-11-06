@@ -83,6 +83,8 @@ pub struct Receipt {
     pub number: String,
     pub finished_at: Option<i64>,
     pub harness: Option<HarnessId>,
+    /// The provider instance's name, when the turn ran on a named one.
+    pub instance: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub wall_ms: Option<i64>,
@@ -224,6 +226,7 @@ pub fn assemble(turn: &[SessionMessageEntry], fallback: &Fallback) -> Option<Rec
         number: receipt_number(&turn.first()?.id),
         finished_at: end.or(Some(anchor.created_at)),
         harness,
+        instance: latest(|s| s.instance.as_ref()),
         model: latest(|s| s.model.as_ref()).or_else(|| fallback.model.clone()),
         effort: latest(|s| s.effort.as_ref()).or_else(|| fallback.effort.clone()),
         wall_ms: end.map(|end| (end - start).max(0)),
@@ -422,7 +425,11 @@ pub fn lines(receipt: &Receipt, extras: &Extras) -> Vec<Line> {
         Line::Rule,
     ];
     if let Some(harness) = receipt.harness {
-        out.push(pair("Agent", agent_name(harness), Tone::Normal, false));
+        let agent = match &receipt.instance {
+            Some(instance) => format!("{} · {instance}", agent_name(harness)),
+            None => agent_name(harness).to_string(),
+        };
+        out.push(pair("Agent", agent, Tone::Normal, false));
     }
     if let Some(model) = &receipt.model {
         out.push(pair("Model", model.clone(), Tone::Normal, false));
@@ -1153,6 +1160,7 @@ mod tests {
     fn stamped_stats_win_and_add_up_across_segments() {
         let mut turn = recorded_turn();
         turn[1].turn_stats = Some(TurnStats {
+            instance: None,
             harness: Some("codex".into()),
             model: Some("gpt-5.5".into()),
             usage: Some(TurnUsage {
@@ -1167,6 +1175,7 @@ mod tests {
         let mut second = entry("reply-2", MessageRole::Assistant, 1_300_000, vec![]);
         second.duration_ms = Some(10_000);
         second.turn_stats = Some(TurnStats {
+            instance: None,
             effort: Some("xhigh".into()),
             usage: Some(TurnUsage {
                 input_tokens: 5,

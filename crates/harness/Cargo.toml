@@ -44,6 +44,11 @@ sha2.workspace = true
 semver = "1"
 similar.workspace = true
 zip.workspace = true
+toml = "0.8"
+# ACP registry binary archives (`.tar.gz`, `.tar.bz2`).
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+bzip2 = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

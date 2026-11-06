@@ -186,6 +186,7 @@ fn world() -> World {
 impl World {
     fn start(&self, chat_id: &str, prompt: &str) {
         let config = ChatConfig {
+            instance: None,
             harness: HarnessId::Mock,
             model: None,
             reasoning: None,
@@ -203,6 +204,7 @@ impl World {
                 chat_id,
                 SessionCommandPayload::Run {
                     request: RunRequest {
+                        instance: None,
                         mcp: None,
                         prompt: prompt.into(),
                         harness: Some(HarnessId::Mock),
