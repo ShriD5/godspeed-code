@@ -1422,6 +1422,45 @@ impl WorkspaceHost {
         Ok(self.mutate(|doc| doc.set_chat_cwd(chat_id, cwd))?)
     }
 
+    /// Re-home a chat onto a different project, but only before its first real
+    /// turn. Guarded: returns `EngineError::ChatAlreadyStarted` if the chat has
+    /// already had a message or a harness session. Refreshes the derived
+    /// project fields (device, cwd, branch, checkout, harness session) so
+    /// nothing is left pointing at the old project.
+    pub fn set_chat_project(&self, chat_id: &str, space_id: &str) -> Result<(), EngineError> {
+        let space = self
+            .space(space_id)?
+            .ok_or_else(|| EngineError::Other(format!("no such space: {space_id}")))?;
+        self.mutate(|doc| {
+            let chat = doc
+                .chat(chat_id)?
+                .ok_or_else(|| EngineError::Other(format!("no such chat: {chat_id}")))?;
+            // "Hasn't started yet": no message has landed in the transcript AND
+            // no harness session has been minted for this chat. Either signals a
+            // real turn has begun (or at least a run has been dispatched).
+            let started = chat.last_message_at.is_some()
+                || chat
+                    .harness_session_id
+                    .as_deref()
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+            if started {
+                return Err(EngineError::ChatAlreadyStarted);
+            }
+            let mut chat = chat;
+            chat.space_id = Some(space.id.clone());
+            chat.device_id = space.device_id.clone();
+            chat.cwd = Some(space.path.clone());
+            chat.branch = None;
+            chat.checkout_id = None;
+            chat.harness_session_id = None;
+            chat.harness_session_cwd = None;
+            doc.upsert_chat(&chat)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     /// Canonical checkout identity for the chat's cwd (diff grouping key).
     pub fn set_chat_checkout(&self, chat_id: &str, checkout_id: &str) -> Result<bool, EngineError> {
         Ok(self.mutate(|doc| doc.set_chat_checkout(chat_id, checkout_id))?)
@@ -2381,5 +2420,47 @@ mod tests {
         std::fs::create_dir_all(&odd).unwrap();
         std::fs::write(odd.join(".git"), "gitdir: /somewhere/else\n").unwrap();
         assert_eq!(linked_worktree_root(&odd), None);
+    }
+
+    #[tokio::test]
+    async fn set_chat_project_rehomes_before_first_turn() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(DocsStore::open(dir.path()).unwrap()),
+            WorkspaceHostConfig {
+                device_id: "test-device".into(),
+                device_name: "Test device".into(),
+                platform: "macos".into(),
+                org_id: "test-org".into(),
+                user_id: "test-user".into(),
+                edge: None,
+                local_only: false,
+            },
+        )
+        .unwrap();
+        host.create_space("space-a", "test-device", "/project-a", None, false)
+            .unwrap();
+        host.create_space("space-b", "test-device", "/project-b", None, false)
+            .unwrap();
+        host.create_chat("chat-1", Some("space-a"), Some("test-device"), None, None)
+            .unwrap();
+        // Success path: re-home before first turn.
+        host.set_chat_project("chat-1", "space-b").unwrap();
+        let chat = host.chat("chat-1").unwrap().unwrap();
+        assert_eq!(chat.space_id.as_deref(), Some("space-b"));
+        assert_eq!(chat.device_id, "test-device");
+        assert_eq!(chat.cwd.as_deref(), Some("/project-b"));
+        assert!(chat.branch.is_none());
+        assert!(chat.checkout_id.is_none());
+        assert!(chat.harness_session_id.is_none());
+
+        // Failure path: rejected after first turn.
+        host.create_chat("chat-2", Some("space-a"), Some("test-device"), None, None)
+            .unwrap();
+        host.set_chat_activity("chat-2", Some(1_700_000_000_000), None)
+            .unwrap();
+        let err = host.set_chat_project("chat-2", "space-b").unwrap_err();
+        assert!(matches!(err, EngineError::ChatAlreadyStarted));
     }
 }

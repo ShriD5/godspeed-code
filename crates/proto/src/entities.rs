@@ -233,7 +233,9 @@ pub struct Chat {
     pub harness_session_cwd: Option<String>,
     /// The space this chat belongs to. Invariant: `Some` for every UI-created
     /// chat; rows with a missing/dangling space id are not rendered (the host
-    /// device's repair sweep deletes its own danglers).
+    /// device's repair sweep deletes its own danglers). Fixed once the chat has
+    /// had a first turn — before that, an agent may re-home itself via
+    /// `set_chat_project`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<String>,
     /// Synced LWW seen marker — compared against `last_message_at` to derive

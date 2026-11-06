@@ -144,6 +144,18 @@ fn catalog() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "set_chat_project",
+            description: "Re-home this chat (itself only) into a different project, but only before its first turn. Fails loudly once the chat has started.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id, path, or name." },
+                    "device": { "type": "string", "description": "Host device (id or name). With project, it must own that project." }
+                },
+                "required": ["project"]
+            }),
+        },
+        ToolDef {
             name: "read_chat",
             description: "Read a chat's transcript as plain messages (newest window by default). Tool calls are summarized one per line.",
             input_schema: chat_key_schema(json!({
@@ -563,6 +575,12 @@ struct CreateChatArgs {
 }
 
 #[derive(Deserialize)]
+struct SetChatProjectArgs {
+    project: String,
+    device: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct ReadChatArgs {
     chat: String,
     limit: Option<usize>,
@@ -739,6 +757,7 @@ impl Tools {
             "list_chats" => self.list_chats(parse(args)?).await,
             "get_chat" => self.get_chat(parse(args)?).await,
             "create_chat" => self.create_chat(parse(args)?).await,
+            "set_chat_project" => self.set_chat_project(parse(args)?).await,
             "create_chats" => self.batch(parse(args)?, true).await,
             "send_messages" => self.batch(parse(args)?, false).await,
             "read_chat" => self.read_chat(parse(args)?).await,
@@ -1211,6 +1230,50 @@ impl Tools {
             }
         }
         Ok(result)
+    }
+
+    async fn set_chat_project(&self, args: SetChatProjectArgs) -> anyhow::Result<Value> {
+        let origin = self
+            .godspeed
+            .origin()
+            .chat_id
+            .clone()
+            .context("set_chat_project requires a Godspeed chat")?;
+        let chat = self.godspeed.resolve_chat(&origin).await?;
+        // Authorization: compose with conductor/parent rules like create_chat.
+        let conductor = self.godspeed.conductor_membership(&chat.id).await?;
+        let (space, device_id) = self
+            .godspeed
+            .resolve_target(Some(&args.project), args.device.as_deref())
+            .await?;
+        let space = space.context("project could not be resolved")?;
+        if let Some(m) = &conductor {
+            let c = self.godspeed.conductor(&m.conductor_id).await?;
+            anyhow::ensure!(
+                c.space_ids.contains(&space.id),
+                "target project is outside your conductor's scope"
+            );
+        }
+        // parent scope: if this chat has a parent, keep device consistent
+        if let Some(parent_id) = &chat.parent_chat_id {
+            let parent = self.godspeed.resolve_chat(parent_id).await?;
+            anyhow::ensure!(
+                parent.device_id == device_id,
+                "re-homing must stay on the parent's host device"
+            );
+        }
+        self.godspeed
+            .mutate(json!({
+                "op": "setChatProject",
+                "chatId": chat.id,
+                "spaceId": space.id,
+            }))
+            .await?;
+        Ok(json!({
+            "chatId": chat.id,
+            "project": { "id": space.id, "name": space.display_name(), "path": space.path },
+            "deviceId": device_id,
+        }))
     }
 
     async fn read_chat(&self, args: ReadChatArgs) -> anyhow::Result<Value> {
