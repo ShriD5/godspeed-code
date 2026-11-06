@@ -58,26 +58,13 @@ impl Inner {
     pub(super) fn recent_projects(&self) -> Vec<Space> {
         let spaces = self.deps.workspace.read_spaces().unwrap_or_default();
         let chats = self.deps.workspace.read_chats().unwrap_or_default();
-        let mut projects: Vec<(Option<chrono::DateTime<chrono::Utc>>, Space)> = spaces
+        let device_spaces: Vec<Space> = spaces
             .into_iter()
             .filter(|space| space.device_id == self.device_id)
-            .map(|space| {
-                let latest = chats
-                    .iter()
-                    .filter(|chat| chat.space_id.as_deref() == Some(space.id.as_str()))
-                    .filter_map(|chat| chat.last_message_at.or(Some(chat.created_at)))
-                    .max();
-                (latest, space)
-            })
             .collect();
-        projects.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| a.1.display_name().cmp(b.1.display_name()))
-        });
-        projects
+        zeron_proto::view::rank_spaces_by_recent_activity(&device_spaces, &chats)
             .into_iter()
             .take(RECENT_PROJECTS)
-            .map(|(_, space)| space)
             .collect()
     }
 
