@@ -65,6 +65,11 @@ pub const STICK_THRESHOLD_PX: f32 = 70.0;
 pub const OVERDRAW_PX: f32 = 320.0;
 /// Show the scroll-to-bottom button beyond this distance from the end.
 pub const SCROLL_BUTTON_THRESHOLD_PX: f32 = 320.0;
+/// Reading-mode keyboard paging scrolls one viewport minus this overlap, so a
+/// couple of lines of context stay on screen between pages.
+const READING_PAGE_OVERLAP_PX: f32 = 48.0;
+/// Floor for a reading-mode page when the measured viewport is unusually short.
+const READING_PAGE_MIN_PX: f32 = 64.0;
 
 fn jump_visibility(was_shown: bool, distance: f32) -> bool {
     // Once offered, keep the control until close to the end. A single 320px
@@ -3218,6 +3223,11 @@ impl SavedViewportCache {
 pub struct Transcript {
     state: Entity<AppState>,
     list: ListState,
+    /// Focus handle for the reading surface itself. Clicking the transcript
+    /// focuses it (via `track_focus`), enabling reading-mode key scrolling.
+    /// A dedicated handle keeps those keys out of the composer's dispatch path,
+    /// so typing there is never intercepted.
+    scroll_focus: gpui::FocusHandle,
     rows: Vec<Row>,
     /// Find in thread: needle, matches over every row, the current one.
     pub(crate) find: Option<crate::transcript_find::FindState>,
@@ -3697,6 +3707,7 @@ impl Transcript {
         let mut this = Self {
             state,
             list,
+            scroll_focus: cx.focus_handle(),
             rows: Vec::new(),
             last_source: None,
             conductor_cards: Vec::new(),
@@ -6329,6 +6340,89 @@ impl Transcript {
             crate::popover::reap_popup(cx, |this: &mut Self| &mut this.image_menu);
             cx.notify();
         }
+    }
+
+    /// Reading-mode keyboard paging for the transcript list. This is scoped to
+    /// when the list itself owns focus (`scroll_focus`): while the composer (a
+    /// sibling subtree) is focused this handler is not in the key dispatch
+    /// path at all, and a focused child popup (image menu, lightbox, ...) is
+    /// filtered out by the `is_focused` guard so it keeps its own key handling.
+    /// This only ADDS a keyboard path — mouse wheel/touch and markdown text
+    /// selection are untouched.
+    fn on_reading_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.scroll_focus.is_focused(window) {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        let m = keystroke.modifiers;
+        let key = keystroke.key.as_str();
+        // Leave Control/Fn combinations — and anything not listed below —
+        // alone, so other shortcuts and IME keep working unchanged.
+        if m.control || m.function {
+            return;
+        }
+        // gpui's ListState exposes the viewport bounds and a pixel `scroll_by`,
+        // so "one viewport height" is exact rather than a row estimate. Keep a
+        // small overlap so consecutive pages share a line of context.
+        let viewport = f32::from(self.list.viewport_bounds().size.height);
+        let page = (viewport - READING_PAGE_OVERLAP_PX).max(READING_PAGE_MIN_PX);
+
+        let handled = if key == "space" && !m.platform && !m.alt {
+            // Space pages down; Shift+Space back up.
+            self.page_scroll(if m.shift { -page } else { page }, cx);
+            true
+        } else if (key == "down" || key == "up") && m.alt && !m.platform && !m.shift {
+            // Option/Alt + arrow pages in that direction.
+            self.page_scroll(if key == "down" { page } else { -page }, cx);
+            true
+        } else if (key == "down" || key == "up") && m.platform && !m.alt && !m.shift {
+            // Cmd + Down/Up jump to the ends.
+            if key == "down" {
+                self.jump_to_bottom(cx);
+            } else {
+                self.jump_to_top(cx);
+            }
+            true
+        } else if (key == "end" || key == "home") && !m.alt && !m.shift {
+            // Home/End (with or without Cmd) are the alternative to Cmd+Up/Down.
+            if key == "end" {
+                self.jump_to_bottom(cx);
+            } else {
+                self.jump_to_top(cx);
+            }
+            true
+        } else {
+            false
+        };
+        if handled {
+            cx.stop_propagation();
+        }
+    }
+
+    /// One keyboard page. Release the tail pin exactly like a wheel/selection
+    /// scroll does, move the list, then refresh the jump-button state and
+    /// repaint (programmatic `scroll_by` alone does not re-render).
+    fn page_scroll(&mut self, delta: f32, cx: &mut Context<Self>) {
+        self.begin_scroll_navigation();
+        self.list.scroll_by(px(delta));
+        self.last_scroll_distance = self.distance_from_bottom();
+        self.show_jump_button = jump_visibility(self.show_jump_button, self.last_scroll_distance);
+        cx.notify();
+    }
+
+    /// Keyboard "top": the first list item, unpinning so tail-follow does not
+    /// pull the viewport back down on the next frame.
+    fn jump_to_top(&mut self, cx: &mut Context<Self>) {
+        self.begin_scroll_navigation();
+        self.list.scroll_to(ListOffset::default());
+        self.last_scroll_distance = self.distance_from_bottom();
+        self.show_jump_button = jump_visibility(self.show_jump_button, self.last_scroll_distance);
+        cx.notify();
     }
 
     fn image_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
@@ -11042,9 +11136,19 @@ impl Render for Transcript {
             list_el.into_any_element()
         };
         let root = div()
+            .id("transcript-reading-root")
             .relative()
             .size_full()
             .min_h_0()
+            // Make the reading surface focusable on click so keyboard paging
+            // is scoped to it (never the composer). A focused child popup is
+            // filtered out inside `on_reading_key`. `tab_stop(false)` keeps the
+            // whole transcript out of the Tab order.
+            .track_focus(&self.scroll_focus)
+            .tab_stop(false)
+            .on_key_down(
+                cx.listener(|this, event, window, cx| this.on_reading_key(event, window, cx)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(Self::on_selection_mouse_down),
