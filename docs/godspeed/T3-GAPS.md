@@ -128,6 +128,7 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Agents | Child-thread approvals appear in the parent thread with the child's name and Approve / Decline, answerable without switching threads | `apps/web/src/components/chat/ChildThreadApprovals.tsx`; `packages/client-runtime/src/state/threadRequests.ts` (`createChildThreadApprovalsAtom`) (`70f475f511`) | PARTIAL: the lanes card shows a child's Needs approval status and opens it in the right pane (`ui/src/shell/session_lanes.rs`); no inline card in the parent composer | Med |
 | Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
 | Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
 | Chat | Divider in the thread when the model or effort changes between messages ("Opus 5.5 high → Sonnet 5.5") | `apps/server/src/orchestration-v2/modelSwitch.ts`; `apps/web/src/components/chat/V2LifecycleRow.tsx` (`ModelSwitchRow`) | MISSING: only the chat's current config is kept (`proto/src/entities.rs` `ChatConfig`) | med |
@@ -219,6 +220,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Worktree chats still get a branch when the repo has a plain branch named like the prefix (`godspeed` flattens to `godspeed-<name>`), and a branch nested under a candidate name counts as taken | #85 |
 | Antigravity turns that go silent mid-prompt end with an error after 15 minutes instead of staying Working (open tools and approvals pause the clock) | #91 |
 | Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |

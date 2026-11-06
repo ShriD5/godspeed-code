@@ -1511,7 +1511,8 @@ impl Repos {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let mut name = None;
+        let locals = self.local_branches(repo_path).await;
+        let mut chosen = None;
         for attempt in 0..50u64 {
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1523,18 +1524,22 @@ impl Repos {
                 ADJECTIVES[(seed % ADJECTIVES.len() as u64) as usize],
                 NOUNS[((seed / 31) % NOUNS.len() as u64) as usize]
             );
-            if !base.join(&candidate).exists() && !existing.contains(&branch_for(&candidate)?) {
-                name = Some(candidate);
+            if base.join(&candidate).exists() {
+                continue;
+            }
+            if let Some(branch) = free_branch_name(&branch_for(&candidate)?, &locals)
+                && !existing.contains(&branch)
+            {
+                chosen = Some((candidate, branch));
                 break;
             }
         }
-        let name =
-            name.ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
+        let (name, branch_name) = chosen
+            .ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
         let path = base.join(&name);
         #[cfg(windows)]
         validate_windows_worktree_path(&path.to_string_lossy())?;
         std::fs::create_dir_all(&base)?;
-        let branch_name = branch_for(&name)?;
         #[cfg(windows)]
         self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
             .await?;
@@ -1671,6 +1676,19 @@ impl Repos {
         Ok(())
     }
 
+    async fn local_branches(&self, repo_path: &Path) -> HashSet<String> {
+        self.git(
+            &["for-each-ref", "--format=%(refname)", "refs/heads"],
+            Some(repo_path),
+        )
+        .await
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("refs/heads/"))
+        .map(str::to_string)
+        .collect()
+    }
+
     async fn branch_exists(&self, path: &Path, branch: &str) -> bool {
         self.git(
             &[
@@ -1722,16 +1740,14 @@ impl Repos {
         let mut hasher = Sha256::new();
         hasher.update(worktree_path.to_string_lossy().as_bytes());
         let suffix = &hex(&hasher.finalize())[..6];
-        let target = if self.branch_exists(worktree_path, &preferred).await {
-            format!("{preferred}-{suffix}")
-        } else {
-            preferred
-        };
-        if self.branch_exists(worktree_path, &target).await {
+        let locals = self.local_branches(worktree_path).await;
+        let Some(target) = free_branch_name(&preferred, &locals)
+            .or_else(|| free_branch_name(&format!("{preferred}-{suffix}"), &locals))
+        else {
             return Err(EngineError::Other(format!(
-                "Branch already exists: {target}"
+                "Branch already exists: {preferred}-{suffix}"
             )));
-        }
+        };
         self.git(
             &["branch", "-m", "--", &current, &target],
             Some(worktree_path),
@@ -2990,6 +3006,25 @@ pub fn worktree_branch_from_title(title: &str) -> String {
     branch_from_title(zeron_proto::DEFAULT_WORKTREE_BRANCH_PREFIX, title)
 }
 
+/// `desired`, or the name to create in its place, next to the local branches
+/// `locals`. Git stores branches as paths, so a branch at a parent path (a
+/// plain `godspeed` branch) blocks every branch under it: those flatten to a
+/// sibling (`godspeed-quiet-fox`). `None` when the name, or a branch nested
+/// under it, is taken.
+fn free_branch_name(desired: &str, locals: &HashSet<String>) -> Option<String> {
+    let blocked_by_parent = desired
+        .match_indices('/')
+        .any(|(at, _)| locals.contains(&desired[..at]));
+    let name = if blocked_by_parent {
+        desired.replace('/', "-")
+    } else {
+        desired.to_string()
+    };
+    let nested = format!("{name}/");
+    let taken = locals.contains(&name) || locals.iter().any(|local| local.starts_with(&nested));
+    (!taken).then_some(name)
+}
+
 /// [`worktree_branch_from_title`] under any branch prefix.
 pub fn branch_from_title(prefix: &str, title: &str) -> String {
     let mut slug = String::new();
@@ -3258,6 +3293,56 @@ mod tests {
         }
         assert!(validate_windows_worktree_path(&format!("C:/{}", "日本語".repeat(80))).is_ok());
         assert!(validate_windows_worktree_path(&format!("C:/{}", "😀".repeat(129))).is_err());
+    }
+
+    #[test]
+    fn branches_blocked_by_a_parent_or_nested_ref_get_a_free_name() {
+        let locals: HashSet<String> = ["godspeed", "main", "fix/login/old"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            free_branch_name("godspeed/quiet-fox", &locals).as_deref(),
+            Some("godspeed-quiet-fox")
+        );
+        assert_eq!(
+            free_branch_name("shri/quiet-fox", &locals).as_deref(),
+            Some("shri/quiet-fox")
+        );
+        assert_eq!(free_branch_name("main", &locals), None);
+        assert_eq!(free_branch_name("fix/login", &locals), None);
+        assert_eq!(free_branch_name("fix", &locals), None);
+    }
+
+    #[tokio::test]
+    async fn a_branch_named_like_the_prefix_does_not_block_worktrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let repos = Repos::with_worktrees_root(
+            &tmp.path().join("data"),
+            "test",
+            tmp.path().join("worktrees"),
+        );
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "Test"],
+            &["config", "user.email", "test@example.com"],
+            &["commit", "--allow-empty", "-m", "init"],
+            &["branch", "godspeed"],
+        ] {
+            repos.git(args, Some(&repo)).await.unwrap();
+        }
+
+        let worktree = repos.create_worktree(&repo, "main").await.unwrap();
+        assert_eq!(worktree.branch, format!("godspeed-{}", worktree.name));
+        assert!(repos.godspeed_created_branch(&repo, &worktree.branch).await);
+
+        let renamed = repos
+            .rename_worktree_branch(Path::new(&worktree.path), &worktree.branch, "Fix login")
+            .await
+            .unwrap();
+        assert_eq!(renamed, "godspeed-fix-login");
     }
 
     #[tokio::test]
