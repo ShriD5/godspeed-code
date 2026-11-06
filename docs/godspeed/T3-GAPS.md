@@ -128,6 +128,9 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Chat | Divider in the thread when the model or effort changes between messages ("Opus 5.5 high → Sonnet 5.5") | `apps/server/src/orchestration-v2/modelSwitch.ts`; `apps/web/src/components/chat/V2LifecycleRow.tsx` (`ModelSwitchRow`) | MISSING: only the chat's current config is kept (`proto/src/entities.rs` `ChatConfig`) | med |
+| Agents | Claude approval cards close when Claude withdraws the request | `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts` (`cancelWithdrawnRequest`) | MISSING: `control_cancel_request` is ignored (`harness/src/claude/wire.rs`) | med |
+| Settings | Managed policy: an organization-wide file that pins T3 settings | T3 `d897d3f3f0` | MISSING: no policy layer | med |
 | Source control | Mark ready for review, back to draft, close, reopen; delete the branch after merge | `pullRequest.ts` (actions `ready`, `draft`, `close`, `reopen`, `delete-branch`) | MISSING: `gh pr create --draft` only (`source_control.rs`) | Med |
 | Source control | Update a PR branch from its base (merge or rebase) | `pullRequest.ts` (action `update-branch`, `updateMethods`) | MISSING | Med |
 | Source control | Request reviewers, see reviewer candidates, set labels | `PullRequestProvider.ts` (`setReviewerRequest`, `listReviewerCandidates`, `setLabels`) | MISSING (PARITY section 13 agrees) | Med |
@@ -214,6 +217,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |
