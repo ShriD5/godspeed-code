@@ -149,7 +149,10 @@ final class NewSessionViewController: UIViewController, UIGestureRecognizerDeleg
             guard let self else { return UIMenu() }
             return AttachmentPicker.menu(host: self, limit: 8 - self.composer.images.count) { [weak self] in self?.composer.addImages($0) }
         }
-        composer.onChipTap = { _, _ in }
+        composer.onChipTap = { [weak self] id, source in
+            guard id == "project" else { return }
+            self?.presentProjectPicker(from: source)
+        }
         composer.mentionSearch = { [weak self] q in
             guard let self, let p = self.project else { return [] }
             return await self.app.searchFiles(deviceId: p.device, spaceId: p.id, query: q)
@@ -283,8 +286,9 @@ final class NewSessionViewController: UIViewController, UIGestureRecognizerDeleg
             chips.append(ComposerChip(id: "effort", title: (draft.effort ?? efforts[efforts.count / 2]).capitalized, symbol: "gauge.with.dots.needle.67percent"))
         }
         composer.chips = chips
+        // The project chip uses a custom picker (search, keyboard, recents)
+        // instead of a native UIMenu; taps are handled by `onChipTap`.
         composer.chipMenus = [
-            "project": { [weak self] in self?.projectMenu() },
             "host": { [weak self] in self?.hostMenu() },
             "branch": { [weak self] in self?.branchMenu() },
             "model": { [weak self] in self?.modelMenu() },
@@ -442,4 +446,314 @@ final class NewSessionViewController: UIViewController, UIGestureRecognizerDeleg
 enum HarnessNames {
     /// The core's harness catalog label (same table as desktop).
     static func label(_ id: String) -> String { harnessLabel(harness: id) }
+}
+
+// MARK: - Custom project picker (search + keyboard + recents)
+
+private struct ProjectGroupChoice {
+    let key: String
+    let name: String
+    let members: [ProjectOption]
+    let colorIndex: Int
+    var hostsSubtitle: String {
+        var hosts: [String] = []
+        for m in members where !hosts.contains(m.deviceName) { hosts.append(m.deviceName) }
+        return hosts.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }.joined(separator: ", ")
+    }
+}
+
+private extension NewSessionViewController {
+    func presentProjectPicker(from source: UIView) {
+        let groups = projectGroups()
+        let recentKeys = recentProjectGroupKeys()
+        let picker = ProjectPickerSheet(
+            groups: groups,
+            recentGroupKeys: recentKeys,
+            selectedGroupKey: project?.groupKey,
+            selectedNoProject: draft.projectId == nil
+        )
+        picker.onPickGroup = { [weak self] members in
+            self?.dismiss(animated: true)
+            self?.pickProject(members)
+        }
+        picker.onPickNoProject = { [weak self] in
+            self?.dismiss(animated: true)
+            guard let self else { return }
+            self.draft.projectId = nil
+            self.draft.hostId = self.draft.hostId ?? self.app.hostOptions.first(where: \.online)?.id ?? self.app.hostOptions.first?.id
+            self.loadModels()
+        }
+        picker.onNewProject = { [weak self] in
+            self?.dismiss(animated: true)
+            guard let self else { return }
+            let vc = NewProjectViewController(app: self.app)
+            vc.onCreated = { [weak self] id in
+                self?.draft.projectId = id
+                self?.draft.hostId = nil
+                self?.draft.branch = nil
+                self?.loadModels()
+            }
+            self.present(UINavigationController(rootViewController: vc), animated: true)
+        }
+        let nav = UINavigationController(rootViewController: picker)
+        nav.modalPresentationStyle = .popover
+        if let pop = nav.popoverPresentationController {
+            pop.sourceView = source
+            pop.sourceRect = source.bounds
+            pop.permittedArrowDirections = [.up, .down]
+        } else {
+            if let sheet = nav.sheetPresentationController {
+                sheet.detents = [.medium(), .large()]
+                sheet.prefersGrabberVisible = true
+            }
+        }
+        present(nav, animated: true)
+    }
+
+    func projectGroups() -> [ProjectGroupChoice] {
+        var groups: [[ProjectOption]] = []
+        for p in app.projectOptions {
+            if let i = groups.firstIndex(where: { $0[0].groupKey == p.groupKey }) {
+                groups[i].append(p)
+            } else {
+                groups.append([p])
+            }
+        }
+        var choices = groups.map { members in
+            let first = members[0]
+            return ProjectGroupChoice(key: first.groupKey, name: first.groupName, members: members, colorIndex: first.colorIndex)
+        }
+        choices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return choices
+    }
+
+    func recentProjectGroupKeys() -> [String] {
+        // `frontPage.projectGroups` are in recency order; ids are "project:<key>".
+        var keys: [String] = []
+        for g in app.frontPage.projectGroups {
+            if g.id.hasPrefix("project:") {
+                let key = String(g.id.dropFirst("project:".count))
+                if !keys.contains(key) { keys.append(key) }
+            }
+            if keys.count >= 5 { break }
+        }
+        return keys
+    }
+}
+
+private final class ProjectPickerSheet: UITableViewController, UISearchResultsUpdating {
+    private let allGroups: [ProjectGroupChoice]
+    private let recentGroupKeys: [String]
+    private let selectedGroupKey: String?
+    private let selectedNoProject: Bool
+    private var filtered: [ProjectGroupChoice] = []
+    private var highlight = 0
+    private let searchController = UISearchController(searchResultsController: nil)
+    private var recentChipButtons: [UIButton] = []
+
+    var onPickGroup: (([ProjectOption]) -> Void)?
+    var onPickNoProject: (() -> Void)?
+    var onNewProject: (() -> Void)?
+
+    init(groups: [ProjectGroupChoice], recentGroupKeys: [String], selectedGroupKey: String?, selectedNoProject: Bool) {
+        self.allGroups = groups
+        self.recentGroupKeys = recentGroupKeys
+        self.selectedGroupKey = selectedGroupKey
+        self.selectedNoProject = selectedNoProject
+        super.init(style: .insetGrouped)
+        self.filtered = groups
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override var keyCommands: [UIKeyCommand]? {
+        let up = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(moveUp))
+        let down = UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(moveDown))
+        let enter = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(activateHighlight))
+        up.wantsPriorityOverSystemBehavior = true
+        down.wantsPriorityOverSystemBehavior = true
+        var cmds = [up, down, enter]
+        let q = (searchController.searchBar.text ?? "")
+        if q.isEmpty {
+            for n in 1...5 {
+                let cmd = UIKeyCommand(input: "\(n)", modifierFlags: [], action: #selector(numberKey(_:)))
+                cmds.append(cmd)
+            }
+        }
+        return cmds
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Project"
+        navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .close, primaryAction: UIAction { [weak self] _ in
+            self?.dismiss(animated: true)
+        })
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = "Search projects"
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+        definesPresentationContext = true
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
+        tableView.keyboardDismissMode = .onDrag
+        rebuildRecentsHeader()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        becomeFirstResponder()
+    }
+
+    private func rebuildRecentsHeader() {
+        let q = (searchController.searchBar.text ?? "")
+        let recents = recentGroupKeys.prefix(4).compactMap { key in allGroups.first { $0.key == key } }
+        guard q.isEmpty, !recents.isEmpty else {
+            tableView.tableHeaderView = nil
+            recentChipButtons = []
+            return
+        }
+        let wrap = UIView()
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        recentChipButtons = []
+        for (i, g) in recents.enumerated() {
+            let n = i + 1
+            let b = UIButton(type: .system)
+            var config = UIButton.Configuration.tinted()
+            config.title = "\(n)  \(g.name)"
+            config.cornerStyle = .capsule
+            config.baseForegroundColor = .label
+            config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
+            b.configuration = config
+            b.tag = n
+            b.addAction(UIAction { [weak self] _ in self?.pickRecent(n) }, for: .touchUpInside)
+            stack.addArrangedSubview(b)
+            recentChipButtons.append(b)
+        }
+        wrap.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: wrap.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -8),
+        ])
+        wrap.frame = CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 52)
+        tableView.tableHeaderView = wrap
+    }
+
+    private var rowItems: [RowItem] {
+        var items = filtered.map { RowItem.group($0) }
+        let q = (searchController.searchBar.text ?? "")
+        if q.isEmpty {
+            items.append(.newProject)
+            items.append(.noProject)
+        }
+        return items
+    }
+
+    private enum RowItem {
+        case group(ProjectGroupChoice)
+        case newProject
+        case noProject
+    }
+
+    private func pickRecent(_ n: Int) {
+        let recents = recentGroupKeys.prefix(4).compactMap { key in allGroups.first { $0.key == key } }
+        guard n >= 1, n <= recents.count else { return }
+        onPickGroup?(recents[n - 1].members)
+    }
+
+    @objc private func numberKey(_ cmd: UIKeyCommand) {
+        guard let t = cmd.input, let n = Int(t) else { return }
+        pickRecent(n)
+    }
+
+    @objc private func moveUp() {
+        let count = max(1, rowItems.count)
+        highlight = max(0, highlight - 1)
+        tableView.reloadData()
+        if highlight < count {
+            tableView.scrollToRow(at: IndexPath(row: highlight, section: 0), at: .none, animated: false)
+        }
+    }
+
+    @objc private func moveDown() {
+        let count = rowItems.count
+        guard count > 0 else { return }
+        highlight = min(count - 1, highlight + 1)
+        tableView.reloadData()
+        tableView.scrollToRow(at: IndexPath(row: highlight, section: 0), at: .none, animated: false)
+    }
+
+    @objc private func activateHighlight() {
+        let items = rowItems
+        guard highlight >= 0, highlight < items.count else { return }
+        select(items[highlight])
+    }
+
+    private func select(_ item: RowItem) {
+        switch item {
+        case .group(let g): onPickGroup?(g.members)
+        case .newProject: onNewProject?()
+        case .noProject: onPickNoProject?()
+        }
+    }
+
+    func updateSearchResults(for searchController: UISearchController) {
+        let q = (searchController.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty {
+            filtered = allGroups
+        } else {
+            filtered = allGroups.filter {
+                $0.name.localizedCaseInsensitiveContains(q) || $0.hostsSubtitle.localizedCaseInsensitiveContains(q)
+            }
+        }
+        highlight = 0
+        rebuildRecentsHeader()
+        tableView.reloadData()
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        rowItems.count
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
+        var config = cell.defaultContentConfiguration()
+        let item = rowItems[indexPath.row]
+        switch item {
+        case .group(let g):
+            config.text = g.name
+            config.secondaryText = g.hostsSubtitle
+            config.image = ProjectTile.image(name: g.name, colorIndex: g.colorIndex, side: 20)
+            cell.accessoryType = (g.key == selectedGroupKey) ? .checkmark : .none
+        case .newProject:
+            config.text = "New Project…"
+            config.image = UIImage(systemName: "folder.badge.plus")
+            cell.accessoryType = .none
+        case .noProject:
+            config.text = "No Project…"
+            config.image = UIImage(systemName: "tray")
+            cell.accessoryType = selectedNoProject ? .checkmark : .none
+        }
+        cell.contentConfiguration = config
+        if indexPath.row == highlight {
+            cell.backgroundColor = UIColor.tintColor.withAlphaComponent(0.08)
+        } else {
+            cell.backgroundColor = nil
+        }
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        highlight = indexPath.row
+        select(rowItems[indexPath.row])
+    }
 }
