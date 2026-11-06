@@ -1534,7 +1534,7 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 25 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 26 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
