@@ -4,6 +4,47 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+## 0.5.11 (2026-11-06)
+
+### Added
+
+- **Open a chat in its own window.** Right-click a session and choose "Open in New Window" for a
+  composer-only window with its own scroll and selection. Reopening the same chat focuses its
+  window, and the window closes if the chat is deleted.
+- **Model and effort switches show in the chat.** A thin divider marks the turn where you changed
+  model or effort, naming only what changed.
+- **iPhone beta waitlist.** The website has a "Join the iPhone beta" form and a privacy page, and
+  approved emails get cloud access within a minute, without a redeploy.
+
+### Changed
+
+- **Search keeps its index on disk.** Message search moved to SQLite full-text search: less memory,
+  about half the indexing work while a reply streams, and the same results. The new index builds in
+  the background on first launch; search keeps working meanwhile.
+- **Less idle work, again.** Dev-server port detection for the preview ran `lsof` twice and `ps`
+  once every two seconds, forever; it now checks every two seconds only while something could start
+  a server (an agent running, a terminal or preview open, or you active) and once a minute
+  otherwise. The Telegram delivery loop sleeps until a bot has work.
+- **Fewer tokens per turn.** Godspeed's own tool instructions are shorter, preview tools are only
+  offered when a window can show them, and tool results go to the model as compact JSON.
+- **Claude's renamed Max and Ultra plans** show correctly in usage.
+- **Streaming chats use less memory** (Loro 1.17, from Zeron), and PR watches no longer run git in
+  every project (from Zeron).
+
+### Fixed
+
+- An agent that hits a usage limit and exits right away now shows the limit, instead of "exited
+  unexpectedly".
+- Claude chats no longer inherit the session of a Claude Code window that launched Godspeed (which
+  could also override the chat's chosen effort).
+- Antigravity turns that go silent for 15 minutes end with an error instead of staying "Working"
+  forever.
+- Worktree chats can start in repos that have a local branch named like the branch prefix.
+- Agents can start Cursor chats with model ids the model list doesn't name (such as
+  `grok-4.7-high`); Cursor's CLI checks them.
+- If you open Godspeed from an account whose cloud refuses a second organization, it continues in
+  the existing one.
+
 ## 0.5.10 (2026-10-30)
 
 ### Added
