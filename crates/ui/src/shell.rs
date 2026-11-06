@@ -11956,7 +11956,11 @@ impl Shell {
             // Reading-mode paging lives in the main navigation scope: clicking
             // the transcript focuses `navigation_focus.main`, while a focused
             // composer (or the right pane) leaves it unfocused, so typing and
-            // other panes are never intercepted.
+            // other panes are never intercepted. It has to sit on this
+            // ancestor: gpui dispatches key events along the focused node's
+            // ancestor path, so the transcript root (a descendant) never sees
+            // them when the pane owns focus. A dedicated track_focus handle on
+            // the transcript root would steal that focus on click.
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.navigation_focus.main.is_focused(window) {
                     let transcript = this.transcript.clone();

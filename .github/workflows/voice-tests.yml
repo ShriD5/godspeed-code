@@ -48,6 +48,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `macos-14` resolves to an unsupported runner configuration here;
+        # `macos-latest` is the supported macOS image the other workflows use.
         os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
