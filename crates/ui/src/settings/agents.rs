@@ -11,8 +11,8 @@ use gpui::{
 use gpui_tokio::Tokio;
 use serde_json::json;
 
-use zeron_proto::HarnessId;
 use zeron_proto::agents::{AgentRun, AgentRunStatus, AgentSummary, AgentTrigger, AgentsSnapshot};
+use zeron_proto::{AccessMode, HarnessId};
 use zeron_rpc::methods;
 
 use crate::composer::ComposerInput;
@@ -70,10 +70,21 @@ struct Editor {
     kept: Vec<AgentTrigger>,
     space_id: Option<String>,
     harness: Option<HarnessId>,
+    /// The explicit `AgentDraft.access_mode` to persist. `None` means the
+    /// picker is untouched: we write nothing, so an untouched zoomie keeps
+    /// whatever its stored draft already resolves to (legacy `sandbox` /
+    /// `auto_approve` or the `AutoAcceptEdits` default) rather than being
+    /// pinned to a value. Picking an option stores `Some(mode)`.
+    access_mode: Option<AccessMode>,
+    /// The selection the picker shows when `access_mode` is `None`: the
+    /// stored draft's resolved `access_mode()`, or `AutoAcceptEdits` for a
+    /// new zoomie.
+    resolved_access_mode: AccessMode,
     enabled: bool,
     choice_select: widgets::SelectState,
     space_select: widgets::SelectState,
     harness_select: widgets::SelectState,
+    access_mode_select: widgets::SelectState,
 }
 
 pub struct AgentsPage {
@@ -135,6 +146,18 @@ fn status_label(status: AgentRunStatus) -> &'static str {
         AgentRunStatus::Failed => "Failed",
         AgentRunStatus::Skipped => "Skipped",
         AgentRunStatus::Limited => "Limited",
+    }
+}
+
+/// One-line consequence of an access mode for an *unattended* zoomie, shown
+/// beside each option in the picker. Kept deliberately plain: this is the
+/// choice a non-expert makes about what an agent may do with nobody watching.
+fn access_consequence(mode: AccessMode) -> &'static str {
+    match mode {
+        AccessMode::Supervised => "Always asks before acting",
+        AccessMode::AutoAcceptEdits => "Edits freely; commands wait (default)",
+        AccessMode::Auto => "Runs commands too; still logged",
+        AccessMode::FullAccess => "Nothing held back; trusted only",
     }
 }
 
@@ -334,10 +357,17 @@ impl AgentsPage {
             harness: draft
                 .map(|d| d.harness)
                 .or_else(|| self.harnesses.first().map(|(id, _)| *id)),
+            // Read `access_mode` directly. A zoomie saved before this field
+            // existed has `None` and keeps resolving through its legacy
+            // `sandbox`/`auto_approve` pair; we only persist a value once
+            // someone actually picks one.
+            access_mode: draft.and_then(|d| d.access_mode),
+            resolved_access_mode: draft.map(|d| d.access_mode()).unwrap_or_default(),
             enabled: draft.is_none_or(|d| d.enabled),
             choice_select: widgets::SelectState::default(),
             space_select: widgets::SelectState::default(),
             harness_select: widgets::SelectState::default(),
+            access_mode_select: widgets::SelectState::default(),
         });
         self.error = None;
         cx.notify();
@@ -375,7 +405,7 @@ impl AgentsPage {
             cx.notify();
             return;
         };
-        let draft = json!({
+        let mut draft = json!({
             "name": text(&editor.name, cx),
             "instructions": text(&editor.instructions, cx),
             "spaceId": space_id,
@@ -383,6 +413,14 @@ impl AgentsPage {
             "enabled": editor.enabled,
             "triggers": triggers,
         });
+        // Only write `accessMode` once the user has actually picked a mode
+        // (or when the stored draft already carried an explicit one, which we
+        // pass through so an unrelated edit doesn't downgrade it). We never
+        // touch the legacy `sandbox`/`autoApprove` fields; the engine's
+        // `normalize_access` keeps them in step with the mode.
+        if let Some(mode) = editor.access_mode {
+            draft["accessMode"] = json!(mode);
+        }
         let (method, params) = match &editor.id {
             Some(id) => (methods::UPDATE_AGENT, json!({ "id": id, "draft": draft })),
             None => (methods::CREATE_AGENT, json!({ "draft": draft })),
@@ -454,6 +492,14 @@ impl AgentsPage {
             .iter()
             .position(|c| *c == editor.choice)
             .unwrap_or(0);
+        // Untouched zoomies show the mode their stored draft resolves to
+        // (`AutoAcceptEdits` for a new one); an explicit pick or a stored
+        // `access_mode` wins.
+        let current_access = editor.access_mode.unwrap_or(editor.resolved_access_mode);
+        let access_ix = AccessMode::ALL
+            .iter()
+            .position(|m| *m == current_access)
+            .unwrap_or(1); // 1 = AutoAcceptEdits, the struct default.
         let field = |label: &str, control: AnyElement| {
             div()
                 .flex()
@@ -519,6 +565,33 @@ impl AgentsPage {
             cx.notify();
         })
         .render(&editor.choice_select, cx);
+        let access_select = widgets::select("agent-access", "Access", theme, |page: &mut Self| {
+            &mut page
+                .editor
+                .as_mut()
+                .expect("editor open")
+                .access_mode_select
+        })
+        .options(
+            AccessMode::ALL
+                .iter()
+                .map(|m| widgets::SelectOption::new(m.label()).detail(access_consequence(*m))),
+            access_ix,
+        )
+        .width(240.0)
+        // Consequence notes sit beside each label in the open menu; widen it
+        // past the trigger so they read on one line instead of being clipped.
+        .menu_width(380.0)
+        .open_rightward()
+        .on_select(|page, ix, _, cx| {
+            if let Some(editor) = page.editor.as_mut() {
+                // Persist an explicit choice; never touch the legacy
+                // `sandbox`/`auto_approve` fields.
+                editor.access_mode = AccessMode::ALL.get(ix).copied();
+            }
+            cx.notify();
+        })
+        .render(&editor.access_mode_select, cx);
         let schedule_field = match editor.choice {
             TriggerChoice::Interval => Some(field(
                 "Minutes between runs",
@@ -583,7 +656,8 @@ impl AgentsPage {
                             .gap(px(12.0))
                             .child(field("Workspace", space_select.into_any_element()))
                             .child(field("Provider", harness_select.into_any_element()))
-                            .child(field("Runs", choice_select.into_any_element())),
+                            .child(field("Runs", choice_select.into_any_element()))
+                            .child(field("Access", access_select.into_any_element())),
                     )
                     .children(schedule_field)
                     .child(
