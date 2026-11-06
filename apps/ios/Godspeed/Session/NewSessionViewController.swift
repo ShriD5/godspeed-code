@@ -545,7 +545,7 @@ private final class ProjectPickerSheet: UITableViewController, UISearchResultsUp
     private let allGroups: [ProjectGroupChoice]
     private let recentGroupKeys: [String]
     private let selectedGroupKey: String?
-    private let selectedNoProject: bool
+    private let selectedNoProject: Bool
     private var filtered: [ProjectGroupChoice] = []
     private var highlight = 0
     private let searchController = UISearchController(searchResultsController: nil)
