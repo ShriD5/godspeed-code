@@ -1193,6 +1193,11 @@ pub enum RowKind {
     ErrorChip {
         message: SharedString,
     },
+    /// A model or effort change between turns, above the prompt that made
+    /// it ([`crate::model_switch`]).
+    ModelSwitch {
+        label: SharedString,
+    },
     /// The fork seam: a labeled divider between copied history and the
     /// chat's own turns.
     ForkMarker {
@@ -1209,6 +1214,22 @@ pub enum RowKind {
     ConductorCard {
         card: Arc<crate::conductor::CardModel>,
     },
+}
+
+fn model_switch_row(entry_id: &str, label: String) -> Row {
+    let id: SharedString = format!("{entry_id}#model-switch").into();
+    Row {
+        id: id.clone(),
+        version: fnv1a(label.as_bytes()),
+        turn_start: true,
+        kind: RowKind::ModelSwitch {
+            label: label.into(),
+        },
+        entry_id: id,
+        timestamp: None,
+        copy_text: None,
+        compact_fold: None,
+    }
 }
 
 fn conductor_card_row(card: &crate::conductor::CardModel) -> Row {
@@ -5283,6 +5304,32 @@ impl Transcript {
                         .and_then(|v| v.as_str().map(str::to_owned)),
                 }
             });
+            let mut switch_rows: HashMap<usize, Row> = HashMap::new();
+            if self.doc_override.is_none() {
+                let config = self
+                    .chat_id
+                    .as_deref()
+                    .and_then(|id| state.chats.iter().find(|c| c.id == id))
+                    .and_then(|chat| chat.config.as_ref());
+                let wire = |value: serde_json::Value| value.as_str().map(str::to_owned);
+                let live = crate::model_switch::TurnModel {
+                    harness: config
+                        .and_then(|c| serde_json::to_value(c.harness).ok())
+                        .and_then(wire),
+                    // An alias pick ("opus") names no concrete model to
+                    // compare; the turn's stamp settles it.
+                    model: config
+                        .and_then(|c| c.model.clone())
+                        .filter(|m| m.contains('-')),
+                    effort: config
+                        .and_then(|c| c.reasoning)
+                        .and_then(|r| serde_json::to_value(r).ok())
+                        .and_then(wire),
+                };
+                for (ix, label) in crate::model_switch::dividers(entries, &live) {
+                    switch_rows.insert(ix, model_switch_row(&entries[ix].id, label));
+                }
+            }
             let entry_times: Vec<i64> = entries.iter().map(|e| e.created_at).collect();
             let mut card_rows: HashMap<usize, Vec<Row>> = HashMap::new();
             for card in &self.conductor_cards {
@@ -5301,6 +5348,9 @@ impl Transcript {
             for (ix, entry) in entries.iter().enumerate() {
                 if entry.role == MessageRole::User {
                     turn_start = ix;
+                }
+                if let Some(row) = switch_rows.remove(&ix) {
+                    new_rows.push(row);
                 }
                 if !self.compact_mode
                     && let Some(rows) = prepared.and_then(|p| p.rows.get(&entry.id))
@@ -8402,6 +8452,7 @@ impl Transcript {
             }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
+            RowKind::ModelSwitch { label } => model_switch_divider(label.clone(), &theme),
             RowKind::Receipt { receipt } => self.render_receipt(&row.id, receipt, &theme, cx),
             RowKind::ConductorCard { card } => self.render_conductor_card(card, &theme, cx),
         };
@@ -10480,6 +10531,29 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
                     .child(source_title),
             ),
         )
+        .into_any_element()
+}
+
+fn model_switch_divider(label: SharedString, theme: &Theme) -> AnyElement {
+    let rule = || div().flex_1().min_w_0().h(px(1.0)).bg(theme.border);
+    div()
+        .w_full()
+        .min_w_0()
+        .overflow_hidden()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(rule())
+        .child(
+            div()
+                .flex_shrink(1.0)
+                .min_w_0()
+                .truncate()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted.opacity(0.7))
+                .child(label),
+        )
+        .child(rule())
         .into_any_element()
 }
 
