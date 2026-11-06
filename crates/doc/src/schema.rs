@@ -447,6 +447,12 @@ impl SessionDoc {
         Ok(())
     }
 
+    pub fn clear_carried_context(&self) -> Result<(), DocError> {
+        self.doc.get_map("meta").delete("carriedContext")?;
+        self.doc.commit();
+        Ok(())
+    }
+
     fn meta_string(&self, key: &str) -> Option<String> {
         match self.doc.get_map("meta").get(key) {
             Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
@@ -466,6 +472,37 @@ impl SessionDoc {
     pub fn push_message(&self, entry: &SessionMessageEntry) -> Result<(), DocError> {
         let messages = self.doc.get_list("messages");
         let map = messages.push_container(LoroMap::new())?;
+        write_entry_scalar_fields(&map, entry)?;
+        let parts = map.insert_container("parts", LoroList::new())?;
+        for part in &entry.parts {
+            push_part(&parts, part)?;
+        }
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// [`Self::push_message`], but directly before the entry `before_id`
+    /// when it exists (appended otherwise).
+    pub fn push_message_before(
+        &self,
+        entry: &SessionMessageEntry,
+        before_id: &str,
+    ) -> Result<(), DocError> {
+        let messages = self.doc.get_list("messages");
+        let at = (0..messages.len()).find(|&i| {
+            matches!(
+                messages.get(i),
+                Some(loro::ValueOrContainer::Container(loro::Container::Map(map)))
+                    if matches!(
+                        map.get("id"),
+                        Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == before_id
+                    )
+            )
+        });
+        let Some(at) = at else {
+            return self.push_message(entry);
+        };
+        let map = messages.insert_container(at, LoroMap::new())?;
         write_entry_scalar_fields(&map, entry)?;
         let parts = map.insert_container("parts", LoroList::new())?;
         for part in &entry.parts {
@@ -1269,6 +1306,19 @@ fn salvage_part(part: &serde_json::Value, entry_id: &str, ix: usize) -> Option<M
         });
     }
     None
+}
+
+/// Id prefix of the system entry marking where `/clear` started a new
+/// provider session ([`zeron_proto::FRESH_SESSION_OPTION`]).
+pub const FRESH_SESSION_ENTRY_PREFIX: &str = "fresh-session:";
+
+/// Index of the first entry the current provider session can know about:
+/// the one after the last fresh-session marker, or 0 without one.
+pub fn fresh_session_start(entries: &[SessionMessageEntry]) -> usize {
+    entries
+        .iter()
+        .rposition(|entry| entry.id.starts_with(FRESH_SESSION_ENTRY_PREFIX))
+        .map_or(0, |at| at + 1)
 }
 
 /// Render-time continuation join at the entry level (`joinContinuations` in TS):

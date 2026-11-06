@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@79f1fadfc6 (2026-10-31)
+Reviewed T3 through: pingdotgg/t3code@6577c6b618 (2026-11-06)
 
 ## Rules
 
@@ -23,6 +23,18 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-06 | `/clear` starts a fresh provider session in the same chat; the send carries the request and the thread marks "New session" (`99e361e415`, `e139768a7e`) | PR #TBD |
+| 2026-11-06 | Scheduled tasks can run in one thread with a fresh session each run (`4aab23cd72`); tasks link to their thread (`4a087861d0`) | queued (always-on agents could set `FRESH_SESSION_OPTION` per run once `/clear` lands) |
+| 2026-11-06 | Project actions a user opted in stop when their thread settles (`dd059b40bc`) | queued (Godspeed project actions keep running after the turn) |
+| 2026-11-06 | Command output keeps text after an unterminated OSC, drops escape bytes with intermediates, and keeps colours past underline styles (`e4ff8433ee`, `cd890ba346`, `a7f6c68fe9`) | queued (check the tool-output ANSI parser against the same inputs) |
+| 2026-11-06 | A branch tracking another local branch no longer shows that branch's PR (`9bf7dcd92d`); threads follow their worktree's branch changes (`02cb2fc465`) | queued (check the PR lookup and branch label for both cases) |
+| 2026-11-06 | Terminal links keep route and pnpm paths whole (`1b14cb3d8c`); shortened `/tmp/...` agent paths no longer become broken file chips (`47a89f2ee7`) | queued (check `terminal` link detection and transcript file chips) |
+| 2026-11-06 | Side chats inherit the parent's permissions by default (`725cfc9c3d`) | skipped (Godspeed already freezes the parent's sandbox into a new side chat's config: `composer.rs` `send`) |
+| 2026-11-06 | Labs setting hides tool calls so threads read like a chat (`3d78e915e3`) | skipped (Godspeed's compact mode folds tool work into one header) |
+| 2026-11-06 | Ultracode on any effort and on Sonnet/Haiku 5.5 (`2d0efd3584`, `4bfb896d00`); Claude turns use the downloaded catalog (`43cf364dd2`) | skipped (Claude catalog details; Godspeed reads its catalog from Claude Code) |
+| 2026-11-06 | Snooze pending input requests (`e66c3168a4`); one usage-limit recovery notice (`c7537d0264`); PR comments into the chat and @/# completion in PR composers (`f08d8dd0a5`, `7bc2a40ced`, `e4ff5da0d3`) | skipped (minor; PR-comment chips added to T3-GAPS) |
+| 2026-11-06 | Secret providers for agent credentials and secret requests (`4a94658ab4`, `7462b16f36`, `187781e9a0`); dictation on a chosen environment (`b8dce83214`, `a9a1b8c4be`, `aabd5629c9`) | skipped (secrets are a T3 Labs flag; Godspeed dictates on the local device with Parakeet) |
+| 2026-11-06 | ~170 other commits: GitLab/Forgejo/GitCafe fixes, mobile and Android, server perf (PR cache, live events, shutdown), Windows git, Antigravity installs, CI and release, tests | skipped (internal/minor) |
 | 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #84 |
 | 2026-10-31 | The context meter marks where Claude actually auto-compacts (window minus 33k) and fills against the limit (`159a914d6b`, `961026c6c9`) | queued (Godspeed's meter has no auto-compact mark; needs the threshold from the Claude driver) |
 | 2026-10-31 | Pin favourite projects and archive old ones (`ffaa1dba76`) | queued (Godspeed pins chats within a project, not projects) |

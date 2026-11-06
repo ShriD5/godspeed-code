@@ -1199,6 +1199,9 @@ pub enum RowKind {
         source_chat_id: SharedString,
         source_title: SharedString,
     },
+    /// Where `/clear` started a new provider session: the agent doesn't see
+    /// the turns above it.
+    FreshSession,
     /// A finished turn's receipt ([`crate::receipt`]): a one-line summary
     /// that opens into the slip. Synthesized per turn, not per entry.
     Receipt {
@@ -1471,6 +1474,19 @@ pub fn rows_for_entry(
     let mut rows: Vec<Row> = Vec::new();
     let streaming = entry.status == Some(MessageStatus::Streaming);
     let entry_id: SharedString = entry.id.clone().into();
+
+    if entry.id.starts_with(zeron_doc::FRESH_SESSION_ENTRY_PREFIX) {
+        return vec![Row {
+            id: entry_id.clone(),
+            version: 0,
+            turn_start: true,
+            kind: RowKind::FreshSession,
+            entry_id,
+            timestamp: None,
+            copy_text: None,
+            compact_fold: None,
+        }];
+    }
 
     if entry.role == MessageRole::User {
         let raw: String = entry
@@ -8402,6 +8418,7 @@ impl Transcript {
             }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
+            RowKind::FreshSession => fresh_session_marker(&theme),
             RowKind::Receipt { receipt } => self.render_receipt(&row.id, receipt, &theme, cx),
             RowKind::ConductorCard { card } => self.render_conductor_card(card, &theme, cx),
         };
@@ -10480,6 +10497,27 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
                     .child(source_title),
             ),
         )
+        .into_any_element()
+}
+
+fn fresh_session_marker(theme: &Theme) -> AnyElement {
+    let rule = || div().flex_1().min_w_0().h(px(1.0)).bg(theme.border_strong);
+    div()
+        .py(px(14.0))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(rule())
+        .child(
+            div()
+                .flex_none()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted.opacity(0.7))
+                .child("New session"),
+        )
+        .child(rule())
         .into_any_element()
 }
 

@@ -68,6 +68,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Composer | Attach a pull request to the prompt as a context chip | `apps/web/src/components/composerContextPresentation.tsx`; `apps/web/src/components/chat/UserMessageContextChips.tsx` | MISSING | low |
 | Composer | Code block language picker in the composer | `apps/web/src/components/chat/ComposerCodeBlockLanguagePicker.tsx` | MISSING | low |
 | Composer | Show skills in the slash menu (toggle) | `settingsSearch.ts` ("Show skills in slash menu") | MISSING as a setting | low |
+| Chat | Add a pull request's review comments to the composer as context | `apps/web/src/components/chat/` (`f08d8dd0a5`) | MISSING: PR threads are answered from the PR pane only | low |
 | Chat | Run a code block's command in the terminal | `apps/web/src/components/chat/MarkdownCodeBlock.tsx` ("Run in terminal") | MISSING | med |
 | Chat | Fork a new thread from any response | `apps/web/src/components/chat/TimelineAssistantRows.tsx` ("Fork from this response") | PARTIAL: side chat forks the conversation through its latest completed reply (`crates/ui/src/shell/side_chats.rs` `fork_chat`); no pick of an earlier response | med |
 | Chat | Response streaming mode: turn or paragraph | `packages/contracts/src/settings.ts` (`ResponseStreamingMode`) | MISSING: live streaming only | low |
@@ -214,6 +215,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| `/clear` starts a fresh provider session in the same chat: a banner arms it (dismiss keeps the session), the next send runs without resume or replayed history, and the transcript marks "New session" | #TBD |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |
 | Run ACP-registry agents: install, update and uninstall from Settings → Providers → More agents (checksum-pinned binaries and integrity-checked exact npm versions; uvx not yet) | #62 |

@@ -849,6 +849,10 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         zeron_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        if take_fresh_session(&mut request) && !idle {
+            self.start_fresh_session(chat_id, &request.cwd, message_id.as_deref())
+                .await?;
+        }
         // Another device's send names the same folder in its own spelling,
         // and leaves out roots it can't pick: run it as the chat runs.
         if let Some(live) = self.live_config_for(chat_id, harness_id) {
@@ -1467,6 +1471,56 @@ impl SessionsEngine {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         Ok(true)
+    }
+
+    /// `/clear`: end the chat's provider session so the send that asked for
+    /// it starts a new one. The live runtime goes (its process holds the old
+    /// conversation), the stored session is tombstoned, and a marker entry
+    /// bounds what any history replay may carry into the new session. The
+    /// doc host may already have written the send's own message: the marker
+    /// goes before it.
+    async fn start_fresh_session(
+        &self,
+        chat_id: &str,
+        cwd: &str,
+        message_id: Option<&str>,
+    ) -> Result<(), EngineError> {
+        self.terminate(chat_id).await?;
+        lock(&self.inner.harness_sessions).insert(
+            chat_id.to_string(),
+            HarnessSessionRef {
+                session_id: String::new(),
+                cwd: cwd.to_string(),
+            },
+        );
+        if let Some(ws) = self.inner.workspace() {
+            ws.set_chat_harness_session(chat_id, "", cwd);
+        }
+        let handle = self.doc_handle(chat_id)?;
+        let doc = handle.doc();
+        doc.clear_carried_context()?;
+        doc.clear_context_usage()?;
+        let id = format!("{}{}", zeron_doc::FRESH_SESSION_ENTRY_PREFIX, new_id());
+        let marker = SessionMessageEntry {
+            id,
+            role: MessageRole::System,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "New session".into(),
+            }],
+            created_at: now_ms(),
+            device_id: self.inner.device_id.clone(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+            turn_stats: None,
+        };
+        match message_id {
+            Some(before) => doc.push_message_before(&marker, before)?,
+            None => doc.push_message(&marker)?,
+        }
+        tracing::info!(chat = %chat_id, "starting a fresh provider session");
+        Ok(())
     }
 
     /// Whether the chat has a run on this device (one `inject_event` can reach).
@@ -2208,6 +2262,8 @@ impl Inner {
             .into_iter()
             .filter(|entry| Some(entry.id.as_str()) != current)
             .collect();
+        // Nothing from before a `/clear` belongs in the session after it.
+        let start = zeron_doc::fresh_session_start(&entries);
         let end = match provider {
             ProviderSession::Fresh => entries.len(),
             ProviderSession::Continued(session) => {
@@ -2223,7 +2279,7 @@ impl Inner {
                 })?
             }
         };
-        let history: Vec<_> = entries[..end]
+        let history: Vec<_> = entries[start.min(end)..end]
             .iter()
             .map(|entry| {
                 let text = entry
@@ -2789,6 +2845,15 @@ struct RunResumeState {
     started: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Takes the sender's one-send [`zeron_proto::FRESH_SESSION_OPTION`] off the
+/// request, so it never reaches a harness or the chat's run configuration.
+fn take_fresh_session(request: &mut RunRequest) -> bool {
+    request
+        .model_options
+        .remove(zeron_proto::FRESH_SESSION_OPTION)
+        .is_some_and(|on| on == serde_json::Value::Bool(true))
+}
+
 fn cursor_unstarted_history(
     doc: &SessionDoc,
     current_id: &str,
@@ -2804,6 +2869,7 @@ fn cursor_unstarted_history(
         .iter()
         .take_while(|entry| entry.id != current_id)
         .collect();
+    let preceding = &preceding[zeron_doc::fresh_session_start(&entries).min(preceding.len())..];
     // With an existing session, only bridge the tail whose assistant never
     // produced content. A process can die before writing its SDK-side receipt,
     // even though an older session ID still exists.
@@ -4421,6 +4487,45 @@ mod tests {
             "an unacknowledged prompt after an older checkpoint must survive"
         );
         assert_eq!(doc.read_entries().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn cursor_history_stops_at_a_fresh_session() {
+        let doc = zeron_doc::SessionDoc::init("cursor-cleared").unwrap();
+        let marker = format!("{}1", zeron_doc::FRESH_SESSION_ENTRY_PREFIX);
+        for (id, role, text) in [
+            ("u1", zeron_doc::MessageRole::User, "before the clear"),
+            (
+                marker.as_str(),
+                zeron_doc::MessageRole::System,
+                "New session",
+            ),
+            ("u2", zeron_doc::MessageRole::User, "after the clear"),
+            ("u3", zeron_doc::MessageRole::User, "current request"),
+        ] {
+            doc.push_message(&zeron_doc::SessionMessageEntry {
+                id: id.into(),
+                role,
+                parts: vec![zeron_doc::MessagePart::Text {
+                    id: format!("{id}-text"),
+                    text: text.into(),
+                }],
+                created_at: 0,
+                device_id: "test".into(),
+                status: None,
+                continuation_of: None,
+                duration_ms: None,
+                turn_stats: None,
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            super::cursor_unstarted_history(&doc, "u2", "after the clear", false).unwrap(),
+            "after the clear"
+        );
+        let prompt = super::cursor_unstarted_history(&doc, "u3", "current request", false).unwrap();
+        assert!(prompt.contains("after the clear"));
+        assert!(!prompt.contains("before the clear"));
     }
 
     use zeron_proto::{HarnessId, RunRequest, SandboxLevel};

@@ -390,6 +390,12 @@ pub struct ModelOptionChoice {
 /// never stored in a chat's config.
 pub const FORK_SESSION_OPTION: &str = "godspeedForkSession";
 
+/// A [`RunRequest::model_options`] flag the SENDER sets for one send
+/// (`/clear`): the host ends the chat's provider session and runs the prompt
+/// in a new one that doesn't see the earlier messages. Never stored in a
+/// chat's config.
+pub const FRESH_SESSION_OPTION: &str = "godspeedFreshSession";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRequest {

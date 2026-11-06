@@ -62,6 +62,7 @@ directly comparable; the movers are listed below.
 | Managed ChatGPT runtime (no CLI needed) | 🟡 | wraps the CLI login only |
 | Skills `$`, plugin skills, project-first discovery budget | ✅ | `harness/src/skills.rs` |
 | Provider slash commands pass through (`/compact`, `/feedback`) | ✅ | `LIST_COMMANDS`; no T3-style client commands |
+| `/clear` starts a fresh provider session in the same thread | ✅ | `composer/fresh_session.rs` arms it; `FRESH_SESSION_OPTION` on the next Run; "New session" divider |
 | Native subagents as child transcripts | ✅ | Codex, Claude, Cursor, ACP, OpenCode |
 | Per-provider instances (binary path, env vars, launch args, config dir) | ❌ | one instance per harness; PATH from login shell (`harness/src/shell_env.rs`) |
 | Provider on/off per project | ❌ | per-device toggle only (`settings/harnesses.rs`) |

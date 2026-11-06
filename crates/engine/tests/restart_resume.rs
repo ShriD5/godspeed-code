@@ -1178,3 +1178,72 @@ async fn steer_after_restart_dispatches_new_turn_with_resume() {
     }
     core.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_fresh_session_send_drops_the_stored_session_and_marks_the_transcript() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+
+    run_one_turn_and_shutdown(&dir, &requests, "hs-before-clear").await;
+
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-after-clear".into(),
+            fail_starts: Default::default(),
+        },
+    );
+    let mut request = run_request("start over", "/tmp");
+    request
+        .model_options
+        .insert(zeron_proto::FRESH_SESSION_OPTION.into(), true.into());
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request,
+                message_id: "msg-user-2".into(),
+            },
+        )
+        .expect("queue run command");
+    wait_for(
+        || complete_assistant_count(&core) == 2,
+        "fresh-session turn to complete",
+    )
+    .await;
+    {
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[1].resume, None, "the old session must not resume");
+        assert!(
+            !requests[1]
+                .model_options
+                .contains_key(zeron_proto::FRESH_SESSION_OPTION),
+            "the one-send flag never reaches the harness"
+        );
+    }
+    let ids: Vec<String> = entries_now(&core).into_iter().map(|e| e.id).collect();
+    let marker = ids
+        .iter()
+        .position(|id| id.starts_with(zeron_doc::FRESH_SESSION_ENTRY_PREFIX))
+        .expect("a new-session marker");
+    let user = ids.iter().position(|id| id == "msg-user-2").unwrap();
+    assert!(
+        ids.iter().position(|id| id == "msg-user-1").unwrap() < marker && marker < user,
+        "the marker sits between the old turns and the fresh send: {ids:?}"
+    );
+
+    queue_run(&core, "and continue", "/tmp", "msg-user-3");
+    wait_for(
+        || complete_assistant_count(&core) == 3,
+        "follow-up turn to complete",
+    )
+    .await;
+    assert_eq!(
+        requests.lock().unwrap()[2].resume.as_deref(),
+        Some("hs-after-clear"),
+        "later sends continue the new session"
+    );
+    core.shutdown().await;
+}
