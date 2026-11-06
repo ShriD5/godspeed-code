@@ -32,6 +32,15 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-11-04 | Kiro as an ACP provider (`55e2538561`, `8c9945d44d`, `8198b2ed5e`) | skipped (ACP registry agents already cover new ACP CLIs) |
 | 2026-11-04 | GitHub star prompt and confetti (`5d3d78ab93`, `cefb544af3`) | skipped (growth tactic) |
 | 2026-11-04 | ~310 other commits: server recovery perf, Pi/Codex/OpenCode/Cursor/Antigravity fixes, forge (GitLab/Forgejo/Azure) fixes, Tailscale, managed policy, secret providers, emoji-safe truncation, mobile, marketing, evals and CI | skipped (internal/minor) |
+| 2026-11-02 | Claude threads no longer join the Claude Code session that launched T3: its session id, messaging socket and token, and effort are dropped from the agent's environment (`47f2c8d29e`) | PR #87 |
+| 2026-11-02 | Threads show a divider when you switch model or effort between messages (`c65f8d552b`) | queued (Godspeed keeps only the chat's current config; needs the model and effort recorded per turn) |
+| 2026-11-02 | Approval cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`) | queued (`claude/wire.rs` ignores `control_cancel_request`, so the card waits forever) |
+| 2026-11-02 | Managed policy file for organization-wide configuration (`d897d3f3f0`) | queued (T3-GAPS row; Theo hyped it) |
+| 2026-11-02 | Turn diffs keep the agent's files when git's `diff.relative` is on (`f2527c2c00`) | queued (`diff_sync.rs` runs `git diff` without `-c diff.relative=false`) |
+| 2026-11-02 | Show why Codex hooks stopped a turn (`9b7208832e`) | queued (Codex normalizer has no hook stop reason) |
+| 2026-11-02 | Tag threads and hide tagged ones while screen recording (`30654b3e91`) | skipped (niche; Godspeed has no tags) |
+| 2026-11-02 | Usage totals filtered by provider and model (`e6e2ab05cc`); usage pricing fixes (`a51164c52b`, `b92c8f4739`) | skipped (usage and cost page is out of scope) |
+| 2026-11-02 | ~170 other commits: mobile, Electron, web perf, Antigravity/OpenCode/Cursor, GitLab/Forgejo/Azure, PR list polish, settings search, preview browser, CLI startup, completion sounds, branch search Enter, login-shell probe force-stop (Godspeed's `shell_env.rs` already kills on timeout) | skipped (internal/minor) |
 | 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #84 |
 | 2026-10-31 | The context meter marks where Claude actually auto-compacts (window minus 33k) and fills against the limit (`159a914d6b`, `961026c6c9`) | queued (Godspeed's meter has no auto-compact mark; needs the threshold from the Claude driver) |
 | 2026-10-31 | Pin favourite projects and archive old ones (`ffaa1dba76`) | queued (Godspeed pins chats within a project, not projects) |

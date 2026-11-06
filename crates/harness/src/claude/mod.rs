@@ -277,6 +277,7 @@ impl ClaudeHarness {
 
     fn build_command(&self, exe: &PathBuf, request: &RunRequest, thinking_display: bool) -> Command {
         let mut cmd = Command::new(exe);
+        crate::process::owned::remove_claude_session_markers(&mut cmd);
         crate::compose_child_path(&mut cmd, exe);
         // Without it, a foreground subagent's (or forked skill's) text and
         // thinking never reach the stream, and its tab shows tool calls only.
@@ -341,6 +342,7 @@ impl ClaudeHarness {
     async fn probe_initialize(&self, cwd: Option<&std::path::Path>) -> Result<Value, HarnessError> {
         let exe = self.resolve_executable()?;
         let mut cmd = Command::new(&exe);
+        crate::process::owned::remove_claude_session_markers(&mut cmd);
         // A project-less probe must not read the engine's cwd as a project.
         cmd.current_dir(cwd.map_or_else(crate::executable::neutral_cwd, |c| c.to_path_buf()));
         crate::compose_child_path(&mut cmd, &exe);
@@ -441,6 +443,7 @@ async fn supports_thinking_display(exe: &std::path::Path) -> bool {
         return known;
     }
     let mut cmd = Command::new(exe);
+    crate::process::owned::remove_claude_session_markers(&mut cmd);
     crate::compose_child_path(&mut cmd, exe);
     cmd.args(["--thinking-display", "summarized", SENTINEL])
         .current_dir(crate::executable::neutral_cwd())
@@ -2345,7 +2348,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_ask_the_cli_to_forward_subagent_text() {
+    fn run_environment_forwards_subagent_text_and_leaves_the_launching_session() {
         let request = RunRequest {
             instance: None,
             mcp: None,
@@ -2370,6 +2373,19 @@ mod tests {
             .find(|(key, _)| *key == "CLAUDE_CODE_FORWARD_SUBAGENT_TEXT")
             .and_then(|(_, value)| value.map(|v| v.to_os_string()));
         assert_eq!(value.as_deref(), Some(std::ffi::OsStr::new("1")));
+        // A Claude Code session that launched Godspeed exports these; a run
+        // that inherits them joins that session.
+        for key in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_EFFORT",
+        ] {
+            assert!(
+                cmd.as_std_mut().get_envs().any(|(k, v)| k == key && v.is_none()),
+                "{key} is passed on"
+            );
+        }
     }
 
     fn tool_request(tool: &str, input: Value) -> wire::ControlRequestBody {
