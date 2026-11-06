@@ -128,6 +128,8 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
+| Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
 | Chat | Divider in the thread when the model or effort changes between messages ("Opus 5.5 high → Sonnet 5.5") | `apps/server/src/orchestration-v2/modelSwitch.ts`; `apps/web/src/components/chat/V2LifecycleRow.tsx` (`ModelSwitchRow`) | MISSING: only the chat's current config is kept (`proto/src/entities.rs` `ChatConfig`) | med |
 | Agents | Claude approval cards close when Claude withdraws the request | `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts` (`cancelWithdrawnRequest`) | MISSING: `control_cancel_request` is ignored (`harness/src/claude/wire.rs`) | med |
 | Settings | Managed policy: an organization-wide file that pins T3 settings | T3 `d897d3f3f0` | MISSING: no policy layer | med |
@@ -156,7 +158,7 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 | Orchestration | Delegated tasks with a task id: check status, cancel, and the child wakes the parent on completion or question | `orchestrator/tools.ts` (`task_status`, `task_cancel`); `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`; `apps/server/src/orchestration-v2/ThreadManagementService.ts` | PARTIAL: `create_chat` + `wait_for_turn` only (PARITY section 4) | High |
 | Orchestration | Delegate a child to another linked machine, and it reports back | `apps/server/src/peer/RemoteDelegation.ts`; orchestrator `t3_environment_links` | PARTIAL: `create_chat` takes a `device` (`crates/mcp/src/tools.rs`); no wake-back | Med |
 | Orchestration | Agent schedules, lists, pauses, deletes and runs always-on tasks | `orchestrator/tools.ts` (`schedule_task`, `list_scheduled_tasks`, `delete_scheduled_task`); `thread/tools.ts` (`run_scheduled_task_now`) | MISSING: MCP has about 16 tools and none schedule (`crates/mcp/src/tools.rs`) | Med |
-| Orchestration | Agent asks the user for a secret in a private card and gets a one-use reference; the model never sees the value | `orchestrator/tools.ts` (`request_secret`) | MISSING (PARITY section 3) | Med |
+| Orchestration | Agent asks the user for a secret in a private card and gets a one-use reference; the model never sees the value | `orchestrator/tools.ts` (`request_secret`); agents told to use it instead of asking in chat (`9e85538535`) | MISSING (PARITY section 3) | Med |
 | Orchestration | Agent moves its own thread into a new worktree on a new branch | `apps/server/src/mcp/toolkits/worktree/tools.ts` (`t3_worktree_handoff`, `t3_worktree_status`, `t3_worktree_list`) | MISSING (PARITY section 12: "no handoff") | Med |
 | Orchestration | Webhook tasks verify an HMAC signature and dedupe deliveries | `apps/server/src/scheduledTasks/webhookVerification.ts`; `webhookDedupe.ts` | MISSING: no verification (signature headers are only redacted in `crates/engine/src/agents/prompt.rs`) | Med |
 | Orchestration | Tailscale: serve the engine on the tailnet directly, pick an exit node | `packages/tailscale/src/tailscale.ts`; `apps/server/src/environment/DirectEndpoints.ts` | PARTIAL: Tailscale peers are offered as servers to set up ("Run on a server"); devices still talk through the edge, not directly over the tailnet | Low |
@@ -217,6 +219,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Antigravity turns that go silent mid-prompt end with an error after 15 minutes instead of staying Working (open tools and approvals pause the clock) | #91 |
 | Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |
 | Claude accounts show the renamed plans: Max (was Max 5×) and Ultra (was Max 20×), including logins saved before the rename | #84 |
 | Thread details card shows the chat's account limits (5-hour, weekly, other windows) and its context window as bars, with resets and token counts on hover | #68 |

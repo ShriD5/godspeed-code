@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@8b44f42b14 (2026-11-04)
+Reviewed T3 through: pingdotgg/t3code@337c5858c3 (2026-11-05)
 
 ## Rules
 
@@ -23,6 +23,13 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-05 | Antigravity prompts that go silent mid-turn time out after 15 minutes instead of staying Working; open tools and approvals pause the clock (`3f905cac2e`) | PR #91 |
+| 2026-11-05 | Agents ask for secrets with `request_secret` instead of in chat (`9e85538535`, `7f782b4d6d`) | queued (T3-GAPS secret card row; needs an MCP tool, a private input card and a keychain-held reference) |
+| 2026-11-05 | MCP Apps render from Claude tool calls (`a21d788752`) | queued (new T3-GAPS row; Godspeed renders `show_visual` but not MCP App UI resources) |
+| 2026-11-05 | Optionally clone repos into ghq-style `<host>/<owner>/<repo>` folders (`707dcdaa16`) | queued (new T3-GAPS row; `project_transfer.rs` clones into one flat folder) |
+| 2026-11-05 | Older pending questions stay answerable when history pages (`c15e49a77c`); Codex shared usage limits offer the recovery options (`935818e422`) | skipped (T3's history paging; Godspeed keeps every pending input card and already maps Codex limits through `limits::event_from_text`) |
+| 2026-11-05 | Sidebar shows Setting up during worktree setup (`b3041a8cb9`); Changes totals name the comparison base (`199cb5b6a9`) | queued (check the session row during worktree creation and the diff header's base label) |
+| 2026-11-05 | ~40 other commits: Effect/crypto refactors, relay and tunnel restarts, mobile iOS/Android fixes, browser tab limit, sibling wakeups, stopped-run history, evals, CI | skipped (internal/minor) |
 | 2026-11-04 | Threads show a divider when you switch model or effort between turns (`c65f8d552b`) | PR #88 |
 | 2026-11-04 | Claude model list comes from what Claude Code reports (`dd69b31665`); the context meter knows the window for models outside the catalog (`7fd859aeef`) | queued (Godspeed's Claude catalog is static in `harness/src/claude/catalog.rs`) |
 | 2026-11-04 | Generated commit/PR text and turn diffs survive user git config: colour, `log.showSignature`, `diff.suppressBlankEmpty`, `diff.submodule=log`, `diff.relative` (`50106efdd9`, `5815442128`, `4a09502b38`, `35af84977d`, `0673e7e610`, `e86dc78d62`) | queued (Godspeed passes `--no-color` but no `-c` overrides for the rest; one change covering the engine's git helper) |
