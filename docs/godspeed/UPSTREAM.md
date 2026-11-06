@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@35561ead (2026-11-03)
+Synced through: zeronsh/zeron@1b86c41c (2026-11-06)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -78,6 +78,18 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     which only zgx lists), a2113ac8 (redacted command output tails and exit codes kept in
     the chat doc; this moves the redactor into `zeron-proto`) and 5e927a01 (`ReadToolOutput`,
     needs a2113ac8). Worth porting together once Godspeed's transcript shows command output.
+- Deferred 2026-11-06:
+  - a8d1dc6e (#1241, "Updates that can't strand a device"): +4.5k lines, an update
+    transaction in `zeron-update`, engine `update_trial`, harness update ownership. Builds on
+    `managed.rs` (cc7da5c2), Zeron's update `channel.rs` (Godspeed has none) and 987bb2f8's
+    package-owner plans; 17 conflicts. Follow-ups deferred with it: 2094602e and c3eb640c
+    (Zeron's beta channel version for bundles and the engine).
+  - zgx-only, deferred with zgx: the ~150 `apps/zgx` commits through 1b86c41c (panel home,
+    zgx v3 panes/tabs, plugin and template security, updates UI, side chats), plus
+    8f1c32d2's `zeron-theme` terminal ANSI legibility (Godspeed's theme crate has no
+    `legibility`), 89701c65 and 36e7cf18 (`plugin-guard`), 4c08b1d1 (zgx beta script).
+  - From 987bb2f8, only Muse's `-R<n>` build ordering in `version_numbers` came over (with
+    302cdc98 and ce1de75e).
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
