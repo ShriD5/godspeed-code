@@ -838,6 +838,22 @@ pub enum PickerKind {
     Access,
 }
 
+/// Hold gesture for the new-session project-picker shortcut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpaceShortcutHold {
+    /// Key down, waiting for the hold threshold.
+    Pending,
+    /// Threshold passed: recents badges shown while the shortcut key is held.
+    Active,
+}
+
+/// How long the project-picker shortcut must be held to show recents.
+const SPACE_HOLD_THRESHOLD: Duration = Duration::from_millis(400);
+/// Recents shown/badged in the hold view.
+const SPACE_HOLD_RECENTS: usize = 4;
+/// Recents reachable by number keys whenever the picker is open.
+const SPACE_JUMP_RECENTS: usize = 5;
+
 pub(crate) struct ReturnComposerFocus;
 
 impl gpui::EventEmitter<ReturnComposerFocus> for Pickers {}
@@ -1046,6 +1062,17 @@ pub struct Pickers {
     /// Last mid-session switch failure (shown in the ref popover).
     switch_error: Option<String>,
     mutate_task: Option<Task<()>>,
+    /// Most-recently-active projects, snapshotted for the current Space picker
+    /// session (ranking must not shift while the user is picking).
+    space_recent_rows: Vec<ProjectRow>,
+    /// Tap-vs-hold state for the project-picker shortcut.
+    space_hold: Option<SpaceShortcutHold>,
+    /// 1-based number key armed during an active hold (commits on key-up).
+    space_hold_armed: Option<usize>,
+    space_hold_task: Option<Task<()>>,
+    /// Show the recents-only hold view (persists after releasing the hold key
+    /// with no number chosen, per the design doc).
+    space_hold_view: bool,
     _search_events: Subscription,
     _state_observe: Subscription,
     _catalog_observe: Subscription,
@@ -1292,6 +1319,11 @@ impl Pickers {
             switch_task: None,
             switch_error: None,
             mutate_task: None,
+            space_recent_rows: Vec::new(),
+            space_hold: None,
+            space_hold_armed: None,
+            space_hold_task: None,
+            space_hold_view: false,
             _search_events: search_events,
             _state_observe: state_observe,
             _catalog_observe: catalog_observe,
@@ -1692,6 +1724,8 @@ impl Pickers {
         self.setting_bounds = None;
         self.close_config();
         self.menu_bar = popover::MenuScrollbarState::default();
+        self.clear_space_hold();
+        self.space_hold_view = false;
         if self.open.begin_close() {
             popover::reap_popup(cx, |pickers: &mut Self| &mut pickers.open);
         }
@@ -1726,6 +1760,145 @@ impl Pickers {
         }
     }
 
+    /// Most-recently-active projects (by project identity), snapshotted for
+    /// the open Space picker session so the ranking never shifts mid-pick.
+    fn snapshot_space_recents(&mut self, cx: &App) {
+        let state = self.state.read(cx);
+        let ranked = zeron_proto::view::rank_spaces_by_recent_activity(&state.spaces, &state.chats);
+        let mut seen = HashSet::new();
+        let mut rows = Vec::new();
+        for space in ranked {
+            let key = zeron_proto::view::project_key(&space);
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let name = state.representative_space(&space).display_name().to_string();
+            rows.push(ProjectRow { key, name });
+            if rows.len() >= SPACE_JUMP_RECENTS {
+                break;
+            }
+        }
+        self.space_recent_rows = rows;
+    }
+
+    fn clear_space_hold(&mut self) {
+        self.space_hold = None;
+        self.space_hold_armed = None;
+        self.space_hold_task = None;
+    }
+
+    /// Open the project picker from the new-session shortcut with tap-vs-hold:
+    /// tap opens the normal popover; holding past the threshold shows the top
+    /// recents badged 1–4.
+    pub fn open_project_picker_shortcut(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_kind() == Some(PickerKind::Space) && self.space_hold.is_some() {
+            // A repeat key-down while holding is ignored.
+            return;
+        }
+        let was_open = self.open_kind() == Some(PickerKind::Space);
+        self.snapshot_space_recents(cx);
+        if !was_open {
+            // Opens with normal behavior (snapshot/clear happens inside toggle,
+            // then we arm hold below).
+            self.toggle(PickerKind::Space, window, cx);
+        }
+        self.snapshot_space_recents(cx);
+        self.space_hold_view = false;
+        self.space_hold_armed = None;
+        self.space_hold = Some(SpaceShortcutHold::Pending);
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SPACE_HOLD_THRESHOLD).await;
+            this.update(cx, |this, cx| {
+                if this.open_kind() == Some(PickerKind::Space)
+                    && this.space_hold == Some(SpaceShortcutHold::Pending)
+                {
+                    this.space_hold = Some(SpaceShortcutHold::Active);
+                    this.space_hold_view = true;
+                    this.active = 0;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self.space_hold_task = Some(task);
+        cx.notify();
+    }
+
+    /// Key-up for the shortcut or number keys while the Space hold is active.
+    pub fn on_space_key_up(
+        &mut self,
+        key: &str,
+        _window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_kind() != Some(PickerKind::Space) {
+            self.clear_space_hold();
+            return;
+        }
+        match self.space_hold {
+            Some(SpaceShortcutHold::Pending) => {
+                // Releasing the shortcut before the threshold: tap — leave the
+                // normal popover open.
+                if Self::is_space_shortcut_key(key) {
+                    self.clear_space_hold();
+                    cx.notify();
+                }
+            }
+            Some(SpaceShortcutHold::Active) => {
+                if let Some(digit) = Self::digit_key(key) {
+                    if digit >= 1 && digit <= SPACE_HOLD_RECENTS {
+                        // Arm/commit on number key-up while holding.
+                        if self.space_hold_armed == Some(digit) {
+                            self.commit_space_recent(digit, cx);
+                            return;
+                        }
+                        // Accept commit on key-up even if we missed arming.
+                        self.commit_space_recent(digit, cx);
+                        return;
+                    }
+                }
+                if Self::is_space_shortcut_key(key) {
+                    // Released hold key with no committed number: keep the
+                    // recents view open as a normal popover.
+                    self.space_hold = None;
+                    self.space_hold_armed = None;
+                    self.space_hold_task = None;
+                    self.space_hold_view = true;
+                    cx.notify();
+                }
+            }
+            None => {
+                // "Numbers always live" commits on key-down in normal mode, so
+                // key-up is a no-op here.
+            }
+        }
+    }
+
+    fn is_space_shortcut_key(key: &str) -> bool {
+        // The default shortcut is mod-p; accept "p" (and "P") as the
+        // non-modifier release key. A re-bound shortcut may differ, but
+        // tap-vs-hold is best-effort on the common case.
+        key.eq_ignore_ascii_case("p")
+    }
+
+    fn digit_key(key: &str) -> Option<usize> {
+        match key {
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => key.parse().ok(),
+            _ => None,
+        }
+    }
+
+    fn commit_space_recent(&mut self, n: usize, cx: &mut Context<Self>) {
+        if let Some(row) = self.space_recent_rows.get(n.saturating_sub(1)).cloned() {
+            self.clear_space_hold();
+            self.space_hold_view = false;
+            self.pick_project(row.key, cx);
+        } else {
+            self.clear_space_hold();
+            cx.notify();
+        }
+    }
+
     fn toggle(&mut self, kind: PickerKind, window: &mut Window, cx: &mut Context<Self>) {
         // A press that found this picker open closes it — the card's
         // `on_mouse_down_out` already began the close on that same press,
@@ -1748,6 +1921,11 @@ impl Pickers {
             self.effort_dragging = false;
             self.compact_keyboard = false;
             self.compact_motion = compact::CompactMotion::default();
+        }
+        if kind == PickerKind::Space {
+            self.snapshot_space_recents(cx);
+            self.clear_space_hold();
+            self.space_hold_view = false;
         }
         self.open.open(kind);
         self.focus_on_mount = true;
@@ -3222,95 +3400,159 @@ impl Pickers {
     /// The project popover: search + one row per project across devices
     /// (check on the current pick), then "New project" and the opt-out rows.
     /// No per-row `@ device` tag — the device chip next door picks the host.
+    /// (check on the current pick), then "New project" and the opt-out rows.
+    /// No per-row `@ device` tag — the device chip next door picks the host.
     fn render_space_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).for_popup();
-        let rows = self.filtered_project_rows(cx);
+        let search_empty = self.search.read(cx).text().is_empty();
+        let hold_view =
+            self.space_hold_view && search_empty && !self.space_recent_rows.is_empty();
         let selected = self
             .state
             .read(cx)
             .selected_space_row()
             .map(zeron_proto::view::project_key);
         let active = self.active;
-        let no_project_index = rows.len();
-        let scrollbar = popover::rail(self, "space-scrollbar", &theme, cx);
-        let (spaces, profile): (Vec<Option<zeron_proto::Space>>, Option<String>) = {
-            let state = self.state.read(cx);
-            (
-                rows.iter()
-                    .map(|row| {
-                        state
-                            .spaces
-                            .iter()
-                            .find(|space| zeron_proto::view::project_key(space) == row.key)
-                            .cloned()
-                    })
-                    .collect(),
-                match &state.auth {
-                    Some(zeron_proto::AuthState::SignedIn { user, org_id }) => {
-                        Some(format!("{}:{org_id:?}", user.id))
-                    }
-                    _ => None,
-                },
-            )
-        };
-        let icons: Vec<AnyElement> = rows
-            .iter()
-            .zip(&spaces)
-            .map(|(row, space)| {
-                self.project_icons.render(
-                    &self.state,
-                    space.as_ref(),
-                    profile.clone(),
-                    selected.as_deref() == Some(row.key.as_str()),
-                    cx,
-                )
-            })
-            .collect();
-        let body: AnyElement = if rows.is_empty() {
-            // Distinguish "the filter ate everything" from "no projects yet".
-            let empty: &str = if self.search.read(cx).text().is_empty() {
-                "No projects yet."
-            } else {
-                "No projects match."
-            };
+
+        let body: AnyElement = if hold_view {
+            let recents = self
+                .space_recent_rows
+                .iter()
+                .take(SPACE_HOLD_RECENTS)
+                .cloned()
+                .collect::<Vec<_>>();
             div()
-                .p(px(Theme::SPACE_SM))
-                .text_size(crate::typography::ui_rems(12.0))
-                .text_color(theme.text_faint)
-                .child(SharedString::from(empty.to_string()))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .p(px(Theme::SPACE_XS))
+                .children(recents.into_iter().enumerate().map(|(ix, row)| {
+                    let n = ix + 1;
+                    let is_selected = selected.as_deref() == Some(row.key.as_str());
+                    let armed = self.space_hold_armed == Some(n);
+                    let key = row.key.clone();
+                    let label: SharedString = row.name.into();
+                    let badge_bg = if armed || ix == active {
+                        theme.accent.opacity(0.22)
+                    } else {
+                        theme.surface_raised
+                    };
+                    let badge_text = if armed { theme.accent } else { theme.text_muted };
+                    popover::picker_row(
+                        &theme,
+                        is_selected,
+                        ix == active,
+                        format!("space-recent-{ix}"),
+                    )
+                    .id(("space-recent", ix))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.pick_project(key.clone(), cx);
+                    }))
+                    .child(
+                        div()
+                            .w(px(18.0))
+                            .h(px(18.0))
+                            .rounded(px(4.0))
+                            .bg(badge_bg)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(badge_text)
+                            .child(SharedString::from(n.to_string())),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                }))
                 .into_any_element()
         } else {
-            popover::menu_scroll_host("space-list-host")
-                .on_hover(cx.listener(Self::on_menu_list_hover))
-                .child(popover::faded_menu_list(
-                    &self.menu_scroll,
-                    popover::menu_scroll_list("space-list", &self.menu_scroll)
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .max_h(px(self.list_budget(152.0)))
-                        .children(rows.into_iter().zip(icons).enumerate().map(
-                            |(ix, (row, art))| {
-                                let label: SharedString = row.name.into();
-                                let is_selected = selected.as_deref() == Some(row.key.as_str());
-                                let key = row.key;
-                                popover::picker_row(
-                                    &theme,
-                                    is_selected,
-                                    ix == active,
-                                    format!("space-row-{ix}"),
-                                )
-                                .id(("space-row", ix))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.pick_project(key.clone(), cx);
-                                }))
-                                .child(popover::picker_icon_slot(art))
-                                .child(div().flex_1().min_w_0().truncate().child(label))
-                            },
-                        )),
-                ))
-                .children(scrollbar)
-                .into_any_element()
+            let rows = self.filtered_project_rows(cx);
+            let scrollbar = popover::rail(self, "space-scrollbar", &theme, cx);
+            let (spaces, profile): (Vec<Option<zeron_proto::Space>>, Option<String>) = {
+                let state = self.state.read(cx);
+                (
+                    rows.iter()
+                        .map(|row| {
+                            state
+                                .spaces
+                                .iter()
+                                .find(|space| zeron_proto::view::project_key(space) == row.key)
+                                .cloned()
+                        })
+                        .collect(),
+                    match &state.auth {
+                        Some(zeron_proto::AuthState::SignedIn { user, org_id }) => {
+                            Some(format!("{}:{org_id:?}", user.id))
+                        }
+                        _ => None,
+                    },
+                )
+            };
+            let icons: Vec<AnyElement> = rows
+                .iter()
+                .zip(&spaces)
+                .map(|(row, space)| {
+                    self.project_icons.render(
+                        &self.state,
+                        space.as_ref(),
+                        profile.clone(),
+                        selected.as_deref() == Some(row.key.as_str()),
+                        cx,
+                    )
+                })
+                .collect();
+            if rows.is_empty() {
+                let empty: &str = if search_empty {
+                    "No projects yet."
+                } else {
+                    "No projects match."
+                };
+                div()
+                    .p(px(Theme::SPACE_SM))
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from(empty.to_string()))
+                    .into_any_element()
+            } else {
+                popover::menu_scroll_host("space-list-host")
+                    .on_hover(cx.listener(Self::on_menu_list_hover))
+                    .child(popover::faded_menu_list(
+                        &self.menu_scroll,
+                        popover::menu_scroll_list("space-list", &self.menu_scroll)
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .max_h(px(self.list_budget(152.0)))
+                            .children(rows.into_iter().zip(icons).enumerate().map(
+                                |(ix, (row, art))| {
+                                    let label: SharedString = row.name.into();
+                                    let is_selected =
+                                        selected.as_deref() == Some(row.key.as_str());
+                                    let key = row.key;
+                                    popover::picker_row(
+                                        &theme,
+                                        is_selected,
+                                        ix == active,
+                                        format!("space-row-{ix}"),
+                                    )
+                                    .id(("space-row", ix))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.pick_project(key.clone(), cx);
+                                    }))
+                                    .child(popover::picker_icon_slot(art))
+                                    .child(div().flex_1().min_w_0().truncate().child(label))
+                                },
+                            )),
+                    ))
+                    .children(scrollbar)
+                    .into_any_element()
+            }
+        };
+
+        let no_project_index = if hold_view {
+            usize::MAX
+        } else {
+            self.filtered_project_rows(cx).len()
         };
         let no_project = popover::picker_row(
             &theme,
@@ -3333,7 +3575,6 @@ impl Pickers {
                 .truncate()
                 .child("Don't work in a project"),
         );
-        // Action row under a hairline: mint a project.
         let new_project = popover::picker_row(&theme, false, false, "project-new".to_string())
             .id("project-new")
             .on_click(cx.listener(|this, _, window, cx| {
@@ -3356,13 +3597,14 @@ impl Pickers {
         div()
             .flex()
             .flex_col()
+            .on_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, window, cx| {
+                this.on_space_key_up(event.keystroke.key.as_str(), window, cx);
+            }))
             .child(self.search_box(&theme))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    // Same 2px rhythm as the list's own row gap — the action
-                    // rows sat flush while list rows breathed (user report).
                     .gap(px(2.0))
                     .child(body)
                     .child(popover::picker_divider())
@@ -3379,6 +3621,13 @@ impl Pickers {
             self.pick_ref(row, cx);
         }
         if self.open_kind() == Some(PickerKind::Space) {
+            if self.space_hold_view && self.search.read(cx).text().is_empty() {
+                let ix = if self.active == NO_ACTIVE_ROW { 0 } else { self.active };
+                if ix < self.space_recent_rows.len().min(SPACE_HOLD_RECENTS) {
+                    self.commit_space_recent(ix + 1, cx);
+                }
+                return;
+            }
             let rows = self.filtered_project_rows(cx);
             if let Some(row) = rows.get(self.active) {
                 self.pick_project(row.key.clone(), cx);
@@ -3403,6 +3652,53 @@ impl Pickers {
         // animation — keys must not drive a dying popover.
         if !self.open.is_open() {
             return;
+        }
+        if self.open_kind() == Some(PickerKind::Space) {
+            let search_empty = self.search.read(cx).text().is_empty();
+            if search_empty
+                && !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+                && !event.keystroke.modifiers.platform
+            {
+                if let Some(n) = Self::digit_key(event.keystroke.key.as_str()) {
+                    if (1..=SPACE_JUMP_RECENTS).contains(&n) {
+                        // Active hold: 1-4 arm on key-down, commit on key-up.
+                        if self.space_hold == Some(SpaceShortcutHold::Active)
+                            && (1..=SPACE_HOLD_RECENTS).contains(&n)
+                        {
+                            self.space_hold_armed = Some(n);
+                            cx.stop_propagation();
+                            cx.notify();
+                            return;
+                        }
+                        // Pending hold: a number arms the hold selection.
+                        if self.space_hold == Some(SpaceShortcutHold::Pending)
+                            && (1..=SPACE_HOLD_RECENTS).contains(&n)
+                        {
+                            self.space_hold_armed = Some(n);
+                            cx.stop_propagation();
+                            cx.notify();
+                            return;
+                        }
+                        // Numbers always live outside an active hold gesture.
+                        if self.space_hold.is_none() {
+                            self.commit_space_recent(n, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
+                }
+            }
+            // In the hold-recents view, Enter commits the highlighted recent.
+            if self.space_hold_view && event.keystroke.key == "enter" {
+                let ix = if self.active == NO_ACTIVE_ROW { 0 } else { self.active };
+                let n = ix + 1;
+                if n <= self.space_recent_rows.len().min(SPACE_HOLD_RECENTS) {
+                    self.commit_space_recent(n, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+            }
         }
         if self.open_kind() == Some(PickerKind::HarnessModel) && self.compact_model_picker(cx) {
             // Escape only steps back a page or closes a submenu: it should
@@ -3506,7 +3802,13 @@ impl Pickers {
                                 self.setting_groups(cx).len()
                             }
                     }
-                    Some(PickerKind::Space) => self.filtered_project_rows(cx).len() + 1,
+                    Some(PickerKind::Space) => {
+                        if self.space_hold_view {
+                            self.space_recent_rows.len().min(SPACE_HOLD_RECENTS)
+                        } else {
+                            self.filtered_project_rows(cx).len() + 1
+                        }
+                    }
                     Some(PickerKind::Device) => self.filtered_device_rows(cx).len(),
                     Some(PickerKind::Access) => AccessMode::ALL.len(),
                     None => 0,

@@ -1466,6 +1466,7 @@ pub enum ShortcutId {
     ToggleTerminal,
     NewSession,
     NewProject,
+    OpenProjectPicker,
     OpenModelPicker,
     CycleAccessMode,
     IncreaseEffort,
@@ -1483,7 +1484,7 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 24 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 25 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
@@ -1495,6 +1496,7 @@ impl ShortcutId {
         ShortcutId::ToggleTerminal,
         ShortcutId::NewSession,
         ShortcutId::NewProject,
+        ShortcutId::OpenProjectPicker,
         ShortcutId::OpenModelPicker,
         ShortcutId::CycleAccessMode,
         ShortcutId::IncreaseEffort,
@@ -1537,6 +1539,7 @@ impl ShortcutId {
             ShortcutId::ToggleTerminal => "Toggle terminal",
             ShortcutId::NewSession => "New session",
             ShortcutId::NewProject => "New project",
+            ShortcutId::OpenProjectPicker => "Open project picker",
             ShortcutId::OpenModelPicker => "Open model picker",
             ShortcutId::CycleAccessMode => "Cycle access mode",
             ShortcutId::IncreaseEffort => "Increase effort",
@@ -1575,6 +1578,7 @@ impl ShortcutId {
             ShortcutId::ToggleTerminal => "mod-j",
             ShortcutId::NewSession => "mod-n",
             ShortcutId::NewProject => "mod-shift-n",
+            ShortcutId::OpenProjectPicker => "mod-p",
             ShortcutId::OpenModelPicker => "mod-/",
             // M for mode. Shift+Tab (Claude Code's own cycle key) moves
             // focus backwards in Godspeed's menus and forms.
@@ -1636,6 +1640,7 @@ pub struct KeymapConfig {
     pub toggle_terminal: String,
     pub new_session: String,
     pub new_project: String,
+    pub open_project_picker: String,
     pub open_model_picker: String,
     pub cycle_access_mode: String,
     pub increase_effort: String,
@@ -1711,6 +1716,7 @@ impl Default for KeymapConfig {
             toggle_terminal: ShortcutId::ToggleTerminal.default_combo().into(),
             new_session: ShortcutId::NewSession.default_combo().into(),
             new_project: ShortcutId::NewProject.default_combo().into(),
+            open_project_picker: ShortcutId::OpenProjectPicker.default_combo().into(),
             open_model_picker: ShortcutId::OpenModelPicker.default_combo().into(),
             cycle_access_mode: ShortcutId::CycleAccessMode.default_combo().into(),
             increase_effort: ShortcutId::IncreaseEffort.default_combo().into(),
@@ -1743,6 +1749,7 @@ impl KeymapConfig {
             ShortcutId::ToggleTerminal => &self.toggle_terminal,
             ShortcutId::NewSession => &self.new_session,
             ShortcutId::NewProject => &self.new_project,
+            ShortcutId::OpenProjectPicker => &self.open_project_picker,
             ShortcutId::OpenModelPicker => &self.open_model_picker,
             ShortcutId::CycleAccessMode => &self.cycle_access_mode,
             ShortcutId::IncreaseEffort => &self.increase_effort,
@@ -1777,6 +1784,7 @@ impl KeymapConfig {
             ShortcutId::ToggleTerminal => self.toggle_terminal = combo,
             ShortcutId::NewSession => self.new_session = combo,
             ShortcutId::NewProject => self.new_project = combo,
+            ShortcutId::OpenProjectPicker => self.open_project_picker = combo,
             ShortcutId::OpenModelPicker => self.open_model_picker = combo,
             ShortcutId::CycleAccessMode => self.cycle_access_mode = combo,
             ShortcutId::IncreaseEffort => self.increase_effort = combo,

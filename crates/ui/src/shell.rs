@@ -140,6 +140,7 @@ actions!(
         ToggleCommandPalette,
         FindInThread,
         OpenModelPicker,
+        OpenProjectPicker,
         CycleAccessMode,
         IncreaseEffort,
         DecreaseEffort,
@@ -559,6 +560,14 @@ pub fn apply_keymap(
         KeyBinding::new(
             &valid_or_default(&keymap.open_model_picker, "mod-/"),
             OpenModelPicker,
+            None,
+        ),
+        KeyBinding::new(
+            &valid_or_default(
+                keymap.get(ShortcutId::OpenProjectPicker),
+                ShortcutId::OpenProjectPicker.default_combo(),
+            ),
+            OpenProjectPicker,
             None,
         ),
         KeyBinding::new(
@@ -14449,6 +14458,10 @@ impl Render for Shell {
             .on_modifiers_changed(
                 cx.listener(|this, event, _, cx| this.on_modifiers_changed(event, cx)),
             )
+            .on_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, window, cx| {
+                let pickers = this.composer.read(cx).pickers().clone();
+                pickers.update(cx, |p, cx| p.on_space_key_up(event.keystroke.key.as_str(), window, cx));
+            }))
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
             }))
@@ -14462,6 +14475,19 @@ impl Render for Shell {
                 if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
                     let pickers = this.composer.read(cx).pickers().clone();
                     pickers.update(cx, |pickers, cx| pickers.open_model_menu(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenProjectPicker, window, cx| {
+                // Fresh/new-session canvas only — never steal the combo from an
+                // existing chat's view.
+                if matches!(this.route, Route::Chat)
+                    && this.state.read(cx).selected_chat.is_none()
+                    && !this.overlay_owns_keyboard(cx)
+                {
+                    let pickers = this.composer.read(cx).pickers().clone();
+                    pickers.update(cx, |pickers, cx| {
+                        pickers.open_project_picker_shortcut(window, cx);
+                    });
                 }
             }))
             .on_action(cx.listener(|this, _: &CycleAccessMode, _, cx| {
