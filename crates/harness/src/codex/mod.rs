@@ -637,6 +637,12 @@ impl Harness for CodexHarness {
     fn stops_turn_in_place(&self) -> bool {
         true
     }
+    /// A steer during an open command: `turn/interrupt` stops the turn's
+    /// foreground command; commands still running past it are kept as
+    /// background terminals, and the app-server stays up.
+    fn steer_stops_tool(&self) -> bool {
+        true
+    }
     /// What the app-server launch and its turns read: `serviceTier` is the
     /// only model option used, and the access mode rides every turn.
     fn same_runtime(&self, live: &RunRequest, next: &RunRequest) -> bool {
