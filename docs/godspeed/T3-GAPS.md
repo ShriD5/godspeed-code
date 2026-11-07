@@ -220,6 +220,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Delete one archived session from Settings → Archived (confirmed, next to Unarchive), not only Delete all | #99 |
 | Worktree chats still get a branch when the repo has a plain branch named like the prefix (`godspeed` flattens to `godspeed-<name>`), and a branch nested under a candidate name counts as taken | #85 |
 | Antigravity turns that go silent mid-prompt end with an error after 15 minutes instead of staying Working (open tools and approvals pause the clock) | #91 |
 | Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |

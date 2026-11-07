@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@337c5858c3 (2026-11-05)
+Reviewed T3 through: pingdotgg/t3code@67fdc53823 (2026-11-07)
 
 ## Rules
 
@@ -23,6 +23,16 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-07 | Delete a single archived thread from the archive page, next to Unarchive (`c864b1c1e1`) | PR #99 |
+| 2026-11-07 | ACP subagent tool output streamed before the tool call is known is kept (`fd1adc888a`) | queued (check `harness/src/acp/normalize.rs` for updates that arrive before their tool call) |
+| 2026-11-07 | Theme files saved with a UTF-8 BOM load instead of being rejected (`ce9b80671b`) | queued (check theme JSON loading in `theme_library.rs`) |
+| 2026-11-07 | Git failures read in English when macOS git follows the system language (`f901c37e7f`) | skipped (`engine/src/git_actions.rs` already runs git with `LC_ALL=C` where stderr is classified) |
+| 2026-11-07 | PRs stay "review required" until required reviewers approve (`95e7dbfdaf`) | skipped (`source_control.rs` uses GitHub's `reviewDecision` directly) |
+| 2026-11-07 | Usage-limit auto-resume survives a server restart (`240446e2d9`) | skipped (limit-recovery timers already persist across engine restarts) |
+| 2026-11-06 | Auto-settle inactive threads after 7 days by default (`d4247a5a19`) | skipped (Godspeed's auto-settle stays opt-in; 1 week is one of its spans) |
+| 2026-11-07 | Active thread rows show the latest reply's age (`08a3909406`) | skipped (sidebar ages already use `last_message_at`) |
+| 2026-11-06 | Cloud dictation, transcription model picker and first-run voice setup (`fe901ac7ba`, `c09060b62b`, `4bd82b2177`, `15b7275595`) | skipped (no dictation in Godspeed; tracked as a larger gap, not a one-run port) |
+| 2026-11-07 | ~45 minor: Azure DevOps PR lookups, server tracing/perf, Pi thinking controls, Grok titles, mobile, Electron/desktop, marketing, release CI, Teams in preview, sidebar collapse persistence, citation comment box | skipped (internal/minor or hosts Godspeed lacks) |
 | 2026-11-01 | Worktree chats get a branch when a plain branch named like the prefix exists (`t3` blocks `t3/...`), and names with a nested branch under them count as taken (`1917c8a33a`) | PR #85 |
 | 2026-11-01 | Child-thread approvals show in the parent with Approve/Decline, so you answer without switching threads; Claude dangerous-rm checks in bypass mode deny with the warning (`70f475f511`) | queued (lanes card shows a child's Needs approval status and opens it in the right pane; no inline card in the parent) |
 | 2026-11-01 | Stopping a Claude turn no longer hangs when interrupt is never acknowledged (`7195b69954`) | queued (with the force-stop item: time-box Claude interrupt in `harness/src/claude`) |
