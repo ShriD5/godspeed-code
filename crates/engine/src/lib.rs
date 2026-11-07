@@ -35,6 +35,7 @@ pub mod doc_host;
 mod fs_watch;
 pub mod git_actions;
 mod git_program;
+mod git_tree;
 pub mod harness_updates;
 pub(crate) mod home_index;
 mod device_settings;
