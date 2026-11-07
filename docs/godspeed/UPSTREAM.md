@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@1b86c41c (2026-11-06)
+Synced through: zeronsh/zeron@3a6c7aa3 (2026-11-07)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -90,6 +90,20 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     `legibility`), 89701c65 and 36e7cf18 (`plugin-guard`), 4c08b1d1 (zgx beta script).
   - From 987bb2f8, only Muse's `-R<n>` build ordering in `version_numbers` came over (with
     302cdc98 and ce1de75e).
+- Deferred 2026-11-07:
+  - Provider updates through the install's owner: a58ce898, df57bd5b, 89a18dcf, 36e15cc6,
+    54951f58 and f6d5d063 (with `scripts/provider-update-rig`). They build on
+    `harness_updates/ownership.rs` and `process/cmd_shim.rs` from the deferred 987bb2f8 and
+    2e151ca6.
+  - Waiting on background work and sleep (`wait_on_background`, a chat's wait on synced rows):
+    63c24a35, 8b31be76, ae4c54b8, 8c3f1043, 010da062, 4cc19a07, cbb8ab41, 566d2714 and
+    c0695e35. They build on `harness/src/background.rs` (6aa4d5af, the deferred background
+    tray) and `engine/src/rpc/agent_gate.rs` (8c8535b7, deferred with zgx).
+  - zgx-only: every `apps/zgx` commit through 3a6c7aa3 (composer deck, Activity sidebar,
+    Running tray, date picker, v2 recordings).
+  - Partly ported: 3d9d08bf brought only its engine half (a steer carries a queued row's
+    files); 76ca2e17's mock dropped the background-tray mode, and Godspeed has no
+    `note_user_stop`.
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
