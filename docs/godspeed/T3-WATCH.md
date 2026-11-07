@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-07 | Delete a single archived thread from the archive page, next to Unarchive (`c864b1c1e1`) | PR #TBD |
+| 2026-11-07 | Delete a single archived thread from the archive page, next to Unarchive (`c864b1c1e1`) | PR #99 |
 | 2026-11-07 | ACP subagent tool output streamed before the tool call is known is kept (`fd1adc888a`) | queued (check `harness/src/acp/normalize.rs` for updates that arrive before their tool call) |
 | 2026-11-07 | Theme files saved with a UTF-8 BOM load instead of being rejected (`ce9b80671b`) | queued (check theme JSON loading in `theme_library.rs`) |
 | 2026-11-07 | Git failures read in English when macOS git follows the system language (`f901c37e7f`) | skipped (`engine/src/git_actions.rs` already runs git with `LC_ALL=C` where stderr is classified) |
