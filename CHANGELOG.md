@@ -4,6 +4,18 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+### Added
+
+- **Idle Claude chats compact before the cache expires.** When a long Claude chat (over 100K tokens
+  on a 200K window, 200K on a 1M window) sits idle on a subscription login, Godspeed runs
+  `/compact` about two minutes before Claude's one-hour prompt cache runs out. Coming back then
+  costs a small turn instead of re-reading the whole history at full price. The transcript shows
+  one quiet line, "Compacted while idle to keep the next turn cheap", with the size before and
+  after; click it to read Claude's summary. A message sent during the compaction waits in the queue
+  and goes out right after it. Chats that are archived, settled, snoozed, waiting on you or busy
+  are left alone, and so are API-key logins, whose five-minute cache would make it fire on every
+  pause. Turn it off in Settings → General → Compact idle Claude chats.
+
 ## 0.5.11 (2026-11-06)
 
 ### Added

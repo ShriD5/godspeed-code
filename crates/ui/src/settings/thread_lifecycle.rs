@@ -2,6 +2,10 @@
 //! activity for a while move to the sidebar's Settled shelf on their own.
 //! Off by default. The setting lives on the engine
 //! (`GetChatLifecycleSettings`), whose timer settles the chats it hosts.
+//!
+//! The same card holds "Compact idle Claude chats" (on by default): the
+//! engine compacts a large idle Claude chat shortly before its prompt cache
+//! expires, so coming back costs a small turn instead of a full re-read.
 
 use gpui::{Context, Entity, SharedString, Subscription, Task, div, prelude::*, px};
 use zeron_proto::ChatLifecycleSettings;
@@ -87,9 +91,22 @@ impl ThreadLifecycleCard {
     }
 
     fn save_days(&mut self, days: Option<u32>, cx: &mut Context<Self>) {
+        let current = self.settings.ready().copied().unwrap_or_default();
         self.call(
             Some(ChatLifecycleSettings {
                 auto_settle_after_days: days,
+                ..current
+            }),
+            cx,
+        );
+    }
+
+    fn save_compaction(&mut self, on: bool, cx: &mut Context<Self>) {
+        let current = self.settings.ready().copied().unwrap_or_default();
+        self.call(
+            Some(ChatLifecycleSettings {
+                compact_idle_chats: on,
+                ..current
             }),
             cx,
         );
@@ -162,6 +179,44 @@ impl Render for ThreadLifecycleCard {
                     .child(div().flex().flex_row().gap(px(6.0)).children(chips)),
             );
         }
+        let compacts = ready.is_none_or(|settings| settings.compact_idle_chats);
+        let compaction_toggle = widgets::toggle_switch(&theme, compacts, "compact-idle-chats")
+            .id("compact-idle-chats-toggle")
+            .flex_none()
+            .role(gpui::Role::Switch)
+            .aria_label("Compact idle Claude chats")
+            .aria_toggled(if compacts {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+            .when(ready.is_some(), |el| {
+                el.cursor_pointer()
+                    .tab_index(0)
+                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                    .on_click(
+                        cx.listener(move |card, _, _, cx| card.save_compaction(!compacts, cx)),
+                    )
+            })
+            .when(ready.is_none(), |el| el.opacity(0.5));
+        card = card.child(
+            widgets::card_row(&theme, false)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(160.0))
+                        .child(widgets::row_title(&theme, "Compact idle Claude chats"))
+                        .child(widgets::meta_line(
+                            &theme,
+                            vec![div()
+                                .child(
+                                    "When a long Claude chat sits idle, compact it shortly before Claude's prompt cache expires, so coming back costs a small turn instead of re-reading the whole history. Only for subscription logins, whose cache lasts an hour.",
+                                )
+                                .into_any_element()],
+                        )),
+                )
+                .child(compaction_toggle),
+        );
         card
     }
 }

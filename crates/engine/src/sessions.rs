@@ -336,6 +336,9 @@ struct RunHandle {
     /// the message under its own configuration; the next send after the
     /// work ends replaces it (see [`keeps_runtime`]).
     deferred_config: Option<RunRequest>,
+    /// The run is compacting its idle context ([`crate::idle_compaction`]):
+    /// sends wait in the queue until it is done. Set under the ledger lock.
+    idle_compacting: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// One accepted-but-unconfirmed steer: enough to re-dispatch it verbatim.
@@ -354,6 +357,9 @@ struct RoutedSteer {
     /// re-dispatches exactly this, not whatever the chat's latest request
     /// became. `None` when the chat had no recorded request.
     request: Option<Box<RunRequest>>,
+    /// The engine's own idle `/compact`, not a user message: never
+    /// re-dispatched when its run dies.
+    idle_compaction: bool,
 }
 
 struct Inner {
@@ -412,7 +418,13 @@ struct Inner {
     /// Told the chat whose pending approval or question was just answered —
     /// the anonymous telemetry counts them. Absent in bare tests.
     input_listener: OnceLock<InputListener>,
+    /// The device's idle-compaction setting, read on each decision. Absent in
+    /// bare tests, where it reads on.
+    idle_compaction_setting: OnceLock<IdleCompactionSetting>,
 }
+
+/// Reads whether idle compaction is on for this device.
+pub type IdleCompactionSetting = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
 pub type TurnListener = Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -476,6 +488,7 @@ impl SessionsEngine {
                 turn_files: OnceLock::new(),
                 turn_stats_listener: OnceLock::new(),
                 input_listener: OnceLock::new(),
+                idle_compaction_setting: OnceLock::new(),
             }),
         }
     }
@@ -567,6 +580,11 @@ impl SessionsEngine {
         let _ = self.inner.turn_stats_listener.set(listener);
     }
 
+    /// Wire the device's idle-compaction setting (engine assembly).
+    pub fn set_idle_compaction_setting(&self, setting: IdleCompactionSetting) {
+        let _ = self.inner.idle_compaction_setting.set(setting);
+    }
+
     /// Wire the answered-input listener (called once at engine assembly).
     pub fn set_input_listener(&self, listener: InputListener) {
         let _ = self.inner.input_listener.set(listener);
@@ -647,6 +665,14 @@ impl SessionsEngine {
         chat_id: &str,
         request: Option<(HarnessId, &RunRequest)>,
     ) -> bool {
+        // An idle compaction holds every send until it is done, however the
+        // agent steers: the next turn should start from the summary.
+        if lock(&self.inner.runs)
+            .get(chat_id)
+            .is_some_and(|h| h.idle_compacting.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return true;
+        }
         if !self.turn_in_flight(chat_id) {
             return false;
         }
@@ -940,6 +966,7 @@ impl SessionsEngine {
                                 fork_history: bootstrap.is_some(),
                                 after_stop: retiring.load(std::sync::atomic::Ordering::Acquire),
                                 request: Some(Box::new(request.clone())),
+                                idle_compaction: false,
                             });
                             permit.send(message);
                         })
@@ -1164,6 +1191,7 @@ impl SessionsEngine {
                 fork_history_sent: fork_history_sent.clone(),
                 retiring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 deferred_config: None,
+                idle_compacting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             },
         );
         self.set_status(
@@ -1322,6 +1350,7 @@ impl SessionsEngine {
                 fork_history: bootstrap.is_some(),
                 after_stop: retiring.load(std::sync::atomic::Ordering::Acquire),
                 request: sent_with,
+                idle_compaction: false,
             });
             permit.send(message);
         });
@@ -2163,6 +2192,172 @@ impl Inner {
 // ── run task ────────────────────────────────────────────────────────────────
 
 /// Which provider session a side chat's prompt goes to.
+// ── idle compaction (see `crate::idle_compaction`) ─────────────────────────
+impl Inner {
+    /// Idle compaction applies to this run at all: a Claude chat, with the
+    /// device setting (or its env override) on.
+    fn idle_compaction_on(
+        &self,
+        harness: HarnessId,
+        chat_id: &str,
+        knobs: &crate::idle_compaction::Knobs,
+    ) -> bool {
+        if harness != HarnessId::ClaudeCode || zeron_proto::voice::is_orchestrator_chat(chat_id) {
+            return false;
+        }
+        knobs.forced.unwrap_or_else(|| {
+            self.idle_compaction_setting
+                .get()
+                .is_none_or(|setting| setting())
+        })
+    }
+
+    /// What keeps a parked chat from compacting right now, if anything: it
+    /// must be idle in every sense, and a chat the user put away stays as is.
+    fn idle_compaction_blocker(
+        &self,
+        chat_id: &str,
+        run_id: &str,
+        harness: HarnessId,
+    ) -> Option<&'static str> {
+        if self.registry.update_pending(harness) {
+            return Some("an agent update is pending");
+        }
+        {
+            let runs = lock(&self.runs);
+            let Some(handle) = runs.get(chat_id).filter(|h| h.run_id == run_id) else {
+                return Some("the run ended");
+            };
+            if handle.retiring.load(std::sync::atomic::Ordering::Acquire) {
+                return Some("the run is stopping");
+            }
+            if !lock(&handle.routed_steers).is_empty() {
+                return Some("a message is on its way");
+            }
+            if !lock(&handle.pending_inputs).is_empty() {
+                return Some("a question is waiting");
+            }
+            if handle.turn.background_live() {
+                return Some("background work is running");
+            }
+            if handle.voice_active.live() {
+                return Some("a call is live");
+            }
+        }
+        if lock(&self.statuses).get(chat_id).is_some_and(is_active) {
+            return Some("a turn is in flight");
+        }
+        if let Some(handle) = self.doc_host().and_then(|host| host.open(chat_id).ok()) {
+            if handle
+                .doc()
+                .read_queue()
+                .is_ok_and(|queue| !queue.is_empty())
+            {
+                return Some("a message is queued");
+            }
+            if handle.continues_with_sent_message() {
+                return Some("a sent message is on its way");
+            }
+        }
+        let chat = self
+            .workspace()
+            .and_then(|ws| ws.chat(chat_id).ok().flatten());
+        if let Some(chat) = chat {
+            if chat.archived {
+                return Some("the chat is archived");
+            }
+            match chat.lifecycle.at(Utc::now()) {
+                zeron_proto::LifecycleState::Active => {}
+                zeron_proto::LifecycleState::Settled => return Some("the chat is settled"),
+                zeron_proto::LifecycleState::Snoozed { .. } => {
+                    return Some("the chat is snoozed");
+                }
+            }
+            if chat.limit.is_some() {
+                return Some("the chat is usage-limited");
+            }
+            if let Some(parent) = chat.parent_chat_id.as_deref()
+                && self.chat_running(parent)
+            {
+                return Some("its parent chat is running");
+            }
+        }
+        None
+    }
+
+    /// A chat has a turn in flight here, or on the device hosting it (a
+    /// recent session row).
+    fn chat_running(&self, chat_id: &str) -> bool {
+        if lock(&self.statuses).get(chat_id).is_some_and(is_active) {
+            return true;
+        }
+        let fresh = Utc::now() - chrono::Duration::minutes(2);
+        self.workspace()
+            .and_then(|ws| ws.read_sessions().ok())
+            .is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row.chat_id == chat_id && row.updated_at > fresh && is_active(row))
+            })
+    }
+
+    /// Put `/compact` in the run's mailbox as the engine's own message. Under
+    /// the ledger lock, like any send: it starts only with nothing else on
+    /// its way, and everything sent after it waits behind it.
+    fn start_idle_compaction(&self, chat_id: &str, run_id: &str, harness: HarnessId) -> bool {
+        let target = lock(&self.runs)
+            .get(chat_id)
+            .filter(|h| h.run_id == run_id && h.steerable)
+            .map(|h| {
+                (
+                    h.steer_tx.clone(),
+                    h.routed_steers.clone(),
+                    h.idle_compacting.clone(),
+                    h.retiring.clone(),
+                )
+            });
+        let Some((steer_tx, ledger, compacting, retiring)) = target else {
+            return false;
+        };
+        let Ok(permit) = steer_tx.try_reserve() else {
+            return false;
+        };
+        let message_id = format!("idle-compact:{run_id}:{}", new_id());
+        self.registry
+            .while_update_clear(harness, || {
+                let mut pending = lock(&ledger);
+                if !pending.is_empty() || retiring.load(std::sync::atomic::Ordering::Acquire) {
+                    return false;
+                }
+                compacting.store(true, std::sync::atomic::Ordering::Release);
+                pending.push_back(RoutedSteer {
+                    prompt: crate::idle_compaction::COMMAND.into(),
+                    message_id: message_id.clone(),
+                    fork_history: false,
+                    after_stop: false,
+                    request: None,
+                    idle_compaction: true,
+                });
+                permit.send(SteerMessage {
+                    prompt: crate::idle_compaction::COMMAND.into(),
+                    message_id: Some(message_id.clone()),
+                    attachments: Vec::new(),
+                    config: None,
+                });
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    /// The idle compaction is over: sends flow again.
+    fn end_idle_compaction(&self, chat_id: &str, run_id: &str) {
+        if let Some(handle) = lock(&self.runs).get(chat_id).filter(|h| h.run_id == run_id) {
+            handle
+                .idle_compacting
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ProviderSession<'a> {
     /// A new provider session: it holds none of the transcript.
@@ -3240,9 +3435,23 @@ async fn drive_run(
     // The driver's background-task count, mirrored onto the session row so
     // clients hold "done" while work is still live.
     let mut background = BackgroundReport::default();
+    // Idle compaction (`crate::idle_compaction`): the cache clock and context
+    // size of this runtime, and whether a compaction is under way.
+    let mut idle_compact =
+        crate::idle_compaction::Tracker::new(crate::idle_compaction::Knobs::from_env());
+    if !resume_state.idle {
+        idle_compact.turn_started(Utc::now());
+    }
+    // When the user's own idleness began, kept across an idle compaction's
+    // park: the compaction is not activity, so the reaper keeps that schedule.
+    let mut compact_origin: Option<tokio::time::Instant> = None;
+    let mut reap_origin: Option<tokio::time::Instant> = None;
 
     let mut final_completed_turn = None;
     let final_status = loop {
+        if idle_since.is_none() {
+            reap_origin = None;
+        }
         inner.set_background_tasks(
             &chat_id,
             background.next(
@@ -3254,6 +3463,18 @@ async fn drive_run(
         let event: AgentEvent = if let Some(event) = prepared_events.pop_front() {
             event
         } else {
+            // A parked chat's idle compaction, when one is due: how long to
+            // wait (re-read off the wall clock at least every MAX_SLEEP), and
+            // the instant the idle reaper must not beat.
+            let compact_due = (idle_since.is_some()
+                && !idle_compact.compacting()
+                && inner.idle_compaction_on(harness_id, &chat_id, idle_compact.knobs()))
+            .then(|| idle_compact.due_at())
+            .flatten()
+            .map(|due| (due - Utc::now()).to_std().unwrap_or_default());
+            let compact_wait = compact_due.map(|wait| wait.min(crate::idle_compaction::MAX_SLEEP));
+            let compact_deadline = compact_due.map(|wait| tokio::time::Instant::now() + wait);
+            let compaction_holds_reaper = idle_compact.holds_reaper();
             let raw_event = tokio::select! {
                 biased;
                 changed = cancel_rx.changed(), if !interrupted => {
@@ -3297,6 +3518,7 @@ async fn drive_run(
                 _ = tokio::time::sleep_until(tokio::time::Instant::now()),
                     if idle_since.is_some()
                         && !resume_state.voice_active.live()
+                        && !compaction_holds_reaper
                         && inner.registry.update_pending(harness_id)
                         && !turn.background_live()
                         && (subagents.is_empty()
@@ -3311,6 +3533,42 @@ async fn drive_run(
                     }
                     break SessionStatus::Idle;
                 }
+                // Idle compaction: the cache is about to expire on a large
+                // parked context. Re-checked on the wall clock, then against
+                // everything that keeps a chat from being idle.
+                _ = tokio::time::sleep(compact_wait.unwrap_or_default()),
+                    if compact_wait.is_some() && !resume_state.voice_active.live() =>
+                {
+                    let now = Utc::now();
+                    if idle_compact.due_at().is_none_or(|due| now < due) {
+                        continue;
+                    }
+                    if !idle_compact.still_warm(now) {
+                        tracing::info!(chat = %chat_id, "idle compaction skipped: the prompt cache expires too soon");
+                        idle_compact.skip();
+                        continue;
+                    }
+                    if let Some(reason) = inner.idle_compaction_blocker(&chat_id, &run_id, harness_id) {
+                        tracing::info!(chat = %chat_id, reason, "idle compaction waits");
+                        idle_compact.retry_later(now);
+                        continue;
+                    }
+                    if !inner.start_idle_compaction(&chat_id, &run_id, harness_id) {
+                        idle_compact.retry_later(now);
+                        continue;
+                    }
+                    tracing::info!(
+                        chat = %chat_id,
+                        expires_at = ?idle_compact.expires_at(),
+                        "idle compaction started before the prompt cache expires"
+                    );
+                    idle_compact.requested();
+                    compact_origin = idle_since;
+                    // Working now, not at the confirmation: the queue holds
+                    // from this moment.
+                    inner.set_status(&chat_id, SessionStatus::Working, true);
+                    continue;
+                }
                 // Idle reaper (godspeed SESSION_IDLE_MS): a parked persistent session
                 // nobody returned to within its window releases its child. The turn
                 // was finalized at Done, so this end is clean — no aborted stamp.
@@ -3320,14 +3578,20 @@ async fn drive_run(
                 _ = tokio::time::sleep_until(
                     {
                         let window = if subagents.is_empty() { session_idle } else { subagent_silence };
+                        // After an idle compaction, the user's idleness sets
+                        // the schedule; a compaction still to come waits.
                         let base = idle_since
-                            .map(|at| at.max(last_subagent_activity.unwrap_or(at)) + window);
+                            .map(|at| reap_origin.unwrap_or(at))
+                            .map(|at| at.max(last_subagent_activity.unwrap_or(at)) + window)
+                            .map(|base| compact_deadline.map_or(base, |due| base.max(due)));
                         match (base, reap_deferred_until) {
                             (Some(base), Some(deferred)) => base.max(deferred),
                             (base, deferred) => base.or(deferred).unwrap_or_else(tokio::time::Instant::now),
                         }
                     }
-                ), if idle_since.is_some() && !resume_state.voice_active.live() => {
+                ), if idle_since.is_some()
+                    && !resume_state.voice_active.live()
+                    && !compaction_holds_reaper => {
                     // A call that began after this wait was armed holds it off.
                     if resume_state.voice_active.live() {
                         continue;
@@ -3525,8 +3789,22 @@ async fn drive_run(
                 turn_limit = Some((*reset_at, window.clone()));
                 continue;
             }
+            // Idle-compaction state, never stream traffic either.
+            AgentEvent::PromptCache { ttl_secs } => {
+                idle_compact.note_ttl(*ttl_secs);
+                continue;
+            }
+            AgentEvent::CompactionSummary { text } => {
+                idle_compact.note_summary(text);
+                continue;
+            }
             AgentEvent::Subagent { event: nested, .. }
-                if matches!(nested.as_ref(), AgentEvent::UsageLimit { .. }) =>
+                if matches!(
+                    nested.as_ref(),
+                    AgentEvent::UsageLimit { .. }
+                        | AgentEvent::PromptCache { .. }
+                        | AgentEvent::CompactionSummary { .. }
+                ) =>
             {
                 continue;
             }
@@ -3750,6 +4028,7 @@ async fn drive_run(
         }
         // Capacity/occupancy can settle after Done; updating it must not reopen a turn.
         if let AgentEvent::ContextUsage { tokens, window } = &event {
+            idle_compact.note_context(*tokens, *window);
             if let Err(err) = doc_ref.update_context_usage(*tokens, *window) {
                 tracing::warn!(%chat_id, error = %err, "context usage write failed");
             }
@@ -3799,6 +4078,7 @@ async fn drive_run(
                 );
                 idle_since = None;
                 self_continued_turn = true;
+                idle_compact.turn_started(Utc::now());
                 // The park cleared the fold; rotate to a fresh entry and
                 // fall through — this event is the new segment's first part.
                 entry_id = new_id();
@@ -3943,6 +4223,14 @@ async fn drive_run(
             // A steer boundary means a real prompt owns the turn again — its
             // Done will come; the short self-continued window stands down.
             self_continued_turn = false;
+            // A message that reached the agent mid-compaction starts its turn
+            // here: the compaction's turn ended at this boundary, with no
+            // Done of its own. Its segment is the compaction's row.
+            let compaction_ended = idle_compact.is_running();
+            if compaction_ended {
+                folded = vec![idle_compact.finish(&folded, None)];
+                inner.end_idle_compaction(&chat_id, &run_id);
+            }
             if let Err(err) = finish_segment(
                 doc_ref,
                 writer.take(),
@@ -3954,7 +4242,9 @@ async fn drive_run(
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "segment finish failed");
             }
-            inner.note_message(&chat_id, &folded_text(&folded));
+            if !compaction_ended {
+                inner.note_message(&chat_id, &folded_text(&folded));
+            }
             folded.clear();
             dirty = false;
             entry_id = next_assistant_message_id.clone().unwrap_or_else(new_id);
@@ -3969,6 +4259,15 @@ async fn drive_run(
                 .get(&chat_id)
                 .filter(|h| h.run_id == run_id)
                 .and_then(|h| lock(&h.routed_steers).pop_front());
+            // The engine's own `/compact` began; anything else is a real turn.
+            if confirmed
+                .as_ref()
+                .is_some_and(|steer| steer.idle_compaction)
+            {
+                idle_compact.running();
+            } else {
+                idle_compact.turn_started(Utc::now());
+            }
             // Consumed: a steer carrying the fork history delivered it to
             // this runtime's provider session.
             if confirmed.is_some_and(|steer| steer.fork_history)
@@ -4016,6 +4315,8 @@ async fn drive_run(
                 inner.set_status(&chat_id, SessionStatus::Working, false);
                 turn_wait.close();
             }
+            // The agent sends its next request with this result.
+            AgentEvent::ToolResult { .. } => idle_compact.tool_result(Utc::now()),
             AgentEvent::Usage { .. } if usage_covers_turn(harness_id) => {
                 turn_usage = zeron_doc::TurnUsage::from_event(&event);
             }
@@ -4057,6 +4358,26 @@ async fn drive_run(
                 DoneStatus::Interrupted => MessageStatus::Aborted,
                 DoneStatus::Completed | DoneStatus::Errored => MessageStatus::Complete,
             };
+            // The end of an idle compaction's turn: its whole entry is the
+            // compaction's quiet row, and nothing about it is news to the
+            // user (no preview, no title, no completion ping). The queue it
+            // held flows again before the status settles.
+            let compaction_turn = idle_compact.compacting();
+            if compaction_turn {
+                let error = match (status, &event) {
+                    (DoneStatus::Completed, _) => None,
+                    (DoneStatus::Interrupted, _) => Some("stopped".to_owned()),
+                    (DoneStatus::Errored, AgentEvent::Done { error, .. }) => error
+                        .clone()
+                        .or_else(|| turn_error.clone())
+                        .or_else(|| Some(String::new())),
+                    (DoneStatus::Errored, _) => Some(String::new()),
+                };
+                folded = vec![idle_compact.finish(&folded, error)];
+                inner.end_idle_compaction(&chat_id, &run_id);
+                turn_limit = None;
+                turn_error = None;
+            }
             // No dangling chips: a run that ends for ANY reason (completed,
             // errored, interrupted) terminally resolves its input parts — an
             // unresolved question must not outlive the run that asked it
@@ -4082,21 +4403,25 @@ async fn drive_run(
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
                 }
-                inner.note_message(&chat_id, &folded_text(&folded));
-                stamp_turn_stats(
-                    &inner,
-                    doc_ref,
-                    &chat_id,
-                    &entry_id,
-                    TurnFacts {
-                        harness: harness_id,
-                        session_model: session_model.as_deref(),
-                        request_model: request_model.as_deref(),
-                        request_effort,
-                        usage: turn_usage.take(),
-                        wait_ms: turn_wait.finish(),
-                    },
-                );
+                if !compaction_turn {
+                    inner.note_message(&chat_id, &folded_text(&folded));
+                    // Claude reports no usage for a compaction (its result
+                    // says zero), so it gets no receipt either.
+                    stamp_turn_stats(
+                        &inner,
+                        doc_ref,
+                        &chat_id,
+                        &entry_id,
+                        TurnFacts {
+                            harness: harness_id,
+                            session_model: session_model.as_deref(),
+                            request_model: request_model.as_deref(),
+                            request_effort,
+                            usage: turn_usage.take(),
+                            wait_ms: turn_wait.finish(),
+                        },
+                    );
+                }
             }
             turn_usage = None;
             turn_wait = TurnWait::default();
@@ -4108,6 +4433,7 @@ async fn drive_run(
             // Exchange completed on an untitled chat → name it (fire-and-forget;
             // interrupted/errored turns never trigger naming).
             if *status == DoneStatus::Completed
+                && !compaction_turn
                 && let Some(titles) = inner.titles.get()
             {
                 titles.maybe_generate(
@@ -4142,13 +4468,16 @@ async fn drive_run(
             let completed_turn = (*status == DoneStatus::Completed
                 && !interrupted
                 && turn_was_active
+                && !compaction_turn
                 && !pending_steer
                 && !inner.continues_with_sent_message(&chat_id))
             .then(|| entry_id.clone());
             // PERSISTENT SESSION: a cleanly completed turn on a steerable
             // harness PARKS instead of ending — child + mailbox stay warm for
             // the next routed dispatch; per-turn state resets for it.
-            if (*status == DoneStatus::Completed || stopped_in_place)
+            // A failed idle compaction parks too: the runtime is fine, and
+            // the chat must not turn Errored over housekeeping.
+            if (*status == DoneStatus::Completed || stopped_in_place || compaction_turn)
                 && steerable
                 && !interrupted
                 && !inner.registry.update_pending(harness_id)
@@ -4162,6 +4491,15 @@ async fn drive_run(
                 idle_since = Some(tokio::time::Instant::now());
                 reap_deferred_until = None;
                 self_continued_turn = false;
+                if compaction_turn {
+                    reap_origin = compact_origin.take();
+                    // A moment for a message the compaction held to go out
+                    // before a reap that is already due.
+                    reap_deferred_until = Some(
+                        tokio::time::Instant::now()
+                            + session_idle.min(std::time::Duration::from_secs(15)),
+                    );
+                }
                 // Accepted steers still own this runtime. Publishing Idle
                 // here lets the ordinary queue overtake that continuation.
                 inner.set_status_with_completion(
@@ -4265,6 +4603,8 @@ async fn drive_run(
     } else {
         orphans
     };
+    // An idle compaction that never ran is not owed to anyone.
+    let orphans: Vec<RoutedSteer> = orphans.into_iter().filter(|s| !s.idle_compaction).collect();
     if !orphans.is_empty() {
         // The dying run accepted these into its mailbox but never confirmed a
         // Steered boundary (idle-reaper race, a mid-turn error discarding

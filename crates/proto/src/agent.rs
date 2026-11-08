@@ -921,6 +921,20 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window: Option<String>,
     },
+    /// How long the provider keeps the prompt cache the last request wrote:
+    /// Claude reports 1 hour on subscription logins and 5 minutes on API
+    /// keys. Engine state for idle compaction, never stream traffic: the
+    /// engine consumes it before publishing, as it does [`Self::UsageLimit`].
+    #[serde(rename_all = "camelCase")]
+    PromptCache {
+        ttl_secs: u64,
+    },
+    /// The summary a context compaction left the agent with. Engine state,
+    /// like [`Self::PromptCache`]: an idle compaction's transcript row shows
+    /// it; every other compaction drops it.
+    CompactionSummary {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
     InputRequested {
         request_id: String,

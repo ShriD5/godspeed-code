@@ -525,6 +525,62 @@ case "$first" in
   cat >/dev/null
   ;;
 
+*scenario:idle-compact*)
+  # A long chat left idle (crates/engine/tests/idle_compaction.rs): one turn
+  # whose request wrote a 1-hour cache over a large context ("small" in the
+  # prompt keeps it small; "ask" first parks the turn on a question), then a
+  # live process that answers `/compact` the way CLI 2.1.318 streams it and
+  # any later message. While a `hold` file exists in the cwd the compaction
+  # does not finish (20 s at most); `compacting` marks that it started, and
+  # `received` lists every later message the CLI was given.
+  fid=$(uuid_of "$first")
+  case "$first" in *small*) ctx=20000 ;; *) ctx=150000 ;; esac
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"started\"}"
+  emit '{"type":"system","subtype":"init","model":"claude-sonnet-5-5","tools":["Bash"],"cwd":"/tmp","session_id":"sess-idle"}'
+  case "$first" in *ask*)
+    emit '{"type":"control_request","request_id":"cr-ask","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"header":"Choice","question":"Pick one","options":["A","B"],"multiSelect":false}]}}}'
+    read -r answer || exit 1
+    ;;
+  esac
+  emit '{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"long answer"}}}'
+  emit "{\"type\":\"assistant\",\"parent_tool_use_id\":null,\"message\":{\"model\":\"claude-sonnet-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"long answer\"}],\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":$ctx,\"cache_read_input_tokens\":0,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":$ctx},\"output_tokens\":50}}}"
+  emit '{"type":"result","subtype":"success","is_error":false,"result":"long answer","errors":[],"usage":{"input_tokens":10,"output_tokens":50},"session_id":"sess-idle"}'
+  emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$fid\",\"state\":\"completed\"}"
+  while read -r line; do
+    case "$line" in
+    *'"content":"/compact"'*)
+      cid=$(uuid_of "$line")
+      : > compacting
+      emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$cid\",\"state\":\"queued\"}"
+      emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$cid\",\"state\":\"started\"}"
+      emit '{"type":"system","subtype":"status","status":"compacting"}'
+      i=0
+      while [ -e hold ] && [ "$i" -lt 400 ]; do
+        sleep 0.05
+        i=$((i + 1))
+      done
+      emit '{"type":"system","subtype":"status","status":null,"compact_result":"success"}'
+      emit '{"type":"system","subtype":"init","model":"claude-sonnet-5-5","tools":["Bash"],"cwd":"/tmp","session_id":"sess-idle"}'
+      emit "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"trigger\":\"manual\",\"pre_tokens\":$ctx,\"post_tokens\":4200,\"duration_ms\":900}}"
+      emit '{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation. Summary: the parser bug is fixed."}}'
+      emit "{\"type\":\"user\",\"parent_tool_use_id\":null,\"uuid\":\"$cid\",\"isReplay\":true,\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Compacted </local-command-stdout>\"}}"
+      emit '{"type":"result","subtype":"success","is_error":false,"num_turns":0,"result":"","errors":[],"usage":{"input_tokens":0,"output_tokens":0},"session_id":"sess-idle"}'
+      emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$cid\",\"state\":\"completed\"}"
+      ;;
+    *'"type":"user"'*)
+      sid=$(uuid_of "$line")
+      content=$(printf '%s\n' "$line" | sed 's/.*"content":"\([^"]*\)".*/\1/')
+      printf '%s\n' "$content" >> received
+      emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"started\"}"
+      emit "{\"type\":\"stream_event\",\"parent_tool_use_id\":null,\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"reply:$content\"}}}"
+      emit "{\"type\":\"assistant\",\"parent_tool_use_id\":null,\"message\":{\"model\":\"claude-sonnet-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"reply:$content\"}],\"usage\":{\"input_tokens\":5,\"cache_creation_input_tokens\":300,\"cache_read_input_tokens\":4200,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":300},\"output_tokens\":20}}}"
+      emit "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"reply:$content\",\"errors\":[],\"usage\":{\"input_tokens\":5,\"output_tokens\":20},\"session_id\":\"sess-idle\"}"
+      emit "{\"type\":\"command_lifecycle\",\"command_uuid\":\"$sid\",\"state\":\"completed\"}"
+      ;;
+    esac
+  done
+  ;;
+
 *scenario:interrupt*)
   emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-int"}'
   # Wedge without reading stdin — forces the SIGTERM escalation path.
