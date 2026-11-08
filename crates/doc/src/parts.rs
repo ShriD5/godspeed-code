@@ -226,6 +226,38 @@ pub enum MessagePart {
         /// source does not rewrite history.
         source_title: String,
     },
+    /// The host compacted this chat's context while it sat idle, shortly
+    /// before the provider's prompt cache expired, so the next turn starts
+    /// small. Written by the engine as the whole of that turn's entry; renders
+    /// as one quiet row that opens to Claude's summary. Old desktop builds'
+    /// unknown-kind fallback renders the doc row's `text` (the row's label) as
+    /// prose; iOS drops unknown kinds.
+    #[serde(rename_all = "camelCase")]
+    Compaction {
+        id: String,
+        /// What the agent kept: the compaction's summary, capped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        /// Context size before and after.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pre_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        post_tokens: Option<u64>,
+        /// Why the compaction did not happen, when it failed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+/// The row label of a successful idle [`MessagePart::Compaction`].
+pub const IDLE_COMPACTION_LABEL: &str = "Compacted while idle to keep the next turn cheap";
+
+/// The one-line label of an idle [`MessagePart::Compaction`].
+pub fn compaction_label(error: Option<&str>) -> String {
+    match error {
+        Some(reason) => format!("Couldn't compact while idle: {reason}"),
+        None => IDLE_COMPACTION_LABEL.to_owned(),
+    }
 }
 
 impl MessagePart {
@@ -238,7 +270,8 @@ impl MessagePart {
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
             | MessagePart::Error { id, .. }
-            | MessagePart::Fork { id, .. } => id,
+            | MessagePart::Fork { id, .. }
+            | MessagePart::Compaction { id, .. } => id,
         }
     }
 
@@ -277,6 +310,9 @@ impl MessagePart {
                 source_title,
                 ..
             } => source_chat_id.len() + source_title.len(),
+            MessagePart::Compaction { summary, error, .. } => {
+                summary.as_ref().map_or(0, String::len) + error.as_ref().map_or(0, String::len)
+            }
         }
     }
 }
@@ -518,8 +554,12 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         // the transcript. UserMessage becomes its own doc ENTRY (the engine's
         // subagent sink writes it), never a part of the assistant message.
         // UsageLimit marks the chat Limited; the error part beside it says why.
+        // PromptCache and CompactionSummary are idle-compaction state the
+        // engine consumes.
         AgentEvent::AssistantMessageCompleted { .. }
         | AgentEvent::UsageLimit { .. }
+        | AgentEvent::PromptCache { .. }
+        | AgentEvent::CompactionSummary { .. }
         | AgentEvent::Usage { .. }
         | AgentEvent::ContextUsage { .. }
         | AgentEvent::AvailableCommands { .. }

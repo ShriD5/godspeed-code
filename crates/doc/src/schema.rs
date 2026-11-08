@@ -132,6 +132,15 @@ struct DocPartJson {
     /// One-line live tail of the subagent's output (additive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     subagent_tail: Option<String>,
+    /// Idle compaction (`kind: "compaction"`, additive): the summary the
+    /// agent kept and the context size around it. Its label rides `text`, so
+    /// builds that predate the kind show the label as prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pre_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    post_tokens: Option<u64>,
 }
 
 /// App parts → doc part json (mirror of `toDocParts`).
@@ -238,6 +247,22 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             source_title: Some(source_title.clone()),
             ..Default::default()
         },
+        MessagePart::Compaction {
+            id,
+            summary,
+            pre_tokens,
+            post_tokens,
+            error,
+        } => DocPartJson {
+            id: id.clone(),
+            kind: "compaction".into(),
+            text: Some(crate::compaction_label(error.as_deref())),
+            summary: summary.clone(),
+            pre_tokens: *pre_tokens,
+            post_tokens: *post_tokens,
+            message: error.clone(),
+            ..Default::default()
+        },
     })
 }
 
@@ -303,6 +328,13 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             source_chat_id: p.source_chat_id.unwrap_or_default(),
             source_title: p.source_title.unwrap_or_default(),
+        },
+        "compaction" => MessagePart::Compaction {
+            id: p.id,
+            summary: p.summary,
+            pre_tokens: p.pre_tokens,
+            post_tokens: p.post_tokens,
+            error: p.message,
         },
         _ => MessagePart::Text {
             id: p.id,
@@ -1085,6 +1117,15 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(summary) = &doc_part.summary {
+        map.insert("summary", summary.as_str())?;
+    }
+    if let Some(pre_tokens) = doc_part.pre_tokens {
+        map.insert("preTokens", pre_tokens as i64)?;
+    }
+    if let Some(post_tokens) = doc_part.post_tokens {
+        map.insert("postTokens", post_tokens as i64)?;
+    }
     Ok(())
 }
 
@@ -1550,6 +1591,15 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     if let Some(subagent_tail) = &doc_part.subagent_tail {
         map.insert("subagentTail", subagent_tail.as_str())?;
     }
+    if let Some(summary) = &doc_part.summary {
+        map.insert("summary", summary.as_str())?;
+    }
+    if let Some(pre_tokens) = doc_part.pre_tokens {
+        map.insert("preTokens", pre_tokens as i64)?;
+    }
+    if let Some(post_tokens) = doc_part.post_tokens {
+        map.insert("postTokens", post_tokens as i64)?;
+    }
     if let Some(text) = &doc_part.text {
         // Defensive path only — the fold never rewrites earlier text.
         if let Some(loro::ValueOrContainer::Container(loro::Container::Text(t))) = map.get("text") {
@@ -1647,6 +1697,53 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].role, MessageRole::System);
         assert_eq!(entries[0].parts, vec![seam]);
+    }
+
+    #[test]
+    fn idle_compaction_round_trips_and_older_readers_see_its_label() {
+        for part in [
+            MessagePart::Compaction {
+                id: "c0".into(),
+                summary: Some("Fixed the login bug; tests pass.".into()),
+                pre_tokens: Some(182_000),
+                post_tokens: Some(9_000),
+                error: None,
+            },
+            MessagePart::Compaction {
+                id: "c0".into(),
+                summary: None,
+                pre_tokens: Some(150_000),
+                post_tokens: None,
+                error: Some("Prompt is too long".into()),
+            },
+        ] {
+            let json = to_doc_part(&part).unwrap();
+            // What a build without the kind renders: its unknown-kind
+            // fallback reads `text`.
+            let MessagePart::Compaction { error, .. } = &part else {
+                unreachable!()
+            };
+            assert_eq!(
+                json.text.as_deref(),
+                Some(crate::compaction_label(error.as_deref()).as_str())
+            );
+            assert_eq!(from_doc_part(json), part);
+            // And through the document itself, field by field.
+            let doc = SessionDoc::init("compacted").unwrap();
+            doc.push_message(&SessionMessageEntry {
+                duration_ms: None,
+                turn_stats: None,
+                id: "a1".into(),
+                role: MessageRole::Assistant,
+                parts: vec![part.clone()],
+                created_at: 1,
+                device_id: "dev".into(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+            })
+            .unwrap();
+            assert_eq!(doc.read_entries().unwrap()[0].parts, vec![part]);
+        }
     }
     use zeron_proto::{AgentEvent, ToolCall};
 

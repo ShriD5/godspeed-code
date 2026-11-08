@@ -528,6 +528,11 @@ impl RowBuilder {
                             let text = format!("Forked from {source_title}");
                             rows.push(Placed { core: Arc::new(chip_row(ctx, &entry.id, id, "arrow.triangle.branch", ColorRole::TextTertiary, &text)), gap });
                         }
+                        MessagePart::Compaction { id, error, .. } => {
+                            let gap = gap_for(&rows, false);
+                            let text = zeron_doc::compaction_label(error.as_deref());
+                            rows.push(Placed { core: Arc::new(chip_row(ctx, &entry.id, id, "archivebox", ColorRole::TextTertiary, &text)), gap });
+                        }
                         _ => {}
                     }
                 }
