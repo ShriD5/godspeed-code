@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-09 | Approval, question and MCP form cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`, reviewed 2026-11-02) | PR #TBD |
+| 2026-11-09 | Approval, question and MCP form cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`, reviewed 2026-11-02) | PR #101 |
 | 2026-11-09 | Steering during a Claude compaction reads as stopped, not failed (`2b65ffb641`) | queued (with the 2026-10-27 steer-during-compaction row) |
 | 2026-11-09 | Focus returns to the composer after answering an approval or question in the timeline (`69dd6956d5`) | queued (check composer focus after answering a card) |
 | 2026-11-09 | Idle parents wake for a delegated result that lands after they settled (`36d0dcbf55`) | queued (with the 2026-10-26 delegated-run row) |
@@ -66,7 +66,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-11-04 | ~310 other commits: server recovery perf, Pi/Codex/OpenCode/Cursor/Antigravity fixes, forge (GitLab/Forgejo/Azure) fixes, Tailscale, managed policy, secret providers, emoji-safe truncation, mobile, marketing, evals and CI | skipped (internal/minor) |
 | 2026-11-02 | Claude threads no longer join the Claude Code session that launched T3: its session id, messaging socket and token, and effort are dropped from the agent's environment (`47f2c8d29e`) | PR #87 |
 | 2026-11-02 | Threads show a divider when you switch model or effort between messages (`c65f8d552b`) | queued (Godspeed keeps only the chat's current config; needs the model and effort recorded per turn) |
-| 2026-11-02 | Approval cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`) | PR #TBD (built 2026-11-09) |
+| 2026-11-02 | Approval cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`) | PR #101 |
 | 2026-11-02 | Managed policy file for organization-wide configuration (`d897d3f3f0`) | queued (T3-GAPS row; Theo hyped it) |
 | 2026-11-02 | Turn diffs keep the agent's files when git's `diff.relative` is on (`f2527c2c00`) | queued (`diff_sync.rs` runs `git diff` without `-c diff.relative=false`) |
 | 2026-11-02 | Show why Codex hooks stopped a turn (`9b7208832e`) | queued (Codex normalizer has no hook stop reason) |
