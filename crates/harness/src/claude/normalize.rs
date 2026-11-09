@@ -1422,6 +1422,7 @@ impl Normalizer {
             Frame::ControlRequest(_)
             | Frame::ControlResponse(_)
             | Frame::CommandLifecycle(_)
+            | Frame::ControlCancel(_)
             | Frame::Other => Vec::new(),
         }
     }

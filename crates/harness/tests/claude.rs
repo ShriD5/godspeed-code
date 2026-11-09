@@ -2033,6 +2033,57 @@ async fn approvals_surface_the_request_and_answer_each_decision() {
 }
 
 #[tokio::test]
+async fn a_withdrawn_approval_closes_its_card_without_an_answer() {
+    use zeron_proto::AccessMode;
+    let dir = tempfile::tempdir().unwrap();
+    let mut req = request("scenario:withdrawn");
+    req.cwd = dir.path().display().to_string();
+    req.set_access_mode(AccessMode::Supervised);
+    let cards: Arc<Mutex<Vec<oneshot::Sender<Vec<UserInputAnswer>>>>> = Arc::default();
+    let parked = cards.clone();
+    let (steer_tx, steer_rx) = mpsc::channel(8);
+    let controls = RunControls {
+        realtime: None,
+        execution_lease: None,
+        request_input: Box::new(move |_| {
+            let (tx, rx) = oneshot::channel();
+            parked.lock().unwrap().push(tx);
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: CancellationToken::new(),
+        turn: Default::default(),
+    };
+    let mut stream = harness().run(req, controls).await.expect("run starts");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = stream.next().await {
+            if matches!(event.expect("stream event"), AgentEvent::Done { .. }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("turn ended in time");
+
+    {
+        let cards = cards.lock().unwrap();
+        assert_eq!(cards.len(), 1, "the approval was asked");
+        assert!(cards[0].is_closed(), "the withdrawn card closed");
+    }
+    drop(steer_tx);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while stream.next().await.is_some() {}
+    })
+    .await
+    .expect("run finished in time");
+    let responses = read_log(dir.path(), "responses.log");
+    assert!(
+        !responses.iter().any(|r| r.contains("cr-hooked")),
+        "a withdrawn request gets no answer: {responses:?}"
+    );
+}
+
+#[tokio::test]
 async fn every_access_mode_launches_with_its_permission_mode() {
     use zeron_proto::AccessMode;
     for (mode, flag) in [
