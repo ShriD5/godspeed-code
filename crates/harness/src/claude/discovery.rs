@@ -49,6 +49,17 @@ impl InitializeCache {
         state.response = Some(response.clone());
         response.map_err(HarnessError::Protocol)
     }
+
+    /// The last good response for this credential context, without probing
+    /// or waiting: `None` while a probe holds the cache, when none succeeded,
+    /// or when the credentials changed since.
+    pub(super) fn cached(&self, key: [u8; 32]) -> Option<Value> {
+        let state = self.state.try_lock().ok()?;
+        match (&state.context, &state.response) {
+            (Some(context), Some(Ok(response))) if *context == key => Some(response.clone()),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -76,6 +87,25 @@ mod tests {
         assert_eq!(calls.load(Relaxed), 2);
         cache.get(|| Ok([2; 32]), probe).await.unwrap();
         assert_eq!(calls.load(Relaxed), 3);
+    }
+    #[tokio::test]
+    async fn cached_reads_only_a_good_response_for_the_same_credentials() {
+        let cache = InitializeCache::default();
+        assert_eq!(cache.cached([1; 32]), None);
+        let failed = cache
+            .get(
+                || Ok([1; 32]),
+                || async { Err(HarnessError::Protocol("offline".into())) },
+            )
+            .await;
+        assert!(failed.is_err());
+        assert_eq!(cache.cached([1; 32]), None);
+        let response = serde_json::json!({"response": {"account": {}}});
+        let ok = response.clone();
+        cache.get(|| Ok([1; 32]), || async { Ok(ok) }).await.unwrap();
+        assert_eq!(cache.cached([1; 32]), Some(response));
+        // Another login: the old answer no longer applies.
+        assert_eq!(cache.cached([2; 32]), None);
     }
     #[tokio::test]
     async fn failed_initialize_retries_and_raced_login_is_not_cached() {

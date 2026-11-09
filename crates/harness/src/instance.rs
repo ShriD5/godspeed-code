@@ -177,6 +177,9 @@ impl Harness for InstanceHarness {
     fn fallback_models(&self) -> Vec<Model> {
         self.decorate(self.inner.fallback_models())
     }
+    fn cached_api_key_source(&self) -> Option<String> {
+        self.inner.cached_api_key_source()
+    }
     async fn model_catalog(&self, force: bool) -> Result<ModelCatalog, HarnessError> {
         let catalog = self.inner.model_catalog(force).await?;
         Ok(ModelCatalog {
