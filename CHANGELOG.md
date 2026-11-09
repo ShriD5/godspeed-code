@@ -4,6 +4,12 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+### Changed
+
+- **New Opus 5.5 and Fable 5 chats start at Medium effort.** That is Claude Code's own default for
+  these models (and T3 Code's), where Godspeed started every model at High. Sonnet and older Opus
+  still start at High. Existing chats and any effort you picked yourself are kept.
+
 ### Added
 
 - **Idle Claude chats compact before the cache expires.** When a long Claude chat (over 100K tokens
