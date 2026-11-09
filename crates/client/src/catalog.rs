@@ -395,18 +395,18 @@ pub fn fallback_models(harness: &str) -> Vec<ModelInfo> {
     }
 }
 
-/// pickers.rs — High when available, then Medium, then the first level.
+/// pickers.rs — High when available (Medium for the Claude models whose own
+/// default is Medium, see [`zeron_proto::default_reasoning_for`]), then
+/// Medium, then the first level.
 pub fn default_reasoning(model: &ModelInfo) -> Option<String> {
-    let levels = &model.reasoning_levels;
-    if levels.is_empty() {
-        return None;
-    }
-    for preferred in ["high", "medium"] {
-        if levels.iter().any(|l| l == preferred) {
-            return Some(preferred.into());
-        }
-    }
-    levels.first().cloned()
+    let ladder: Vec<zeron_proto::ReasoningLevel> = model
+        .reasoning_levels
+        .iter()
+        .filter_map(|level| serde_json::from_value(serde_json::Value::String(level.clone())).ok())
+        .collect();
+    zeron_proto::default_reasoning_for(Some(&model.id), &ladder)
+        .and_then(|level| serde_json::to_value(level).ok()?.as_str().map(str::to_owned))
+        .or_else(|| model.reasoning_levels.first().cloned())
 }
 
 pub fn reasoning_label(level: &str) -> String {
@@ -673,6 +673,19 @@ mod tests {
             model_label("cursor-test", "sonnet-9-thinking"),
             "Sonnet 9 Thinking"
         );
+    }
+
+    #[test]
+    fn default_reasoning_follows_the_models_own_default() {
+        let levels = &["low", "medium", "high", "xhigh", "max"];
+        let opus = model("claude-opus-5-5", "Opus 5.5", "x", levels, vec![]);
+        assert_eq!(default_reasoning(&opus).as_deref(), Some("medium"));
+        let sonnet = model("claude-sonnet-5", "Sonnet 5", "x", levels, vec![]);
+        assert_eq!(default_reasoning(&sonnet).as_deref(), Some("high"));
+        let unknown = model("odd", "Odd", "x", &["turbo"], vec![]);
+        assert_eq!(default_reasoning(&unknown).as_deref(), Some("turbo"));
+        let haiku = model("claude-haiku-4-5", "Haiku 4.5", "x", &[], vec![]);
+        assert_eq!(default_reasoning(&haiku), None);
     }
 
     #[test]
