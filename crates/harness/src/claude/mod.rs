@@ -998,6 +998,10 @@ async fn run_session(session: Session) {
     // Last stdout activity, for the held result's settle fallback.
     let mut last_frame_at = tokio::time::Instant::now();
     let mut done_after_interrupt = false;
+    // Control requests waiting on the user, by request id, so a request the
+    // CLI withdraws closes its card instead of waiting for an answer.
+    let mut open_requests: std::collections::HashMap<String, tokio::task::AbortHandle> =
+        std::collections::HashMap::new();
     let mut escalation: Option<tokio::task::JoinHandle<()>> = None;
     // The runtime's process tree when its teardown began (see
     // [`crate::shutdown_agent`]).
@@ -1045,6 +1049,12 @@ async fn run_session(session: Session) {
                     {
                         turn.set_background(system.tasks.as_ref().map_or(0, Vec::len));
                     }
+                    if let Frame::ControlCancel(cancel) = &frame {
+                        if let Some(task) = open_requests.remove(&cancel.request_id) {
+                            task.abort();
+                        }
+                        continue;
+                    }
                     if let Frame::ControlRequest(req) = frame {
                         if title_only {
                             if let Some(id) = &req.request.tool_use_id {
@@ -1055,13 +1065,17 @@ async fn run_session(session: Session) {
                             }));
                             let _ = stdin_tx.send(StdinMsg::Line(line));
                         } else {
-                            handle_control_request(
+                            let request_id = req.request_id.clone();
+                            if let Some(task) = handle_control_request(
                                 req,
                                 &config,
                                 &request_input,
                                 &stdin_tx,
                                 &norm.user_denials,
-                            );
+                            ) {
+                                open_requests.retain(|_, task| !task.is_finished());
+                                open_requests.insert(request_id, task);
+                            }
                         }
                         continue;
                     }
@@ -1514,37 +1528,37 @@ fn handle_control_request(
     request_input: &Arc<RequestInputFn>,
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
     user_denials: &Denials,
-) {
+) -> Option<tokio::task::AbortHandle> {
     if req.request.subtype == "elicitation" {
         // The CLI blocks the MCP call until an answer arrives; unanswered,
         // the tool hung until the server gave up.
         let request_input = Arc::clone(request_input);
         let stdin_tx = stdin_tx.clone();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let result = answer_elicitation(&req.request, request_input.as_ref()).await;
             let line = control_response_line(&req.request_id, result);
             let _ = stdin_tx.send(StdinMsg::Line(line));
         });
-        return;
+        return Some(task.abort_handle());
     }
     if req.request.subtype != "can_use_tool" {
         tracing::debug!(
             target: "zeron_harness::claude",
             "unhandled control_request subtype: {}", req.request.subtype
         );
-        return;
+        return None;
     }
     if req.request.tool_name != "AskUserQuestion" {
         if config.access_mode() == AccessMode::FullAccess {
             let line = control_response_line(&req.request_id, allow_response(req.request.input));
             let _ = stdin_tx.send(StdinMsg::Line(line));
-            return;
+            return None;
         }
         let approval = approval_request(&req.request, &config.cwd);
         let request_input = Arc::clone(request_input);
         let stdin_tx = stdin_tx.clone();
         let user_denials = Arc::clone(user_denials);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let decision = crate::approval::ask(request_input.as_ref(), approval).await;
             if !decision.approves()
                 && let Some(id) = &req.request.tool_use_id
@@ -1555,11 +1569,11 @@ fn handle_control_request(
             let line = control_response_line(&req.request_id, response);
             let _ = stdin_tx.send(StdinMsg::Line(line));
         });
-        return;
+        return Some(task.abort_handle());
     }
     let request_input = Arc::clone(request_input);
     let stdin_tx = stdin_tx.clone();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let request_id = req.request_id;
         let input = req.request.input;
         let questions = parse_questions(&input);
@@ -1577,6 +1591,7 @@ fn handle_control_request(
         let line = control_response_line(&request_id, allow_response(updated));
         let _ = stdin_tx.send(StdinMsg::Line(line));
     });
+    Some(task.abort_handle())
 }
 
 /// Answer an MCP `elicitation` with the user's input. A form that asks for

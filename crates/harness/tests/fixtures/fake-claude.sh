@@ -128,6 +128,18 @@ case "$first" in
   esac
   ;;
 
+*scenario:withdrawn*)
+  # A PermissionRequest hook answers the request while the card is open, so
+  # the CLI withdraws it. Every later stdin line is recorded for the test.
+  : > responses.log
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":["Bash"],"cwd":"/tmp","session_id":"sess-wd"}'
+  emit '{"type":"control_request","request_id":"cr-hooked","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"tu-1","input":{"command":"make deploy"}}}'
+  sleep 1
+  emit '{"type":"control_cancel_request","request_id":"cr-hooked"}'
+  emit '{"type":"result","subtype":"success","result":"hooked","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-wd"}'
+  while read -r line; do printf '%s\n' "$line" >> responses.log; done
+  ;;
+
 *scenario:approvals*)
   # Access modes ride `--permission-mode`; every `can_use_tool` the CLI
   # still raises is the user's to answer. Shapes follow the Agent SDK
