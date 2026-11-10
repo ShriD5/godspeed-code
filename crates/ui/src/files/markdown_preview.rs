@@ -37,6 +37,63 @@ fn block_source_lines(source: &str, tree: &BlockTree) -> Vec<u32> {
         .collect()
 }
 
+/// Blanks a leading YAML frontmatter block so the preview skips it instead of
+/// showing a rule and a setext heading. Every masked byte becomes a space and
+/// line breaks stay, so source offsets (task toggles, comment lines) hold.
+fn mask_frontmatter(source: &mut String) {
+    let Some(end) = frontmatter_end(source) else {
+        return;
+    };
+    let masked: String = source.as_bytes()[..end]
+        .iter()
+        .map(|&b| {
+            if matches!(b, b'\r' | b'\n') {
+                b as char
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    source.replace_range(..end, &masked);
+}
+
+/// The byte offset where a leading frontmatter block's closing fence ends.
+fn frontmatter_end(source: &str) -> Option<usize> {
+    let start = if source.starts_with('\u{feff}') { 3 } else { 0 };
+    let mut lines = line_spans(&source.as_bytes()[start..]).map(|(a, b)| {
+        (
+            b + start,
+            source[a + start..b + start].trim_end_matches([' ', '\t']),
+        )
+    });
+    if lines.next()?.1 != "---" {
+        return None;
+    }
+    lines
+        .find(|(_, line)| matches!(*line, "---" | "..."))
+        .map(|(end, _)| end)
+}
+
+/// Byte spans of each line's content, splitting on `\r\n`, `\r` or `\n`.
+fn line_spans(bytes: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        if at >= bytes.len() {
+            return None;
+        }
+        let start = at;
+        let end = bytes[start..]
+            .iter()
+            .position(|b| matches!(b, b'\r' | b'\n'))
+            .map_or(bytes.len(), |offset| start + offset);
+        at = match bytes.get(end..end + 2) {
+            Some(b"\r\n") => end + 2,
+            _ => end + 1,
+        };
+        Some((start, end))
+    })
+}
+
 /// A preview of a file beyond the workspace renders its local links as
 /// plain text: they would resolve against the linking chat's checkout, not
 /// the document's own folder, so their styling drops before render. Web
@@ -489,6 +546,8 @@ impl MarkdownPreview {
             let (tree, highlights, anchors, block_lines) = cx
                 .background_executor()
                 .spawn(async move {
+                    let mut source = source;
+                    mask_frontmatter(&mut source);
                     let mut tree = parser::parse_full(&source);
                     if outside {
                         for top in &mut tree.blocks {
@@ -1473,6 +1532,46 @@ mod tests {
         assert_eq!(comment_block(&lines, 11), Some(3));
         assert_eq!(comment_block(&[], 1), None);
     }
+    fn masked(source: &str) -> String {
+        let mut source = source.to_owned();
+        mask_frontmatter(&mut source);
+        source
+    }
+
+    #[test]
+    fn frontmatter_is_blanked_without_moving_later_offsets() {
+        let source = "---\r\nname: café\r\n---\r\n# Skill\n- [ ] item\n";
+        let blanked = masked(source);
+        assert_eq!(
+            blanked,
+            "   \r\n           \r\n   \r\n# Skill\n- [ ] item\n"
+        );
+        assert_eq!(blanked.find("[ ]"), source.find("[ ]"));
+        let tree = parser::parse_full(&blanked);
+        assert_eq!(tree.len(), 2);
+        assert!(matches!(tree.blocks[0].block, Block::Heading { .. }));
+        assert_eq!(block_source_lines(&blanked, &tree), [4, 5]);
+
+        assert_eq!(
+            masked("\u{feff}---\na: 1\n---\n# Body"),
+            "      \n    \n   \n# Body"
+        );
+        assert_eq!(masked("---\ra: 1\r... \r# Body"), "   \r    \r    \r# Body");
+        assert_eq!(masked("---\n---\n# Body"), "   \n   \n# Body");
+    }
+
+    #[test]
+    fn unterminated_or_later_fences_are_left_alone() {
+        for source in [
+            "---\na: 1\n",
+            "# A\n---\nb\n---\n",
+            "---\na: 1\n----\n",
+            "--- x\n---\n",
+        ] {
+            assert_eq!(masked(source), source);
+        }
+    }
+
     #[test]
     fn markdown_paths_and_links() {
         assert!(is_markdown("docs/README.MD"));
