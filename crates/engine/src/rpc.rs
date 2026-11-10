@@ -744,6 +744,9 @@ enum MutateParams {
     /// fresh harness conversation there (resume is cwd-scoped).
     #[serde(rename_all = "camelCase")]
     SetChatCwd { chat_id: String, cwd: String },
+    /// Re-home a chat onto a different project, but only before its first turn.
+    #[serde(rename_all = "camelCase")]
+    SetChatProject { chat_id: String, space_id: String },
     /// Backdate a chat's activity timestamps (epoch ms) — the sidebar's
     /// relative-time column. Used by tooling/seeds; the doc fold sets these on
     /// real message traffic.
@@ -1774,6 +1777,12 @@ impl EngineRpc {
                     .set_chat_cwd(&chat_id, &cwd)
                     .map_err(failed)
                     .map(drop)
+            }
+            MutateParams::SetChatProject { chat_id, space_id } => {
+                self.voice.retire_chat(&chat_id);
+                self.workspace
+                    .set_chat_project(&chat_id, &space_id)
+                    .map_err(failed)
             }
             MutateParams::SetChatActivity {
                 chat_id,

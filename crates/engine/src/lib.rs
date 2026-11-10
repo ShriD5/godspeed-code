@@ -136,6 +136,8 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Other(String),
+    #[error("chat has already started; its project can no longer be changed")]
+    ChatAlreadyStarted,
 }
 
 /// Epoch millis now — the doc/journal timestamp base.
