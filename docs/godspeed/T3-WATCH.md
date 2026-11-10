@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@337c5858c3 (2026-11-05)
+Reviewed T3 through: pingdotgg/t3code@61cb845d96 (2026-11-10)
 
 ## Rules
 
@@ -23,6 +23,16 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-10 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`, queued 2026-10-27) | PR #105 |
+| 2026-11-10 | Background commands and subagents get a Details action (`16a6c1c41f`) | queued (check what the Claude background-task row shows) |
+| 2026-11-10 | Deleting a thread clears its draft, staged uploads and its side chats' drafts (`a3cd0aa823`, `b8c2cfad6b`); deleting the open thread doesn't open a side chat (`915676ee6a`) | queued (check composer draft cleanup on chat delete, PR #99 path) |
+| 2026-11-10 | A new side chat focuses its message input (`b10cdded50`) | queued (with the composer-focus-after-card item, 69dd6956d5) |
+| 2026-11-10 | Provider status probes set `MISE_OFFLINE=1` so mise shims don't download missing CLIs; failed `--version` runs report no version (`5dcf69ebfa`) | queued (`harness/src/executable.rs` `probe_version` already rejects non-zero exits; only the env var is missing) |
+| 2026-11-10 | Claude Fable 5.2 in the model list (`12f3244e05`) | skipped for now (local Claude Code 2.1.319 has no `claude-fable-5-2`; Godspeed lists Fable 5.1, revisit when Claude Code ships it) |
+| 2026-11-10 | Claude turns whose CLI exits before its first frame fail (`bcee0f5d28`) | skipped (`claude/mod.rs` already sends an Errored Done with the crash message on stdout EOF) |
+| 2026-11-10 | Commit, push & PR refuses to push the default branch into itself (`ad91636f0b`) | skipped (`git_actions.rs` `create_pull_request` already returns `OnBaseBranch`) |
+| 2026-11-10 | Use T3 Code from another app over MCP, approved with T3 Connect (`965ddc1d6c`, `dd0737d3e2`, `9a0d02723c`) | skipped (T3-GAPS already tracks the HTTP MCP endpoint; T3 Connect is out of scope) |
+| 2026-11-10 | ~105 other commits: mobile (Expo, Android, iOS), desktop Electron fixes, web re-render perf, Welcome page, keybinding `when` conditions, IME fixes, relay/SSH/updater, forge fixes, pricing tables, server segment reads, CI | skipped (internal/minor) |
 | 2026-11-01 | Worktree chats get a branch when a plain branch named like the prefix exists (`t3` blocks `t3/...`), and names with a nested branch under them count as taken (`1917c8a33a`) | PR #85 |
 | 2026-11-01 | Child-thread approvals show in the parent with Approve/Decline, so you answer without switching threads; Claude dangerous-rm checks in bypass mode deny with the warning (`70f475f511`) | queued (lanes card shows a child's Needs approval status and opens it in the right pane; no inline card in the parent) |
 | 2026-11-01 | Stopping a Claude turn no longer hangs when interrupt is never acknowledged (`7195b69954`) | queued (with the force-stop item: time-box Claude interrupt in `harness/src/claude`) |
@@ -85,7 +95,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-10-30 | Boring sidebar folders (`4e4d4ba395`, `001d16e969`, `80fcb7f58f`, `5211acfe95`); multi-project filter (`c38b265adc`); custom snooze options (`93a9e079b1`, `c3858bf1f7`); F6 focus cycle (`2525252c96`); back/forward swipe (`476590d0ad`) | skipped (Godspeed has a project filter, snooze presets and back/forward; F6 is the existing T3-GAPS row) |
 | 2026-10-30 | ~300 other commits: streaming and timeline perf, server query/startup perf, React effect removal, mobile/Android, GitCafe/GitLab/Forgejo, guest links, Antigravity/Cursor/OpenCode/Copilot fixes, `t3 service protect`, Electron bump, credential redaction, CI and release fixes | skipped (internal/minor) |
 | 2026-10-27 | A thread whose worktree was deleted recovers on the next message (`0604547a3a`) | PR #41 |
-| 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | queued (`files/markdown_preview.rs` shows SKILL.md frontmatter as a rule and a setext heading; mask it with spaces so task toggles keep their offsets) |
+| 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | PR #105 |
 | 2026-10-27 | ACP session notices show as notices, not reply text (`323d9611ff`) | queued (`acp/normalize.rs` drops `notice` updates; needs a notice event and row) |
 | 2026-10-27 | Steer works while a compaction runs (`ad068d7c93`) | queued (check steering during a Claude /compact) |
 | 2026-10-27 | Stopped runs read as muted, not errors (`f3b058cd6a`) | skipped (T3 web row styling; Godspeed run receipts already show "Stopped" in the normal tone) |
