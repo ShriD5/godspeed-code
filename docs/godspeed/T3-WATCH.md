@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-10 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`, queued 2026-10-27) | PR #TBD |
+| 2026-11-10 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`, queued 2026-10-27) | PR #105 |
 | 2026-11-10 | Background commands and subagents get a Details action (`16a6c1c41f`) | queued (check what the Claude background-task row shows) |
 | 2026-11-10 | Deleting a thread clears its draft, staged uploads and its side chats' drafts (`a3cd0aa823`, `b8c2cfad6b`); deleting the open thread doesn't open a side chat (`915676ee6a`) | queued (check composer draft cleanup on chat delete, PR #99 path) |
 | 2026-11-10 | A new side chat focuses its message input (`b10cdded50`) | queued (with the composer-focus-after-card item, 69dd6956d5) |
@@ -95,7 +95,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-10-30 | Boring sidebar folders (`4e4d4ba395`, `001d16e969`, `80fcb7f58f`, `5211acfe95`); multi-project filter (`c38b265adc`); custom snooze options (`93a9e079b1`, `c3858bf1f7`); F6 focus cycle (`2525252c96`); back/forward swipe (`476590d0ad`) | skipped (Godspeed has a project filter, snooze presets and back/forward; F6 is the existing T3-GAPS row) |
 | 2026-10-30 | ~300 other commits: streaming and timeline perf, server query/startup perf, React effect removal, mobile/Android, GitCafe/GitLab/Forgejo, guest links, Antigravity/Cursor/OpenCode/Copilot fixes, `t3 service protect`, Electron bump, credential redaction, CI and release fixes | skipped (internal/minor) |
 | 2026-10-27 | A thread whose worktree was deleted recovers on the next message (`0604547a3a`) | PR #41 |
-| 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | PR #TBD |
+| 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | PR #105 |
 | 2026-10-27 | ACP session notices show as notices, not reply text (`323d9611ff`) | queued (`acp/normalize.rs` drops `notice` updates; needs a notice event and row) |
 | 2026-10-27 | Steer works while a compaction runs (`ad068d7c93`) | queued (check steering during a Claude /compact) |
 | 2026-10-27 | Stopped runs read as muted, not errors (`f3b058cd6a`) | skipped (T3 web row styling; Godspeed run receipts already show "Stopped" in the normal tone) |
