@@ -847,6 +847,19 @@ pub struct EngineRpc {
 }
 
 impl EngineRpc {
+    /// Settings → Accounts names a Claude Code login that bills an API key
+    /// (T3 Code's "Claude API Key" label), from the CLI's own report in the
+    /// initialize discovery it already ran. Never probes, so listing stays
+    /// offline-fast.
+    fn note_api_key_logins(&self, snapshot: &mut zeron_proto::AgentAccountsSnapshot) {
+        let source = self
+            .registry
+            .resolve(zeron_proto::HarnessId::ClaudeCode)
+            .ok()
+            .and_then(|harness| harness.cached_api_key_source());
+        crate::agent_accounts::note_api_key_login(snapshot, source);
+    }
+
     #[allow(clippy::too_many_arguments)] // engine assembly seam, not a public API
     pub fn new(
         sessions: SessionsEngine,
@@ -4483,31 +4496,34 @@ impl RpcService for EngineRpc {
             }
             methods::LIST_AGENT_ACCOUNTS => {
                 let p: ListAgentAccountsParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .list(p.force_usage.unwrap_or(false))
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::ACTIVATE_AGENT_ACCOUNT => {
                 self.voice.retire();
                 let p: AgentAccountParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .activate(p.harness, &p.account_id)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::FORGET_AGENT_ACCOUNT => {
                 self.voice.retire();
                 let p: AgentAccountParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .forget(p.harness, &p.account_id)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::START_AGENT_LOGIN => {
@@ -4529,11 +4545,12 @@ impl RpcService for EngineRpc {
             }
             methods::COMPLETE_AGENT_LOGIN => {
                 let p: CompleteAgentLoginParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .complete_login(&p.login_id, &p.code)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::POLL_AGENT_LOGIN => {

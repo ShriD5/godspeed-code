@@ -388,6 +388,9 @@ pub(crate) struct Normalizer {
     reported_denials: std::collections::HashSet<String>,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
+    /// A `compact_boundary` went by: the next top-level user frame carrying
+    /// text is the summary the compaction kept.
+    awaiting_compact_summary: bool,
 }
 
 impl Normalizer {
@@ -415,6 +418,7 @@ impl Normalizer {
             denial_reasons: Default::default(),
             reported_denials: Default::default(),
             session_id: None,
+            awaiting_compact_summary: false,
         }
     }
 
@@ -880,6 +884,7 @@ impl Normalizer {
                     return Vec::new();
                 }
                 if f.subtype == "compact_boundary" {
+                    self.awaiting_compact_summary = true;
                     let meta = f.compact_metadata.unwrap_or_default();
                     let mut out = Vec::new();
                     if let Some(tokens) = meta.get("post_tokens").and_then(Value::as_u64) {
@@ -1086,6 +1091,9 @@ impl Normalizer {
                             window: None,
                         });
                     }
+                    if let Some(ttl_secs) = prompt_cache_ttl_secs(usage) {
+                        out.push(AgentEvent::PromptCache { ttl_secs });
+                    }
                 }
                 // A failed turn (usage limit, billing, auth, overloaded, …)
                 // carries a terse `error` code here — often with empty content
@@ -1153,6 +1161,15 @@ impl Normalizer {
                             .map(|b| tag(parent, AgentEvent::UserMessage { text: b.text })),
                     );
                     return out;
+                }
+                // The summary a compaction kept arrives as a top-level user
+                // frame right after the boundary; never conversation, it is
+                // engine state an idle compaction's row shows.
+                if !f.is_replay
+                    && (std::mem::take(&mut self.awaiting_compact_summary) || f.is_compact_summary)
+                    && let Some(text) = compact_summary_text(&f.message)
+                {
+                    return vec![AgentEvent::CompactionSummary { text }];
                 }
                 f.message
                     .blocks()
@@ -1223,6 +1240,7 @@ impl Normalizer {
             }
 
             Frame::Result(f) => {
+                self.awaiting_compact_summary = false;
                 let model_usage = self
                     .last_model
                     .as_ref()
@@ -1407,6 +1425,38 @@ impl Normalizer {
             | Frame::Other => Vec::new(),
         }
     }
+}
+
+/// How long the prompt cache this request wrote lives, read off its usage's
+/// `cache_creation` split: Claude Code writes 1-hour entries on subscription
+/// logins and 5-minute entries on API keys. A request served wholly from
+/// cache writes nothing and says nothing; the earlier lifetime still holds.
+fn prompt_cache_ttl_secs(usage: &Value) -> Option<u64> {
+    let creation = usage.get("cache_creation")?;
+    let written = |key: &str| creation.get(key).and_then(Value::as_u64).unwrap_or(0) > 0;
+    if written("ephemeral_1h_input_tokens") {
+        Some(60 * 60)
+    } else if written("ephemeral_5m_input_tokens") {
+        Some(5 * 60)
+    } else {
+        None
+    }
+}
+
+/// A compaction summary's text: the frame's plain-string content or its
+/// text blocks. The replayed `<local-command-stdout>` echo is not one.
+fn compact_summary_text(message: &super::wire::MessageBody) -> Option<String> {
+    let text = match message.content.as_str() {
+        Some(text) => text.to_owned(),
+        None => message
+            .blocks()
+            .filter(|b| b.kind == "text")
+            .map(|b| b.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
+    let text = text.trim();
+    (!text.is_empty() && !text.starts_with("<local-command-stdout>")).then(|| text.to_owned())
 }
 
 #[cfg(test)]
@@ -2848,10 +2898,25 @@ mod tests {
                     AgentEvent::ReasoningDelta { text: heartbeat },
                     AgentEvent::ContextUsage { tokens: Some(1995), window: None },
                     AgentEvent::TextDelta { text: note },
+                    AgentEvent::CompactionSummary { text: summary },
                     AgentEvent::Done { status: DoneStatus::Completed, .. },
-                ] if heartbeat.is_empty() && note.trim() == "Context compacted."
+                ] if heartbeat.is_empty()
+                    && note.trim() == "Context compacted."
+                    && summary.starts_with("This session is being continued")
             ),
             "{visible:?}"
+        );
+        // Without a boundary before it, a user frame is never a summary.
+        assert!(
+            Normalizer::new()
+                .normalize(
+                    crate::claude::wire::parse_frame(
+                        r#"{"type":"user","message":{"role":"user","content":"hello"}}"#
+                    )
+                    .unwrap(),
+                    false
+                )
+                .is_empty()
         );
         // Automatic compaction says so; a failed one is an error.
         let auto = normalize_one(
@@ -2870,6 +2935,40 @@ mod tests {
             }]
         );
         assert!(normalize_one(r#"{"type":"system","subtype":"status","status":"requesting"}"#).is_empty());
+    }
+
+    /// The prompt cache's lifetime rides each top-level assistant frame's
+    /// `cache_creation` split (live 2.1.310 shape): 1 hour on subscriptions,
+    /// 5 minutes on API keys, nothing for a fully cached request or a
+    /// subagent's frame.
+    #[test]
+    fn prompt_cache_lifetime_reads_the_cache_creation_split() {
+        let ttl = |raw: &str| -> Vec<u64> {
+            Normalizer::new()
+                .normalize(super::super::wire::parse_frame(raw).unwrap(), false)
+                .into_iter()
+                .filter_map(|e| match e {
+                    AgentEvent::PromptCache { ttl_secs } => Some(ttl_secs),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            ttl(r#"{"type":"assistant","message":{"content":[],"usage":{"input_tokens":2,"cache_creation_input_tokens":20831,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":20831},"output_tokens":4}}}"#),
+            vec![3600]
+        );
+        assert_eq!(
+            ttl(r#"{"type":"assistant","message":{"content":[],"usage":{"input_tokens":2,"cache_creation_input_tokens":900,"cache_creation":{"ephemeral_5m_input_tokens":900,"ephemeral_1h_input_tokens":0},"output_tokens":4}}}"#),
+            vec![300]
+        );
+        assert!(
+            ttl(r#"{"type":"assistant","message":{"content":[],"usage":{"input_tokens":2,"cache_read_input_tokens":40000,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":4}}}"#)
+                .is_empty()
+        );
+        assert!(
+            ttl(r#"{"type":"assistant","parent_tool_use_id":"toolu_sub","message":{"content":[],"usage":{"input_tokens":2,"cache_creation":{"ephemeral_1h_input_tokens":500},"output_tokens":4}}}"#)
+                .is_empty()
+        );
     }
 
     /// Auto mode's classifier (or a deny rule) refuses a call inside the

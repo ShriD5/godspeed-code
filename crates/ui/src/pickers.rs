@@ -208,19 +208,16 @@ fn selected_catalog_model<'a>(models: &'a [Model], selected: Option<&str>) -> Op
     }
 }
 
-/// A model's default reasoning: X-High when the ladder offers it (godspeed
-/// `DEFAULT_REASONING = "xhigh"`), else High, else the ladder's first entry.
-/// `None` only for ladder-less models (e.g. Haiku's thinking toggle instead).
-pub fn default_reasoning(ladder: &[ReasoningLevel]) -> Option<ReasoningLevel> {
-    // The recommended default is High (user-corrected — not X-High globally);
-    // fall to Medium then the ladder's first entry for shorter ladders.
-    if ladder.contains(&ReasoningLevel::High) {
-        return Some(ReasoningLevel::High);
-    }
-    if ladder.contains(&ReasoningLevel::Medium) {
-        return Some(ReasoningLevel::Medium);
-    }
-    ladder.first().copied()
+/// A model's default reasoning: High (user-corrected, not X-High globally),
+/// except the Claude models whose own default is Medium (Opus 5.5, Fable 5,
+/// Haiku 5.5, as in Claude Code and T3 Code); see
+/// [`zeron_proto::default_reasoning_for`]. `None` only for ladder-less models
+/// (e.g. Haiku 4.5's thinking toggle instead).
+pub fn default_reasoning(
+    model: Option<&str>,
+    ladder: &[ReasoningLevel],
+) -> Option<ReasoningLevel> {
+    zeron_proto::default_reasoning_for(model, ladder)
 }
 
 /// Clamp a picked/remembered level to what the model actually offers: keep it
@@ -228,11 +225,12 @@ pub fn default_reasoning(ladder: &[ReasoningLevel]) -> Option<ReasoningLevel> {
 /// or foreign level — godspeed use-run-config.ts's derived-model discipline).
 pub fn clamp_reasoning(
     level: Option<ReasoningLevel>,
+    model: Option<&str>,
     ladder: &[ReasoningLevel],
 ) -> Option<ReasoningLevel> {
     match level {
         Some(level) if ladder.contains(&level) => Some(level),
-        _ => default_reasoning(ladder),
+        _ => default_reasoning(model, ladder),
     }
 }
 
@@ -1546,7 +1544,11 @@ impl Pickers {
             // to clamp against); it resolves to a concrete level on load.
             return explicit;
         }
-        clamp_reasoning(explicit, &self.trait_ladder(cx))
+        clamp_reasoning(
+            explicit,
+            self.selected_model(cx).map(|m| m.id.as_str()),
+            &self.trait_ladder(cx),
+        )
     }
 
     /// Only an implicit selection follows the harness default. An explicit ID
@@ -2607,7 +2609,8 @@ impl Pickers {
                 ladder = descriptor.reasoning_levels.clone();
             }
             if !ladder.is_empty() {
-                config.reasoning = clamp_reasoning(config.reasoning, &ladder);
+                config.reasoning =
+                    clamp_reasoning(config.reasoning, config.model.as_deref(), &ladder);
             }
             // Options likewise: a model switch must not carry picks the new
             // model doesn't offer (e.g. a 1M context onto Haiku).
@@ -5732,7 +5735,11 @@ impl Pickers {
         } else {
             row.model.reasoning_levels.clone()
         };
-        let reasoning = clamp_reasoning(self.effective_reasoning(cx), &levels);
+        let reasoning = clamp_reasoning(
+            self.effective_reasoning(cx),
+            Some(row.model.id.as_str()),
+            &levels,
+        );
         let selections = offered_options(
             &row.model,
             self.defaults
@@ -6359,7 +6366,7 @@ fn build_setting_groups(
 ) -> Vec<SettingGroup> {
     let mut groups = Vec::new();
     if !levels.is_empty() {
-        let default = default_reasoning(&levels);
+        let default = default_reasoning(model.map(|m| m.id.as_str()), &levels);
         groups.push(SettingGroup {
             id: ModelSetting::Reasoning,
             label: "Reasoning".into(),
@@ -10946,18 +10953,19 @@ mod tests {
     #[test]
     fn default_reasoning_prefers_high_then_medium() {
         use ReasoningLevel::*;
+        let full = [Low, Medium, High, XHigh, Max, Ultracode, Ultrathink];
         // Recommended default is High (user-corrected), even on full ladders.
-        assert_eq!(
-            default_reasoning(&[Low, Medium, High, XHigh, Max, Ultracode, Ultrathink]),
-            Some(High)
-        );
-        assert_eq!(default_reasoning(&[Low, Medium, High, Max]), Some(High));
+        assert_eq!(default_reasoning(Some("claude-sonnet-5"), &full), Some(High));
+        assert_eq!(default_reasoning(None, &[Low, Medium, High, Max]), Some(High));
+        // Claude models whose own default is Medium start there.
+        assert_eq!(default_reasoning(Some("claude-opus-5-5"), &full), Some(Medium));
+        assert_eq!(default_reasoning(Some("claude-fable-5-1"), &full), Some(Medium));
         // No High: Medium.
-        assert_eq!(default_reasoning(&[Minimal, Low, Medium]), Some(Medium));
+        assert_eq!(default_reasoning(None, &[Minimal, Low, Medium]), Some(Medium));
         // Neither offered: first entry.
-        assert_eq!(default_reasoning(&[Minimal, Low]), Some(Minimal));
+        assert_eq!(default_reasoning(None, &[Minimal, Low]), Some(Minimal));
         // Ladder-less model (Haiku): no reasoning at all.
-        assert_eq!(default_reasoning(&[]), None);
+        assert_eq!(default_reasoning(Some("claude-haiku-4-5"), &[]), None);
     }
 
     #[test]
@@ -10965,12 +10973,16 @@ mod tests {
         use ReasoningLevel::*;
         let ladder = [Low, Medium, High, Max];
         // A pick the ladder offers survives.
-        assert_eq!(clamp_reasoning(Some(Max), &ladder), Some(Max));
+        assert_eq!(clamp_reasoning(Some(Max), None, &ladder), Some(Max));
         // A remembered level the new model doesn't offer heals to its default.
-        assert_eq!(clamp_reasoning(Some(XHigh), &ladder), Some(High));
+        assert_eq!(clamp_reasoning(Some(XHigh), None, &ladder), Some(High));
         // No pick at all resolves to the concrete default too.
-        assert_eq!(clamp_reasoning(None, &ladder), Some(High));
-        assert_eq!(clamp_reasoning(Some(High), &[]), None);
+        assert_eq!(clamp_reasoning(None, None, &ladder), Some(High));
+        assert_eq!(clamp_reasoning(Some(High), None, &[]), None);
+        // An explicit High on Opus 5.5 stays High; only the default moved.
+        let opus = Some("claude-opus-5-5");
+        assert_eq!(clamp_reasoning(Some(High), opus, &ladder), Some(High));
+        assert_eq!(clamp_reasoning(None, opus, &ladder), Some(Medium));
     }
 
     #[test]

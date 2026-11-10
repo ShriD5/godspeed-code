@@ -1198,6 +1198,16 @@ pub enum RowKind {
     ModelSwitch {
         label: SharedString,
     },
+    /// The host compacted the chat while it sat idle, before the prompt
+    /// cache expired ([`MessagePart::Compaction`]): one quiet line that
+    /// opens to the summary Claude kept.
+    IdleCompaction {
+        label: SharedString,
+        /// "182K → 9K tokens", when both sizes are known.
+        sizes: Option<SharedString>,
+        summary: Option<SharedString>,
+        failed: bool,
+    },
     /// The fork seam: a labeled divider between copied history and the
     /// chat's own turns.
     ForkMarker {
@@ -1933,6 +1943,46 @@ pub fn rows_for_entry(
                             entry_id: entry_id.clone(),
                             timestamp: None,
                             copy_text: None,
+                            compact_fold: None,
+                        });
+                    }
+                    MessagePart::Compaction {
+                        id: part_id,
+                        summary,
+                        pre_tokens,
+                        post_tokens,
+                        error,
+                    } => {
+                        let label = zeron_doc::compaction_label(
+                            error.as_deref().map(single_line).as_deref(),
+                        );
+                        let sizes = match (pre_tokens, post_tokens) {
+                            (Some(pre), Some(post)) => Some(SharedString::from(format!(
+                                "{} → {} tokens",
+                                compact_token_count(*pre),
+                                compact_token_count(*post)
+                            ))),
+                            _ => None,
+                        };
+                        let summary = summary
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(|s| SharedString::from(s.to_owned()));
+                        rows.push(Row {
+                            id: format!("{}#{}", entry.id, part_id).into(),
+                            version: fnv1a(label.as_bytes())
+                                ^ summary.as_ref().map_or(0, |s| s.len() as u64),
+                            turn_start: false,
+                            copy_text: summary.clone(),
+                            kind: RowKind::IdleCompaction {
+                                label: label.into(),
+                                sizes,
+                                summary,
+                                failed: error.is_some(),
+                            },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
                             compact_fold: None,
                         });
                     }
@@ -3622,6 +3672,8 @@ pub struct Transcript {
     /// Receipts opened into the full slip, with when they opened (the print
     /// animation plays only right after a click).
     receipts_open: HashMap<SharedString, Instant>,
+    /// Idle-compaction rows opened to their summary.
+    compactions_open: std::collections::HashSet<SharedString>,
     /// Receipt whose copy action is showing its check: (row, as image).
     receipt_copied: Option<(SharedString, bool)>,
     receipt_copy_task: Option<Task<()>>,
@@ -3962,6 +4014,7 @@ impl Transcript {
             show_receipts: crate::settings::show_receipts(cx),
             receipt_cache: HashMap::new(),
             receipts_open: HashMap::new(),
+            compactions_open: Default::default(),
             receipt_copied: None,
             receipt_copy_task: None,
             attachment_preview: None,
@@ -5228,6 +5281,7 @@ impl Transcript {
             self.copied_message_clear = None;
             self.receipt_cache.clear();
             self.receipts_open.clear();
+            self.compactions_open.clear();
             self.receipt_copied = None;
             self.receipt_copy_task = None;
             self.list.reset(0);
@@ -8453,6 +8507,20 @@ impl Transcript {
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
             RowKind::ModelSwitch { label } => model_switch_divider(label.clone(), &theme),
+            RowKind::IdleCompaction {
+                label,
+                sizes,
+                summary,
+                failed,
+            } => self.render_idle_compaction(
+                &row.id,
+                label,
+                sizes.as_ref(),
+                summary.as_ref(),
+                *failed,
+                &theme,
+                cx,
+            ),
             RowKind::Receipt { receipt } => self.render_receipt(&row.id, receipt, &theme, cx),
             RowKind::ConductorCard { card } => self.render_conductor_card(card, &theme, cx),
         };
@@ -8746,6 +8814,110 @@ impl Transcript {
                 })
             }),
         }
+    }
+
+    fn toggle_idle_compaction(&mut self, row_id: SharedString, cx: &mut Context<Self>) {
+        if !self.compactions_open.remove(&row_id) {
+            self.compactions_open.insert(row_id.clone());
+        }
+        if let Some(ix) = self.rows.iter().position(|row| row.id == row_id) {
+            self.list.remeasure_items(ix..ix + 1);
+        }
+        if self.pinned {
+            self.wake_spring();
+        }
+        cx.notify();
+    }
+
+    /// One muted line: what happened and how much smaller the context got.
+    /// With a summary it is a button that opens the summary below it.
+    #[allow(clippy::too_many_arguments)]
+    fn render_idle_compaction(
+        &mut self,
+        row_id: &SharedString,
+        label: &SharedString,
+        sizes: Option<&SharedString>,
+        summary: Option<&SharedString>,
+        failed: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.compactions_open.contains(row_id);
+        let muted = theme.text_muted.opacity(0.7);
+        let hover_key = format!("idle-compaction-hover-{row_id}");
+        let mut line = div()
+            .id(SharedString::from(format!("idle-compaction-{row_id}")))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .min_w_0()
+            .h(px(22.0))
+            .text_size(crate::typography::ui_rems(12.0))
+            .child(
+                crate::icons::icon(if failed {
+                    crate::icons::DANGER_TRIANGLE
+                } else {
+                    crate::icons::COLLAPSE_ARROWS
+                })
+                .size(px(12.0))
+                .flex_none()
+                .text_color(muted),
+            )
+            .child(div().min_w_0().truncate().child(label.clone()))
+            .when_some(sizes, |el, sizes| {
+                el.child(div().flex_none().child("·")).child(
+                    div()
+                        .flex_none()
+                        .font_family(theme.font_mono.clone())
+                        .text_size(crate::typography::ui_rems(11.5))
+                        .child(sizes.clone()),
+                )
+            });
+        if summary.is_some() {
+            let toggle_id = row_id.clone();
+            line = line
+                .cursor_pointer()
+                .text_color(motion::hover_blend(&hover_key, muted, theme.text))
+                .on_hover(motion::hover_listener(hover_key))
+                .role(gpui::Role::Button)
+                .aria_label(if open { "Hide summary" } else { "Show summary" })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.toggle_idle_compaction(toggle_id.clone(), cx);
+                }))
+                .child(
+                    crate::icons::icon(if open {
+                        crate::icons::ALT_ARROW_DOWN
+                    } else {
+                        crate::icons::ALT_ARROW_RIGHT
+                    })
+                    .size(px(11.0))
+                    .flex_none(),
+                );
+        } else {
+            line = line.text_color(muted);
+        }
+        let mut el = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(line);
+        if open && let Some(summary) = summary {
+            el = el.child(
+                div()
+                    .ml(px(18.0))
+                    .pl(px(10.0))
+                    .border_l_1()
+                    .border_color(theme.border)
+                    .min_w_0()
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .line_height(crate::typography::ui_rems(18.0))
+                    .text_color(theme.text_muted)
+                    .child(summary.clone()),
+            );
+        }
+        el.into_any_element()
     }
 
     fn toggle_receipt(&mut self, row_id: SharedString, cx: &mut Context<Self>) {
@@ -10532,6 +10704,22 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
             ),
         )
         .into_any_element()
+}
+
+/// A token count the way the context row reads it: 950, 12K, 1.2M.
+fn compact_token_count(tokens: u64) -> String {
+    match tokens {
+        n if n >= 1_000_000 => {
+            let tenths = (n + 50_000) / 100_000;
+            if tenths % 10 == 0 {
+                format!("{}M", tenths / 10)
+            } else {
+                format!("{}.{}M", tenths / 10, tenths % 10)
+            }
+        }
+        n if n >= 1_000 => format!("{}K", (n + 500) / 1_000),
+        n => n.to_string(),
+    }
 }
 
 fn model_switch_divider(label: SharedString, theme: &Theme) -> AnyElement {
@@ -13550,6 +13738,44 @@ mod tests {
             role: MessageRole::User,
             ..assistant(id, MessageStatus::Complete, vec![text_part("t0", text)])
         }
+    }
+
+    #[test]
+    fn an_idle_compaction_is_one_quiet_row_that_carries_its_summary() {
+        let entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![MessagePart::Compaction {
+                id: "c0".into(),
+                summary: Some("Kept: the parser fix.".into()),
+                pre_tokens: Some(182_400),
+                post_tokens: Some(9_100),
+                error: None,
+            }],
+        );
+        for compact in [false, true] {
+            let rows = rows_for_entry(&entry, false, compact, &mut parse);
+            assert_eq!(rows.len(), 1);
+            let RowKind::IdleCompaction {
+                label,
+                sizes,
+                summary,
+                failed,
+            } = &rows[0].kind
+            else {
+                panic!("expected the idle compaction row");
+            };
+            assert_eq!(label.as_ref(), zeron_doc::IDLE_COMPACTION_LABEL);
+            assert_eq!(sizes.as_ref().map(|s| s.as_ref()), Some("182K → 9K tokens"));
+            assert_eq!(
+                summary.as_ref().map(|s| s.as_ref()),
+                Some("Kept: the parser fix.")
+            );
+            assert!(!failed);
+        }
+        assert_eq!(compact_token_count(950), "950");
+        assert_eq!(compact_token_count(1_000_000), "1M");
+        assert_eq!(compact_token_count(1_250_000), "1.3M");
     }
 
     #[test]

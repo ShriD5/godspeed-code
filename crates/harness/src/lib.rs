@@ -255,6 +255,13 @@ pub trait Harness: Send + Sync {
     fn fallback_models(&self) -> Vec<Model> {
         Vec::new()
     }
+    /// The API-key credential the agent's CLI says it bills when it is
+    /// signed in with a key rather than a subscription (`ANTHROPIC_API_KEY`,
+    /// …), read from discovery the harness already ran. Never spawns or
+    /// waits; `None` when unknown or not an API key.
+    fn cached_api_key_source(&self) -> Option<String> {
+        None
+    }
     async fn model_catalog(&self, _force: bool) -> Result<ModelCatalog, HarnessError> {
         self.models().await.map(|models| ModelCatalog {
             models,
