@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@3a6c7aa3 (2026-11-07)
+Synced through: zeronsh/zeron@82a81968 (2026-11-10)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -104,6 +104,17 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
   - Partly ported: 3d9d08bf brought only its engine half (a steer carries a queued row's
     files); 76ca2e17's mock dropped the background-tray mode, and Godspeed has no
     `note_user_stop`.
+- Deferred 2026-11-10:
+  - a02a326b and 11420d69 (iOS Activity, Sleep, Settings → Activity; `Client::sleep_session`
+    and `stop_waiting`, `SessionRow` sleep/wait fields): they need `Chat::sleep`/`sleep_state`,
+    `SessionWaiting` and `StopWaiting` from the deferred wait-on-background chain above.
+  - 533e89d6 (Linux "texture must exist" fix): pins zui 15ee708 and gpui-base cab50b0, which
+    sit on the b564a34/59f8924 pins Godspeed hasn't taken (see c31124aa); a fork bump is the
+    owner's call.
+  - zgx-only: d5b65b78, 89b0d156 (plugin 3D scenes), 9fe52584 (plugin Open on GitHub).
+  - Partly ported: 68c7ea28 (long chats on other devices) keeps Godspeed's relay without
+    per-conn device checks and its own turn status report; respond_to_input still reads the
+    whole transcript when it names a question older than the newest.
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
