@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@82a81968 (2026-11-10)
+Synced through: zeronsh/zeron@7437e3e9 (2026-11-11)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
