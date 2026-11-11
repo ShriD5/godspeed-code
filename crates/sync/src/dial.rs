@@ -49,6 +49,19 @@ pub async fn connect_ws(url: &str) -> Result<WsStream, WsError> {
         })?
 }
 
+/// tungstenite's default refuses any frame over 16 MiB, and a Durable Object
+/// sends each message as one frame however the sender fragmented it: a host's
+/// large reply then ended the whole link in the reader. The cap only stops
+/// runaways, like the local socket's (`zeron_rpc`'s `ws::config`).
+fn ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    const MAX_MESSAGE_BYTES: usize = 512 << 20;
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(MAX_MESSAGE_BYTES),
+        max_frame_size: Some(MAX_MESSAGE_BYTES),
+        ..Default::default()
+    }
+}
+
 async fn connect_ws_inner(url: &str) -> Result<WsStream, WsError> {
     let request = url.into_client_request()?;
     let uri = request.uri();
@@ -72,7 +85,8 @@ async fn connect_ws_inner(url: &str) -> Result<WsStream, WsError> {
     let _ = stream.set_nodelay(true);
     let (stream, progress) = crate::socket::ProgressIo::new(stream);
     let (ws, _response) =
-        tokio_tungstenite::client_async_tls_with_config(request, stream, None, None).await?;
+        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(ws_config()), None)
+            .await?;
     crate::wake::notify_online();
     Ok(crate::socket::Connection {
         socket: ws,
