@@ -735,6 +735,10 @@ enum MutateParams {
     DeleteSpace { space_id: String },
     #[serde(rename_all = "camelCase")]
     RenameChat { chat_id: String, title: String },
+    /// Generate a new title from the chat's conversation, replacing the
+    /// current one. Returns at once; the title lands when the model answers.
+    #[serde(rename_all = "camelCase")]
+    RegenerateChatTitle { chat_id: String },
     /// Set the chat's checkout branch label — the sidebar's
     /// "project · branch" sub-line.
     #[serde(rename_all = "camelCase")]
@@ -1763,6 +1767,12 @@ impl EngineRpc {
                 .rename_chat(&chat_id, &title)
                 .map_err(failed)
                 .map(drop),
+            MutateParams::RegenerateChatTitle { chat_id } => {
+                if self.workspace.chat(&chat_id).map_err(failed)?.is_none() {
+                    return Err(RpcError::Failed(format!("no chat {chat_id}")));
+                }
+                self.sessions.regenerate_title(&chat_id).map_err(failed)
+            }
             MutateParams::SetChatBranch { chat_id, branch } => self
                 .workspace
                 .set_chat_branch(&chat_id, &branch)

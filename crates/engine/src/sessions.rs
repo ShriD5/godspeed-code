@@ -560,6 +560,22 @@ impl SessionsEngine {
         let _ = self.inner.titles.set(titles);
     }
 
+    /// Retitle `chat_id` from its conversation (see
+    /// [`crate::titles::TitleGenerator::regenerate`]).
+    pub fn regenerate_title(&self, chat_id: &str) -> Result<(), EngineError> {
+        let (Some(titles), Some(docs)) = (self.inner.titles.get(), self.inner.doc_host()) else {
+            return Err(EngineError::Other(
+                "title generation is not available".into(),
+            ));
+        };
+        if !titles.regenerate(chat_id, docs) {
+            return Err(EngineError::Other(
+                "a title is already being generated".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Wire the turn-start listener (called once at engine assembly).
     pub fn set_turn_listener(&self, listener: TurnListener) {
         let _ = self.inner.turn_listener.set(listener);
