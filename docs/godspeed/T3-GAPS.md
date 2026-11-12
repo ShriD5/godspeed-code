@@ -54,7 +54,6 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Appearance | Diff color scheme | `settingsSearch.ts` ("Diff colors") | MISSING: diff colors come from the theme | low |
 | Appearance | Separate prompt font | `settingsSearch.ts` ("Prompt font", "Separate fonts") | PARTIAL: UI, code and terminal fonts (`settings/appearance.rs`) | low |
 | Appearance | Time format (relative or absolute, 12 or 24 hour); font smoothing; environment-identification badge | `apps/web/src/timestampFormat.ts`; `settingsSearch.ts` ("Time format", "Font smoothing", "Environment identification") | MISSING | low |
-| Sidebar | Regenerate a thread's title on demand | `apps/web/src/components/Sidebar.tsx` ("Failed to regenerate thread title") | MISSING: manual rename only (no regenerate RPC in `crates/engine/src/titles.rs` or `crates/proto`) | med |
 | Sidebar | Auto-settle a thread when its PR merges; keep threads that have an open PR | `settingsSearch.ts` ("Auto-settle merged threads", "Keep threads with a PR"); `packages/contracts/src/settings.ts` (`sidebarAutoSettleOnMerge`) | PARTIAL: auto-settle after 1 day, 3 days or 1 week idle only (`crates/ui/src/settings/thread_lifecycle.rs`); no merged-PR trigger, no keep-PR rule | med |
 | Sidebar | Compact idle threads before the prompt cache expires | `packages/contracts/src/settings.ts` (`idleCompaction`); `settingsSearch.ts` ("Compact idle threads") | MISSING (T3-WATCH lists it as queued) | med |
 | Sidebar | Unsent-draft rows in the sidebar, with open and discard | `apps/web/src/components/sidebar/SidebarDraftBlock.tsx` | MISSING: drafts persist per chat but never appear as sidebar rows | low |
@@ -63,6 +62,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Composer | Default setting: a follow-up queues or steers the running turn | `packages/contracts/src/settings.ts` (`followUpBehavior`); `settingsSearch.ts` ("Follow-up behavior") | MISSING: chosen per message, no default setting | low |
 | Composer | Send shortcut modes (Enter / Mod+Enter multiline / Mod+Enter) | `packages/contracts/src/settings.ts` (`sendShortcut`) | PARTIAL: Enter or Mod+Enter (`settings.rs` `ComposerSendBehavior`) | low |
 | Composer | Collapse the composer to one line while scrolling the conversation | `apps/web/src/components/chat/ChatComposer.tsx`; `packages/contracts/src/settings.ts` (`composerCollapseOnScroll`) | MISSING | low |
+| Composer | Reply to an assistant response from its hover actions; sent quotes show as inset cards | `apps/web/src` (T3 `c0f85e7f79`, `1a8ecc64b7`) | PARTIAL: Ask quotes a text selection (`transcript.rs`); no whole-response Reply, sent quotes are plain blockquotes | med |
 | Composer | Hide or reorder models in the picker | `packages/contracts/src/settings.ts` (`hiddenModels`, `modelOrder`); `apps/web/src/modelPickerVisibility.ts` | MISSING: favorites only (`crates/ui/src/settings/composer.rs`) | med |
 | Composer | Model picker keys: Mod+1-9 inside the picker; Mod+Shift+arrows to switch provider | `packages/shared/src/keybindings.ts` (`modelPicker.*`) | PARTIAL: arrow-key navigation in the compact picker (`crates/ui/src/pickers/compact.rs`) | low |
 | Composer | Attach a pull request to the prompt as a context chip | `apps/web/src/components/composerContextPresentation.tsx`; `apps/web/src/components/chat/UserMessageContextChips.tsx` | MISSING | low |
@@ -220,6 +220,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Worktree chats still get a branch when the repo has a plain branch named like the prefix (`godspeed` flattens to `godspeed-<name>`), and a branch nested under a candidate name counts as taken | #85 |
 | Antigravity turns that go silent mid-prompt end with an error after 15 minutes instead of staying Working (open tools and approvals pause the clock) | #91 |
 | Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |

@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@337c5858c3 (2026-11-05)
+Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
 
 ## Rules
 
@@ -23,6 +23,18 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
+| 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
+| 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |
+| 2026-11-12 | A killed Claude process names its signal on the failed turn (`cdbfae86cd`) | queued (`harness/src/lib.rs` already says "killed by signal N"; check the Claude failure path uses it) |
+| 2026-11-12 | Show a context handoff when a provider conversation can't be resumed (`7d8f6c9481`, `9f1e97de60`) | queued (we start fresh silently when resume fails) |
+| 2026-11-12 | OpenCode native goals, todos, shell and image jobs mirrored into T3 (`0e2841d5a7`, `71a1c49b75`, `ed52af3a47`, `3a8c250cb0`) | queued (OpenCode todo updates into our checklist; check `harness/src/opencode`) |
+| 2026-11-12 | Idle compaction no longer runs during delegated work (`e8afdb0624`) | skipped (`engine/src/idle_compaction.rs` already blocks on live subagents and a running parent) |
+| 2026-11-12 | Switch the UI language, with eight translations (`2a6b2c8298` and translation commits) | skipped (Godspeed's UI is English-only; a large i18n layer for little gain now) |
+| 2026-11-12 | Screen readers hear the agent's messages during a turn (`40c3682543`) | skipped (GPUI accessibility APIs are limited; revisit with GPUI a11y support) |
+| 2026-11-12 | Composer strip names the worktree folder (`b6d3097379`); label chip descriptions on hover (`dea8472438`) | skipped (minor) |
+| 2026-11-12 | GitLab MR revert and thread resolve, GitHub unvouched-PR rules, Muse/xAI/Antigravity usage via CLIProxyAPI, Fable resets, Windows `t3 service`, scenario e2e scripts (`362ef9a88a`, `f3da8ff63b`, `1e25ef9e57`, `44ebb2fe57`, `9e1f81c788`, `93c10239b4`, `ae142932d0`) | skipped (no GitLab host, account fallback/usage page out of scope, T3-internal) |
+| 2026-11-12 | ~640 minor fixes: mobile, desktop, SSH, Pi, Cursor, relay, usage pricing, storage cleanup, sidebar and terminal polish, perf in T3's server/web, copy edits, docs, CI | skipped (internal/minor) |
 | 2026-11-01 | Worktree chats get a branch when a plain branch named like the prefix exists (`t3` blocks `t3/...`), and names with a nested branch under them count as taken (`1917c8a33a`) | PR #85 |
 | 2026-11-01 | Child-thread approvals show in the parent with Approve/Decline, so you answer without switching threads; Claude dangerous-rm checks in bypass mode deny with the warning (`70f475f511`) | queued (lanes card shows a child's Needs approval status and opens it in the right pane; no inline card in the parent) |
 | 2026-11-01 | Stopping a Claude turn no longer hangs when interrupt is never acknowledged (`7195b69954`) | queued (with the force-stop item: time-box Claude interrupt in `harness/src/claude`) |
