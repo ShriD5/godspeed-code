@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #TBD |
+| 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |
 | 2026-11-12 | A killed Claude process names its signal on the failed turn (`cdbfae86cd`) | queued (`harness/src/lib.rs` already says "killed by signal N"; check the Claude failure path uses it) |
