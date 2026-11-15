@@ -476,6 +476,48 @@ async fn supports_thinking_display(exe: &std::path::Path) -> bool {
     verdict
 }
 
+/// The API-key credential Claude Code bills, from the `account` its
+/// initialize response reports (T3 Code's "Claude API Key" auth label): a
+/// first-party login whose token source is an API key or auth token, or
+/// whose `apiKeySource` names a key in use (`ANTHROPIC_API_KEY`,
+/// `apiKeyHelper`, `/login managed key`). `None` for a Claude subscription
+/// (claude.ai OAuth, `apiKeySource: "none"`) and for third-party backends
+/// (Bedrock, Vertex, a gateway), which bill elsewhere.
+fn api_key_source(response: &Value) -> Option<String> {
+    let account = response.get("response")?.get("account")?;
+    let field = |key: &str| {
+        account
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    if field("apiProvider").is_some_and(|provider| provider != "firstParty") {
+        return None;
+    }
+    if let Some(source) = field("tokenSource") {
+        let normalized: String = source
+            .chars()
+            .filter(|c| !matches!(c, ' ' | '_' | '-'))
+            .flat_map(char::to_lowercase)
+            .collect();
+        if matches!(
+            normalized.as_str(),
+            "apikey" | "anthropicapikey" | "anthropicauthtoken"
+        ) {
+            return Some(source.to_owned());
+        }
+    }
+    field("apiKeySource")
+        .filter(|source| {
+            matches!(
+                *source,
+                "ANTHROPIC_API_KEY" | "apiKeyHelper" | "/login managed key"
+            )
+        })
+        .map(str::to_owned)
+}
+
 /// `commands` out of an `initialize` control_response payload
 /// (`response.response.commands`: name / description / argumentHint).
 fn parse_initialize_commands(response: &Value) -> Vec<SlashCommand> {
@@ -570,6 +612,10 @@ impl Harness for ClaudeHarness {
     /// Credential and executable identity scopes both initialize and catalog caches.
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
         crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
+    }
+    fn cached_api_key_source(&self) -> Option<String> {
+        let key = self.model_context().ok()??.key();
+        api_key_source(&self.initialize.cached(key)?)
     }
     fn fallback_models(&self) -> Vec<Model> {
         catalog::configured_models()
@@ -2105,6 +2151,37 @@ fn updated_input_with_answers(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn api_key_logins_are_named_and_subscriptions_are_not() {
+        let account = |account: Value| json!({ "response": { "account": account } });
+        // A Claude subscription: no key in use.
+        let max = account(json!({
+            "email": "a@b.c", "subscriptionType": "max", "apiKeySource": "none",
+            "apiProvider": "firstParty"
+        }));
+        assert_eq!(api_key_source(&max), None);
+        // An auth token in the environment reads as an API key (T3 Code).
+        let token = account(json!({
+            "tokenSource": "ANTHROPIC_AUTH_TOKEN", "apiKeySource": "none",
+            "apiProvider": "firstParty"
+        }));
+        assert_eq!(api_key_source(&token).as_deref(), Some("ANTHROPIC_AUTH_TOKEN"));
+        // A key the CLI says it bills, even beside a subscription.
+        for source in ["ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key"] {
+            let keyed = account(json!({
+                "subscriptionType": "max", "tokenSource": "none", "apiKeySource": source
+            }));
+            assert_eq!(api_key_source(&keyed).as_deref(), Some(source));
+        }
+        // Third-party backends bill elsewhere.
+        let bedrock = account(json!({
+            "apiKeySource": "ANTHROPIC_API_KEY", "apiProvider": "bedrock"
+        }));
+        assert_eq!(api_key_source(&bedrock), None);
+        // Older CLIs report no account at all.
+        assert_eq!(api_key_source(&json!({ "response": {} })), None);
+    }
 
     #[test]
     fn parses_questions_tolerantly() {

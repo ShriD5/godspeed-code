@@ -335,6 +335,34 @@ pub enum ReasoningLevel {
     Ultrathink,
 }
 
+/// Claude models whose own default effort is Medium: Claude Code runs them
+/// at medium when no `--effort` is passed, and T3 Code's model manifest
+/// defaults them the same way. Other Claude models (Sonnet, older Opus)
+/// default to High. Prefixes, so dated snapshots and `[1m]` rows match.
+const MEDIUM_EFFORT_MODELS: &[&str] = &["claude-opus-5-5", "claude-fable-5", "claude-haiku-5-5"];
+
+/// The effort a model runs at when nobody picked one: Medium for the models
+/// in [`MEDIUM_EFFORT_MODELS`], otherwise High when the ladder offers it,
+/// then Medium, then the ladder's first entry. `None` only for ladder-less
+/// models (Haiku 4.5's thinking toggle instead).
+pub fn default_reasoning_for(
+    model: Option<&str>,
+    ladder: &[ReasoningLevel],
+) -> Option<ReasoningLevel> {
+    let medium_first =
+        model.is_some_and(|id| MEDIUM_EFFORT_MODELS.iter().any(|p| id.starts_with(p)));
+    let preferred: &[ReasoningLevel] = if medium_first {
+        &[ReasoningLevel::Medium, ReasoningLevel::High]
+    } else {
+        &[ReasoningLevel::High, ReasoningLevel::Medium]
+    };
+    preferred
+        .iter()
+        .find(|level| ladder.contains(level))
+        .or(ladder.first())
+        .copied()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxLevel {
@@ -921,6 +949,20 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window: Option<String>,
     },
+    /// How long the provider keeps the prompt cache the last request wrote:
+    /// Claude reports 1 hour on subscription logins and 5 minutes on API
+    /// keys. Engine state for idle compaction, never stream traffic: the
+    /// engine consumes it before publishing, as it does [`Self::UsageLimit`].
+    #[serde(rename_all = "camelCase")]
+    PromptCache {
+        ttl_secs: u64,
+    },
+    /// The summary a context compaction left the agent with. Engine state,
+    /// like [`Self::PromptCache`]: an idle compaction's transcript row shows
+    /// it; every other compaction drops it.
+    CompactionSummary {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
     InputRequested {
         request_id: String,
@@ -974,6 +1016,38 @@ pub enum AgentEvent {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_models_that_default_to_medium_effort_start_there() {
+        use super::ReasoningLevel::*;
+        use super::default_reasoning_for as default;
+        let full = [Low, Medium, High, XHigh, Max, Ultracode, Ultrathink];
+        for id in [
+            "claude-opus-5-5",
+            "claude-opus-5-5[1m]",
+            "claude-opus-5-5-20261001",
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-haiku-5-5",
+        ] {
+            assert_eq!(default(Some(id), &full), Some(Medium), "{id}");
+        }
+        // Sonnet and older Opus keep High, as in Claude Code and T3 Code.
+        for id in [
+            "claude-sonnet-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+        ] {
+            assert_eq!(default(Some(id), &full), Some(High), "{id}");
+        }
+        assert_eq!(default(None, &full), Some(High));
+        // A ladder without the preferred level falls through.
+        assert_eq!(default(Some("claude-opus-5-5"), &[Low, High]), Some(High));
+        assert_eq!(default(Some("gpt-6"), &[Minimal, Low, Medium]), Some(Medium));
+        assert_eq!(default(Some("x"), &[Minimal, Low]), Some(Minimal));
+        assert_eq!(default(Some("claude-haiku-4-5"), &[]), None);
+    }
+
     #[test]
     fn harness_ids_keep_their_wire_names_and_registry_agents_round_trip() {
         for harness in HarnessId::BUILT_IN {

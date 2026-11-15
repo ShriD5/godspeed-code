@@ -143,6 +143,13 @@ pub(crate) struct MessageFrame {
     /// Terse assistant-level error code (`rate_limit`, `billing_error`, …).
     #[serde(default)]
     pub error: Option<String>,
+    /// A user frame the CLI replays (a stdin line or a local command's
+    /// output echoed back), not new conversation.
+    #[serde(default, rename = "isReplay")]
+    pub is_replay: bool,
+    /// The user frame holding a compaction's summary, when the CLI marks it.
+    #[serde(default, rename = "isCompactSummary")]
+    pub is_compact_summary: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
