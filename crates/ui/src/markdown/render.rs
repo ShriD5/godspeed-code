@@ -110,11 +110,16 @@ pub struct TaskUi {
     pub toggle: Option<Rc<dyn Fn(&super::parser::TaskMarker, &mut Window, &mut gpui::App)>>,
 }
 
+/// Draws one inline image in place of its text, or declines it (`None`).
+pub type ImageUi =
+    Rc<dyn Fn(&super::parser::InlineImage, SharedString, &Theme) -> Option<AnyElement>>;
+
 #[derive(Clone)]
 pub struct MediaUi {
     pub diagram: Option<Rc<dyn Fn(&str, SharedString, &Theme) -> DiagramView>>,
-    /// `None` keeps inline images in their ordinary text rendering.
-    pub image: Option<Rc<dyn Fn(&super::parser::InlineImage, SharedString, &Theme) -> AnyElement>>,
+    /// `None` keeps inline images in their ordinary text rendering; so does
+    /// the closure, per image, by returning `None`.
+    pub image: Option<ImageUi>,
 }
 
 /// How a Mermaid fence presents itself on the owning surface.
@@ -1870,6 +1875,40 @@ pub(crate) fn selection_test_position(needle: &str) -> gpui::Point<gpui::Pixels>
     })
 }
 
+/// Window point at the start of a settled selection, for the Ask chip.
+/// Reads the previous paint's registry, which is what a render pass can see.
+pub(crate) fn selection_ask_origin() -> Option<gpui::Point<gpui::Pixels>> {
+    let (surface, spans) = super::selection::settled_spans()?;
+    REGISTRY.with(|registry| {
+        let registry = registry.borrow();
+        for span in spans {
+            if span.range.is_empty() {
+                continue;
+            }
+            let Some(entry) = registry
+                .iter()
+                .find(|entry| entry.surface == surface && entry.key.as_ref() == span.key.as_str())
+            else {
+                continue;
+            };
+            let range = entry.offsets.as_ref().map_or_else(
+                || span.range.clone(),
+                |offsets| offsets.displayed_range(span.range.clone()),
+            );
+            if let Some(rect) = range_rects(&entry.layout, &range, 0.0, 0.0)
+                .into_iter()
+                .next()
+            {
+                return Some(rect.origin);
+            }
+            if let Some(position) = entry.layout.position_for_index(range.start) {
+                return Some(position);
+            }
+        }
+        None
+    })
+}
+
 #[cfg(test)]
 pub(super) fn selection_test_snapshot(
     key: &str,
@@ -2227,31 +2266,34 @@ fn text_element(
     window: &Window,
 ) -> AnyElement {
     if let Some(image_ui) = opts.media.as_ref().and_then(|media| media.image.as_ref()) {
-        if runs.iter().any(|run| run.style.image.is_some()) {
+        // The images the host draws; the ones it declines stay text.
+        let drawn: Vec<(usize, AnyElement)> = runs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, run)| {
+                let id = format!("{}-image-{ix}-{index}", opts.row_key).into();
+                Some((index, image_ui(run.style.image.as_ref()?, id, theme)?))
+            })
+            .collect();
+        if !drawn.is_empty() {
             let mut elements = Vec::new();
             let mut start = 0;
-            for (index, run) in runs.iter().enumerate() {
-                if let Some(image) = &run.style.image {
-                    if start < index {
-                        elements.push(text_element(
-                            &runs[start..index],
-                            size,
-                            line_height,
-                            bold_default,
-                            top_ix,
-                            ix.wrapping_mul(4099).wrapping_add(start + 1000),
-                            opts,
-                            theme,
-                            window,
-                        ));
-                    }
-                    elements.push(image_ui(
-                        image,
-                        format!("{}-image-{ix}-{index}", opts.row_key).into(),
+            for (index, image) in drawn {
+                if start < index {
+                    elements.push(text_element(
+                        &runs[start..index],
+                        size,
+                        line_height,
+                        bold_default,
+                        top_ix,
+                        ix.wrapping_mul(4099).wrapping_add(start + 1000),
+                        opts,
                         theme,
+                        window,
                     ));
-                    start = index + 1;
                 }
+                elements.push(image);
+                start = index + 1;
             }
             if start < runs.len() {
                 elements.push(text_element(

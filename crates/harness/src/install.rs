@@ -54,7 +54,10 @@ fn methods(id: HarnessId, platform: Platform) -> Vec<Method> {
     match id {
         // Manual only for now: the Homebrew cask (`muse-code`) is the
         // supported install, and Godspeed does not drive casks yet.
-        Mock | Muse => vec![],
+        // Registry agents install from Settings → Providers → More agents.
+        Mock | Muse | Acp(_) => vec![],
+        Fx if windows => vec![],
+        Fx => vec![Shell("curl -fsSL https://fx.sh/setup.sh | bash", "bash")],
         Antigravity => vec![Archive],
         ClaudeCode if windows => vec![PowerShell("irm https://claude.ai/install.ps1 | iex")],
         ClaudeCode => vec![Shell(
@@ -161,7 +164,8 @@ pub fn manual_command(id: HarnessId) -> Option<&'static str> {
         Hermes => "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
         Devin => "curl -fsSL https://cli.devin.ai/install.sh | bash",
         Muse => "brew install --cask muse-code",
-        Antigravity | Mock => return None,
+        Fx => "curl -fsSL https://fx.sh/setup.sh | bash",
+        Antigravity | Mock | Acp(_) => return None,
     })
 }
 
@@ -179,6 +183,8 @@ fn cli_and_dir(id: HarnessId) -> (&'static str, &'static str) {
         Muse => ("muse", "the Homebrew bin"),
         Antigravity => ("agy_acp_server", "~/.godspeed/adapters"),
         Mock => ("mock", "PATH"),
+        Fx => ("fx", "~/.local/bin"),
+        Acp(agent) => (agent.as_str(), "~/.godspeed/adapters/acp-registry"),
     }
 }
 
@@ -196,6 +202,9 @@ pub fn installed(id: HarnessId) -> bool {
         Muse => crate::MuseHarness::new().installed(),
         Antigravity => crate::AcpHarness::antigravity().installed(),
         Mock => false,
+        Fx => crate::AcpHarness::fx().installed(),
+        // Registry agents install from Settings → Providers → More agents.
+        Acp(_) => false,
     }
 }
 
@@ -396,7 +405,7 @@ async fn run(
 mod tests {
     use super::*;
 
-    const IDS: [HarnessId; 11] = [
+    const IDS: [HarnessId; 12] = [
         HarnessId::ClaudeCode,
         HarnessId::Codex,
         HarnessId::Cursor,
@@ -404,6 +413,7 @@ mod tests {
         HarnessId::Pi,
         HarnessId::Grok,
         HarnessId::Hermes,
+        HarnessId::Fx,
         HarnessId::Devin,
         HarnessId::Antigravity,
         HarnessId::Muse,
@@ -418,6 +428,7 @@ mod tests {
                 assert_eq!(
                     list.is_empty(),
                     matches!(id, HarnessId::Mock | HarnessId::Muse)
+                        || (id == HarnessId::Fx && platform == Platform::Windows)
                 );
                 for method in list {
                     assert!(available(method, platform, &|_| true, true));

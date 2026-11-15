@@ -249,6 +249,15 @@ final class AppModel {
         await MainActor.run { onSignedIn?() }
     }
 
+    /// "Look around with sample data" on the sign-in screen: the offline
+    /// demo workspace (the `-demo` fixtures in crates/client/src/demo), for
+    /// anyone without a Mac running Godspeed — App Review included. Nothing
+    /// is stored or sent; Settings → Leave Sample Data returns to sign-in.
+    @MainActor func startSampleData() {
+        guard client == nil, start(.demo(options: Self.demoOptions())) else { return }
+        onSignedIn?()
+    }
+
     /// The user signing out: this device forgets the account's local docs.
     @MainActor func signOut() {
         voice.stop()

@@ -2,7 +2,10 @@
 # macOS packaging: build the release binary for the host arch and produce
 #   target/package/godspeed-<version>-macos-<arch>.dmg          (user download)
 #   target/package/godspeed-<version>-macos-<arch>-app.tar.gz   (auto-updater)
-# containing Godspeed.app (unsigned unless CODESIGN_IDENTITY is set).
+#   target/package/manifest.json                                (auto-updater feed)
+# containing Godspeed.app (unsigned unless CODESIGN_IDENTITY is set). Upload all
+# three to the GitHub release tagged v<version>: the in-app updater reads
+# releases/latest/download/manifest.json and installs the app tarball.
 #
 # Usage: scripts/package-macos.sh
 # Env:   CODESIGN_IDENTITY="Developer ID Application: …" to sign the bundle.
@@ -137,3 +140,8 @@ if $NOTARIZE; then
   xcrun stapler staple "$DMG"
 fi
 echo "packaged: $DMG"
+
+# The updater's feed document: version + sha256/size of the final artifacts
+# (after signing and stapling, so the checksums match what gets uploaded).
+python3 "$ROOT/scripts/release-manifest.py" --version "$VERSION" --dir "$OUT_DIR" \
+  "$DMG" "$APP_TARBALL"

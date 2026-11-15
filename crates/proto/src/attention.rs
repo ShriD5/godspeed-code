@@ -26,6 +26,10 @@ pub enum AttentionKind {
     Limited,
     /// Finished and not seen yet.
     Finished,
+    /// A watched pull request needs a look: failed checks, new review
+    /// comments, or a merge conflict. Its chat was woken (or the wake cap
+    /// held it back).
+    PullRequest,
 }
 
 impl AttentionKind {
@@ -37,6 +41,7 @@ impl AttentionKind {
             Self::Failed => "Failed",
             Self::Limited => "Limited",
             Self::Finished => "Finished",
+            Self::PullRequest => "Pull requests",
         }
     }
 }
@@ -130,7 +135,8 @@ impl AttentionItem {
             (AttentionKind::Failed, _) => 4,
             (AttentionKind::Limited, _) => 5,
             (AttentionKind::TimedOut, _) => 6,
-            (AttentionKind::Finished, _) => 7,
+            (AttentionKind::PullRequest, _) => 7,
+            (AttentionKind::Finished, _) => 8,
         }
     }
 }

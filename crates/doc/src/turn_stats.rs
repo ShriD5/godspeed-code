@@ -17,6 +17,11 @@ pub struct TurnStats {
     /// `HarnessId`, so a harness this build doesn't know still parses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+    /// The display name of the provider instance the turn ran on (Settings →
+    /// Providers → Instances); `None` for the provider's default instance.
+    /// Attribution stays by `harness` — this only labels the receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
     /// The model the harness reported (or the one the run asked for).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -103,6 +108,7 @@ mod tests {
     #[test]
     fn round_trips_and_tolerates_unknown_fields() {
         let stats = TurnStats {
+            instance: None,
             harness: Some("claude-code".into()),
             model: Some("claude-opus-4-7".into()),
             effort: Some("high".into()),

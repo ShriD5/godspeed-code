@@ -44,7 +44,12 @@ use crate::theme::Theme;
 mod chip;
 pub(crate) mod continue_menu;
 pub(crate) mod limit_banner;
+mod prompt_recall;
+pub(crate) mod prompt_stash;
+mod recall_stash;
 mod relay_banner;
+mod zoomie;
+pub use zoomie::ZoomieCreated;
 pub use chip::ChipKind;
 use chip::*;
 pub(crate) use chip::{
@@ -328,6 +333,17 @@ pub fn comment_strip_height(count: usize) -> f32 {
         return 0.0;
     }
     STRIP_PAD_TOP + crate::badges::BADGE_HEIGHT
+}
+
+pub const CITATION_ROW_HEIGHT: f32 = 28.0;
+pub const CITATION_ROW_GAP: f32 = 6.0;
+
+/// Height the quote strip adds for `count` staged passages (0 when empty).
+pub fn citation_strip_height(count: usize) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    STRIP_PAD_TOP + count as f32 * CITATION_ROW_HEIGHT + (count - 1) as f32 * CITATION_ROW_GAP
 }
 
 /// Compact↔expanded flip morph (round 9): the flip used to snap between the
@@ -946,6 +962,7 @@ actions!(
         MentionTab,
         ToggleDictation,
         OutdentList,
+        StashPrompt,
     ]
 );
 
@@ -963,6 +980,25 @@ const MENTION_TOOLTIP_HEIGHT: f32 = 24.0;
 // rest of the padding, while preserving the chip's atomic wrapping and
 // source/caret projection.
 const MENTION_SIDE_PAD: &str = "\u{00A0}";
+/// Code lines an annotation chip's hover card shows.
+const ANNOTATION_SNIPPET_LINES: usize = 4;
+/// Air between an annotation chip and its preview.
+const ANNOTATION_TOOLTIP_GAP: f32 = 6.0;
+
+/// The hover card's element row, above its code.
+const ANNOTATION_HEADER_HEIGHT: f32 = 28.0;
+
+fn annotation_tooltip_height(annotation: &zeron_proto::annotation::BrowserAnnotation) -> f32 {
+    let lines = annotation.snippet(ANNOTATION_SNIPPET_LINES).lines().count();
+    // Border, element row, hairline, then the code with its padding.
+    let code = if lines == 0 {
+        0.0
+    } else {
+        1.0 + lines as f32 * 16.0 + 14.0
+    };
+    2.0 + ANNOTATION_HEADER_HEIGHT + code
+}
+
 /// A private URI scheme keeps file mentions distinguishable from ordinary
 /// Markdown links pasted into the composer.
 use zeron_proto::file_mentions::{FILE_MENTION_SCHEME, local_file_link, local_path_is_safe};
@@ -988,6 +1024,8 @@ struct FileMentionLink {
     kind: ChipKind,
     /// The draft number when this chip references a staged attachment.
     attachment: Option<u32>,
+    /// The element an annotation chip carries.
+    annotation: Option<std::sync::Arc<zeron_proto::annotation::BrowserAnnotation>>,
 }
 
 impl FileMentionLink {
@@ -1056,6 +1094,7 @@ fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
                 ChipKind::File
             },
             attachment: None,
+            annotation: None,
         })
         .collect()
 }
@@ -1076,6 +1115,8 @@ struct MentionTooltipTarget {
     /// Set for attachment chips. An image chip has no tooltip: a click opens
     /// the picture full size instead.
     attachment: Option<u32>,
+    /// Set for annotation chips: the hover shows the element's code.
+    annotation: Option<std::sync::Arc<zeron_proto::annotation::BrowserAnnotation>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1317,6 +1358,7 @@ impl TextProjection {
                         ChipKind::Skill
                     },
                     attachment: None,
+                    annotation: None,
                 }),
         );
         links.extend(
@@ -1328,6 +1370,7 @@ impl TextProjection {
                     path: link.chat_id,
                     kind: ChipKind::Chat,
                     attachment: None,
+                    annotation: None,
                 }),
         );
         links.extend(
@@ -1349,6 +1392,19 @@ impl TextProjection {
                         ChipKind::File
                     },
                     attachment: Some(mention.index),
+                    annotation: None,
+                }),
+        );
+        links.extend(
+            zeron_proto::annotation::annotation_links(raw)
+                .into_iter()
+                .map(|(range, annotation)| FileMentionLink {
+                    range,
+                    basename: annotation.label(),
+                    path: annotation.element.clone(),
+                    kind: ChipKind::Annotation,
+                    attachment: None,
+                    annotation: Some(std::sync::Arc::new(annotation)),
                 }),
         );
         links.sort_by_key(|link| link.range.start);
@@ -1560,6 +1616,7 @@ fn has_mention_scheme(raw: &str) -> bool {
         || raw.contains(zeron_proto::attachment_mentions::IMAGE_MENTION_SCHEME)
         || raw.contains(zeron_proto::attachment_mentions::ATTACHMENT_MENTION_SCHEME)
         || raw.contains(zeron_proto::chat_mentions::CHAT_MENTION_SCHEME)
+        || raw.contains(zeron_proto::annotation::ANNOTATION_SCHEME)
 }
 
 /// Project a sent message's raw Markdown for transcript display: mention links
@@ -1877,6 +1934,11 @@ pub enum ComposerInputEvent {
     PastedLongText(String),
     /// An image chip was clicked: open its picture full size.
     OpenAttachment(u32),
+    /// The pointer moved onto (or off) an annotation chip.
+    AnnotationHovered(Option<u32>),
+    /// Up at the start of the draft (or Down while browsing): step through
+    /// the prompts sent in this chat. `back` is toward older ones.
+    RecallStep { back: bool },
 }
 
 #[derive(Clone)]
@@ -2103,6 +2165,11 @@ pub struct ComposerInput {
     /// mention token is active, keeping input focus and native text editing.
     mention_open: bool,
     mention_has_selection: bool,
+    /// The message composer's Up and Down can recall sent prompts.
+    recall_keys: bool,
+    /// The draft is a recalled prompt, untouched: Up and Down on its first
+    /// and last lines keep stepping through the history.
+    pub(crate) recall_browsing: bool,
     /// Last prepainted chip bounds; the paint-phase pointer listener uses
     /// these instead of attempting to infer text geometry from the cursor.
     mention_hits: Vec<MentionHit>,
@@ -2116,6 +2183,8 @@ pub struct ComposerInput {
     /// into another draft can tell it must not reuse their numbers.
     attachment_scope: String,
     mention_tooltip: MentionTooltipPhase,
+    /// The annotation chip under the pointer, as last reported.
+    hovered_annotation: Option<u32>,
     mention_tooltip_generation: u64,
     mention_tooltip_popup: Option<Bounds<Pixels>>,
     mention_tooltip_task: Option<Task<()>>,
@@ -2201,11 +2270,14 @@ impl ComposerInput {
             last_edit: None,
             mention_open: false,
             mention_has_selection: false,
+            recall_keys: false,
+            recall_browsing: false,
             mention_hits: Vec::new(),
             chip_press: None,
             attachment_chips: None,
             attachment_scope: String::new(),
             mention_tooltip: MentionTooltipPhase::Hidden,
+            hovered_annotation: None,
             mention_tooltip_generation: 0,
             mention_tooltip_popup: None,
             mention_tooltip_task: None,
@@ -2506,6 +2578,59 @@ impl ComposerInput {
         true
     }
 
+    /// Insert a browser annotation chip at the selection, numbered after the
+    /// draft's existing annotations. One undo step, like a dropped mention.
+    pub(crate) fn insert_annotation(
+        &mut self,
+        mut annotation: zeron_proto::annotation::BrowserAnnotation,
+        cx: &mut Context<Self>,
+    ) -> Option<u32> {
+        if self.read_only || self.marked_range.is_some() {
+            return None;
+        }
+        annotation.index = zeron_proto::annotation::annotation_links(&self.content)
+            .iter()
+            .map(|(_, existing)| existing.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let index = annotation.index;
+        let range = self.selected_range.clone();
+        if range.start > range.end || !self.content.is_char_boundary(range.start) {
+            return None;
+        }
+        let lead = if range.start > 0
+            && self.content[..range.start]
+                .chars()
+                .next_back()
+                .is_some_and(|ch| !ch.is_whitespace())
+        {
+            " "
+        } else {
+            ""
+        };
+        let (trailing, advance) =
+            reference_suffix(self.content.get(range.end..).and_then(|s| s.chars().next()));
+        let inserted = format!("{lead}{}{trailing}", annotation.bounded().link());
+        self.invalidate_mention_tooltip();
+        self.record_edit(&range, &inserted);
+        self.edit_revision = self.edit_revision.wrapping_add(1);
+        self.content =
+            self.content[..range.start].to_owned() + &inserted + &self.content[range.end..];
+        let cursor = range.start + inserted.len() + advance;
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.caret_affinity = CaretAffinity::Downstream;
+        self.preferred_column = None;
+        self.refresh_projection();
+        self.follow_cursor = true;
+        self.reset_blink();
+        self.needs_measure = true;
+        cx.emit(ComposerInputEvent::Edited);
+        cx.notify();
+        Some(index)
+    }
+
     /// Replace a completed plain-text token (slash commands) as one
     /// non-coalescing undo step. Unlike [`Self::replace_mention`], the
     /// replacement is ordinary text — no link, no chip projection.
@@ -2671,6 +2796,7 @@ impl ComposerInput {
                     {
                         input.mention_tooltip_view = Some(cx.new(|_| MentionPathTooltip {
                             path: target.path.clone(),
+                            annotation: target.annotation.clone(),
                             activation: *generation,
                         }));
                     }
@@ -2698,6 +2824,21 @@ impl ComposerInput {
     }
 
     fn on_mention_pointer_move(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        // The browser points at a hovered annotation chip's element at once,
+        // ahead of the delayed code card.
+        let annotation = (!self.is_selecting)
+            .then(|| {
+                self.mention_hits
+                    .iter()
+                    .find(|hit| hit.bounds.contains(&position))
+                    .and_then(|hit| hit.target.annotation.as_ref())
+                    .map(|annotation| annotation.index)
+            })
+            .flatten();
+        if annotation != self.hovered_annotation {
+            self.hovered_annotation = annotation;
+            cx.emit(ComposerInputEvent::AnnotationHovered(annotation));
+        }
         if self.is_selecting {
             self.invalidate_mention_tooltip();
             return;
@@ -2957,8 +3098,13 @@ impl ComposerInput {
             cx.propagate();
             return;
         }
-        // Mirror `apply_keymap`, which binds the default for an unparseable combo.
-        let parse = |combo: &str| Keystroke::parse(&crate::settings::platform_combo(combo)).ok();
+        // Mirror `apply_keymap`, which binds the default for an unparseable
+        // combo, on the key the active layout types for it.
+        let equivalents = crate::settings::key_equivalents(cx);
+        let parse = |combo: &str| {
+            let combo = crate::settings::platform_combo(combo);
+            Keystroke::parse(&crate::settings::localize_combo(&combo, &equivalents)).ok()
+        };
         let keystroke = parse(&crate::settings::current(cx).keymap.toggle_dictation)
             .or_else(|| parse(crate::settings::ShortcutId::ToggleDictation.default_combo()));
         let blur = cx.on_blur(&self.focus_handle, window, |input, _, cx| {
@@ -3293,6 +3439,10 @@ impl ComposerInput {
             cx.emit(ComposerInputEvent::MentionNavigate(-1));
             return;
         }
+        if self.recall_step_applies(true) {
+            cx.emit(ComposerInputEvent::RecallStep { back: true });
+            return;
+        }
         if let Some((ix, affinity, column)) = self.vertical_target(-1.0) {
             self.move_to(ix, cx);
             self.caret_affinity = affinity;
@@ -3305,11 +3455,41 @@ impl ComposerInput {
             cx.emit(ComposerInputEvent::MentionNavigate(1));
             return;
         }
+        if self.recall_step_applies(false) {
+            cx.emit(ComposerInputEvent::RecallStep { back: false });
+            return;
+        }
         if let Some((ix, affinity, column)) = self.vertical_target(1.0) {
             self.move_to(ix, cx);
             self.caret_affinity = affinity;
             self.preferred_column = Some(column);
         }
+    }
+
+    /// Whether Up (`back`) or Down reaches prompt recall instead of moving
+    /// the caret: Up with the caret at the very start, or either key on the
+    /// edge line of a recalled prompt that is still untouched.
+    fn recall_step_applies(&self, back: bool) -> bool {
+        if !self.recall_keys || !self.selected_range.is_empty() || self.marked_range.is_some() {
+            return false;
+        }
+        let offset = self.cursor_offset();
+        if back && offset == 0 {
+            return true;
+        }
+        if !self.recall_browsing {
+            return false;
+        }
+        let edge = if back { 0 } else { self.content.len() };
+        offset == edge
+            || self.vertical_target(if back { -1.0 } else { 1.0 })
+                .is_some_and(|(target, _, _)| target == edge)
+    }
+
+    /// Put the caret at `offset` (recall lands it at the start, so the next
+    /// Up keeps going back).
+    pub(crate) fn set_caret(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to(offset.min(self.content.len()), cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -4876,14 +5056,105 @@ struct ComposerTextElement {
 
 struct MentionPathTooltip {
     path: SharedString,
+    /// Annotation chips preview their element instead of a path.
+    annotation: Option<std::sync::Arc<zeron_proto::annotation::BrowserAnnotation>>,
     /// Stable for one `Waiting → Visible` promotion; a later activation gets
     /// a new key and therefore exactly one fresh fade-in.
     activation: u64,
 }
 
+impl MentionPathTooltip {
+    /// At a glance: which element (with its size, like the page's label)
+    /// and the opening of its code.
+    fn annotation_card(
+        annotation: &zeron_proto::annotation::BrowserAnnotation,
+        activation: u64,
+        theme: &Theme,
+    ) -> gpui::AnyElement {
+        let snippet = annotation.snippet(ANNOTATION_SNIPPET_LINES);
+        let tag_len = annotation
+            .element
+            .find(['#', '.'])
+            .unwrap_or(annotation.element.len());
+        let (tag, rest) = annotation.element.split_at(tag_len);
+        let [_, _, width, height] = annotation.rect;
+        let header = div()
+            .h(px(ANNOTATION_HEADER_HEIGHT))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(10.0))
+            .text_size(px(12.0))
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .truncate()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.text)
+                            .child(SharedString::from(tag.to_owned())),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(rest.to_owned())),
+                    ),
+            )
+            .when(width > 0 || height > 0, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .ml_auto()
+                        .pl(px(8.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(format!("{width} × {height}"))),
+                )
+            });
+        let code = (!snippet.is_empty()).then(|| {
+            div()
+                .border_t_1()
+                .border_color(theme.border)
+                .px(px(10.0))
+                .py(px(7.0))
+                .font_family(theme.font_mono.clone())
+                .text_size(px(11.0))
+                .line_height(px(16.0))
+                .text_color(theme.text_muted)
+                .children(snippet.lines().map(|line| {
+                    div()
+                        .h(px(16.0))
+                        .truncate()
+                        .child(SharedString::from(line.to_owned()))
+                }))
+        });
+        motion::fade_quick(
+            ("annotation-chip-tooltip", activation),
+            div().child(crate::frost::frosted(
+                crate::popover::CARD_RADIUS,
+                crate::frost::MENU_BLUR,
+                crate::popover::popover_card(theme)
+                    .h(px(annotation_tooltip_height(annotation)))
+                    .w(px(360.0))
+                    .p_0()
+                    .gap_0()
+                    .child(header)
+                    .children(code),
+            )),
+        )
+        .into_any_element()
+    }
+}
+
 impl Render for MentionPathTooltip {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).for_popup();
+        if let Some(annotation) = &self.annotation {
+            return Self::annotation_card(annotation, self.activation, &theme);
+        }
         let card = crate::popover::popover_card(&theme)
             .max_w(px(480.0))
             .h(px(MENTION_TOOLTIP_HEIGHT))
@@ -4903,6 +5174,7 @@ impl Render for MentionPathTooltip {
                 card,
             )),
         )
+        .into_any_element()
     }
 }
 
@@ -5013,9 +5285,20 @@ impl gpui::Element for ComposerTextElement {
                     ))
                 },
                 attachment: mention.attachment,
+                annotation: mention.annotation.clone(),
             };
-            // The path tooltip stays flush so the pointer can move onto it.
-            let (tooltip_height, tooltip_gap) = (MENTION_TOOLTIP_HEIGHT, 1.0);
+            // The path tooltip stays flush so the pointer can move onto it; an
+            // annotation's code preview floats a little above its chip.
+            let (tooltip_height, tooltip_gap) =
+                mention
+                    .annotation
+                    .as_deref()
+                    .map_or((MENTION_TOOLTIP_HEIGHT, 1.0), |annotation| {
+                        (
+                            annotation_tooltip_height(annotation),
+                            ANNOTATION_TOOLTIP_GAP,
+                        )
+                    });
             let label = chip_pad_ranges(display)[0].end;
             for local_bounds in input.bounds_for_display_range(display.clone()) {
                 let row_top = origin.y + local_bounds.origin.y;
@@ -5449,6 +5732,10 @@ impl Render for ComposerInput {
 #[derive(Debug, Clone)]
 pub enum ComposerEvent {
     WorkspaceCommand(WorkspaceCommand),
+    /// The annotation numbers the draft holds changed.
+    AnnotationsChanged(Vec<u32>),
+    /// The pointer is on this annotation's chip (`None`: on none).
+    AnnotationHovered(Option<u32>),
     /// Arm the shared-element transition before the draft route is replaced
     /// by the newly-created session. Emitting this before `select_chat` keeps
     /// the first destination frame on the same timeline as the source frame.
@@ -5476,6 +5763,8 @@ pub enum ComposerEvent {
         chat_id: String,
         message_id: String,
     },
+    /// Zoomie mode's Send created a zoomie (and started its first run).
+    ZoomieCreated(ZoomieCreated),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6074,6 +6363,10 @@ pub struct Composer {
     pub(crate) input: Entity<ComposerInput>,
     /// Draft displaced while a queued message occupies the composer.
     pub(crate) queue_edit_draft: Option<(String, Vec<StagedAttachment>, Vec<CapturedAppshot>)>,
+    /// Where Up/Down prompt recall stands in this chat's sent prompts.
+    recall: Option<prompt_recall::RecallPosition>,
+    /// The "Stashed" chip's menu is open.
+    stash_menu_open: bool,
     /// The displaced draft's chip numbering and undo stash. The queued
     /// message gets its own while it is edited, so its chips can never name
     /// the draft's attachments.
@@ -6172,6 +6465,8 @@ pub struct Composer {
     /// Whether the modifier overlay should currently reveal the queue hint.
     /// The shell owns modifier tracking and clears this on window deactivation.
     queue_shortcut_revealed: bool,
+    /// Annotation numbers in the draft, as last reported to the shell.
+    annotation_marks: Vec<u32>,
     /// Interrupt/answer commands get their own slot: assigning `send_task`
     /// DROPPED an in-flight send future mid-upload — no banner, no cleanup,
     /// `sending` stuck true forever (2026-08-19 incident, "press Stop while
@@ -6244,6 +6539,8 @@ pub struct Composer {
     /// after the transcript lands instead of vanishing.
     voice_last: Option<VoiceFrame>,
     voice_tween: VoiceTween,
+    /// Zoomie mode on the new-chat canvas (`composer::zoomie`).
+    pub(crate) zoomie: Option<zoomie::ZoomieMode>,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -6314,6 +6611,7 @@ impl Composer {
                 ComposerInput::with_context("Do anything…", MESSAGE_COMPOSER_CONTEXT, cx);
             input.enable_mentions();
             input.copies_transcript_selection = true;
+            input.recall_keys = true;
             input
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
@@ -6337,9 +6635,13 @@ impl Composer {
         let input_events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.on_submit(cx),
             ComposerInputEvent::ModifiedSubmitted => this.on_modified_submit(cx),
-            ComposerInputEvent::Edited | ComposerInputEvent::CursorMoved => {
+            ComposerInputEvent::Edited => {
+                this.sync_annotation_marks(cx);
+                this.forget_recall_on_edit(cx);
                 this.on_input_edited(cx)
             }
+            ComposerInputEvent::RecallStep { back } => this.step_prompt_recall(*back, cx),
+            ComposerInputEvent::CursorMoved => this.on_input_edited(cx),
             ComposerInputEvent::ViewportChanged => cx.notify(),
             // The slash popup and the mention popup share the input's
             // completion key routing; they are mutually exclusive by token
@@ -6366,6 +6668,9 @@ impl Composer {
                 }
             }
             ComposerInputEvent::OpenAttachment(index) => this.open_attachment(*index, cx),
+            ComposerInputEvent::AnnotationHovered(number) => {
+                cx.emit(ComposerEvent::AnnotationHovered(*number))
+            }
             ComposerInputEvent::PastedImages(images) => {
                 let images = images.clone();
                 this.stage_in_background(
@@ -6404,7 +6709,7 @@ impl Composer {
                     && composer_has_content(
                         this.input.read(cx).text(),
                         this.staged().len() + this.staged_appshots().len(),
-                        this.staged_comments(cx).len(),
+                        this.draft_context_count(cx),
                     )
                 {
                     this.on_submit(cx);
@@ -6416,6 +6721,8 @@ impl Composer {
             state,
             input,
             queue_edit_draft: None,
+            recall: None,
+            stash_menu_open: false,
             queue_edit_attachment_draft: None,
             pickers,
             drafts: HashMap::new(),
@@ -6470,6 +6777,7 @@ impl Composer {
             todo_panels: HashMap::new(),
             todo_scroll: gpui::ScrollHandle::new(),
             queue_shortcut_revealed: false,
+            annotation_marks: Vec::new(),
             expanded_mode: false,
             flip_epoch: 0,
             compact_capacity: 0.0,
@@ -6504,6 +6812,7 @@ impl Composer {
             dictation_focus: cx.focus_handle(),
             voice_last: None,
             voice_tween: VoiceTween::default(),
+            zoomie: None,
         };
         // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
         // a rig) — `GODSPEED_ATTACH=/path/a.png[,/path/b.png]`, and
@@ -6698,12 +7007,12 @@ impl Composer {
     }
 
     /// Whether the draft holds anything a close would lose: text, staged
-    /// attachments or appshots, or staged review comments.
+    /// attachments or appshots, staged review comments, or a quoted passage.
     pub(crate) fn has_draft(&self, cx: &App) -> bool {
         composer_has_content(
             self.input.read(cx).text(),
             self.staged().len() + self.staged_appshots().len(),
-            self.staged_comments(cx).len(),
+            self.draft_context_count(cx),
         )
     }
 
@@ -6814,6 +7123,44 @@ impl Composer {
     /// Add a file-tree or file-tab drop through the existing file-mention
     /// pipeline. This keeps the reference workspace-relative and therefore
     /// valid for local and remote sessions alike.
+    /// Add an element picked in the browser. `focus` hands the keyboard to
+    /// the composer (the pick finished) rather than leaving it with the page.
+    pub(crate) fn add_browser_annotation(
+        &mut self,
+        annotation: zeron_proto::annotation::BrowserAnnotation,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<u32> {
+        let number = self
+            .input
+            .update(cx, |input, cx| input.insert_annotation(annotation, cx));
+        if number.is_some() && focus {
+            let handle = self.input.read(cx).focus_handle.clone();
+            window.focus(&handle, cx);
+        }
+        cx.notify();
+        number
+    }
+
+    /// Tell the browser which annotation numbers the draft still holds, so
+    /// markers of removed or sent chips leave the page.
+    fn sync_annotation_marks(&mut self, cx: &mut Context<Self>) {
+        let text = self.input.read(cx).text();
+        let marks: Vec<u32> = if text.contains(zeron_proto::annotation::ANNOTATION_SCHEME) {
+            zeron_proto::annotation::annotation_links(text)
+                .into_iter()
+                .map(|(_, annotation)| annotation.index)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if marks != self.annotation_marks {
+            self.annotation_marks = marks.clone();
+            cx.emit(ComposerEvent::AnnotationsChanged(marks));
+        }
+    }
+
     pub(crate) fn add_workspace_path(
         &mut self,
         path: &str,
@@ -7063,11 +7410,13 @@ impl Composer {
     /// Drop a deleted chat's per-chat composer state — staged attachments hold
     /// raw image bytes, and a deleted chat's stage could never be sent again.
     pub fn purge_chat(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        prompt_stash::update(cx, |stash| stash.purge(chat_id));
         self.attachments.remove(chat_id);
         self.attachment_drafts.remove(chat_id);
         self.appshots.remove(chat_id);
         self.state.update(cx, |state, _| {
             state.purge_review_comments(chat_id);
+            state.purge_citations(chat_id);
         });
     }
 
@@ -7077,6 +7426,23 @@ impl Composer {
             .read(cx)
             .review_comments(&self.current_key)
             .to_vec()
+    }
+
+    fn staged_citations(&self, cx: &App) -> Vec<crate::citations::Citation> {
+        self.state.read(cx).citations(&self.current_key).to_vec()
+    }
+
+    /// Review comments and quoted passages both count as sendable context.
+    fn draft_context_count(&self, cx: &App) -> usize {
+        self.staged_comments(cx).len() + self.staged_citations(cx).len()
+    }
+
+    fn remove_citation(&mut self, id: &str, cx: &mut Context<Self>) {
+        let key = self.current_key.clone();
+        self.state.update(cx, |state, cx| {
+            state.remove_citation(&key, id);
+            cx.notify();
+        });
     }
 
     fn render_comments_chip(&self, theme: &Theme, cx: &App) -> Option<gpui::Div> {
@@ -7102,6 +7468,78 @@ impl Composer {
                     theme,
                 )),
         )
+    }
+
+    /// Quoted passages sitting above the input. Each row is the selection the
+    /// next message is about, and the close control drops that one quote.
+    fn render_citations(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let staged = self.staged_citations(cx);
+        if staged.is_empty() {
+            return None;
+        }
+        let mut strip = div()
+            .w_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(CITATION_ROW_GAP))
+            .px(px(STRIP_PAD_X))
+            .pt(px(STRIP_PAD_TOP));
+        for citation in staged {
+            let id = citation.id.clone();
+            let preview = crate::citations::preview(&citation.quote);
+            let remove_id = id.clone();
+            strip = strip.child(
+                div()
+                    .w_full()
+                    .h(px(CITATION_ROW_HEIGHT))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(crate::theme::ink(0.06))
+                    .child(
+                        crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                            .size(px(12.0))
+                            .text_color(theme.text_muted.opacity(0.7)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .text_color(theme.text)
+                            .child(preview),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("composer-citation-remove-{id}")))
+                            .flex_none()
+                            .size(px(16.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.remove_citation(&remove_id, cx);
+                            }))
+                            .tooltip(|_, cx| {
+                                cx.new(|_| AppshotActionTooltip(SharedString::from("Remove quote")))
+                                    .into()
+                            })
+                            .child(
+                                crate::icons::icon(crate::icons::CLOSE)
+                                    .size(px(12.0))
+                                    .text_color(theme.text_muted),
+                            ),
+                    ),
+            );
+        }
+        Some(strip)
     }
 
     /// The staged-thumbnail strip (attachment-ui.tsx AttachmentStrip):
@@ -8534,6 +8972,15 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
+        if self.state.read(cx).composer_focus_pending() {
+            self.focus_pending = true;
+            let state = self.state.clone();
+            cx.defer(move |cx| {
+                state.update(cx, |state, _| {
+                    state.take_composer_focus();
+                });
+            });
+        }
         {
             let state = self.state.read(cx);
             // AppState also notifies at clock-only transitions, so a run that
@@ -8626,6 +9073,8 @@ impl Composer {
             }
             let draft = self.drafts.get(&key).cloned().unwrap_or_default();
             self.current_key = key;
+            self.end_recall(cx);
+            self.stash_menu_open = false;
             // `failure` deliberately survives navigation: chat-scoped
             // failures render only under their own chat (see `failure_key`),
             // so switching away and back must not erase the one visible
@@ -8821,7 +9270,7 @@ impl Composer {
             || composer_has_content(
                 self.input.read(cx).text(),
                 self.staged().len() + self.staged_appshots().len(),
-                self.staged_comments(cx).len(),
+                self.draft_context_count(cx),
             );
         send_button_mode(self.run_live(cx), has_text)
     }
@@ -8883,10 +9332,14 @@ impl Composer {
             self.execute_workspace_command(action, 0..self.input.read(cx).text().len(), cx);
             return;
         }
+        if self.zoomie_active(cx) {
+            self.submit_zoomie(cx);
+            return;
+        }
         let no_content = !composer_has_content(
             &text,
             self.staged().len() + self.staged_appshots().len(),
-            self.staged_comments(cx).len(),
+            self.draft_context_count(cx),
         );
         match self.button_mode(cx) {
             // Enter never stops a run: Stop mode implies an empty composer,
@@ -8919,7 +9372,7 @@ impl Composer {
         let has_content = composer_has_content(
             self.input.read(cx).text(),
             self.staged().len() + self.staged_appshots().len(),
-            self.staged_comments(cx).len(),
+            self.draft_context_count(cx),
         );
         match modified_submit_target(has_content) {
             ModifiedSubmitTarget::SubmitContent => self.on_submit(cx),
@@ -8933,6 +9386,7 @@ impl Composer {
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
     /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, text: String, queue: bool, cx: &mut Context<Self>) {
+        self.end_recall(cx);
         if !self.check_reference_delivery(&text, cx) {
             return;
         }
@@ -9065,12 +9519,13 @@ impl Composer {
         // restoring the folded prompt would paste the comment block into the
         // input as literal text.
         let key = self.current_key.clone();
-        let comments = self.state.update(cx, |state, cx| {
-            let taken = state.take_review_comments(&key);
-            if !taken.is_empty() {
+        let (comments, citations) = self.state.update(cx, |state, cx| {
+            let comments = state.take_review_comments(&key);
+            let citations = state.take_citations(&key);
+            if !comments.is_empty() || !citations.is_empty() {
                 cx.notify();
             }
-            taken
+            (comments, citations)
         });
         let typed = text.clone();
         // A chip for an attachment that is no longer staged must not leave as a link.
@@ -9080,6 +9535,7 @@ impl Composer {
             .collect();
         let text = zeron_proto::attachment_mentions::demote_unattached_mentions(&text, &attached);
         let text = crate::comments::with_comments(&text, &comments);
+        let text = crate::citations::with_citations(&text, &citations);
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().timestamp_millis();
@@ -9571,6 +10027,7 @@ impl Composer {
                     .is_some();
                 let command = SessionCommandPayload::Run {
                     request: RunRequest {
+                        instance: resolved.instance.clone(),
                         mcp: None,
                         prompt: content.clone(),
                         harness: resolved.harness,
@@ -9729,6 +10186,9 @@ impl Composer {
                         }
                         for comment in &comments {
                             s.add_review_comment(&restore_key, comment.clone());
+                        }
+                        for citation in &citations {
+                            s.add_citation(&restore_key, citation.clone());
                         }
                         cx.notify();
                     });
@@ -10912,13 +11372,16 @@ impl Composer {
             SendButtonMode::Send | SendButtonMode::Queue => {
                 // Share the submission guard with Enter, including pending
                 // edits and the new-session runnable-agent check.
-                let blocked = self.send_blocked(cx);
+                let zoomie = self.zoomie_active(cx);
+                let blocked = self.send_blocked(cx) || (zoomie && self.zoomie_send_blocked(cx));
                 send_circle("composer-send", blocked, theme)
                     .when(!blocked, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| this.on_submit(cx)))
                     })
                     .tooltip(crate::settings::widgets::text_tooltip(
-                        if mode == SendButtonMode::Queue {
+                        if zoomie {
+                            "Create zoomie"
+                        } else if mode == SendButtonMode::Queue {
                             "Queue message"
                         } else {
                             "Send message"
@@ -11288,7 +11751,7 @@ impl Render for Composer {
             && !composer_has_content(
                 self.input.read(cx).text(),
                 self.staged().len() + self.staged_appshots().len(),
-                self.staged_comments(cx).len(),
+                self.draft_context_count(cx),
             );
         // The checklist tray stacks above the queue (or directly above the
         // composer), one step narrower than what follows it.
@@ -11358,6 +11821,7 @@ impl Render for Composer {
         let appshot_count = self.staged_appshots().len();
         let strip_h = attachment_strip_height(staged_count, strip_width_hint);
         let comment_strip_h = comment_strip_height(self.staged_comments(cx).len());
+        let citation_strip_h = citation_strip_height(self.staged_citations(cx).len());
         let base_height = if self.dock_frame.is_some() {
             dock_layout.height(dock_amount)
         } else if expanded {
@@ -11365,9 +11829,13 @@ impl Render for Composer {
         } else {
             COMPACT_TOTAL_HEIGHT
         };
-        let target_height =
-            base_height + strip_h + appshot_strip_height(appshot_count) + comment_strip_h;
-        dock_layout.extra_height = strip_h + appshot_strip_height(appshot_count) + comment_strip_h;
+        let target_height = base_height
+            + strip_h
+            + appshot_strip_height(appshot_count)
+            + comment_strip_h
+            + citation_strip_h;
+        dock_layout.extra_height =
+            strip_h + appshot_strip_height(appshot_count) + comment_strip_h + citation_strip_h;
         let dock_owns_layout = self.dock_frame.is_some_and(|frame| frame.active)
             || dock_height_changed
             || self.dock_reflow.active();
@@ -11456,6 +11924,7 @@ impl Render for Composer {
             - strip_h
             - appshot_strip_height(appshot_count)
             - comment_strip_h
+            - citation_strip_h
             - PILL_BORDER_V
             - ACTIONS_ROW_HEIGHT)
             .max(if route_to_single_line {
@@ -11614,6 +12083,7 @@ impl Render for Composer {
         // the input inside the pill in both modes.
         let strip = self.render_attachment_strip(&theme, cx);
         let appshot_strip = self.render_appshot_strip(&theme, window, cx);
+        let citations_strip = self.render_citations(&theme, cx);
         let comments_chip = self.render_comments_chip(&theme, cx);
 
         let pill_border = theme.composer_surface_border();
@@ -11707,6 +12177,9 @@ impl Render for Composer {
             });
         let beneath_voice = 1.0 - voice_t.clamp(0.0, 1.0);
         let model_picker = model_picker.opacity(beneath_voice);
+        let zoomie_chip = self
+            .render_zoomie_chip(&theme, cx)
+            .map(|chip| div().flex_none().opacity(beneath_voice).child(chip));
         let body = if expanded {
             // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row
             // (8px bottom + 2px top, 32px chips → 42px) ABSOLUTE at the pill's
@@ -11721,6 +12194,7 @@ impl Render for Composer {
                 .relative()
                 .flex()
                 .flex_col()
+                .children(citations_strip)
                 .children(comments_chip)
                 .children(appshot_strip)
                 .children(strip)
@@ -11759,6 +12233,7 @@ impl Render for Composer {
                                 .gap(px(ACTION_UTILITY_GAP))
                                 .child(attach),
                         )
+                        .children(zoomie_chip)
                         .child(model_picker)
                         .child(
                             div()
@@ -11792,6 +12267,7 @@ impl Render for Composer {
                 .flex()
                 .flex_col()
                 .justify_end()
+                .children(citations_strip)
                 .children(comments_chip)
                 .children(appshot_strip)
                 .children(strip)
@@ -11825,6 +12301,14 @@ impl Render for Composer {
                                 .opacity(beneath_voice)
                                 .child(self.render_input_with_completion()),
                         )
+                        .children(zoomie_chip.map(|chip| {
+                            div()
+                                .flex_none()
+                                .pr(px(4.0))
+                                .relative()
+                                .top(px(-cluster_dy))
+                                .child(chip)
+                        }))
                         .child(
                             div()
                                 .min_w_0()
@@ -11891,7 +12375,8 @@ impl Render for Composer {
             // Both completion popups span the full pill width above it —
             // the file-mention and slash tokens are mutually exclusive.
             .children(self.render_file_mention_popup(&theme, cx))
-            .children(self.render_slash_popup(&theme, cx));
+            .children(self.render_slash_popup(&theme, cx))
+            .children(self.render_stash_chip(&theme, cx));
         // Restore the original chip-only selector treatment: destination at
         // the top-right, no surrounding surface. Cancel the column gap as the
         // row collapses so the pill never jumps at the route boundary.
@@ -11928,9 +12413,11 @@ impl Render for Composer {
             container
         };
         let dictation_status = self.render_dictation_status(cx);
+        let zoomie_panel = self.render_zoomie_panel(&theme, window, cx);
         let container = container.child(
             div()
                 .track_focus(&self.dictation_focus)
+                .on_action(cx.listener(Self::stash_prompt_action))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                     if event.keystroke.key == "escape"
                         && this.input.read(cx).dictation.phase.active()
@@ -11943,6 +12430,7 @@ impl Render for Composer {
                 .flex_col()
                 .gap(px(Theme::SPACE_SM))
                 .child(pill_surface)
+                .children(zoomie_panel)
                 .children(dictation_status),
         );
 
@@ -11961,9 +12449,9 @@ impl Render for Composer {
                     .update(cx, |pickers, cx| pickers.render_footer(cx))
             });
             if session_chrome_opacity > 0.0 {
-                let harness = (!self.side_chat)
-                    .then(|| self.pickers.read(cx).resolved(cx).harness)
-                    .flatten();
+                let resolved = (!self.side_chat).then(|| self.pickers.read(cx).resolved(cx));
+                let harness = resolved.as_ref().and_then(|run| run.harness);
+                let model = resolved.and_then(|run| run.model);
                 let target = {
                     let state = self.state.read(cx);
                     state
@@ -11972,7 +12460,7 @@ impl Render for Composer {
                         .filter(|device| state.local_device_id.as_ref() != Some(device))
                 };
                 self.account_usage
-                    .update(cx, |usage, cx| usage.track(harness, target, cx));
+                    .update(cx, |usage, cx| usage.track(harness, model, target, cx));
             }
             container.child(
                 div()
@@ -12899,6 +13387,42 @@ mod tests {
                 "Pending edits must still block submission"
             );
         });
+    }
+
+    /// The target the sidebar's "No project" `+` leaves: a project-less new
+    /// chat names its host outright, so it lands in that device's group.
+    #[gpui::test]
+    fn projectless_new_chat_is_created_on_the_picked_device(cx: &mut gpui::TestAppContext) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel::<String>(64);
+        let (_replies, inbound) = tokio::sync::mpsc::channel::<String>(64);
+        let state = cx.new(|_| AppState::new());
+        state.update(cx, |state, cx| {
+            state.set_test_engine(crate::state::EngineHandle::from_test_client(
+                zeron_rpc::RpcClient::new(out, inbound),
+            ));
+            state.local_device_id = Some("local".into());
+            state.select_space(None, cx);
+            state.select_device("remote".into(), cx);
+        });
+        let composer = cx.new(|cx| Composer::new(state, cx));
+        composer.update(cx, |composer, cx| {
+            composer
+                .input
+                .update(cx, |input, cx| input.set_text("hello", cx));
+            composer.on_submit(cx);
+        });
+        cx.run_until_parked();
+        let create = std::iter::from_fn(|| requests.try_recv().ok())
+            .map(|frame| serde_json::from_str::<zeron_rpc::ClientFrame>(&frame).unwrap())
+            .find(|frame| frame.params["op"] == "createChat")
+            .expect("the send creates the chat");
+        assert_eq!(create.params["deviceId"], "remote");
+        assert!(create.params.get("spaceId").is_none());
     }
 
     #[gpui::test]
@@ -14031,6 +14555,62 @@ mod tests {
         });
     }
 
+    fn button_annotation() -> zeron_proto::annotation::BrowserAnnotation {
+        zeron_proto::annotation::BrowserAnnotation {
+            index: 1,
+            element: "button.cta".into(),
+            html: "<button class=\"cta\">Go</button>".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn annotation_tokens_project_to_annotate_chips_in_drafts_and_sent_messages() {
+        let raw = format!("Fix {} now", button_annotation().link());
+        let projection = TextProjection::new(&raw);
+        assert_eq!(projection.mentions.len(), 1);
+        let (link, display) = &projection.mentions[0];
+        assert!(link.annotation.is_some());
+        assert_eq!(link.kind, ChipKind::Annotation);
+        assert!(matches!(
+            chip_icon(link.kind, &link.path, crate::theme::Appearance::Dark),
+            ChipIcon::Glyph(crate::icons::CURSOR)
+        ));
+        assert!(projection.display[display.clone()].contains("Annotation\u{a0}1"));
+        let (text, spans) = sent_mention_display(&raw).unwrap();
+        assert!(text.starts_with("Fix ") && text.ends_with(" now"));
+        assert_eq!(spans[0].kind, ChipKind::Annotation);
+        assert!(!text.contains(zeron_proto::annotation::ANNOTATION_SCHEME));
+    }
+
+    #[gpui::test]
+    fn inserted_annotations_number_after_existing_ones_and_undo_as_one_step(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let input = cx.new(|cx| ComposerInput::new("Draft", cx));
+        input.update(cx, |input, cx| {
+            input.set_text("Tighten", cx);
+            input.selected_range = 7..7;
+            assert_eq!(input.insert_annotation(button_annotation(), cx), Some(1));
+            assert_eq!(input.insert_annotation(button_annotation(), cx), Some(2));
+            let indices: Vec<u32> = zeron_proto::annotation::annotation_links(input.text())
+                .into_iter()
+                .map(|(_, annotation)| annotation.index)
+                .collect();
+            assert_eq!(indices, [1, 2]);
+            assert!(input.text().starts_with("Tighten [Annotation 1]("));
+            assert_eq!(input.selected_range.start, input.text().len());
+            let previous = input.undo_stack.pop().unwrap();
+            input.restore(previous, cx);
+            assert_eq!(
+                zeron_proto::annotation::annotation_links(input.text()).len(),
+                1
+            );
+            input.read_only = true;
+            assert!(input.insert_annotation(button_annotation(), cx).is_none());
+        });
+    }
+
     #[gpui::test]
     fn completion_rejects_paths_that_cannot_round_trip_as_chips(cx: &mut gpui::TestAppContext) {
         let input = cx.new(|cx| ComposerInput::new("Draft", cx));
@@ -14335,6 +14915,7 @@ mod tests {
             range,
             path: path.into(),
             attachment: None,
+            annotation: None,
         }
     }
 
@@ -15397,6 +15978,7 @@ mod tests {
                 path: "foo/mod.rs".into(),
                 kind: ChipKind::File,
                 attachment: None,
+                annotation: None,
             },
             FileMentionLink {
                 range: 0..0,
@@ -15404,6 +15986,7 @@ mod tests {
                 path: "bar/oomod.rs".into(),
                 kind: ChipKind::File,
                 attachment: None,
+                annotation: None,
             },
         ];
         assert_eq!(
@@ -16814,3 +17397,17 @@ impl Composer {
 #[cfg(test)]
 #[path = "composer_dictation_tests.rs"]
 mod dictation_tests;
+
+/// The demo recording opens the composer's pickers.
+#[cfg(feature = "demo-fixture")]
+impl Composer {
+    pub(crate) fn fixture_open_picker(
+        &mut self,
+        kind: crate::pickers::PickerKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pickers
+            .update(cx, |pickers, cx| pickers.fixture_toggle(kind, window, cx));
+    }
+}

@@ -21,9 +21,10 @@ at once. What shipped in each release is in the [changelog](../../CHANGELOG.md).
 
 ## Next
 
-1. **Close the laptop, the work keeps going.** Linux builds, a "Run on a server" setup that installs
-   the headless engine over SSH, and reconnect hardening so the phone, desktop and Telegram hand a
-   chat back and forth without hiccups.
+1. **Close the laptop, the work keeps going.** Linux builds and the "Run on a server" setup (SSH or
+   Tailscale) are built and land in the next release; still to do: the end-to-end soak on a real
+   VPS and reconnect hardening so the phone, desktop and Telegram hand a chat back and forth
+   without hiccups.
 2. **PR autopilot.** Review, reply, resolve and merge from the PR pane; per-PR autopilot that feeds
    failing checks and review comments back to the chat and merges when green.
 3. **iPhone app on TestFlight**, with push notifications for approvals.

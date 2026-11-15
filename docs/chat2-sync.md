@@ -96,9 +96,15 @@ loro-protocol, no base64 — 33% base64 overhead matters at 1.2 Mbps):
 - `rows{after, excludeDevice}` → server streams rows `seq > after AND device !=
   excludeDevice` — you never re-download your own writes (matters exactly on the
   reconnect-after-offline-work path).
-- `push{batchId, bytes}` → append + relay + `ack{batchId, seq}`. `batch_id UNIQUE`
-  dedupes reconnect re-pushes server-side (client keeps a pending-unacked queue,
+- `push{batchId, bytes}` → append + relay + `ack{batchId, seq}`. Batch ids dedupe
+  reconnect re-pushes server-side (client keeps a pending-unacked queue,
   registry-style; Loro re-import is a no-op so duplicates are safe end-to-end).
+  Writes are coalesced for the free plan's 100k rows-written/day budget: the first
+  push after a quiet second is written at once, later ones within the second land
+  together as one `chunks` row (several log rows packed; row `i` has seq
+  `first_seq + i`). Acks and relays leave only after that commit, so an ack still
+  means durable; a crash before it loses only unacked batches, which the outbox
+  replays. HTTPS pushes flush immediately.
 - `POST /checkpoint {seqCovered, frontier}` + chunked blob: owner-only, guarded by
   `seqCovered >= seqFloor` (floor-monotonic — the dumb replacement for the VV-monotonic
   R2 guard). Rows `seq <= seqCovered` deleted after commit.

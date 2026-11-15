@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@071239804e375078dd3fae3b14704b4def57e048 (2026-10-26)
+Reviewed T3 through: pingdotgg/t3code@337c5858c3 (2026-11-05)
 
 ## Rules
 
@@ -23,6 +23,77 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-01 | Worktree chats get a branch when a plain branch named like the prefix exists (`t3` blocks `t3/...`), and names with a nested branch under them count as taken (`1917c8a33a`) | PR #85 |
+| 2026-11-01 | Child-thread approvals show in the parent with Approve/Decline, so you answer without switching threads; Claude dangerous-rm checks in bypass mode deny with the warning (`70f475f511`) | queued (lanes card shows a child's Needs approval status and opens it in the right pane; no inline card in the parent) |
+| 2026-11-01 | Stopping a Claude turn no longer hangs when interrupt is never acknowledged (`7195b69954`) | queued (with the force-stop item: time-box Claude interrupt in `harness/src/claude`) |
+| 2026-11-01 | `preview_open` takes a dev-server port directly (`6328c84722`) | queued (our `preview_open` takes a URL only) |
+| 2026-11-01 | Branch names fold accented letters to plain ones (Café → cafe) (`0743ba5524`) | queued (`branch_from_title` drops non-ASCII; needs Unicode decomposition, no crate in the tree yet) |
+| 2026-11-01 | Terminal URLs like `redis://host/0` no longer become file links (`f513369612`) | queued (check terminal link detection) |
+| 2026-11-01 | Queued messages editable during Compact (`bfd37b774b`); Steer on a queued message keeps its model (`a732caa7d2`) | queued (check our queue during compaction) |
+| 2026-11-01 | Run a scheduled task once at a date and time (`4ac97be2b6`) | skipped (always-on agents already have a `Once` trigger) |
+| 2026-11-01 | Generated commit/PR text reads source diffs, not textconv output (`655165d5f8`, `0671305178`) | skipped (already `--no-textconv` in `engine/src/git_actions.rs`) |
+| 2026-11-01 | Noisy shell probes no longer block PATH capture (`0b75a852d8`) | skipped (`harness/src/shell_env.rs` already discards stderr) |
+| 2026-11-01 | MCP links/unlinks several PRs per call (`78aa0d5ca5`, `01bd0a2702`); `run_scheduled_task_now` says why (`7370b92c3e`); scheduled tasks start from the default branch (`4773ab7a71`) | skipped (no PR-link or scheduled-task MCP tools in Godspeed) |
+| 2026-11-01 | Subagent rows and cards show the account each runs on (`0343c83aa6`, `2c59bf66c7`) | skipped (account fallback is out of scope; one account per harness instance) |
+| 2026-11-01 | ~170 minor fixes: model/effort picker layout, sidebar shelves, mobile, Electron, relay, SnapShots, ACP provider quirks (Copilot, Kimi, Cursor, Pi), perf in T3's server/web, copy edits, docs, CI | skipped (internal/minor) |
+| 2026-11-05 | Antigravity prompts that go silent mid-turn time out after 15 minutes instead of staying Working; open tools and approvals pause the clock (`3f905cac2e`) | PR #91 |
+| 2026-11-05 | Agents ask for secrets with `request_secret` instead of in chat (`9e85538535`, `7f782b4d6d`) | queued (T3-GAPS secret card row; needs an MCP tool, a private input card and a keychain-held reference) |
+| 2026-11-05 | MCP Apps render from Claude tool calls (`a21d788752`) | queued (new T3-GAPS row; Godspeed renders `show_visual` but not MCP App UI resources) |
+| 2026-11-05 | Optionally clone repos into ghq-style `<host>/<owner>/<repo>` folders (`707dcdaa16`) | queued (new T3-GAPS row; `project_transfer.rs` clones into one flat folder) |
+| 2026-11-05 | Older pending questions stay answerable when history pages (`c15e49a77c`); Codex shared usage limits offer the recovery options (`935818e422`) | skipped (T3's history paging; Godspeed keeps every pending input card and already maps Codex limits through `limits::event_from_text`) |
+| 2026-11-05 | Sidebar shows Setting up during worktree setup (`b3041a8cb9`); Changes totals name the comparison base (`199cb5b6a9`) | queued (check the session row during worktree creation and the diff header's base label) |
+| 2026-11-05 | ~40 other commits: Effect/crypto refactors, relay and tunnel restarts, mobile iOS/Android fixes, browser tab limit, sibling wakeups, stopped-run history, evals, CI | skipped (internal/minor) |
+| 2026-11-04 | Threads show a divider when you switch model or effort between turns (`c65f8d552b`) | PR #88 |
+| 2026-11-04 | Claude model list comes from what Claude Code reports (`dd69b31665`); the context meter knows the window for models outside the catalog (`7fd859aeef`) | queued (Godspeed's Claude catalog is static in `harness/src/claude/catalog.rs`) |
+| 2026-11-04 | Generated commit/PR text and turn diffs survive user git config: colour, `log.showSignature`, `diff.suppressBlankEmpty`, `diff.submodule=log`, `diff.relative` (`50106efdd9`, `5815442128`, `4a09502b38`, `35af84977d`, `0673e7e610`, `e86dc78d62`) | queued (Godspeed passes `--no-color` but no `-c` overrides for the rest; one change covering the engine's git helper) |
+| 2026-11-04 | ACP final agent message without a trailing newline is no longer dropped (`6d80df55bb`); ACP Always allow no longer cancels when only allow-once is offered (`21e4f980ca`) | queued (check `harness/src/acp` framing and permission option mapping) |
+| 2026-11-04 | Refresh button on provider status banners (`e27e12d9b4`); copied code blocks keep blank lines (`b7ab02e0f6`); images from MCP tool outputs shown (`d51bc58f5e`) | queued (small UI checks) |
+| 2026-11-04 | A failed or cancelled worktree add deletes its new branch (`48c8cf787e`, `c3c15f7d36`) | skipped (Godspeed keeps the branch on purpose, like `git worktree add`, and picks a free name on retry) |
+| 2026-11-04 | Kiro as an ACP provider (`55e2538561`, `8c9945d44d`, `8198b2ed5e`) | skipped (ACP registry agents already cover new ACP CLIs) |
+| 2026-11-04 | GitHub star prompt and confetti (`5d3d78ab93`, `cefb544af3`) | skipped (growth tactic) |
+| 2026-11-04 | ~310 other commits: server recovery perf, Pi/Codex/OpenCode/Cursor/Antigravity fixes, forge (GitLab/Forgejo/Azure) fixes, Tailscale, managed policy, secret providers, emoji-safe truncation, mobile, marketing, evals and CI | skipped (internal/minor) |
+| 2026-11-02 | Claude threads no longer join the Claude Code session that launched T3: its session id, messaging socket and token, and effort are dropped from the agent's environment (`47f2c8d29e`) | PR #87 |
+| 2026-11-02 | Threads show a divider when you switch model or effort between messages (`c65f8d552b`) | queued (Godspeed keeps only the chat's current config; needs the model and effort recorded per turn) |
+| 2026-11-02 | Approval cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`) | queued (`claude/wire.rs` ignores `control_cancel_request`, so the card waits forever) |
+| 2026-11-02 | Managed policy file for organization-wide configuration (`d897d3f3f0`) | queued (T3-GAPS row; Theo hyped it) |
+| 2026-11-02 | Turn diffs keep the agent's files when git's `diff.relative` is on (`f2527c2c00`) | queued (`diff_sync.rs` runs `git diff` without `-c diff.relative=false`) |
+| 2026-11-02 | Show why Codex hooks stopped a turn (`9b7208832e`) | queued (Codex normalizer has no hook stop reason) |
+| 2026-11-02 | Tag threads and hide tagged ones while screen recording (`30654b3e91`) | skipped (niche; Godspeed has no tags) |
+| 2026-11-02 | Usage totals filtered by provider and model (`e6e2ab05cc`); usage pricing fixes (`a51164c52b`, `b92c8f4739`) | skipped (usage and cost page is out of scope) |
+| 2026-11-02 | ~170 other commits: mobile, Electron, web perf, Antigravity/OpenCode/Cursor, GitLab/Forgejo/Azure, PR list polish, settings search, preview browser, CLI startup, completion sounds, branch search Enter, login-shell probe force-stop (Godspeed's `shell_env.rs` already kills on timeout) | skipped (internal/minor) |
+| 2026-10-31 | Claude accounts show the new plan names: Max 5x is Max, Max 20x is Ultra (`bf270e74e4`) | PR #84 |
+| 2026-10-31 | The context meter marks where Claude actually auto-compacts (window minus 33k) and fills against the limit (`159a914d6b`, `961026c6c9`) | queued (Godspeed's meter has no auto-compact mark; needs the threshold from the Claude driver) |
+| 2026-10-31 | Pin favourite projects and archive old ones (`ffaa1dba76`) | queued (Godspeed pins chats within a project, not projects) |
+| 2026-10-31 | Commands that exit 0 no longer show as failed (`469afd8b53`); cancelled ACP tool calls stop showing as running (`076aacca16`); Claude NotebookEdit names the notebook (`3a9640c3eb`) | queued (check our command and ACP tool rows for the same cases) |
+| 2026-10-31 | Pick the model and its effort from one control (`c96c1b69f5`); picker Show more row (`2359643cff`); hide Ultrathink from Claude effort (`85bd3f2a2a`) | skipped (Godspeed's compact picker already shows model, effort and fast traits together) |
+| 2026-10-31 | Side chats beside the main thread (`50c1c5dc53`) | skipped (Godspeed has side chats) |
+| 2026-10-31 | Claude MCP elicitations on the approval card (`ff55c19baa`) | skipped (Godspeed already answers Claude elicitations from an input card: `answer_elicitation`) |
+| 2026-10-31 | Message bubble shapes for media, files, pasted text and stacked bursts (`b8397e5caf`, `1da41f9499`, `e57ae5a0bf`, `f012fa210d`, `d6d2433609`); GitHub star prompt (`d92c437baa`) | skipped (T3's web look) |
+| 2026-10-31 | ~370 other commits: Pi/Codex/OpenCode/Antigravity/Cursor fixes, Markdown and timeline perf, Bitbucket/GitLab/Forgejo/Azure fixes, SSH, preview browser, usage pricing, mobile, CI and release | skipped (internal/minor) |
+| 2026-10-30 | The thread details card shows 5-hour, weekly and context limits (`310c128552`, `d7935f135f`) | PR #68 |
+| 2026-10-30 | Stop always completes, and an agent that ignores it can be force stopped (`6b1245cced`, `36d4d711b7`, `6d12bb1e9f`) | queued (check Stop on a Claude/Codex run that ignores the interrupt; Godspeed has no force-stop) |
+| 2026-10-30 | See and stop the dev servers a thread started (`a27ec88bfa`) | queued (with the T3-GAPS process-list row) |
+| 2026-10-30 | Claude command approvals show the command, not Claude's description (`5eebf77b37`); Open diff shows Claude edits as a diff (`eb565e13ab`, `441a4ebd65`) | queued (check the Bash approval card and edit tool rows) |
+| 2026-10-30 | Turn a No project thread into a project (`58e60bf5e8`) | queued (no move-to-project action in `crates/ui`) |
+| 2026-10-30 | Review local commits in the Diff pane (`5ef56853ef`); PR diff hide-tests filter (`a5448f4c50`); shift-click marks PR files viewed (`ff424802ed`) | queued (see T3-GAPS diff and PR rows) |
+| 2026-10-30 | Compaction row reads "Compacting for 12s" (`3ef1610079`) | queued (check the Claude compaction row's wording) |
+| 2026-10-30 | Parallel worktree launches no longer fail on the `.git/config` lock (`3b22620a5c`) | skipped (Godspeed already serializes creation and its config marks per repository: `Repos::worktree_lock`) |
+| 2026-10-30 | Fleet switch between Stable and Nightly (`f2943ee90e`); release notes in the update popover (`b5fc7bedfe`) | skipped (needs a second release feed; T3-GAPS "Update track" and "Release notes" rows cover it) |
+| 2026-10-30 | Linked environments, @-mention a machine, remote delegate wake-back (`4005759adf`…`5e9d56416f`, `4ab7084aa7`, `0affd28db2`, `96a330c957`) | skipped (T3's peer links; Godspeed delegates across devices with `create_chat` `device`; wake-back is the existing T3-GAPS row) |
+| 2026-10-30 | Simlock simulator leasing and EAS sessions (`be6ff17f51`, `be7d86fa66`, `812c0a71c7`, `d07c0a7c7b`) | skipped (Godspeed has no device panel yet; T3-GAPS Devices row) |
+| 2026-10-30 | Provider fallback when out of usage (`861a51a6c4`); 1Password secret providers (`7a4f5b6188`, `97e35bcf23`, `ee81ea4ce8`) | skipped (account fallback out of scope; secrets are a Labs flag in T3) |
+| 2026-10-30 | Boring sidebar folders (`4e4d4ba395`, `001d16e969`, `80fcb7f58f`, `5211acfe95`); multi-project filter (`c38b265adc`); custom snooze options (`93a9e079b1`, `c3858bf1f7`); F6 focus cycle (`2525252c96`); back/forward swipe (`476590d0ad`) | skipped (Godspeed has a project filter, snooze presets and back/forward; F6 is the existing T3-GAPS row) |
+| 2026-10-30 | ~300 other commits: streaming and timeline perf, server query/startup perf, React effect removal, mobile/Android, GitCafe/GitLab/Forgejo, guest links, Antigravity/Cursor/OpenCode/Copilot fixes, `t3 service protect`, Electron bump, credential redaction, CI and release fixes | skipped (internal/minor) |
+| 2026-10-27 | A thread whose worktree was deleted recovers on the next message (`0604547a3a`) | PR #41 |
+| 2026-10-27 | Markdown previews hide a leading YAML frontmatter block (`f81c4cd79f`) | queued (`files/markdown_preview.rs` shows SKILL.md frontmatter as a rule and a setext heading; mask it with spaces so task toggles keep their offsets) |
+| 2026-10-27 | ACP session notices show as notices, not reply text (`323d9611ff`) | queued (`acp/normalize.rs` drops `notice` updates; needs a notice event and row) |
+| 2026-10-27 | Steer works while a compaction runs (`ad068d7c93`) | queued (check steering during a Claude /compact) |
+| 2026-10-27 | Stopped runs read as muted, not errors (`f3b058cd6a`) | skipped (T3 web row styling; Godspeed run receipts already show "Stopped" in the normal tone) |
+| 2026-10-27 | Claude MCP registration timeouts keep the native session (`fe867b86c8`) | skipped (T3 error tagging; see the 2026-10-26 MCP retry row) |
+| 2026-10-27 | T3 MCP tool schemas cut by a third, 18 tools merged (`ed44f251d8`, `bc813670d9`) | skipped (T3's own orchestrator tools) |
+| 2026-10-27 | Thread state at the end of the timeline (`bd3287b640`); spoken model labels (`56695ae3ec`); new-model badges expire (`0790e3891b`); Cmd+W closes sidebar tabs (`a86c05f977`) | skipped (T3's web look and model catalog) |
+| 2026-10-27 | Warn before a second Claude/Codex account (`560ddb14d9`); Vercel fx provider (`6df241d23a`); inline charts prompt (`d2c440312e`, `c294d63b21`); PDF search (`becf853def`) | skipped (account fallback out of scope; T3 providers and viewers; Godspeed has `show_visual`) |
+| 2026-10-27 | ~120 other commits: React effect removal, mobile/Android, PR screens, evals, telemetry, cloudflared pin, settings pages, CI | skipped (internal/minor) |
 | 2026-10-26 | Forked threads get titles from the history they inherit (`a6aca345d5`) | PR #34 |
 | 2026-10-26 | Terminal drag selection scrolls faster the farther past the edge (`313ca2715f`) | queued (`selection_scroll_lines` in `terminal/panel.rs` tops out at 3 lines inside the grid edge) |
 | 2026-10-26 | Resumed Claude turns retry a stalled MCP registration (`572cf74275`) | queued (check the Godspeed MCP tools after resuming a Claude chat) |

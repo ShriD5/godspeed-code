@@ -26,6 +26,9 @@ impl From<ProtoKind> for AttentionKind {
             ProtoKind::Failed => Self::Failed,
             ProtoKind::Limited => Self::Limited,
             ProtoKind::Finished => Self::Finished,
+            // The iPhone groups pull request events with failures until its
+            // bindings carry the new kind; the summary says what happened.
+            ProtoKind::PullRequest => Self::Failed,
         }
     }
 }

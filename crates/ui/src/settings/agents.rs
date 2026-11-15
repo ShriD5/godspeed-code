@@ -85,6 +85,9 @@ pub struct AgentsPage {
     editor: Option<Editor>,
     telegram: Entity<TelegramSection>,
     error: Option<SharedString>,
+    /// A zoomie to open in the editor once the first snapshot lands
+    /// ([`Self::open_agent`] from the sidebar or a toast).
+    pending_open: Option<String>,
     watch_task: Option<Task<()>>,
     harness_task: Option<Task<()>>,
     task: Option<Task<()>>,
@@ -93,21 +96,7 @@ pub struct AgentsPage {
 
 impl EventEmitter<AgentsPageEvent> for AgentsPage {}
 
-/// This machine's IANA zone (`/etc/localtime` → `…/zoneinfo/Area/City`),
-/// the form's default for cron schedules.
-fn local_timezone() -> String {
-    std::env::var("TZ")
-        .ok()
-        .filter(|tz| tz.contains('/'))
-        .or_else(|| {
-            let target = std::fs::read_link("/etc/localtime").ok()?;
-            let target = target.to_string_lossy();
-            target
-                .split_once("zoneinfo/")
-                .map(|(_, zone)| zone.to_string())
-        })
-        .unwrap_or_else(|| "UTC".into())
-}
+use crate::zoomies::local_timezone;
 
 fn next_fire_label(
     at: chrono::DateTime<chrono::Utc>,
@@ -151,6 +140,7 @@ impl AgentsPage {
             editor: None,
             telegram,
             error: None,
+            pending_open: None,
             watch_task: None,
             harness_task: None,
             task: None,
@@ -196,6 +186,7 @@ impl AgentsPage {
                     .update(cx, |page, cx| {
                         page.snapshot = Some(snapshot);
                         page.runs = runs;
+                        page.open_pending(cx);
                         cx.notify();
                     })
                     .is_err()
@@ -211,6 +202,30 @@ impl AgentsPage {
                 .ok();
             }
         }));
+    }
+
+    /// Open zoomie `id` in the editor (now, or when the list arrives).
+    pub fn open_agent(&mut self, id: String, cx: &mut Context<Self>) {
+        self.pending_open = Some(id);
+        self.open_pending(cx);
+    }
+
+    fn open_pending(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.pending_open.as_ref() else {
+            return;
+        };
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let agent = snapshot
+            .agents
+            .iter()
+            .find(|agent| &agent.id == id)
+            .cloned();
+        self.pending_open = None;
+        if let Some(agent) = agent {
+            self.open_editor(Some(&agent), cx);
+        }
     }
 
     fn load_harnesses(&mut self, cx: &mut Context<Self>) {

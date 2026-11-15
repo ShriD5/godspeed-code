@@ -212,6 +212,8 @@ pub(super) enum LifecycleUndo {
         chat_id: String,
         seen_at: DateTime<Utc>,
     },
+    /// One bulk-bar action across several rows: undone together.
+    Batch(Vec<LifecycleUndo>),
 }
 
 /// The Snooze submenu's typed-time field.
@@ -498,22 +500,9 @@ impl Shell {
     ) {
         self.close_chat_menu(cx);
         let now = Utc::now();
-        let Some(before) = self
-            .state
-            .read(cx)
-            .chats
-            .iter()
-            .find(|chat| chat.id == chat_id)
-            .map(|chat| chat.lifecycle.at(now))
-        else {
+        let Some(undo) = self.apply_lifecycle(chat_id, lifecycle, now, cx) else {
             return;
         };
-        if before == lifecycle {
-            return;
-        }
-        self.state.update(cx, |state, cx| {
-            state.set_chat_lifecycle(&chat_id, lifecycle, None, cx)
-        });
         let notice = match lifecycle {
             LifecycleState::Active => "Back in the list".to_owned(),
             LifecycleState::Settled => "Settled".to_owned(),
@@ -521,15 +510,35 @@ impl Shell {
                 format!("Snoozed until {}", local_moment_label(until, now))
             }
         };
-        self.remember_lifecycle_undo(
-            LifecycleUndo::State {
-                chat_id,
-                before,
-                after: lifecycle,
-            },
-            notice,
-            cx,
-        );
+        self.remember_lifecycle_undo(undo, notice, cx);
+    }
+
+    /// Move one chat to `lifecycle`; how to undo it, unless it already was.
+    pub(super) fn apply_lifecycle(
+        &mut self,
+        chat_id: String,
+        lifecycle: LifecycleState,
+        now: DateTime<Utc>,
+        cx: &mut Context<Self>,
+    ) -> Option<LifecycleUndo> {
+        let before = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .map(|chat| chat.lifecycle.at(now))?;
+        if before == lifecycle {
+            return None;
+        }
+        self.state.update(cx, |state, cx| {
+            state.set_chat_lifecycle(&chat_id, lifecycle, None, cx)
+        });
+        Some(LifecycleUndo::State {
+            chat_id,
+            before,
+            after: lifecycle,
+        })
     }
 
     /// The settle shortcut: settles the open chat, or unsettles it when it
@@ -588,7 +597,7 @@ impl Shell {
         }
     }
 
-    fn remember_lifecycle_undo(
+    pub(super) fn remember_lifecycle_undo(
         &mut self,
         undo: LifecycleUndo,
         notice: String,
@@ -606,26 +615,9 @@ impl Shell {
             return;
         };
         let now = Utc::now();
-        let undone = self.state.update(cx, |state, cx| match undo {
-            LifecycleUndo::State {
-                chat_id,
-                before,
-                after,
-            } => {
-                let unchanged = state
-                    .chats
-                    .iter()
-                    .any(|chat| chat.id == chat_id && chat.lifecycle.at(now) == after);
-                if unchanged {
-                    state.set_chat_lifecycle(&chat_id, before, Some(after), cx);
-                }
-                unchanged
-            }
-            LifecycleUndo::Unread { chat_id, seen_at } => {
-                state.restore_chat_seen(&chat_id, seen_at, cx);
-                true
-            }
-        });
+        let undone = self
+            .state
+            .update(cx, |state, cx| undo_one(state, undo, now, cx));
         crate::toast::info(
             cx,
             if undone {
@@ -634,6 +626,40 @@ impl Shell {
                 "The thread changed since; nothing to undo"
             },
         );
+    }
+}
+
+/// Put one undo entry back; whether anything was. A batch counts when any
+/// of its rows could still be put back.
+fn undo_one(
+    state: &mut crate::state::AppState,
+    undo: LifecycleUndo,
+    now: DateTime<Utc>,
+    cx: &mut Context<crate::state::AppState>,
+) -> bool {
+    match undo {
+        LifecycleUndo::State {
+            chat_id,
+            before,
+            after,
+        } => {
+            let unchanged = state
+                .chats
+                .iter()
+                .any(|chat| chat.id == chat_id && chat.lifecycle.at(now) == after);
+            if unchanged {
+                state.set_chat_lifecycle(&chat_id, before, Some(after), cx);
+            }
+            unchanged
+        }
+        LifecycleUndo::Unread { chat_id, seen_at } => {
+            state.restore_chat_seen(&chat_id, seen_at, cx);
+            true
+        }
+        LifecycleUndo::Batch(undos) => undos
+            .into_iter()
+            .map(|undo| undo_one(state, undo, now, cx))
+            .fold(false, |any, undone| any || undone),
     }
 }
 

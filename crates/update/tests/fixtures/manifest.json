@@ -1,0 +1,13 @@
+{
+  "files": {
+    "godspeed-0.5.8-macos-arm64-app.tar.gz": {
+      "sha256": "1143295a8db6805c33411a9c293506e9d1eaa08ff25f8feccd4506982418d74b",
+      "size": 20
+    },
+    "godspeed-0.5.8-macos-arm64.dmg": {
+      "sha256": "c78256f38aa07bdddd619c74cc4d37138cb6400a57689f23bfc47f0e38fff32e",
+      "size": 12
+    }
+  },
+  "version": "0.5.8"
+}

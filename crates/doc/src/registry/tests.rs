@@ -261,6 +261,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         checkout_id: None,
         source_context: None,
         config: Some(ChatConfig {
+            instance: None,
             harness: HarnessId::Mock,
             model: Some("mock-1".into()),
             reasoning: None,
@@ -2524,6 +2525,7 @@ fn largest_conductor(device: &str) -> zeron_proto::Conductor {
         main_chat_id: uuid(2),
         space_ids: (10..18).map(uuid).collect(),
         config: Some(ChatConfig {
+            instance: None,
             harness: HarnessId::ClaudeCode,
             model: Some("claude-opus-5-5".into()),
             reasoning: None,

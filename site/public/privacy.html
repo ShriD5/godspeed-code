@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Privacy · Godspeed Code</title>
+<meta name="description" content="What Godspeed Code's Mac and iPhone apps, cloud sync and beta waitlist collect, and how to turn it off or delete it.">
+<meta name="theme-color" content="#0b0806">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://godspeed-code.pages.dev/privacy">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<!-- Generated from docs/PRIVACY.md by site/scripts/privacy.py. Edit the markdown, not this file. -->
+<style>
+@font-face{font-family:Geist;src:url(/fonts/geist.woff2) format("woff2");font-weight:100 900;font-display:swap}
+:root{--bg:#0b0806;--panel:#15110d;--line:#2a221a;--ink:#efe7da;--muted:#a89d8d;--gold:#f2b63f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 Geist,ui-sans-serif,system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+.top{max-width:820px;margin:0 auto;padding:22px 24px 0;display:flex;align-items:center;gap:12px}
+.top a{color:var(--ink);text-decoration:none;display:flex;align-items:center;gap:10px;font-weight:600}
+.top img{border-radius:8px}
+main{max-width:820px;margin:0 auto;padding:12px 24px 72px}
+h1{font-size:40px;letter-spacing:-.03em;margin:28px 0 8px}
+h2{font-size:26px;letter-spacing:-.02em;margin:48px 0 10px;padding-top:12px;border-top:1px solid var(--line)}
+h3{font-size:18px;margin:30px 0 8px}
+p,li{color:#ddd3c4}
+a{color:var(--gold)}
+code{font:14px ui-monospace,Menlo,monospace;background:var(--panel);padding:1px 5px;border-radius:5px}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600}
+footer{max-width:820px;margin:0 auto;padding:0 24px 48px;color:var(--muted);font-size:14px}
+</style>
+</head>
+<body>
+<header class="top"><a href="/"><img src="/favicon-32.png" width="28" height="28" alt="">Godspeed Code</a></header>
+<main>
+<h1 id="privacy">Privacy</h1>
+<p>Last updated: 30 October 2026.</p>
+<p>Godspeed Code is a free, open-source app for running coding agents: the Mac (and Linux) app, and an
+iPhone companion that follows the Mac's chats. It is made by Shrithan and Devakumar. This page
+covers everything the apps and our server receive:</p>
+<ul>
+<li><a href="#the-anonymous-usage-ping">The anonymous usage ping</a> the desktop app sends once a day (on by
+  default, easy to turn off).</li>
+<li><a href="#cloud-sync-and-the-iphone-app">Cloud sync and the iPhone app</a>: what is stored when you turn on
+  sync, which the iPhone app needs.</li>
+<li><a href="#the-iphone-beta-waitlist">The iPhone beta waitlist</a>: the email you leave on the website.</li>
+</ul>
+<p>We don't sell or share data, show ads, or use third-party analytics or tracking SDKs in any app.</p>
+<h2 id="the-anonymous-usage-ping">The anonymous usage ping</h2>
+<p>Godspeed Code sends one small, anonymous usage ping a day so we know the app is working and
+roughly how it is used. It contains no prompts, no code, no file paths, no repo or project names,
+no emails, no account or device ids, and no free text of any kind. It is on by default and easy to
+turn off.</p>
+<h3 id="what-is-sent">What is sent</h3>
+<p>At most once per UTC day, and only on a day you use Godspeed, the app sends this JSON to
+<code>https://godspeed-edge.shrid5.workers.dev/telemetry/v1/ping</code> (or <code>$GODSPEED_EDGE_URL</code> if you set
+one). This is the complete list of fields. The edge rejects anything else, and a test in
+<code>crates/proto/src/telemetry.rs</code> fails if a field is added without updating this page.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Example</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>v</code></td>
+<td><code>1</code></td>
+<td>Payload version</td>
+</tr>
+<tr>
+<td><code>install_id</code></td>
+<td><code>4f9d7c1e-…</code></td>
+<td>A random UUID made for this ping only, stored in <code>telemetry.json</code> in the data dir (<code>~/.godspeed</code>). It is not your device id and is never linked to an account</td>
+</tr>
+<tr>
+<td><code>day</code></td>
+<td><code>2026-10-27</code></td>
+<td>The UTC day the ping is sent</td>
+</tr>
+<tr>
+<td><code>app_version</code></td>
+<td><code>0.5.8</code></td>
+<td>Godspeed's version</td>
+</tr>
+<tr>
+<td><code>os</code></td>
+<td><code>macos</code></td>
+<td><code>macos</code>, <code>linux</code>, <code>windows</code> or <code>other</code></td>
+</tr>
+<tr>
+<td><code>arch</code></td>
+<td><code>aarch64</code></td>
+<td><code>aarch64</code>, <code>x86_64</code> or <code>other</code></td>
+</tr>
+<tr>
+<td><code>first_seen</code></td>
+<td><code>2026-10-20</code></td>
+<td>The UTC day this install first ran with the ping</td>
+</tr>
+<tr>
+<td><code>active</code></td>
+<td><code>true</code></td>
+<td><code>true</code> if a person used Godspeed that day (the desktop app was open or a turn was started), <code>false</code> for a background engine that only ran</td>
+</tr>
+<tr>
+<td><code>usage</code></td>
+<td></td>
+<td>Counts for your most recent earlier day of use not yet reported (a day is only complete once it's over). Missing on the very first ping</td>
+</tr>
+<tr>
+<td><code>usage.day</code></td>
+<td><code>2026-10-26</code></td>
+<td>The UTC day the counts cover</td>
+</tr>
+<tr>
+<td><code>usage.chats_started</code></td>
+<td><code>3</code></td>
+<td>Chats created on this install</td>
+</tr>
+<tr>
+<td><code>usage.turns_finished</code></td>
+<td><code>12</code></td>
+<td>Agent turns that finished</td>
+</tr>
+<tr>
+<td><code>usage.approvals_answered</code></td>
+<td><code>4</code></td>
+<td>Approvals and agent questions you answered</td>
+</tr>
+<tr>
+<td><code>usage.zoomie_runs</code></td>
+<td><code>1</code></td>
+<td>Zoomie (always-on agent) runs started</td>
+</tr>
+<tr>
+<td><code>usage.harnesses</code></td>
+<td><code>{"claude-code": 9, "codex": 3}</code></td>
+<td>Finished turns per agent. Only Godspeed's own agent ids (<code>claude-code</code>, <code>codex</code>, <code>cursor</code>, <code>devin</code>, <code>grok</code>, <code>hermes</code>, <code>pi</code>, <code>muse</code>, <code>opencode</code>, <code>antigravity</code>, <code>mock</code>, <code>unknown</code>); anything else is counted as <code>other</code></td>
+</tr>
+<tr>
+<td><code>usage.tokens</code></td>
+<td><code>{"input": …, "output": …, "cache_read": …, "cache_write": …}</code></td>
+<td>Token totals for those turns</td>
+</tr>
+<tr>
+<td><code>usage.spend_usd</code></td>
+<td><code>1.25</code></td>
+<td>What those tokens would cost at list API prices (an estimate; subscription logins pay nothing per token)</td>
+</tr>
+</tbody>
+</table>
+<p>The usage numbers come from the same local index as Settings → Usage, limited to turns Godspeed
+ran. Claude Code and Codex history from outside Godspeed is never read for the ping. Model names
+are not sent.</p>
+<h3 id="when-it-is-sent">When it is sent</h3>
+<ul>
+<li>On launch, about a minute in (five minutes on the very first launch, so you can read the notice
+  and turn it off first), if today's ping hasn't gone out yet.</li>
+<li>Otherwise at the day's first activity (a turn started or an approval answered), for an app or
+  background engine that stayed open past midnight. An idle day sends nothing.</li>
+<li>A failed send is retried a few times over about 45 minutes, then dropped. It never blocks or
+  slows anything.</li>
+</ul>
+<h3 id="what-the-server-keeps">What the server keeps</h3>
+<p>The edge (<code>edge/src/telemetry.ts</code>, a Cloudflare Worker) checks every field and stores the ping as
+one row per install per day (a retry replaces the row). It does not store your IP address, user
+agent or any request header. Your IP is used only, in memory, to rate-limit requests. Rows are kept
+for <strong>400 days</strong>, then deleted.</p>
+<p>The numbers are shown on a private dashboard that only the maintainers can open (signed in, by
+an email allowlist). Nothing is sold or shared.</p>
+<h3 id="how-to-turn-it-off">How to turn it off</h3>
+<p>Any one of these stops the ping:</p>
+<ul>
+<li><strong>Settings → General → Privacy → Share anonymous usage stats</strong> (switch it off), or <strong>Turn off</strong>
+  on the first-launch notice.</li>
+<li><code>GODSPEED_TELEMETRY=0</code> in the environment.</li>
+<li><code>DO_NOT_TRACK=1</code> in the environment.</li>
+</ul>
+<p>When it is off nothing is sent at all, and nothing about your usage is recorded locally for it.
+Turning it off does not delete pings already sent; they are anonymous and age out after 400 days.
+The headless engine (<code>godspeed headless</code>) honors the same file and variables, and logs a one-line
+notice at startup.</p>
+<h3 id="other-connections">Other connections</h3>
+<p>Separately from this ping, Godspeed checks GitHub Releases for updates (Settings → General →
+Updates turns that off), talks to the agents' own providers when you run them, and connects to the
+sync edge only if you turn on sync (next section).</p>
+<h2 id="cloud-sync-and-the-iphone-app">Cloud sync and the iPhone app</h2>
+<p>Sync is off by default: without it, chats stay on your Mac and no account exists. It is
+invite-only on our hosted server. If you turn it on (<strong>Enable sync</strong> in the Mac app's account
+menu) or sign in on the iPhone app, this is what happens.</p>
+<h3 id="what-is-stored-and-where">What is stored, and where</h3>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Why</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Your account: email address, name (if you gave one), a user id and organization id</td>
+<td>Signing in, and keeping your chats yours</td>
+<td><a rel="noopener" href="https://workos.com">WorkOS</a> (sign-in provider) and our server</td>
+</tr>
+<tr>
+<td>Your chats: messages you send, agent replies, tool output and diffs, chat and project names, and images or files you attach</td>
+<td>Showing the same chats on every device you sign in on</td>
+<td>Our server: a Cloudflare Worker with Durable Objects and R2 storage</td>
+</tr>
+<tr>
+<td>Your devices: a random device id the app makes, the device's name (for example "Shrithan's iPhone"), platform and app version</td>
+<td>Showing which machine runs which chat, and routing commands to it</td>
+<td>Our server</td>
+</tr>
+<tr>
+<td>Notification settings and the iPhone's push token, if you allow notifications</td>
+<td>Telling you when a chat finishes or needs you</td>
+<td>Our server; the notification (the chat's title and "Finished" / "Needs your input") goes through Apple's push service</td>
+</tr>
+</tbody>
+</table>
+<p>Data travels over TLS (HTTPS and secure WebSockets) and Cloudflare encrypts it at rest. It is not
+end-to-end encrypted: the server can read synced chats, and only the maintainers can access it, to
+run and fix the service. Chats you sync stay until you delete them or your account.</p>
+<h3 id="on-the-iphone">On the iPhone</h3>
+<ul>
+<li><strong>The app is a remote.</strong> Agents run on your Mac (or your own server); the phone shows their chats
+  and sends your messages and approvals to them through the sync server.</li>
+<li><strong>Microphone and speech recognition</strong> (only when you use them): dictation turns speech into
+  text with Apple's speech recognition. A Codex voice call you start connects the phone's audio to
+  OpenAI's realtime voice service; your Mac sets the call up with the ChatGPT account signed in to
+  Codex there. Only the call setup passes through our server; the audio doesn't, and nothing of it
+  is stored there.</li>
+<li><strong>Camera and photos</strong> (only when you use them): photos you take or pick are attached to the
+  message you're writing and synced like any other attachment.</li>
+<li><strong>Sample data:</strong> "Look around with sample data" on the sign-in screen runs entirely on the phone
+  with made-up chats. Nothing is sent anywhere.</li>
+<li>The iPhone app doesn't send the usage ping, has no analytics, and doesn't track you across apps
+  or websites.</li>
+</ul>
+<h3 id="deleting-your-data">Deleting your data</h3>
+<p>Signing out on the iPhone deletes its local copy. To delete your account and everything
+synced to our server, contact us (below) from the email you signed in with; we delete it within 30
+days and confirm. You can also run your own sync server instead (<a rel="noopener" href="https://github.com/ShriD5/godspeed-code/blob/main/edge/DEPLOY.md">edge/DEPLOY.md</a>),
+in which case nothing reaches ours.</p>
+<h2 id="the-iphone-beta-waitlist">The iPhone beta waitlist</h2>
+<p>The website's "Join the iPhone beta" form sends us your email address and, if you write one, a
+short note. We use them only to decide who gets access during the beta and to send you the
+TestFlight invite. They're stored on our server (separately from the usage pings), seen only by
+the maintainers, and deleted when you ask or when the beta ends, whichever comes first. Your IP
+address is used, in memory, only to rate-limit the form; it isn't stored.</p>
+<h2 id="contact">Contact</h2>
+<p>Questions, or a request to see or delete your data: message
+<a rel="noopener" href="https://github.com/ShriD5">@ShriD5 on GitHub</a> or <a rel="noopener" href="https://x.com/DevaiahShrithan">@DevaiahShrithan on X</a>,
+or reply to your beta invite. Changes to this page are listed in the repository's history.</p>
+</main>
+<footer><a href="/">Home</a> · <a href="https://github.com/ShriD5/godspeed-code/blob/main/docs/PRIVACY.md">Source of this page</a></footer>
+</body>
+</html>

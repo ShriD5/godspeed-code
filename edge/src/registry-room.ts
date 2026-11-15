@@ -13,7 +13,17 @@
  * Persistence model:
  * - `rows` — the state. Written synchronously inside the message event (write
  *   rate is index-scale: renames, status flips — never transcript traffic).
- * - `meta` — seq counter, gcFloor, per-device push attribution, backup marks.
+ *   No secondary index: every index entry is another row written against the
+ *   free plan's 100k/day, and delta reads are a scan of a small table.
+ * - heartbeats — a running session re-upserts its row every 10 s and only
+ *   `updatedAt` moves. Such a touch is applied in memory (`fresh`), broadcast
+ *   at seq 0 (rows apply, no client cursor moves) and acked; it reaches SQLite
+ *   once `updatedAt` is `HEARTBEAT_PERSIST_MS` past the stored value or with
+ *   the next real change. A stored row is thus never more than ~40 s behind,
+ *   inside the 45 s staleness horizon. Losing the memory copy (eviction)
+ *   loses nothing but that freshness.
+ * - `meta` — seq counter, gcFloor, per-device push attribution (throttled,
+ *   push-outcomes.ts), backup marks.
  * - presence — memory-only by construction (15s client beats, rebroadcast).
  *
  * Hibernation discipline: ZERO wall-clock timers; ping/pong rides the
@@ -22,6 +32,8 @@
 import { applyOp, validateOp, type Op, type Row } from "./registry-core";
 import { AUTH_USER_HEADER, apnsConfig, type Env } from "./env";
 import { isDeadToken, sendApns, type ApnsEnvironment } from "./apns";
+import { PushOutcomes, type PushOutcome } from "./push-outcomes";
+import { WriteMeter } from "./write-meter";
 import {
   apnsPayload,
   chatForNotification,
@@ -40,6 +52,11 @@ const TOMBSTONE_RETAIN_MS = 30 * DAY_MS;
 const MAX_BATCH_OPS = 500;
 /** Serialized inbound frame budget. */
 const MAX_FRAME_BYTES = 1_000_000;
+/** Heartbeat-only fields per row kind (see "heartbeats" above). */
+const HEARTBEAT_FIELDS: Record<string, string> = { sessions: "updatedAt" };
+/** A heartbeat this far past the stored value is written. Engines beat every
+ * 10 s and peers call a session dead 45 s after `updatedAt`. */
+export const HEARTBEAT_PERSIST_MS = 30_000;
 
 interface SocketState {
   userId: string;
@@ -49,12 +66,6 @@ interface SocketState {
 }
 
 interface WireOp extends Op {}
-
-interface PushOutcome {
-  ok: number;
-  rejected: number;
-  lastOkAt: number;
-}
 
 /** A phone that asked for notifications (APNs token + its choices). */
 interface PushTarget {
@@ -88,14 +99,25 @@ export class RegistryRoom implements DurableObject {
   private readonly env: Env;
   /** device → last presence beat (epoch ms). Memory-only. */
   private readonly presence = new Map<string, number>();
+  /** `kind id` → merged row newer than its stored copy only by a heartbeat. */
+  private readonly fresh = new Map<string, Row>();
+  /** The room's SQL, metered (rows written per minute show in the logs). */
+  private readonly sql: SqlStorage;
+  readonly meter: WriteMeter;
+  private readonly outcomes: PushOutcomes;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.ctx = ctx;
     this.env = env;
+    this.meter = new WriteMeter(`registry ${ctx.id.toString().slice(0, 12)}`);
+    this.sql = this.meter.wrap(ctx.storage.sql);
+    this.outcomes = new PushOutcomes((key) => this.getMeta(key), (key, value) => this.setMeta(key, value));
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS rows (kind TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, deleted INTEGER NOT NULL, del_hlc TEXT, fields TEXT NOT NULL, clocks TEXT NOT NULL, PRIMARY KEY (kind, id))"
     );
-    ctx.storage.sql.exec("CREATE INDEX IF NOT EXISTS rows_seq ON rows (seq)");
+    // Rewritten on every seq bump: twice the rows written, for an index
+    // that only speeds up delta reads of a small table.
+    ctx.storage.sql.exec("DROP INDEX IF EXISTS rows_seq");
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
     );
@@ -113,12 +135,12 @@ export class RegistryRoom implements DurableObject {
   // ── meta helpers ──────────────────────────────────────────────────────────
 
   private getMeta(key: string): string | undefined {
-    const rows = [...this.ctx.storage.sql.exec("SELECT value FROM meta WHERE key = ?", key)];
+    const rows = [...this.sql.exec("SELECT value FROM meta WHERE key = ?", key)];
     return rows[0]?.value as string | undefined;
   }
 
   private setMeta(key: string, value: string): void {
-    this.ctx.storage.sql.exec(
+    this.sql.exec(
       "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       key,
       value
@@ -135,9 +157,14 @@ export class RegistryRoom implements DurableObject {
 
   // ── row storage ───────────────────────────────────────────────────────────
 
+  /** The row's merged truth: a heartbeat-fresh copy beats the stored one. */
+  private currentRow(kind: string, id: string): Row | undefined {
+    return this.fresh.get(`${kind} ${id}`) ?? this.loadRow(kind, id);
+  }
+
   private loadRow(kind: string, id: string): Row | undefined {
     const rows = [
-      ...this.ctx.storage.sql.exec(
+      ...this.sql.exec(
         "SELECT seq, deleted, del_hlc, fields, clocks FROM rows WHERE kind = ? AND id = ?",
         kind,
         id
@@ -157,7 +184,7 @@ export class RegistryRoom implements DurableObject {
   }
 
   private saveRow(row: Row): void {
-    this.ctx.storage.sql.exec(
+    this.sql.exec(
       "INSERT INTO rows (kind, id, seq, deleted, del_hlc, fields, clocks) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET seq = excluded.seq, deleted = excluded.deleted, del_hlc = excluded.del_hlc, fields = excluded.fields, clocks = excluded.clocks",
       row.kind,
       row.id,
@@ -169,9 +196,14 @@ export class RegistryRoom implements DurableObject {
     );
   }
 
+  /** Stored rows past `cursor`, each replaced by its heartbeat-fresh copy. */
   private rowsSince(cursor: number): Row[] {
+    return this.storedRowsSince(cursor).map((row) => this.fresh.get(`${row.kind} ${row.id}`) ?? row);
+  }
+
+  private storedRowsSince(cursor: number): Row[] {
     const out: Row[] = [];
-    for (const raw of this.ctx.storage.sql.exec(
+    for (const raw of this.sql.exec(
       "SELECT kind, id, seq, deleted, del_hlc, fields, clocks FROM rows WHERE seq > ? ORDER BY seq",
       cursor
     )) {
@@ -206,10 +238,10 @@ export class RegistryRoom implements DurableObject {
     }
 
     if (url.pathname === "/stats" && request.method === "GET") {
-      const rowCount = [...this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM rows")][0]
+      const rowCount = [...this.sql.exec("SELECT COUNT(*) AS n FROM rows")][0]
         ?.n as number;
       const tombstones = [
-        ...this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM rows WHERE deleted = 1")
+        ...this.sql.exec("SELECT COUNT(*) AS n FROM rows WHERE deleted = 1")
       ][0]?.n as number;
       return json({
         seq: this.seq(),
@@ -219,7 +251,8 @@ export class RegistryRoom implements DurableObject {
         connectedSockets: this.ctx.getWebSockets().length,
         // The ONLY per-device attribution surface — kept from the 2026-08-05
         // incident tooling (SessionRoom's /stats pushOutcomes).
-        pushOutcomes: JSON.parse(this.getMeta("pushOutcomes") ?? "{}") as Record<string, PushOutcome>,
+        pushOutcomes: this.outcomes.snapshot() as Record<string, PushOutcome>,
+        heartbeatsInMemory: this.fresh.size,
         lastBackupSeq: Number(this.getMeta("backupSeq") ?? "0"),
         lastGcAt: Number(this.getMeta("lastGcAt") ?? "0"),
         pushTargets: this.pushTargets().map((t) => ({ device: t.device, environment: t.environment, prefs: t.prefs })),
@@ -234,7 +267,7 @@ export class RegistryRoom implements DurableObject {
       const device = url.searchParams.get("device") ?? "";
       if (device === "") return json({ error: "bad_request", message: "device required" }, 400);
       if (request.method === "DELETE") {
-        this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ?", device);
+        this.sql.exec("DELETE FROM push_targets WHERE device = ?", device);
         return json({ ok: true });
       }
       if (request.method === "POST") {
@@ -249,7 +282,7 @@ export class RegistryRoom implements DurableObject {
         if (!TOKEN_RE.test(token) || environment === undefined) {
           return json({ error: "bad_request", message: "token and environment required" }, 400);
         }
-        this.ctx.storage.sql.exec(
+        this.sql.exec(
           "INSERT INTO push_targets (device, token, environment, prefs, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(device) DO UPDATE SET token = excluded.token, environment = excluded.environment, prefs = excluded.prefs, updated_at = excluded.updated_at",
           device,
           token,
@@ -319,8 +352,10 @@ export class RegistryRoom implements DurableObject {
       // detects `state.seq < cursor` on its next hello and re-seeds the table
       // from its local rows with their ORIGINAL clocks (registry-core
       // rowToSeedOp) — the ws4 repair recipe, built in.
-      this.ctx.storage.sql.exec("DELETE FROM rows");
-      this.ctx.storage.sql.exec("DELETE FROM meta");
+      this.sql.exec("DELETE FROM rows");
+      this.sql.exec("DELETE FROM meta");
+      this.fresh.clear();
+      this.outcomes.reset();
       for (const ws of this.ctx.getWebSockets()) {
         try {
           ws.close(4410, "registry reset");
@@ -457,7 +492,7 @@ export class RegistryRoom implements DurableObject {
     let applied = 0;
     for (const op of ops) {
       const key = `${op.kind} ${op.id}`;
-      const before = touched.get(key) ?? this.loadRow(op.kind, op.id);
+      const before = touched.get(key) ?? this.currentRow(op.kind, op.id);
       if (op.kind === "sessions" && !sessionsBefore.has(op.id)) sessionsBefore.set(op.id, before);
       const { row, changed } = applyOp(before, op);
       if (!changed || row === undefined) continue;
@@ -465,13 +500,25 @@ export class RegistryRoom implements DurableObject {
       row.seq = nextSeq;
       touched.set(key, row);
     }
-    if (applied > 0) {
-      for (const row of touched.values()) this.saveRow(row);
+    // A batch that only moves heartbeats is applied in memory: nothing is
+    // written, the rows go out at seq 0 (no client cursor moves on them).
+    const heartbeatOnly =
+      applied > 0 && [...touched.values()].every((row) => this.isHeartbeatOnly(row));
+    if (heartbeatOnly) {
+      for (const [key, row] of touched) {
+        row.seq = this.loadRow(row.kind, row.id)!.seq;
+        this.fresh.set(key, row);
+      }
+    } else if (applied > 0) {
+      for (const [key, row] of touched) {
+        this.saveRow(row);
+        this.fresh.delete(key);
+      }
       this.setMeta("seq", String(nextSeq));
       this.markBackupDirty();
     }
     this.recordPush(device, true);
-    const seq = applied > 0 ? nextSeq : this.seq();
+    const seq = applied > 0 && !heartbeatOnly ? nextSeq : this.seq();
     if (applied > 0) {
       // Merged full rows to EVERY ready socket (sender included -- its op may
       // have lost LWW, and the merged row is the truth it must display).
@@ -482,7 +529,7 @@ export class RegistryRoom implements DurableObject {
       for (const socket of this.ctx.getWebSockets()) {
         const socketState = socket.deserializeAttachment() as SocketState | null;
         if (!socketState?.ready) continue;
-        send(socket, { t: "rows", seq, rows });
+        send(socket, { t: "rows", seq: heartbeatOnly ? 0 : seq, rows });
       }
       this.notifySessions(sessionsBefore, touched);
     }
@@ -492,7 +539,7 @@ export class RegistryRoom implements DurableObject {
   // ── push notifications ───────────────────────────────────────────────────
 
   private pushTargets(): PushTarget[] {
-    return [...this.ctx.storage.sql.exec("SELECT device, token, environment, prefs FROM push_targets")].map((raw) => ({
+    return [...this.sql.exec("SELECT device, token, environment, prefs FROM push_targets")].map((raw) => ({
       device: raw.device as string,
       token: raw.token as string,
       environment: (raw.environment as string) === "sandbox" ? "sandbox" : "production",
@@ -535,7 +582,7 @@ export class RegistryRoom implements DurableObject {
             const r = await sendApns(config, target.environment, target.token, apnsPayload(note.chatId, note.title, note.category), note.chatId);
             entry.result = r.reason ? `${r.status} ${r.reason}` : String(r.status);
             if (isDeadToken(r)) {
-              this.ctx.storage.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
+              this.sql.exec("DELETE FROM push_targets WHERE device = ? AND token = ?", target.device, target.token);
             }
           } catch (err) {
             entry.result = `error ${(err as Error).message}`;
@@ -579,21 +626,30 @@ export class RegistryRoom implements DurableObject {
   }
 
   private recordPush(device: string, ok: boolean): void {
-    const key = device === "" ? "(unknown)" : device;
-    const outcomes = JSON.parse(this.getMeta("pushOutcomes") ?? "{}") as Record<string, PushOutcome>;
-    const entry = outcomes[key] ?? { ok: 0, rejected: 0, lastOkAt: 0 };
-    if (ok) {
-      entry.ok += 1;
-      entry.lastOkAt = Date.now();
-    } else {
-      entry.rejected += 1;
+    this.outcomes.record(device, ok);
+  }
+
+  /** `merged` differs from its stored copy only by a heartbeat field moving
+   * forward less than `HEARTBEAT_PERSIST_MS` (clocks aside). */
+  private isHeartbeatOnly(merged: Row): boolean {
+    const field = HEARTBEAT_FIELDS[merged.kind];
+    if (field === undefined || merged.deleted) return false;
+    const stored = this.loadRow(merged.kind, merged.id);
+    if (stored === undefined || stored.deleted) return false;
+    const next = merged.fields[field];
+    const prev = stored.fields[field];
+    if (typeof next !== "number" || typeof prev !== "number") return false;
+    if (next < prev || next - prev >= HEARTBEAT_PERSIST_MS) return false;
+    const keys = new Set([...Object.keys(merged.fields), ...Object.keys(stored.fields)]);
+    for (const key of keys) {
+      if (key === field) continue;
+      if (JSON.stringify(merged.fields[key]) !== JSON.stringify(stored.fields[key])) return false;
     }
-    outcomes[key] = entry;
-    this.setMeta("pushOutcomes", JSON.stringify(outcomes));
+    return true;
   }
 
   private markBackupDirty(): void {
-    this.setMeta("backupDirty", "1");
+    if (this.getMeta("backupDirty") !== "1") this.setMeta("backupDirty", "1");
     void this.ctx.storage.getAlarm().then((existing) => {
       if (existing === null) void this.ctx.storage.setAlarm(Date.now() + DAY_MS);
     });
@@ -608,14 +664,14 @@ export class RegistryRoom implements DurableObject {
     const horizon = Date.now() - TOMBSTONE_RETAIN_MS;
     const horizonHlc = `${String(horizon).padStart(13, "0")}-`;
     let purgedMaxSeq = 0;
-    for (const raw of this.ctx.storage.sql.exec(
+    for (const raw of this.sql.exec(
       "SELECT seq FROM rows WHERE deleted = 1 AND del_hlc < ?",
       horizonHlc
     )) {
       purgedMaxSeq = Math.max(purgedMaxSeq, raw.seq as number);
     }
     if (purgedMaxSeq > 0) {
-      this.ctx.storage.sql.exec("DELETE FROM rows WHERE deleted = 1 AND del_hlc < ?", horizonHlc);
+      this.sql.exec("DELETE FROM rows WHERE deleted = 1 AND del_hlc < ?", horizonHlc);
       this.setMeta("gcFloor", String(Math.max(this.gcFloor(), purgedMaxSeq)));
       this.setMeta("lastGcAt", String(Date.now()));
     }
@@ -624,7 +680,7 @@ export class RegistryRoom implements DurableObject {
     //    can never replace the last good copy with a hollow one.
     const seq = this.seq();
     if (seq > Number(this.getMeta("backupSeq") ?? "0")) {
-      const rows = this.rowsSince(0);
+      const rows = this.storedRowsSince(0);
       await this.env.BLOBS.put(
         `backup/registry/${this.ctx.id.toString()}/latest.json`,
         JSON.stringify({ seq, at: Date.now(), rows })

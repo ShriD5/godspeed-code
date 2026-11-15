@@ -904,6 +904,7 @@ mod tests {
             checkout_id: None,
             source_context: None,
             config: Some(ChatConfig {
+                instance: None,
                 harness: HarnessId::Mock,
                 model: Some("mock-1".into()),
                 reasoning: None,
@@ -976,6 +977,7 @@ mod tests {
             serde_json::Value::String("1m".into()),
         );
         let config = ChatConfig {
+            instance: None,
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),

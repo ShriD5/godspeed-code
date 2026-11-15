@@ -27,6 +27,7 @@ use gpui::{App, Context, Entity, Task};
 use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
+use crate::citations::Citation;
 use crate::comments::ReviewComment;
 use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
@@ -299,14 +300,26 @@ impl EngineHandle {
     /// Must run on the tokio runtime (`Tokio::spawn`): both transports spawn
     /// tokio tasks.
     pub async fn bootstrap(config: EngineBootConfig) -> anyhow::Result<EngineHandle> {
+        Self::bootstrap_with(config, None).await
+    }
+
+    /// [`Self::bootstrap`], optionally serving IPC on a listener the caller
+    /// already bound to `config.ipc_port`. Owning the port rules out a daemon
+    /// on it, so there is nothing to probe; tests use this to hold their port
+    /// from the start instead of releasing a "free" one for anyone to take.
+    async fn bootstrap_with(
+        config: EngineBootConfig,
+        ipc_listener: Option<tokio::net::TcpListener>,
+    ) -> anyhow::Result<EngineHandle> {
         // Invariant: at most one bootstrap in this process runs probe+embed at
         // a time. The winner binds the deferred IPC listener before releasing
         // the gate, so a concurrent viewport's probe finds it and attaches as
         // Remote instead of racing it for the data dir.
         static BOOTSTRAP_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _gate = BOOTSTRAP_GATE.lock().await;
+        let probe_daemon = ipc_listener.is_none();
 
-        if let Some(handle) = Self::attach_to_daemon(config.ipc_port).await {
+        if probe_daemon && let Some(handle) = Self::attach_to_daemon(config.ipc_port).await {
             return Ok(handle);
         }
 
@@ -336,7 +349,9 @@ impl EngineHandle {
                         return Err(err.into());
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    if let Some(handle) = Self::attach_to_daemon(engine_config.ipc_port).await {
+                    if probe_daemon
+                        && let Some(handle) = Self::attach_to_daemon(engine_config.ipc_port).await
+                    {
                         return Ok(handle);
                     }
                 }
@@ -367,8 +382,14 @@ impl EngineHandle {
         //
         // Best-effort — losing the bind race with another engine costs other
         // viewports, not this one.
-        let ipc_task = match zeron_engine::serve_ipc(engine_config.ipc_port, service.clone()).await
-        {
+        let served = match ipc_listener {
+            Some(listener) => Ok(tokio::spawn(zeron_rpc::serve_ws_listener(
+                listener,
+                service.clone(),
+            ))),
+            None => zeron_engine::serve_ipc(engine_config.ipc_port, service.clone()).await,
+        };
+        let ipc_task = match served {
             Ok(task) => Some(task),
             Err(err) => {
                 tracing::warn!(
@@ -423,6 +444,14 @@ impl EngineHandle {
                     if let Some(port) = served_ipc_port {
                         engine_runtime.core().sessions.set_ipc_port(port);
                     }
+                    // The anonymous daily usage ping (docs/PRIVACY.md); never
+                    // from unit tests.
+                    #[cfg(not(test))]
+                    engine_runtime.start_telemetry(&engine_config.edge_url, true);
+                    // One jobserver shared by the agents and terminals this
+                    // engine starts (Settings → General → Builds).
+                    #[cfg(not(test))]
+                    engine_runtime.start_build_slots();
                     *runtime_for_boot.lock().await = Some(engine_runtime);
                     if service_for_boot.set(service).is_err() {
                         state_tx.send_replace(DeferredEngineState::Failed(
@@ -871,6 +900,10 @@ pub struct AppState {
     transfers: HashMap<String, (u64, u64)>,
     /// Written by the changes pane, read by the composer.
     review_comments: HashMap<String, Vec<ReviewComment>>,
+    /// Passages quoted from the transcript, folded into the next prompt.
+    citations: HashMap<String, Vec<Citation>>,
+    /// The transcript asked the composer to take the keyboard (an Ask click).
+    composer_focus: bool,
     /// File surfaces whose editor-backed comments currently cite a buffer
     /// revision that has not reached disk yet. A chat remains blocked until
     /// every surface waiting on a workspace write has finished or cancelled.
@@ -893,6 +926,9 @@ pub struct AppState {
     transcript_task: Option<Task<()>>,
     change_requests: ChangeRequestClientState,
     change_request_tasks: HashMap<ChangeRequestWatchKey, Task<()>>,
+    /// This device's pull request watches (chat rows mark watched PRs).
+    pull_request_watches: Vec<zeron_proto::pull_request_actions::PullRequestWatch>,
+    pull_request_watch_task: Option<Task<()>>,
     queue_task: Option<Task<()>>,
     change_requests_visible: bool,
     /// SUBAGENT transcripts keyed by subagent doc id (the right pane's
@@ -993,6 +1029,8 @@ impl AppState {
             upload_progress: None,
             transfers: HashMap::new(),
             review_comments: HashMap::new(),
+            citations: HashMap::new(),
+            composer_focus: false,
             review_comment_flushes: HashMap::new(),
             local_device_id: None,
             harness_updates: Vec::new(),
@@ -1004,6 +1042,8 @@ impl AppState {
             transcript_task: None,
             change_requests: ChangeRequestClientState::default(),
             change_request_tasks: HashMap::new(),
+            pull_request_watches: Vec::new(),
+            pull_request_watch_task: None,
             queue_task: None,
             change_requests_visible: true,
             sub_transcripts: HashMap::new(),
@@ -1150,6 +1190,63 @@ impl AppState {
     pub fn purge_review_comments(&mut self, key: &str) {
         self.review_comment_flushes.remove(key);
         self.review_comments.remove(key);
+    }
+
+    pub fn citations(&self, key: &str) -> &[Citation] {
+        self.citations
+            .get(key)
+            .map(|citations| citations.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Stage a quote on `key`. An empty quote is ignored. A quote already
+    /// staged is left as it is. Either way the composer is asked to focus,
+    /// because the click meant "reply to this".
+    pub fn stage_citation(&mut self, key: &str, citation: Citation) -> bool {
+        if citation.quote.is_empty() {
+            return false;
+        }
+        let list = self.citations.entry(key.to_string()).or_default();
+        if !list.iter().any(|existing| existing.quote == citation.quote) {
+            list.push(citation);
+        }
+        self.composer_focus = true;
+        true
+    }
+
+    pub fn add_citation(&mut self, key: &str, citation: Citation) {
+        if citation.quote.is_empty() {
+            return;
+        }
+        self.citations
+            .entry(key.to_string())
+            .or_default()
+            .push(citation);
+    }
+
+    pub fn remove_citation(&mut self, key: &str, id: &str) {
+        if let Some(list) = self.citations.get_mut(key) {
+            list.retain(|citation| citation.id != id);
+            if list.is_empty() {
+                self.citations.remove(key);
+            }
+        }
+    }
+
+    pub fn take_citations(&mut self, key: &str) -> Vec<Citation> {
+        self.citations.remove(key).unwrap_or_default()
+    }
+
+    pub fn purge_citations(&mut self, key: &str) {
+        self.citations.remove(key);
+    }
+
+    pub fn composer_focus_pending(&self) -> bool {
+        self.composer_focus
+    }
+
+    pub fn take_composer_focus(&mut self) -> bool {
+        std::mem::take(&mut self.composer_focus)
     }
 
     pub fn begin_review_comment_flush(&mut self, key: &str, source: u64) {
@@ -2466,6 +2563,34 @@ impl AppState {
             .change_request_for_chat(chat, &self.spaces)
     }
 
+    /// Replace this device's pull request watches (from the engine).
+    pub fn set_pull_request_watches(
+        &mut self,
+        watches: Vec<zeron_proto::pull_request_actions::PullRequestWatch>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pull_request_watches == watches {
+            return;
+        }
+        crate::change_requests::set_watched_pull_requests(
+            watches
+                .iter()
+                .filter(|watch| watch.active())
+                .map(|watch| watch.url.clone()),
+        );
+        self.pull_request_watches = watches;
+        cx.notify();
+    }
+
+    pub fn pull_request_watch(
+        &self,
+        url: &str,
+    ) -> Option<&zeron_proto::pull_request_actions::PullRequestWatch> {
+        self.pull_request_watches
+            .iter()
+            .find(|watch| watch.url == url)
+    }
+
     pub fn gate(&self) -> GatePhase {
         gate_phase(&self.connection, self.workspace_scope, self.auth.as_ref())
     }
@@ -2488,6 +2613,8 @@ impl AppState {
         self.transcript_task = None;
         self.change_request_tasks.clear();
         self.change_requests = ChangeRequestClientState::default();
+        self.pull_request_watch_task = None;
+        self.set_pull_request_watches(Vec::new(), cx);
         self.connection = ConnectionStatus::Connecting;
         self.workspace_scope = None;
         self.auth = None;
@@ -2531,7 +2658,7 @@ impl AppState {
     /// An `unsaved` chat is a hand-started side chat nothing has written yet:
     /// it opens no doc until its first send mints it (see
     /// [`Self::unsaved_side_chat_create`]).
-    pub(crate) fn side_chat_state(
+    pub(crate) fn independent_chat_state(
         parent: &Entity<Self>,
         chat: Chat,
         unsaved: bool,
@@ -2556,6 +2683,15 @@ impl AppState {
         state.select_chat(Some(chat.id), cx);
         state.watch_clock_transitions(cx);
         state
+    }
+
+    pub(crate) fn side_chat_state(
+        parent: &Entity<Self>,
+        chat: Chat,
+        unsaved: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::independent_chat_state(parent, chat, unsaved, cx)
     }
 
     /// This is a side chat's state whose chat its first send has yet to mint.
@@ -2751,7 +2887,10 @@ impl AppState {
             ));
         }
         self.watch_tasks = watch_tasks;
+        // The one-time anonymous usage stats notice (first launch only).
+        crate::settings::telemetry::show_notice_once(handle.clone(), cx);
         self.reconcile_change_request_watches(cx);
+        self.pull_request_watch_task = Some(spawn_pull_request_watch_refresh(cx, handle.clone()));
         // EngineInfo is part of the attachment boundary: views must know which
         // data profile they reached before they are allowed to render Ready.
         self.connection = ConnectionStatus::Ready;
@@ -3280,6 +3419,38 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
 
 pub use zeron_proto::version_triple;
 
+/// Re-read this device's pull request watches every two minutes: the engine
+/// starts some on its own (a chat opened the PR) and their state moves.
+fn spawn_pull_request_watch_refresh(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        loop {
+            match handle
+                .client()
+                .call(methods::LIST_PULL_REQUEST_WATCHES, serde_json::json!({}))
+                .await
+            {
+                Ok(value) => {
+                    if let Ok(watches) = serde_json::from_value::<
+                        Vec<zeron_proto::pull_request_actions::PullRequestWatch>,
+                    >(value)
+                        && this
+                            .update(cx, |state, cx| state.set_pull_request_watches(watches, cx))
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+                // An older engine: nothing to show, nothing to poll.
+                Err(RpcError::UnknownMethod(_)) => return,
+                Err(_) => {}
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(120))
+                .await;
+        }
+    })
+}
+
 fn spawn_change_request_watch(
     cx: &mut Context<AppState>,
     handle: EngineHandle,
@@ -3288,6 +3459,10 @@ fn spawn_change_request_watch(
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+        // A host that rejects the checkout (a removed worktree, a folder it
+        // no longer knows) keeps rejecting it, so failed subscribes back off.
+        const MAX_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+        let mut retry_delay = RETRY_DELAY;
         loop {
             let params = watch_params(&target, local_device_id.as_deref());
 
@@ -3296,7 +3471,10 @@ fn spawn_change_request_watch(
                 .subscribe_checked(methods::WATCH_CHECKOUT_CHANGE_REQUEST, params)
                 .await
             {
-                Ok(subscription) => subscription,
+                Ok(subscription) => {
+                    retry_delay = RETRY_DELAY;
+                    subscription
+                }
                 Err(RpcError::UnknownMethod(_)) => {
                     tracing::debug!(
                         device = %target.device_id,
@@ -3326,7 +3504,8 @@ fn spawn_change_request_watch(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    cx.background_executor().timer(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
                     continue;
                 }
             };
@@ -3864,19 +4043,25 @@ mod tests {
         zeron_engine::EngineProfile::local(dir.path()).unwrap();
         std::fs::create_dir(dir.path().join("profiles")).unwrap();
         std::fs::write(dir.path().join("profiles/local"), b"not a directory").unwrap();
-        let port = free_port().await;
+        // Hand bootstrap a listener already bound: releasing a "free" port
+        // and asking bootstrap to bind it again let any process on the host
+        // take the port in between, and then answer the final check below.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
 
-        let error = match EngineHandle::bootstrap(EngineBootConfig {
-            data_dir: dir.path().to_path_buf(),
-            ipc_port: port,
-            edge_url: "http://127.0.0.1:1".into(),
-            edge_token: None,
-            org_id: None,
-            workos_client_id: Some("client_test".into()),
-            default_harness: HarnessId::Mock,
-        })
-        .await
-        {
+        let bootstrap = EngineHandle::bootstrap_with(
+            EngineBootConfig {
+                data_dir: dir.path().to_path_buf(),
+                ipc_port: port,
+                edge_url: "http://127.0.0.1:1".into(),
+                edge_token: None,
+                org_id: None,
+                workos_client_id: Some("client_test".into()),
+                default_harness: HarnessId::Mock,
+            },
+            Some(listener),
+        );
+        let error = match bootstrap.await {
             Ok(handle) => {
                 handle.shutdown().await;
                 panic!("a corrupt local store must fail bootstrap")
@@ -3885,12 +4070,19 @@ mod tests {
         };
 
         assert!(!format!("{error:#}").is_empty());
-        assert!(
-            tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .is_err(),
-            "failed bootstrap must release the IPC listener"
-        );
+        // Binding the port again succeeds only once nothing listens on it.
+        // Wait for that rather than test it once: a child process another
+        // thread forks at this instant holds a copy of every open descriptor,
+        // the closed listener included, until it execs microseconds later. A
+        // listener bootstrap really leaked never releases and still fails.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "failed bootstrap must release the IPC listener"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test]
@@ -5582,6 +5774,7 @@ mod tests {
         let mut state = AppState::new();
         state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
         let config = zeron_proto::ChatConfig {
+            instance: None,
             harness: HarnessId::ClaudeCode,
             model: Some("claude-fable-5".into()),
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
@@ -5607,6 +5800,7 @@ mod tests {
         state.apply_chat_config(
             "missing",
             zeron_proto::ChatConfig {
+                instance: None,
                 harness: HarnessId::ClaudeCode,
                 model: None,
                 reasoning: None,

@@ -2,8 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// Wire form: the built-in agents serialize as their kebab-case names
+/// (`claude-code`, `codex`, …); an agent installed from the ACP registry
+/// serializes as `acp:<registry id>` (`acp:gemini`). See [`AcpAgentId`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HarnessId {
     ClaudeCode,
     Codex,
@@ -14,6 +16,8 @@ pub enum HarnessId {
     Grok,
     /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
     Hermes,
+    /// Vercel fx, driven by its native ACP server.
+    Fx,
     /// The Pi coding agent (pi.dev), driven over its native JSONL RPC protocol.
     Pi,
     /// Meta's Muse Code, driven natively over MSP (the Muse Session
@@ -28,6 +32,174 @@ pub enum HarnessId {
     Antigravity,
     /// Test harness; never shown in production pickers.
     Mock,
+    /// An agent installed from the public ACP agent registry (Factory Droid,
+    /// GitHub Copilot CLI, Gemini CLI, Kimi CLI, …), driven over ACP by the
+    /// generic ACP driver.
+    Acp(AcpAgentId),
+}
+
+/// The id of an ACP-registry agent (`factory-droid`, `gemini`). Registry ids
+/// are untrusted data, so construction validates them (the registry's own
+/// `^[a-z0-9][a-z0-9._-]*$`, at most 128 bytes) and interns the result: the
+/// id is a `&'static str`, which keeps [`HarnessId`] `Copy`. The interner is
+/// capped so hostile wire input cannot grow it without bound.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AcpAgentId(&'static str);
+
+/// Longest registry id accepted (the registry schema's own bound).
+pub const ACP_AGENT_ID_MAX_LEN: usize = 128;
+/// Distinct registry ids one process will intern.
+const ACP_AGENT_ID_INTERN_CAP: usize = 4096;
+/// Wire prefix of a registry agent's [`HarnessId`].
+pub const ACP_HARNESS_PREFIX: &str = "acp:";
+
+impl AcpAgentId {
+    /// Validate and intern a registry id.
+    pub fn new(id: &str) -> Result<Self, String> {
+        if !is_valid_acp_agent_id(id) {
+            return Err(format!("invalid ACP registry agent id {id:?}"));
+        }
+        intern_acp_agent_id(id).map(Self)
+    }
+
+    /// The bare registry id (`gemini`).
+    pub fn as_str(&self) -> &'static str {
+        &self.0[ACP_HARNESS_PREFIX.len()..]
+    }
+
+    /// The harness wire name (`acp:gemini`).
+    pub fn wire_name(&self) -> &'static str {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for AcpAgentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.as_str())
+    }
+}
+
+/// The registry's id grammar: `^[a-z0-9][a-z0-9._-]*$`, 1..=128 bytes.
+pub fn is_valid_acp_agent_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= ACP_AGENT_ID_MAX_LEN
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+fn intern_acp_agent_id(id: &str) -> Result<&'static str, String> {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let wire = format!("{ACP_HARNESS_PREFIX}{id}");
+    let mut set = INTERNED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = set.get(wire.as_str()) {
+        return Ok(existing);
+    }
+    if set.len() >= ACP_AGENT_ID_INTERN_CAP {
+        return Err("too many distinct ACP registry agent ids".into());
+    }
+    let leaked: &'static str = Box::leak(wire.into_boxed_str());
+    set.insert(leaked);
+    Ok(leaked)
+}
+
+impl HarnessId {
+    /// Every built-in harness, in registry order (registry agents are
+    /// dynamic and not listed).
+    pub const BUILT_IN: [HarnessId; 12] = [
+        HarnessId::ClaudeCode,
+        HarnessId::Codex,
+        HarnessId::Cursor,
+        HarnessId::Devin,
+        HarnessId::Grok,
+        HarnessId::Hermes,
+        HarnessId::Fx,
+        HarnessId::Pi,
+        HarnessId::Muse,
+        HarnessId::Opencode,
+        HarnessId::Antigravity,
+        HarnessId::Mock,
+    ];
+
+    /// The wire name (`claude-code`, `acp:gemini`).
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            HarnessId::ClaudeCode => "claude-code",
+            HarnessId::Codex => "codex",
+            HarnessId::Cursor => "cursor",
+            HarnessId::Devin => "devin",
+            HarnessId::Grok => "grok",
+            HarnessId::Hermes => "hermes",
+            HarnessId::Fx => "fx",
+            HarnessId::Pi => "pi",
+            HarnessId::Muse => "muse",
+            HarnessId::Opencode => "opencode",
+            HarnessId::Antigravity => "antigravity",
+            HarnessId::Mock => "mock",
+            HarnessId::Acp(agent) => agent.wire_name(),
+        }
+    }
+
+    /// Parse a wire name.
+    pub fn from_wire(name: &str) -> Result<Self, String> {
+        if let Some(id) = name.strip_prefix(ACP_HARNESS_PREFIX) {
+            return AcpAgentId::new(id).map(HarnessId::Acp);
+        }
+        HarnessId::BUILT_IN
+            .into_iter()
+            .find(|harness| harness.wire_name() == name)
+            .ok_or_else(|| format!("unknown harness `{name}`"))
+    }
+
+    /// The registry agent this harness drives, if it is one.
+    pub fn acp_agent(self) -> Option<AcpAgentId> {
+        match self {
+            HarnessId::Acp(agent) => Some(agent),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for HarnessId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.wire_name())
+    }
+}
+
+impl std::str::FromStr for HarnessId {
+    type Err = String;
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        HarnessId::from_wire(name)
+    }
+}
+
+impl Serialize for HarnessId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.wire_name())
+    }
+}
+
+impl<'de> Deserialize<'de> for HarnessId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = HarnessId;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a harness id")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<HarnessId, E> {
+                HarnessId::from_wire(value).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_str(Visitor)
+    }
 }
 
 /// Durable user preference for one agent's independently-installed CLI.
@@ -163,6 +335,34 @@ pub enum ReasoningLevel {
     Ultrathink,
 }
 
+/// Claude models whose own default effort is Medium: Claude Code runs them
+/// at medium when no `--effort` is passed, and T3 Code's model manifest
+/// defaults them the same way. Other Claude models (Sonnet, older Opus)
+/// default to High. Prefixes, so dated snapshots and `[1m]` rows match.
+const MEDIUM_EFFORT_MODELS: &[&str] = &["claude-opus-5-5", "claude-fable-5", "claude-haiku-5-5"];
+
+/// The effort a model runs at when nobody picked one: Medium for the models
+/// in [`MEDIUM_EFFORT_MODELS`], otherwise High when the ladder offers it,
+/// then Medium, then the ladder's first entry. `None` only for ladder-less
+/// models (Haiku 4.5's thinking toggle instead).
+pub fn default_reasoning_for(
+    model: Option<&str>,
+    ladder: &[ReasoningLevel],
+) -> Option<ReasoningLevel> {
+    let medium_first =
+        model.is_some_and(|id| MEDIUM_EFFORT_MODELS.iter().any(|p| id.starts_with(p)));
+    let preferred: &[ReasoningLevel] = if medium_first {
+        &[ReasoningLevel::Medium, ReasoningLevel::High]
+    } else {
+        &[ReasoningLevel::High, ReasoningLevel::Medium]
+    };
+    preferred
+        .iter()
+        .find(|level| ladder.contains(level))
+        .or(ladder.first())
+        .copied()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxLevel {
@@ -228,6 +428,11 @@ pub struct RunRequest {
     /// engine default. Additive + serde-defaulted for wire compat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<HarnessId>,
+    /// The provider instance picked at send time (see
+    /// [`crate::provider_instance`]); `None` is the provider's default
+    /// instance — today's single-install behaviour. Additive + serde-defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
     pub model: Option<String>,
     pub reasoning: Option<ReasoningLevel>,
     /// Harness-specific option selections (option id -> choice id), JSON round-tripped.
@@ -298,6 +503,11 @@ impl RunRequest {
         self.access.get_or_insert_with(Default::default).mode = mode;
     }
 }
+
+/// Environment variable the engine sets to `0` on its injected `godspeed mcp`
+/// server when no desktop window is attached to drive the preview browser:
+/// the server then leaves the `preview_*` tools out. Unset means offer them.
+pub const MCP_PREVIEW_ENV: &str = "GODSPEED_PREVIEW";
 
 /// A stdio MCP server the harness should add to the agent's session, on top
 /// of whatever the user configured. Each driver spells it in its own dialect
@@ -477,6 +687,14 @@ const _: () = assert!(
     VISUAL_MAX_TOTAL_ASSET_BYTES.div_ceil(3) * 4 + VISUAL_MAX_BYTES * 6 + 64 * 1024 < 16 * 1024 * 1024
 );
 
+/// Largest image file an agent may show with `show_image` (it rides one
+/// WebSocket message, base64-encoded, like a visual's assets).
+pub const IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
+/// Longest side, in pixels, of an image the desktop decodes for a preview;
+/// `show_image` refuses larger ones rather than publish an unviewable part.
+pub const IMAGE_MAX_SIDE: u32 = 4096;
+const _: () = assert!(IMAGE_MAX_BYTES.div_ceil(3) * 4 + 64 * 1024 < 16 * 1024 * 1024);
+
 /// Whether `name` can name a visual's asset: a plain file name.
 pub fn valid_visual_asset_name(name: &str) -> bool {
     !name.is_empty()
@@ -640,7 +858,9 @@ pub enum AgentEvent {
     TextDelta {
         text: String,
     },
-    /// A generated raster asset. The engine materializes this path before publication.
+    /// A raster image in the reply: one a harness generated (the engine
+    /// materializes this path before publication) or one an agent showed with
+    /// Godspeed's `show_image` MCP tool (already stored in uploads).
     #[serde(rename_all = "camelCase")]
     GeneratedImage {
         id: String,
@@ -729,6 +949,20 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window: Option<String>,
     },
+    /// How long the provider keeps the prompt cache the last request wrote:
+    /// Claude reports 1 hour on subscription logins and 5 minutes on API
+    /// keys. Engine state for idle compaction, never stream traffic: the
+    /// engine consumes it before publishing, as it does [`Self::UsageLimit`].
+    #[serde(rename_all = "camelCase")]
+    PromptCache {
+        ttl_secs: u64,
+    },
+    /// The summary a context compaction left the agent with. Engine state,
+    /// like [`Self::PromptCache`]: an idle compaction's transcript row shows
+    /// it; every other compaction drops it.
+    CompactionSummary {
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
     InputRequested {
         request_id: String,
@@ -767,9 +1001,12 @@ pub enum AgentEvent {
     /// the spawning tool call (`parent_tool_use_id` = the parent-feed
     /// `ToolCall::id` that launched it). Never folded into the parent chat
     /// doc — the engine routes these to the subagent's own doc; the parent
-    /// keeps only the spawn chip. Additive: old consumers that don't match
-    /// this variant drop the nested traffic, which is the pre-subagent-viz
-    /// behavior.
+    /// keeps only the spawn chip. The spawn `ToolCall` must come first: the
+    /// engine opens that doc only for an id that already names one of the
+    /// chat's spawn chips ([`ToolCall::is_subagent_spawn`]), and keeps
+    /// traffic tagged with any other id in the run journal only. Additive:
+    /// old consumers that don't match this variant drop the nested traffic,
+    /// which is the pre-subagent-viz behavior.
     #[serde(rename_all = "camelCase")]
     Subagent {
         parent_tool_use_id: String,
@@ -779,6 +1016,61 @@ pub enum AgentEvent {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_models_that_default_to_medium_effort_start_there() {
+        use super::ReasoningLevel::*;
+        use super::default_reasoning_for as default;
+        let full = [Low, Medium, High, XHigh, Max, Ultracode, Ultrathink];
+        for id in [
+            "claude-opus-5-5",
+            "claude-opus-5-5[1m]",
+            "claude-opus-5-5-20261001",
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-haiku-5-5",
+        ] {
+            assert_eq!(default(Some(id), &full), Some(Medium), "{id}");
+        }
+        // Sonnet and older Opus keep High, as in Claude Code and T3 Code.
+        for id in [
+            "claude-sonnet-5",
+            "claude-sonnet-5-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+        ] {
+            assert_eq!(default(Some(id), &full), Some(High), "{id}");
+        }
+        assert_eq!(default(None, &full), Some(High));
+        // A ladder without the preferred level falls through.
+        assert_eq!(default(Some("claude-opus-5-5"), &[Low, High]), Some(High));
+        assert_eq!(default(Some("gpt-6"), &[Minimal, Low, Medium]), Some(Medium));
+        assert_eq!(default(Some("x"), &[Minimal, Low]), Some(Minimal));
+        assert_eq!(default(Some("claude-haiku-4-5"), &[]), None);
+    }
+
+    #[test]
+    fn harness_ids_keep_their_wire_names_and_registry_agents_round_trip() {
+        for harness in HarnessId::BUILT_IN {
+            let json = serde_json::to_string(&harness).unwrap();
+            assert_eq!(json, format!("\"{}\"", harness.wire_name()));
+            assert_eq!(serde_json::from_str::<HarnessId>(&json).unwrap(), harness);
+        }
+        assert_eq!(serde_json::to_string(&HarnessId::ClaudeCode).unwrap(), "\"claude-code\"");
+        let gemini: HarnessId = serde_json::from_str("\"acp:gemini\"").unwrap();
+        assert_eq!(gemini.acp_agent().unwrap().as_str(), "gemini");
+        assert_eq!(serde_json::to_string(&gemini).unwrap(), "\"acp:gemini\"");
+        assert_eq!(gemini, HarnessId::Acp(AcpAgentId::new("gemini").unwrap()));
+        for bad in ["\"acp:\"", "\"acp:Gemini\"", "\"acp:../x\"", "\"nope\""] {
+            assert!(serde_json::from_str::<HarnessId>(bad).is_err(), "{bad}");
+        }
+        let long = format!("\"acp:{}\"", "a".repeat(ACP_AGENT_ID_MAX_LEN + 1));
+        assert!(serde_json::from_str::<HarnessId>(&long).is_err());
+        // Map keys keep working.
+        let map: std::collections::HashMap<HarnessId, u8> =
+            serde_json::from_str("{\"acp:kimi\":1,\"codex\":2}").unwrap();
+        assert_eq!(map.len(), 2);
+    }
+
     use super::*;
 
     #[test]
@@ -859,6 +1151,7 @@ mod tests {
         assert!(json.get("attachments").is_none());
         // Populated lists round-trip.
         let req = RunRequest {
+            instance: None,
             attachments: vec!["/tmp/a.png".into()],
             ..req
         };
@@ -878,6 +1171,7 @@ mod tests {
         assert!(json.get("worktree").is_none());
         // A populated spec round-trips camelCased.
         let req = RunRequest {
+            instance: None,
             worktree: Some(WorktreeSpec {
                 repo_path: "/repos/comet".into(),
                 base: "main".into(),

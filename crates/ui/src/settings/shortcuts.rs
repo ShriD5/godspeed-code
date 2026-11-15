@@ -15,8 +15,8 @@ use crate::popover::{self, ScrollRailHost};
 mod appshots_page;
 use crate::settings::widgets;
 use crate::settings::{
-    ComposerSendBehavior, KeymapConfig, PullRequestDestination, SavePolicy, ShortcutId,
-    combo_from_keystroke, display_combo,
+    ComposerSendBehavior, KeyEquivalents, KeymapConfig, PullRequestDestination, SavePolicy,
+    ShortcutId, canonical_key, combo_from_keystroke, display_combo, key_equivalents,
 };
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -32,11 +32,26 @@ pub enum RecordOutcome {
     Set(String),
 }
 
-pub fn record_key(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> RecordOutcome {
+/// `key` is what the layout reported; `equivalents` that layout's
+/// [`KeyEquivalents`]. The combo stores the US key behind it, the spelling
+/// defaults use (AZERTY ⌘& records as "mod-1"), so stored-combo conflict
+/// checks keep seeing one chord per key. A key no stored combo can reach is
+/// unusable.
+pub fn record_key(
+    key: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    cmd: bool,
+    equivalents: &KeyEquivalents,
+) -> RecordOutcome {
     if key.eq_ignore_ascii_case("escape") {
         return RecordOutcome::Cancelled;
     }
-    match combo_from_keystroke(ctrl, alt, shift, cmd, key) {
+    let Some(key) = canonical_key(key, equivalents) else {
+        return RecordOutcome::Ignored;
+    };
+    match combo_from_keystroke(ctrl, alt, shift, cmd, &key) {
         Some(combo) => RecordOutcome::Set(combo),
         None => RecordOutcome::Ignored,
     }
@@ -90,7 +105,14 @@ pub struct ShortcutsPage {
     thread_lifecycle: Entity<crate::settings::thread_lifecycle::ThreadLifecycleCard>,
     /// Settings → General's opt-in question timeout default.
     question_timeout: Entity<crate::settings::question_timeout::QuestionTimeoutCard>,
+    /// Settings → General's anonymous usage stats switch (Privacy).
+    telemetry: Entity<crate::settings::telemetry::TelemetryCard>,
+    /// Settings → General's shared build slots and sccache (Builds).
+    build_slots: Entity<crate::settings::build_slots::BuildSlotsCard>,
     worktrees: Entity<super::worktrees::WorktreeSettingsCard>,
+    /// Re-renders Settings → General's Updates row as checks and downloads
+    /// progress.
+    _app_update_observation: Option<gpui::Subscription>,
     _state: Entity<AppState>,
 }
 
@@ -147,7 +169,17 @@ impl ShortcutsPage {
                 let state = state.clone();
                 cx.new(|cx| crate::settings::question_timeout::QuestionTimeoutCard::new(state, cx))
             },
+            telemetry: {
+                let state = state.clone();
+                cx.new(|cx| crate::settings::telemetry::TelemetryCard::new(state, cx))
+            },
+            build_slots: {
+                let state = state.clone();
+                cx.new(|cx| crate::settings::build_slots::BuildSlotsCard::new(state, cx))
+            },
             worktrees: cx.new(|cx| super::worktrees::WorktreeSettingsCard::new(state.clone(), cx)),
+            _app_update_observation: crate::app_update::AppUpdate::global(cx)
+                .map(|update| cx.observe(&update, |_, _, cx| cx.notify())),
             _state: state,
         }
     }
@@ -246,6 +278,7 @@ impl ShortcutsPage {
             mods.alt,
             mods.shift,
             mods.platform,
+            &key_equivalents(cx),
         ) {
             RecordOutcome::Cancelled => {
                 self.stop_recording();
@@ -374,6 +407,77 @@ impl ShortcutsPage {
     }
 }
 
+/// Settings → General → Updates: "Check for updates automatically" (on by
+/// default; scheduled checks, background download and install-on-quit) with
+/// the current state underneath, and "Check now".
+fn render_updates_row(theme: &Theme, cx: &mut Context<ShortcutsPage>) -> gpui::Div {
+    let enabled = crate::settings::current(cx).auto_update_enabled;
+    let current = zeron_update::current_version();
+    let detail = match crate::app_update::AppUpdate::global(cx) {
+        Some(update) => {
+            let update = update.read(cx);
+            crate::app_update::settings_detail(
+                current,
+                update.status(),
+                update.flow(),
+                chrono::Utc::now().timestamp_millis(),
+            )
+        }
+        None => format!("You're on {current}."),
+    };
+    widgets::card_row(theme, true)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(widgets::row_title(theme, "Check for updates automatically"))
+                .child(widgets::meta_line(
+                    theme,
+                    vec![div().child(detail).into_any_element()],
+                )),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(12.0))
+                .child(
+                    widgets::text_action(theme, widgets::ActionTone::Quiet, "Check now")
+                        .id("updates-check-now")
+                        .tab_index(0)
+                        .role(gpui::Role::Button)
+                        .focus_visible(|s| s.border_2().border_color(theme.accent))
+                        .on_click(|_, _, cx| crate::app_update::check_for_updates(cx)),
+                )
+                .child(
+                    widgets::toggle_switch(theme, enabled, "auto-update-enabled")
+                        .id("auto-update-enabled-toggle")
+                        .tab_index(0)
+                        .role(gpui::Role::Switch)
+                        .aria_label("Check for updates automatically")
+                        .aria_toggled(if enabled {
+                            gpui::Toggled::True
+                        } else {
+                            gpui::Toggled::False
+                        })
+                        .focus_visible(|s| s.border_2().border_color(theme.accent))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::settings::update(SavePolicy::Immediate, cx, |settings| {
+                                settings.auto_update_enabled = !enabled
+                            });
+                            if let Some(update) = crate::app_update::AppUpdate::global(cx) {
+                                update.update(cx, |update, cx| {
+                                    update.set_automatic_checks(!enabled, cx)
+                                });
+                            }
+                            cx.notify();
+                        })),
+                ),
+        )
+}
+
 impl popover::ScrollRailHost for ShortcutsPage {
     fn rail_bar(&mut self) -> &mut popover::MenuScrollbarState {
         self.scroll.rail_bar()
@@ -463,6 +567,7 @@ impl ShortcutField {
             mods.alt,
             mods.shift,
             mods.platform,
+            &key_equivalents(cx),
         ) {
             RecordOutcome::Cancelled => self.stop_recording(),
             RecordOutcome::Ignored => {}
@@ -685,7 +790,9 @@ fn refusal(
 pub fn conflict_owner(keymap: &KeymapConfig, id: ShortcutId, combo: &str) -> Option<ShortcutId> {
     ShortcutId::ALL
         .into_iter()
-        .find(|&other| other.available() && other != id && keymap.get(other) == combo)
+        .find(|&other| {
+            other.available() && other != id && !id.shares_combo(other) && keymap.get(other) == combo
+        })
 }
 
 pub fn send_combo_is_reserved(_behavior: ComposerSendBehavior, combo: &str) -> bool {
@@ -739,7 +846,8 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::SettleSession
         | ShortcutId::NavigateBack
         | ShortcutId::NavigateForward
-        | ShortcutId::MissionControl => "Sessions",
+        | ShortcutId::MissionControl
+        | ShortcutId::StashPrompt => "Sessions",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
@@ -1022,6 +1130,7 @@ impl Render for ShortcutsPage {
                         )),
                 )
                 .child(pull_request_destination_control);
+            let updates_row = render_updates_row(&theme, cx);
             let scrollbar = self.render_scrollbar(&theme, cx);
             return div()
                 .id("general-settings-page-host")
@@ -1057,11 +1166,20 @@ impl Render for ShortcutsPage {
                                             .mt_0()
                                             .child(pull_request_destination_row),
                                     ))
+                                    .child(widgets::section(
+                                        &theme,
+                                        "Updates",
+                                        widgets::section_card(&theme)
+                                            .mt_0()
+                                            .child(updates_row),
+                                    ))
                                     .child(self.thread_naming.clone())
                                     .child(self.usage_limits.clone())
                                     .child(self.thread_lifecycle.clone())
                                     .child(self.question_timeout.clone())
-                                    .child(self.worktrees.clone()),
+                                    .child(self.worktrees.clone())
+                                    .child(self.build_slots.clone())
+                                    .child(self.telemetry.clone()),
                             ),
                     )
                     .fade_overflow_y(&self.scroll.scroll),
@@ -1561,35 +1679,74 @@ mod tests {
 
     #[test]
     fn recording_outcomes() {
+        let us = KeyEquivalents::default();
         assert_eq!(
-            record_key("escape", false, false, false, false),
+            record_key("escape", false, false, false, false, &us),
             RecordOutcome::Cancelled
         );
         assert_eq!(
-            record_key("Escape", true, false, false, false),
+            record_key("Escape", true, false, false, false, &us),
             RecordOutcome::Cancelled
         );
         assert_eq!(
-            record_key("s", false, false, false, true),
+            record_key("s", false, false, false, true, &us),
             RecordOutcome::Set("mod-s".into())
         );
         assert_eq!(
-            record_key("k", false, true, true, true),
+            record_key("k", false, true, true, true, &us),
             RecordOutcome::Set("mod-alt-shift-k".into())
         );
         // macOS-only: elsewhere ctrl IS the primary and records as "mod".
         #[cfg(target_os = "macos")]
         assert_eq!(
-            record_key("tab", true, false, true, false),
+            record_key("tab", true, false, true, false, &us),
             RecordOutcome::Set("ctrl-shift-tab".into())
         );
         // Bare modifiers stay recording.
         assert_eq!(
-            record_key("shift", false, false, true, false),
+            record_key("shift", false, false, true, false, &us),
             RecordOutcome::Ignored
         );
         assert_eq!(
-            record_key("ctrl", true, false, false, false),
+            record_key("ctrl", true, false, false, false, &us),
+            RecordOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn azerty_records_the_us_key_behind_each_chord() {
+        let azerty = crate::settings::azerty_key_equivalents();
+        // ⌘& is AZERTY's ⌘1: it records as the default's own spelling, so
+        // the conflict check sees Jump to session 1 holding it.
+        let RecordOutcome::Set(combo) = record_key("&", false, false, false, true, &azerty) else {
+            panic!("expected Set");
+        };
+        assert_eq!(combo, "mod-1");
+        assert_eq!(
+            conflict_owner(&KeymapConfig::default(), ShortcutId::NewSession, &combo),
+            Some(ShortcutId::JumpSession(0))
+        );
+        assert_eq!(
+            record_key(":", false, false, false, true, &azerty),
+            RecordOutcome::Set("mod-/".into())
+        );
+        // ⌘⇧è types 7, where AZERTY puts US ⌘&.
+        assert_eq!(
+            record_key("7", false, false, false, true, &azerty),
+            RecordOutcome::Set("mod-&".into())
+        );
+        // Letters and keys AZERTY keeps in place record as typed.
+        assert_eq!(
+            record_key("é", false, false, false, true, &azerty),
+            RecordOutcome::Set("mod-2".into())
+        );
+        assert_eq!(
+            record_key("b", false, false, false, true, &azerty),
+            RecordOutcome::Set("mod-b".into())
+        );
+        // No US key lands on AZERTY's @ key: nothing stored could reach it.
+        assert_eq!(
+            record_key("@", false, false, false, true, &azerty),
             RecordOutcome::Ignored
         );
     }
@@ -1618,11 +1775,31 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_stash_shares_save_files_key_and_nothing_else() {
+        let keymap = KeymapConfig::default();
+        assert_eq!(keymap.get(ShortcutId::StashPrompt), "mod-s");
+        assert_eq!(keymap.get(ShortcutId::SaveFile), "mod-s");
+        assert_eq!(conflict_owner(&keymap, ShortcutId::StashPrompt, "mod-s"), None);
+        assert_eq!(conflict_owner(&keymap, ShortcutId::SaveFile, "mod-s"), None);
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::StashPrompt, "mod-b"),
+            Some(ShortcutId::ToggleSidebar)
+        );
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::ToggleSidebar, "mod-s"),
+            Some(ShortcutId::SaveFile)
+        );
+        assert_eq!(group(ShortcutId::StashPrompt), "Sessions");
+    }
+
+    #[test]
     fn conflicting_records_are_refused() {
         // godspeed parity: a combo bound elsewhere is refused at record time (the
         // helper names the owner) — conflicts never persist into the keymap.
         let keymap = KeymapConfig::default();
-        let RecordOutcome::Set(combo) = record_key("r", false, false, false, true) else {
+        let RecordOutcome::Set(combo) =
+            record_key("r", false, false, false, true, &KeyEquivalents::default())
+        else {
             panic!("expected Set");
         };
         assert_eq!(

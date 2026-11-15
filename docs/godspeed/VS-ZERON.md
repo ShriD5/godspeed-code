@@ -103,7 +103,9 @@ Startup, memory after work, idle CPU and shutdown are a tie within noise. The on
 is idle memory: Godspeed uses about 1.6 MiB more, for the agent scheduler, Telegram bot, message
 index and the other added subsystems. Request latency gaps are smaller than the run-to-run noise.
 
-Network: Godspeed made no connections at all. Zeron as shipped opens one HTTPS connection to
+Network: in that run Godspeed made no connections at all. Since then it checks GitHub Releases
+for updates and sends one anonymous usage ping a day (counts and token totals, no content; off
+in Settings, see [PRIVACY.md](../PRIVACY.md)). Zeron as shipped opens one HTTPS connection to
 `edge.zeron.sh` about 20 s after launch, which matches its built-in release check (the payload was
 not captured). The machine was not fully idle during the run. Method, raw data and limitations:
 [BENCHMARKS-ZERON.md](BENCHMARKS-ZERON.md).

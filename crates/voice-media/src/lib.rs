@@ -97,7 +97,7 @@ impl NativeHost {
         let device_selection = helper_device_selection(path)?;
         let result = tokio::time::timeout(
             Duration::from_secs(5),
-            Self::command(path).arg("--build-commit").output(),
+            retry_busy(|| async { Self::command(path).arg("--build-commit").output().await }),
         )
         .await
         .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?
@@ -108,11 +108,14 @@ impl NativeHost {
             .filter(|s| !s.is_empty() && s.len() <= 128)
             .filter(|_| result.status.success())
             .ok_or(VoiceRejection::NativeRuntimeUnavailable)?;
-        let mut child = Self::command(path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
+        let mut child = retry_busy(|| async {
+            Self::command(path)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+        })
+        .await
+        .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
         let input = child.stdin.take().ok_or(VoiceRejection::Protocol)?;
         let output = child.stdout.take().ok_or(VoiceRejection::Protocol)?;
         let reaper_stop = stop.clone();
@@ -246,6 +249,30 @@ impl NativeHost {
             .and_then(|n| u16::try_from(n).ok())
             .ok_or(VoiceRejection::Protocol)?;
         Ok((mic, speaker))
+    }
+}
+
+/// Run a spawn, retrying while the kernel reports the helper busy. Linux
+/// refuses to exec a file any process holds open for writing (`ETXTBSY`); a
+/// helper this process just wrote or updated can still be open in a child
+/// another thread forked before the write closed, until that child execs
+/// microseconds later. Other errors return at once.
+async fn retry_busy<T, F, Fut>(mut spawn: F) -> std::io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<T>>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match spawn().await {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
     }
 }
 

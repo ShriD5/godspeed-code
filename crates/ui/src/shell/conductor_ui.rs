@@ -298,6 +298,7 @@ impl Shell {
             return;
         };
         let config = Some(ChatConfig {
+            instance: None,
             harness,
             model: None,
             reasoning: None,

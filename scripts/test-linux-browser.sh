@@ -35,8 +35,28 @@ fi
 export DISPLAY=":$display_number"
 export XDG_RUNTIME_DIR="$runtime"
 export GODSPEED_BROWSER_NATIVE_POINTER=1
-openbox >"$output/openbox.log" 2>&1 &
-processes+=("$!")
+# Launch the fixture only once openbox manages windows. While it is still
+# starting it already redirects map requests (the fixture window then stays
+# unmapped until openbox's event loop runs), and its startup (theme, fonts)
+# can outlast the fixture's visibility wait on a loaded runner. `--startup`
+# runs after initialization, right before the event loop.
+openbox --startup "touch $runtime/openbox-ready" >"$output/openbox.log" 2>&1 &
+openbox_pid=$!
+processes+=("$openbox_pid")
+for _ in $(seq 1 600); do
+  [ -e "$runtime/openbox-ready" ] && break
+  if ! kill -0 "$openbox_pid" 2>/dev/null; then
+    echo "openbox exited during startup" >&2
+    cat "$output/openbox.log" >&2
+    exit 1
+  fi
+  sleep .1
+done
+if [ ! -e "$runtime/openbox-ready" ]; then
+  echo "openbox did not finish starting within 60 seconds" >&2
+  cat "$output/openbox.log" >&2
+  exit 1
+fi
 record_fixture() {
   local mode="$1" capture_window="${2:-}" fixture_pid video_pid
   mkdir -p "$output/$mode"
