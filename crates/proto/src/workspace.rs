@@ -24,6 +24,9 @@ pub mod capabilities {
     /// The host accepts `SidebarSectionChange::Move` and orders sections by
     /// their placed key; older hosts reject the action outright.
     pub const SIDEBAR_SECTION_ORDER_V1: &str = "sidebar-section-order-v1";
+    /// The host honours [`crate::FRESH_SESSION_OPTION`] on a Run; older hosts
+    /// would resume the old provider session.
+    pub const FRESH_SESSION_V1: &str = "fresh-session-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -35,6 +38,7 @@ pub mod capabilities {
         HARNESS_UPDATES_V1,
         PROJECTLESS_SCRATCH_V1,
         SIDEBAR_SECTION_ORDER_V1,
+        FRESH_SESSION_V1,
         crate::voice::remote::CAPABILITY,
         crate::project_transfer::CAPABILITY,
     ];

@@ -21,7 +21,9 @@ pub(crate) enum Frame {
     ControlResponse(ControlResponseFrame),
     /// Where the CLI has taken one of our stdin user messages.
     CommandLifecycle(CommandLifecycleFrame),
-    /// control_cancel_request / anything unknown.
+    /// The CLI withdrew one of its control requests (a PermissionRequest
+    /// hook answered it, say): nothing reads an answer to it any more.
+    ControlCancel(ControlCancelFrame),
     Other,
 }
 
@@ -303,6 +305,12 @@ pub(crate) struct UsageBody {
 
 /// A CLI→client control request (`can_use_tool` is the one we act on).
 #[derive(Debug, Default, Deserialize)]
+pub(crate) struct ControlCancelFrame {
+    #[serde(default)]
+    pub request_id: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub(crate) struct ControlRequestFrame {
     #[serde(default)]
     pub request_id: String,
@@ -370,6 +378,7 @@ pub(crate) fn parse_frame(line: &str) -> Result<Frame, serde_json::Error> {
         "control_request" => Frame::ControlRequest(serde_json::from_value(value)?),
         "control_response" => Frame::ControlResponse(serde_json::from_value(value)?),
         "command_lifecycle" => Frame::CommandLifecycle(serde_json::from_value(value)?),
+        "control_cancel_request" => Frame::ControlCancel(serde_json::from_value(value)?),
         _ => Frame::Other,
     };
     Ok(frame)
@@ -584,6 +593,12 @@ mod tests {
                 assert_eq!(f.subtype, "init");
                 assert_eq!(f.session_id, "s1");
             }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+        match parse_frame(r#"{"type":"control_cancel_request","request_id":"cr-7"}"#)
+            .expect("parses")
+        {
+            Frame::ControlCancel(f) => assert_eq!(f.request_id, "cr-7"),
             other => panic!("unexpected frame: {other:?}"),
         }
         assert!(matches!(
