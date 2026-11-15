@@ -4218,6 +4218,10 @@ mod tests {
             assert_eq!(page.recent_repositories(), ["owner/current"]);
             page
         });
+        // The menu's entrance animation runs on the wall clock and moves the
+        // card a few pixels while it plays; snap it so the bounds below are
+        // comparable however fast the test runs.
+        cx.update(|_, cx| crate::motion::set_reduced_motion(cx, true));
         let click = |selector: &'static str, cx: &mut gpui::VisualTestContext| {
             let bounds = cx.debug_bounds(selector).unwrap();
             cx.simulate_mouse_down(
