@@ -717,6 +717,31 @@ pub fn checkout_label(kind: CheckoutKind, picked: Option<&crate::RepoRef>) -> &'
     }
 }
 
+/// Spaces ranked by most recent chat activity: for each space, the max of its
+/// chats' `last_message_at` (falling back to `created_at`), descending; spaces
+/// with no activity or equal recency sort by `display_name()` then id. The
+/// single ranking used by Telegram's project list and the desktop project picker.
+pub fn rank_spaces_by_recent_activity(spaces: &[Space], chats: &[Chat]) -> Vec<Space> {
+    let mut ranked: Vec<(Option<DateTime<Utc>>, Space)> = spaces
+        .iter()
+        .cloned()
+        .map(|space| {
+            let latest = chats
+                .iter()
+                .filter(|chat| chat.space_id.as_deref() == Some(space.id.as_str()))
+                .filter_map(|chat| chat.last_message_at.or(Some(chat.created_at)))
+                .max();
+            (latest, space)
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.display_name().cmp(b.1.display_name()))
+            .then_with(|| a.1.id.cmp(&b.1.id))
+    });
+    ranked.into_iter().map(|(_, space)| space).collect()
+}
+
 #[cfg(test)]
 mod checkout_tests {
     use super::*;
