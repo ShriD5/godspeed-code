@@ -120,6 +120,9 @@ const CLAUDE_LOOPBACK_SCOPES: &str = "org:create_api_key user:profile user:infer
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 /// The Cursor dashboard's current-period usage RPC (Connect-style POST).
 const CURSOR_CURRENT_PERIOD_USAGE: &str = "aiserver.v1.DashboardService/GetCurrentPeriodUsage";
+/// The Grok Bot ("sand") quota: its own weekly window, separate from the plan's
+/// monthly buckets.
+const CURSOR_SAND_USAGE: &str = "aiserver.v1.DashboardService/GetSandUsageStatus";
 const CURSOR_DEFAULT_BACKEND: &str = "https://api2.cursor.sh";
 
 /// Claude Code stores these next to `claudeAiOauth` in the same credential
@@ -2818,12 +2821,29 @@ impl AgentAccounts {
                 .json(&serde_json::json!({})),
         )
         .await?;
-        cursor_usage_windows(&body)
-            .map(|windows| UsageSnapshot {
-                windows,
-                plan_label: None,
-            })
-            .ok_or_else(|| schema_error("cursor", &body))
+        let mut windows =
+            cursor_usage_windows(&body).ok_or_else(|| schema_error("cursor", &body))?;
+        // Best effort: a failed or absent Grok quota never hides the plan meters.
+        let sand = probe_json(
+            "cursor",
+            "grok",
+            self.inner
+                .http
+                .post(format!("{backend}/{CURSOR_SAND_USAGE}"))
+                .bearer_auth(&access_token)
+                .header("Connect-Protocol-Version", "1")
+                .json(&serde_json::json!({})),
+        )
+        .await
+        .ok();
+        // Cursor, Grok, Other: the weekly Grok quota sits between the two monthly pools.
+        if let Some(grok) = sand.as_ref().and_then(cursor_grok_window) {
+            windows.insert(1.min(windows.len()), grok);
+        }
+        Ok(UsageSnapshot {
+            windows,
+            plan_label: None,
+        })
     }
 
     /// Refresh a saved Claude slot's expired access token so its usage stays
@@ -3668,6 +3688,22 @@ fn claude_usage_windows(body: &serde_json::Value) -> Option<UsageSnapshot> {
     })
 }
 
+/// `GetSandUsageStatus`: the Grok Bot plan's weekly quota. `usagePercent` is
+/// read on the same 0-100 scale as the plan buckets (observed 0.177784 an hour
+/// into a fresh period), not as a 0-1 fraction.
+fn cursor_grok_window(body: &serde_json::Value) -> Option<AgentUsageWindow> {
+    let percent = body.get("usagePercent").and_then(|v| v.as_f64())?;
+    Some(AgentUsageWindow {
+        label: zeron_proto::CURSOR_USAGE_GROK.to_string(),
+        used_fraction: (percent / 100.0).clamp(0.0, 1.0) as f32,
+        resets_at: body
+            .get("nextResetTimestampUtc")
+            .and_then(|v| v.as_str())
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc)),
+    })
+}
+
 /// Included-usage meters from Cursor's `GetCurrentPeriodUsage`.
 ///
 /// cursor.com/dashboard/spending draws two pools: `autoPercentUsed` is
@@ -3692,8 +3728,8 @@ fn cursor_usage_windows(body: &serde_json::Value) -> Option<Vec<AgentUsageWindow
             resets_at,
         };
         return Some(vec![
-            window("Cursor", auto.unwrap_or(0.0)),
-            window("Other", api.unwrap_or(0.0)),
+            window(zeron_proto::CURSOR_USAGE_CURSOR, auto.unwrap_or(0.0)),
+            window(zeron_proto::CURSOR_USAGE_OTHER, api.unwrap_or(0.0)),
         ]);
     }
     let limit = plan.get("limit").and_then(|v| v.as_f64())?;
@@ -3990,6 +4026,31 @@ fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
+/// Name a Claude Code login that bills an API key rather than a Claude
+/// subscription, the way T3 Code labels it ("Claude API Key"): the CLI's
+/// own report of the credential it uses (`source`, e.g. `ANTHROPIC_API_KEY`)
+/// joins the snapshot's warnings, so Settings → Accounts shows it under
+/// Claude Code whatever account rows are listed.
+pub(crate) fn note_api_key_login(snapshot: &mut AgentAccountsSnapshot, source: Option<String>) {
+    let Some(source) = source else {
+        return;
+    };
+    let message = format!(
+        "Claude Code is signed in with an API key ({source}), not a Claude subscription, \
+         so its runs bill that key."
+    );
+    if !snapshot
+        .warnings
+        .iter()
+        .any(|w| w.harness == HarnessId::ClaudeCode && w.message == message)
+    {
+        snapshot.warnings.push(AgentAccountWarning {
+            harness: HarnessId::ClaudeCode,
+            message,
+        });
+    }
+}
+
 /// The loopback port an authorize url's `redirect_uri` lands on — where the
 /// login's CLI (or our own listener) waits for the browser. `None` for flows
 /// that don't redirect to this machine.
@@ -4220,6 +4281,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn api_key_logins_join_the_claude_warnings_once() {
+        let mut snapshot = AgentAccountsSnapshot::default();
+        note_api_key_login(&mut snapshot, None);
+        assert!(snapshot.warnings.is_empty());
+        note_api_key_login(&mut snapshot, Some("ANTHROPIC_API_KEY".into()));
+        note_api_key_login(&mut snapshot, Some("ANTHROPIC_API_KEY".into()));
+        assert_eq!(snapshot.warnings.len(), 1);
+        let warning = &snapshot.warnings[0];
+        assert_eq!(warning.harness, HarnessId::ClaudeCode);
+        assert!(warning.message.contains("API key (ANTHROPIC_API_KEY)"));
+        assert!(warning.message.contains("not a Claude subscription"));
+    }
+
+    #[test]
     fn plan_labels() {
         assert_eq!(
             claude_plan(Some("claude_max"), Some("default_claude_max_20x")).as_deref(),
@@ -4373,6 +4448,19 @@ mod tests {
             );
         }
         assert!(cursor_usage_windows(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn cursor_grok_window_is_weekly_percent() {
+        let window = cursor_grok_window(&serde_json::json!({
+            "usagePercent": 0.177784,
+            "nextResetTimestampUtc": "2026-11-04T18:46:22.484Z",
+        }))
+        .expect("window");
+        assert_eq!(window.label, "Grok");
+        assert!((window.used_fraction - 0.00177784).abs() < 1e-7);
+        assert_eq!(window.resets_at.unwrap().timestamp(), 1_793_817_982);
+        assert!(cursor_grok_window(&serde_json::json!({})).is_none());
     }
 
     #[test]

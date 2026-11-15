@@ -847,6 +847,19 @@ pub struct EngineRpc {
 }
 
 impl EngineRpc {
+    /// Settings → Accounts names a Claude Code login that bills an API key
+    /// (T3 Code's "Claude API Key" label), from the CLI's own report in the
+    /// initialize discovery it already ran. Never probes, so listing stays
+    /// offline-fast.
+    fn note_api_key_logins(&self, snapshot: &mut zeron_proto::AgentAccountsSnapshot) {
+        let source = self
+            .registry
+            .resolve(zeron_proto::HarnessId::ClaudeCode)
+            .ok()
+            .and_then(|harness| harness.cached_api_key_source());
+        crate::agent_accounts::note_api_key_login(snapshot, source);
+    }
+
     #[allow(clippy::too_many_arguments)] // engine assembly seam, not a public API
     pub fn new(
         sessions: SessionsEngine,
@@ -1174,8 +1187,16 @@ impl EngineRpc {
 
     /// Accept only a checkout already named by a local chat or contained in a
     /// local space. Remote clients must not turn this RPC into an arbitrary path probe.
+    ///
+    /// Clients watch a chat's `sourceContext.repoRoot`, which the engine
+    /// captured from that chat's own checkout, so it is accepted like the
+    /// chat's cwd without asking git. That root is canonical (`\\?\C:\…` on
+    /// Windows) and never equals the cwd there, so before this every watch
+    /// ran `git worktree list` once per local space, and a chat outside every
+    /// space failed and was retried that way for as long as it stayed open.
     async fn change_request_root(&self, cwd: &str) -> Result<std::path::PathBuf, RpcError> {
         let requested = std::path::PathBuf::from(cwd);
+        let unknown = || RpcError::BadParams("cwd is not a known checkout on this device".into());
         let local_device = self.doc_host.device_id();
         let mut chats_rx = self.workspace.watch_chats();
         let mut spaces_rx = self.workspace.watch_spaces();
@@ -1184,9 +1205,20 @@ impl EngineRpc {
             let chats = chats_rx.borrow_and_update().clone();
             if chats.iter().any(|chat| {
                 chat.device_id == local_device
-                    && chat.cwd.as_deref().map(std::path::Path::new) == Some(requested.as_path())
+                    && (chat.cwd.as_deref().map(std::path::Path::new) == Some(requested.as_path())
+                        || chat.source_context.as_ref().is_some_and(|source| {
+                            std::path::Path::new(&source.repo_root) == requested.as_path()
+                        }))
             }) {
-                return Ok(requested);
+                // A removed worktree is still named by its chats; it has no
+                // checkout to resolve and no PR to watch. Checked only once a
+                // chat names the path, so an unknown path's answer never
+                // depends on whether it exists.
+                return if crate::repos::Repos::path_exists(&requested).await {
+                    Ok(requested)
+                } else {
+                    Err(unknown())
+                };
             }
 
             let spaces = spaces_rx.borrow_and_update().clone();
@@ -1194,10 +1226,16 @@ impl EngineRpc {
                 .iter()
                 .filter(|space| space.device_id == local_device)
             {
-                if let Some(checkout) = self
-                    .repos
-                    .workspace_checkout(std::path::Path::new(&space.path), &requested)
-                    .await
+                let space_path = std::path::Path::new(&space.path);
+                // `git worktree list` in a plain folder walks every parent
+                // directory looking for a repository first.
+                if !space.git_detected {
+                    if let Some(folder) = self.repos.same_folder(space_path, &requested).await {
+                        return Ok(folder);
+                    }
+                    continue;
+                }
+                if let Some(checkout) = self.repos.workspace_checkout(space_path, &requested).await
                 {
                     return Ok(checkout);
                 }
@@ -1212,9 +1250,7 @@ impl EngineRpc {
                 _ = tokio::time::sleep_until(deadline) => break,
             }
         }
-        Err(RpcError::BadParams(
-            "cwd is not a known checkout on this device".into(),
-        ))
+        Err(unknown())
     }
 
     /// Most-recent-first paths the current chat actually touched, followed by
@@ -4433,31 +4469,34 @@ impl RpcService for EngineRpc {
             }
             methods::LIST_AGENT_ACCOUNTS => {
                 let p: ListAgentAccountsParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .list(p.force_usage.unwrap_or(false))
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::ACTIVATE_AGENT_ACCOUNT => {
                 self.voice.retire();
                 let p: AgentAccountParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .activate(p.harness, &p.account_id)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::FORGET_AGENT_ACCOUNT => {
                 self.voice.retire();
                 let p: AgentAccountParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .forget(p.harness, &p.account_id)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::START_AGENT_LOGIN => {
@@ -4479,11 +4518,12 @@ impl RpcService for EngineRpc {
             }
             methods::COMPLETE_AGENT_LOGIN => {
                 let p: CompleteAgentLoginParams = parse_params(params)?;
-                let snapshot = self
+                let mut snapshot = self
                     .agent_accounts
                     .complete_login(&p.login_id, &p.code)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
+                self.note_api_key_logins(&mut snapshot);
                 RpcReply::value(&snapshot)
             }
             methods::POLL_AGENT_LOGIN => {

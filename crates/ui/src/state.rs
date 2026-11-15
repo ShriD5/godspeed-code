@@ -2658,7 +2658,7 @@ impl AppState {
     /// An `unsaved` chat is a hand-started side chat nothing has written yet:
     /// it opens no doc until its first send mints it (see
     /// [`Self::unsaved_side_chat_create`]).
-    pub(crate) fn side_chat_state(
+    pub(crate) fn independent_chat_state(
         parent: &Entity<Self>,
         chat: Chat,
         unsaved: bool,
@@ -2683,6 +2683,15 @@ impl AppState {
         state.select_chat(Some(chat.id), cx);
         state.watch_clock_transitions(cx);
         state
+    }
+
+    pub(crate) fn side_chat_state(
+        parent: &Entity<Self>,
+        chat: Chat,
+        unsaved: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::independent_chat_state(parent, chat, unsaved, cx)
     }
 
     /// This is a side chat's state whose chat its first send has yet to mint.
@@ -3450,6 +3459,10 @@ fn spawn_change_request_watch(
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
         const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+        // A host that rejects the checkout (a removed worktree, a folder it
+        // no longer knows) keeps rejecting it, so failed subscribes back off.
+        const MAX_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+        let mut retry_delay = RETRY_DELAY;
         loop {
             let params = watch_params(&target, local_device_id.as_deref());
 
@@ -3458,7 +3471,10 @@ fn spawn_change_request_watch(
                 .subscribe_checked(methods::WATCH_CHECKOUT_CHANGE_REQUEST, params)
                 .await
             {
-                Ok(subscription) => subscription,
+                Ok(subscription) => {
+                    retry_delay = RETRY_DELAY;
+                    subscription
+                }
                 Err(RpcError::UnknownMethod(_)) => {
                     tracing::debug!(
                         device = %target.device_id,
@@ -3488,7 +3504,8 @@ fn spawn_change_request_watch(
                     if this.update(cx, |_, _| {}).is_err() {
                         return;
                     }
-                    cx.background_executor().timer(RETRY_DELAY).await;
+                    cx.background_executor().timer(retry_delay).await;
+                    retry_delay = (retry_delay * 2).min(MAX_RETRY_DELAY);
                     continue;
                 }
             };

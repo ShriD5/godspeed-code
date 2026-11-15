@@ -277,6 +277,7 @@ impl ClaudeHarness {
 
     fn build_command(&self, exe: &PathBuf, request: &RunRequest, thinking_display: bool) -> Command {
         let mut cmd = Command::new(exe);
+        crate::process::owned::remove_claude_session_markers(&mut cmd);
         crate::compose_child_path(&mut cmd, exe);
         // Without it, a foreground subagent's (or forked skill's) text and
         // thinking never reach the stream, and its tab shows tool calls only.
@@ -341,6 +342,7 @@ impl ClaudeHarness {
     async fn probe_initialize(&self, cwd: Option<&std::path::Path>) -> Result<Value, HarnessError> {
         let exe = self.resolve_executable()?;
         let mut cmd = Command::new(&exe);
+        crate::process::owned::remove_claude_session_markers(&mut cmd);
         // A project-less probe must not read the engine's cwd as a project.
         cmd.current_dir(cwd.map_or_else(crate::executable::neutral_cwd, |c| c.to_path_buf()));
         crate::compose_child_path(&mut cmd, &exe);
@@ -441,6 +443,7 @@ async fn supports_thinking_display(exe: &std::path::Path) -> bool {
         return known;
     }
     let mut cmd = Command::new(exe);
+    crate::process::owned::remove_claude_session_markers(&mut cmd);
     crate::compose_child_path(&mut cmd, exe);
     cmd.args(["--thinking-display", "summarized", SENTINEL])
         .current_dir(crate::executable::neutral_cwd())
@@ -471,6 +474,48 @@ async fn supports_thinking_display(exe: &std::path::Path) -> bool {
             .insert(key, verdict);
     }
     verdict
+}
+
+/// The API-key credential Claude Code bills, from the `account` its
+/// initialize response reports (T3 Code's "Claude API Key" auth label): a
+/// first-party login whose token source is an API key or auth token, or
+/// whose `apiKeySource` names a key in use (`ANTHROPIC_API_KEY`,
+/// `apiKeyHelper`, `/login managed key`). `None` for a Claude subscription
+/// (claude.ai OAuth, `apiKeySource: "none"`) and for third-party backends
+/// (Bedrock, Vertex, a gateway), which bill elsewhere.
+fn api_key_source(response: &Value) -> Option<String> {
+    let account = response.get("response")?.get("account")?;
+    let field = |key: &str| {
+        account
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    if field("apiProvider").is_some_and(|provider| provider != "firstParty") {
+        return None;
+    }
+    if let Some(source) = field("tokenSource") {
+        let normalized: String = source
+            .chars()
+            .filter(|c| !matches!(c, ' ' | '_' | '-'))
+            .flat_map(char::to_lowercase)
+            .collect();
+        if matches!(
+            normalized.as_str(),
+            "apikey" | "anthropicapikey" | "anthropicauthtoken"
+        ) {
+            return Some(source.to_owned());
+        }
+    }
+    field("apiKeySource")
+        .filter(|source| {
+            matches!(
+                *source,
+                "ANTHROPIC_API_KEY" | "apiKeyHelper" | "/login managed key"
+            )
+        })
+        .map(str::to_owned)
 }
 
 /// `commands` out of an `initialize` control_response payload
@@ -567,6 +612,10 @@ impl Harness for ClaudeHarness {
     /// Credential and executable identity scopes both initialize and catalog caches.
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
         crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
+    }
+    fn cached_api_key_source(&self) -> Option<String> {
+        let key = self.model_context().ok()??.key();
+        api_key_source(&self.initialize.cached(key)?)
     }
     fn fallback_models(&self) -> Vec<Model> {
         catalog::configured_models()
@@ -2104,6 +2153,37 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn api_key_logins_are_named_and_subscriptions_are_not() {
+        let account = |account: Value| json!({ "response": { "account": account } });
+        // A Claude subscription: no key in use.
+        let max = account(json!({
+            "email": "a@b.c", "subscriptionType": "max", "apiKeySource": "none",
+            "apiProvider": "firstParty"
+        }));
+        assert_eq!(api_key_source(&max), None);
+        // An auth token in the environment reads as an API key (T3 Code).
+        let token = account(json!({
+            "tokenSource": "ANTHROPIC_AUTH_TOKEN", "apiKeySource": "none",
+            "apiProvider": "firstParty"
+        }));
+        assert_eq!(api_key_source(&token).as_deref(), Some("ANTHROPIC_AUTH_TOKEN"));
+        // A key the CLI says it bills, even beside a subscription.
+        for source in ["ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key"] {
+            let keyed = account(json!({
+                "subscriptionType": "max", "tokenSource": "none", "apiKeySource": source
+            }));
+            assert_eq!(api_key_source(&keyed).as_deref(), Some(source));
+        }
+        // Third-party backends bill elsewhere.
+        let bedrock = account(json!({
+            "apiKeySource": "ANTHROPIC_API_KEY", "apiProvider": "bedrock"
+        }));
+        assert_eq!(api_key_source(&bedrock), None);
+        // Older CLIs report no account at all.
+        assert_eq!(api_key_source(&json!({ "response": {} })), None);
+    }
+
+    #[test]
     fn parses_questions_tolerantly() {
         let input = json!({
             "questions": [
@@ -2345,7 +2425,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_ask_the_cli_to_forward_subagent_text() {
+    fn run_environment_forwards_subagent_text_and_leaves_the_launching_session() {
         let request = RunRequest {
             instance: None,
             mcp: None,
@@ -2370,6 +2450,19 @@ mod tests {
             .find(|(key, _)| *key == "CLAUDE_CODE_FORWARD_SUBAGENT_TEXT")
             .and_then(|(_, value)| value.map(|v| v.to_os_string()));
         assert_eq!(value.as_deref(), Some(std::ffi::OsStr::new("1")));
+        // A Claude Code session that launched Godspeed exports these; a run
+        // that inherits them joins that session.
+        for key in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_EFFORT",
+        ] {
+            assert!(
+                cmd.as_std_mut().get_envs().any(|(k, v)| k == key && v.is_none()),
+                "{key} is passed on"
+            );
+        }
     }
 
     fn tool_request(tool: &str, input: Value) -> wire::ControlRequestBody {

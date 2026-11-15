@@ -4,6 +4,74 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+### Added
+
+- **Settings → Accounts says when Claude Code bills an API key.** If the Claude CLI reports that it
+  signs in with an API key (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, an `apiKeyHelper` or a
+  Console key from `/login`) instead of a Claude subscription, the Claude Code section says so, like
+  T3 Code's "Claude API Key" label. Godspeed reads this from the CLI's own report and never reads
+  the key.
+- **Usage shows what each kind of token cost.** In Settings → Usage, the Input, Output, Cache read
+  and Cache write totals now also show their cost at API prices and their share of the total (like
+  T3 Code's "Cost by type"), so you can see whether output, cache writes or cache reads drive the
+  bill.
+- **Idle Claude chats compact before the cache expires.** When a long Claude chat (over 100K tokens
+  on a 200K window, 200K on a 1M window) sits idle on a subscription login, Godspeed runs
+  `/compact` about two minutes before Claude's one-hour prompt cache runs out. Coming back then
+  costs a small turn instead of re-reading the whole history at full price. The transcript shows
+  one quiet line, "Compacted while idle to keep the next turn cheap", with the size before and
+  after; click it to read Claude's summary. A message sent during the compaction waits in the queue
+  and goes out right after it. Chats that are archived, settled, snoozed, waiting on you or busy
+  are left alone, and so are API-key logins, whose five-minute cache would make it fire on every
+  pause. Turn it off in Settings → General → Compact idle Claude chats.
+
+### Changed
+
+- **New Opus 5.5 and Fable 5 chats start at Medium effort.** That is Claude Code's own default for
+  these models (and T3 Code's), where Godspeed started every model at High. Sonnet and older Opus
+  still start at High. Existing chats and any effort you picked yourself are kept.
+
+## 0.5.11 (2026-11-06)
+
+### Added
+
+- **Open a chat in its own window.** Right-click a session and choose "Open in New Window" for a
+  composer-only window with its own scroll and selection. Reopening the same chat focuses its
+  window, and the window closes if the chat is deleted.
+- **Model and effort switches show in the chat.** A thin divider marks the turn where you changed
+  model or effort, naming only what changed.
+- **iPhone beta waitlist.** The website has a "Join the iPhone beta" form and a privacy page, and
+  approved emails get cloud access within a minute, without a redeploy.
+
+### Changed
+
+- **Search keeps its index on disk.** Message search moved to SQLite full-text search: less memory,
+  about half the indexing work while a reply streams, and the same results. The new index builds in
+  the background on first launch; search keeps working meanwhile.
+- **Less idle work, again.** Dev-server port detection for the preview ran `lsof` twice and `ps`
+  once every two seconds, forever; it now checks every two seconds only while something could start
+  a server (an agent running, a terminal or preview open, or you active) and once a minute
+  otherwise. The Telegram delivery loop sleeps until a bot has work.
+- **Fewer tokens per turn.** Godspeed's own tool instructions are shorter, preview tools are only
+  offered when a window can show them, and tool results go to the model as compact JSON.
+- **Claude's renamed Max and Ultra plans** show correctly in usage.
+- **Streaming chats use less memory** (Loro 1.17, from Zeron), and PR watches no longer run git in
+  every project (from Zeron).
+
+### Fixed
+
+- An agent that hits a usage limit and exits right away now shows the limit, instead of "exited
+  unexpectedly".
+- Claude chats no longer inherit the session of a Claude Code window that launched Godspeed (which
+  could also override the chat's chosen effort).
+- Antigravity turns that go silent for 15 minutes end with an error instead of staying "Working"
+  forever.
+- Worktree chats can start in repos that have a local branch named like the branch prefix.
+- Agents can start Cursor chats with model ids the model list doesn't name (such as
+  `grok-4.7-high`); Cursor's CLI checks them.
+- If you open Godspeed from an account whose cloud refuses a second organization, it continues in
+  the existing one.
+
 ## 0.5.10 (2026-10-30)
 
 ### Added

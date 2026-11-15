@@ -3,19 +3,40 @@ use std::ops::{Deref, DerefMut};
 
 use crate::process::{Child as ProcessChild, Command};
 
+/// What a Claude Code session exports to its children. A `claude` started
+/// with them joins that session: its id, messaging socket and token, IDE
+/// port and effort.
+const CLAUDE_SESSION_MARKERS: [&str; 13] = [
+    "CLAUDECODE",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_AGENT_SDK_VERSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_HOST_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_DESKTOP_APP_VERSION",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+];
+
+/// Starts the agent as its own session even when a Claude Code session
+/// launched Godspeed.
+pub(crate) fn remove_claude_session_markers(command: &mut Command) {
+    for key in CLAUDE_SESSION_MARKERS {
+        command.env_remove(key);
+    }
+}
+
 /// A private process group, and none of the markers a Claude Code session
 /// leaves in its children's environment. Every Claude Godspeed starts,
 /// directly or through an adapter, reports Godspeed as its entrypoint.
 pub(crate) fn configure(command: &mut Command) {
     #[cfg(unix)]
     command.process_group(0);
-    for key in [
-        "CLAUDECODE",
-        "CLAUDE_CODE_SSE_PORT",
-        "CLAUDE_AGENT_SDK_VERSION",
-    ] {
-        command.env_remove(key);
-    }
+    remove_claude_session_markers(command);
     command.env("CLAUDE_CODE_ENTRYPOINT", "godspeed");
 }
 
@@ -121,14 +142,15 @@ mod tests {
             .filter(|(_, value)| value.is_none())
             .map(|(key, _)| key.to_str().unwrap())
             .collect();
-        assert_eq!(
-            removed,
-            vec![
-                "CLAUDECODE",
-                "CLAUDE_AGENT_SDK_VERSION",
-                "CLAUDE_CODE_SSE_PORT"
-            ]
-        );
+        assert_eq!(removed.len(), CLAUDE_SESSION_MARKERS.len());
+        for key in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_EFFORT",
+        ] {
+            assert!(removed.contains(&key), "{key} is passed on");
+        }
         assert_eq!(
             command
                 .as_std()

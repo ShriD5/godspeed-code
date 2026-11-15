@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@4f55b0e1 (2026-10-31)
+Synced through: zeronsh/zeron@1b86c41c (2026-11-06)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -63,6 +63,37 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     `Vec<BackgroundTask>`, so older peers would fail to read new rows. Needs a wire
     decision (new key, or keep the count beside the list) and a merge with Godspeed's
     count users; 26 files conflict.
+- Deferred 2026-11-04: zgx, Zeron's new interface (`apps/zgx`, a Luau-scripted shell with a
+  design system, plugins, templates, themes and a beta update channel).
+  - d898f936 (#1137, squash of 2d63bdb2, b721a994, a4520ca3, 40183b93, b4b8cf04, c00c9a28):
+    2034 files, +324k lines, ~1780 of them in `apps/zgx`. Also touches about 90 engine
+    files (the `plugins` module, update channels, shared CLI/launch/notify crates). The owner
+    needs to decide whether Godspeed takes zgx at all.
+  - Built on zgx, so deferred with it: 8c8535b7 (plugin and template consent, engine-held
+    decisions, edge plugin keys), the whole of merge 35561ead (#1198: about 60 `apps/zgx`
+    commits, plus 0a6aef02 theme tools and catalog in `zeron-theme`/MCP and c83937d3's
+    `zeron-preview-label` ports list).
+  - Engine halves of zgx features with no reader in Godspeed's UI yet: c90481c6 (a child
+    chat's `childKind` side/subagent; the MCP would default delegated chats to `subagent`,
+    which only zgx lists), a2113ac8 (redacted command output tails and exit codes kept in
+    the chat doc; this moves the redactor into `zeron-proto`) and 5e927a01 (`ReadToolOutput`,
+    needs a2113ac8). Worth porting together once Godspeed's transcript shows command output.
+- Deferred 2026-11-06:
+  - a8d1dc6e (#1241, "Updates that can't strand a device"): +4.5k lines, an update
+    transaction in `zeron-update`, engine `update_trial`, harness update ownership. Builds on
+    `managed.rs` (cc7da5c2), Zeron's update `channel.rs` (Godspeed has none) and 987bb2f8's
+    package-owner plans; 17 conflicts. Follow-ups deferred with it: 2094602e and c3eb640c
+    (Zeron's beta channel version for bundles and the engine).
+  - zgx-only, deferred with zgx: the ~150 `apps/zgx` commits through 1b86c41c (panel home,
+    zgx v3 panes/tabs, plugin and template security, updates UI, side chats), plus
+    8f1c32d2's `zeron-theme` terminal ANSI legibility (Godspeed's theme crate has no
+    `legibility`), 89701c65 and 36e7cf18 (`plugin-guard`), 4c08b1d1 (zgx beta script).
+  - From 987bb2f8, only Muse's `-R<n>` build ordering in `version_numbers` came over (with
+    302cdc98 and ce1de75e).
+- Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
+  restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
+  binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
+  (dfbb6876); its git identity XDG fix lives in `credentials.rs` (cc7da5c2).
 - Partly ported (2026-10-27): f65c5bc6 and d8a14b35 brought the shared header parser and the
   desktop rows; their iOS/Android captions wait for inline marks and a workspace snapshot in
   the mobile layout (Android needs cc7da5c2).

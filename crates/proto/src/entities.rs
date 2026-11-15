@@ -343,13 +343,32 @@ impl ChatLifecycle {
 }
 
 /// Device setting for chats this engine hosts (`GetChatLifecycleSettings`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatLifecycleSettings {
     /// Settle idle threads after this many days without activity; `None`
     /// (the default) never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_settle_after_days: Option<u32>,
+    /// Compact an idle Claude chat with a large context shortly before its
+    /// prompt cache expires, so the next turn starts small instead of
+    /// re-reading the whole history at full price. On by default; a writer
+    /// that predates the field leaves it on.
+    #[serde(default = "default_true")]
+    pub compact_idle_chats: bool,
+}
+
+impl Default for ChatLifecycleSettings {
+    fn default() -> Self {
+        Self {
+            auto_settle_after_days: None,
+            compact_idle_chats: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1609,6 +1628,13 @@ pub enum AgentLoginStatus {
     Done,
     Error,
 }
+
+/// Labels of Cursor's usage windows. The composer's plan ring picks between
+/// them by the selected model, so the engine (which writes them) and the UI
+/// (which reads them) share these.
+pub const CURSOR_USAGE_CURSOR: &str = "Cursor";
+pub const CURSOR_USAGE_GROK: &str = "Grok";
+pub const CURSOR_USAGE_OTHER: &str = "Other";
 
 /// CLI plan rate-limit window (accounts settings meters) — NOT app token accounting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

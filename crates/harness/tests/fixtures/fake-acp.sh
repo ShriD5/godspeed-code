@@ -190,6 +190,16 @@ case "$promptline" in
   exec sleep 60
   ;;
 
+*scenario:prompt-idle*)
+  # Starts the turn, runs a tool longer than the idle bound (an open tool
+  # pauses it), then goes quiet with the prompt still open.
+  update '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}'
+  update '{"sessionUpdate":"tool_call","toolCallId":"t1","title":"cargo build","kind":"execute","status":"in_progress"}'
+  sleep 1.5
+  update '{"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed"}'
+  exec sleep 60
+  ;;
+
 *scenario:subagent*)
   # Grok's background subagent lifecycle (wire shapes captured live, 1.0.4):
   # spawn tool_call tagged _meta["x.ai/tool"], completion echoing the minted

@@ -132,7 +132,7 @@ fn catalog() -> Vec<ToolDef> {
                     "parent": { "type": "string", "description": "Parent chat to record (id, prefix, or title). Defaults to the chat you are speaking from." },
                     "notify": { "type": "boolean", "default": false, "description": "Wake this parent with durable notifications when the child needs approval, completes, or fails. Requires parent and child on the same device." },
                     "harness": { "type": "string", "description": "Harness id (see list_harnesses with the chosen device). Defaults to claude-code when available." },
-                    "model": { "type": "string", "description": "Model id from list_models on the chosen device. Omit for the harness default." },
+                    "model": { "type": "string", "description": "Model id from list_models on the chosen device. Omit for the harness default. For Cursor, also accepts any model id its CLI supports (e.g. a parameterized id like grok-4.7-high), even if list_models doesn't enumerate it." },
                     "reasoning": { "type": "string", "description": "Reasoning level the model supports (e.g. low, medium, high, max)." },
                     "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "default": "workspace-write" },
                     "access_mode": { "type": "string", "enum": ["supervised", "auto-accept-edits", "auto", "full-access"], "description": "What the new chat's agent may do before it asks. Defaults to your own chat's mode and never exceeds it." },
@@ -1266,7 +1266,16 @@ impl Tools {
             }
             None => default_harness(&harnesses).with_context(|| format!("device {device_id}"))?,
         };
-        if let Some(model) = args.model.as_deref() {
+        if let Some(model) = args.model.as_deref()
+            // Cursor's catalog lists each base model's parameter choices
+            // (e.g. reasoning effort) as options on one entry, but its CLI
+            // also accepts the parameterized id directly (`grok-4.7-high`),
+            // which never appears as its own catalog entry. Godspeed can't
+            // enumerate every such id, so for Cursor the CLI is the
+            // validator: let it through and surface the harness's own error
+            // if the id turns out to be wrong.
+            && harness != HarnessId::Cursor
+        {
             let models = self.godspeed.models_on(harness, Some(&device_id)).await?;
             anyhow::ensure!(
                 models.iter().any(|m| m.id == model),
@@ -2412,7 +2421,9 @@ mod tests {
                     { "id": "claude-code", "name": "Claude Code", "supportsSteering": true,
                       "steeringMode": "step-boundary", "reasoningLevels": [], "installed": true, "enabled": true },
                     { "id": "codex", "name": "Codex", "supportsSteering": true,
-                      "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false, "enabled": true }
+                      "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false, "enabled": true },
+                    { "id": "cursor", "name": "Cursor", "supportsSteering": true,
+                      "steeringMode": "step-boundary", "reasoningLevels": [], "installed": true, "enabled": true }
                 ])),
                 methods::LIST_MODELS if remote => RpcReply::Value(json!([
                     {"id":"remote-model", "label":"Remote model"}
@@ -3543,6 +3554,28 @@ mod tests {
         assert_eq!(writes[1].1["op"], "renameChat");
         assert_eq!(writes[2].0, methods::QUEUE_COMMAND);
         assert_eq!(writes[2].1["command"]["request"]["prompt"], "go");
+    }
+
+    /// Cursor's catalog only lists each base model's parameter choices as
+    /// options, not every parameterized id its CLI accepts directly (e.g.
+    /// `grok-4.7-high`), so godspeed can't validate those ids against the
+    /// catalog. Unlike other harnesses, an unrecognized model id passes
+    /// through for Cursor and lets the CLI be the validator.
+    #[tokio::test]
+    async fn create_chat_lets_cursor_models_bypass_the_catalog() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Origin::default());
+        let created = tools
+            .call(
+                "create_chat",
+                json!({ "project": "space-1", "harness": "cursor", "model": "grok-4.7-high" }),
+            )
+            .await
+            .unwrap();
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[0].1["config"]["harness"], "cursor");
+        assert_eq!(writes[0].1["config"]["model"], "grok-4.7-high");
+        assert!(created["chatId"].as_str().is_some());
     }
 
     #[tokio::test]

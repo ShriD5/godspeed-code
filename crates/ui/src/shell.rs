@@ -77,6 +77,7 @@ mod chat_pull_requests;
 mod chat_rename_tests;
 mod closed_tabs;
 mod command_palette;
+mod detached_sessions;
 mod delete_chat;
 mod file_mutations;
 mod find_bar;
@@ -112,6 +113,7 @@ pub(crate) mod spaces;
 mod thread_lifecycle;
 mod thread_search;
 use side_chats::SideChatTab;
+use detached_sessions::DetachedSessionWindow;
 mod tabs;
 use tabs::NewSessionTarget;
 mod voice_stage;
@@ -271,7 +273,8 @@ const CHAT_MENU_ROW_SNOOZE: u8 = 10;
 const CHAT_MENU_ROW_WAKE: u8 = 11;
 const CHAT_MENU_ROW_UNREAD: u8 = 12;
 const CHAT_MENU_ROW_QUESTION_TIMEOUT: u8 = 13;
-const CHAT_MENU_ROW_SCHEDULE: u8 = 14;
+const CHAT_MENU_ROW_NEW_WINDOW: u8 = 14;
+const CHAT_MENU_ROW_SCHEDULE: u8 = 15;
 
 #[derive(Clone, Copy)]
 enum TabCloseAction {
@@ -2385,6 +2388,10 @@ pub struct Shell {
     side_chats: std::collections::HashMap<u64, SideChatTab>,
     side_chat_seq: u64,
     side_chat_creating: bool,
+    /// One composer-only window per chat. The main shell remains the owner of
+    /// navigation; detached windows only mirror an individual conversation.
+    detached_session_windows:
+        std::collections::HashMap<String, gpui::WindowHandle<DetachedSessionWindow>>,
     browsers: std::collections::HashMap<u64, Entity<crate::browser::BrowserSurface>>,
     browser_subs: std::collections::HashMap<u64, Subscription>,
     browser_seq: u64,
@@ -2998,6 +3005,7 @@ impl Shell {
             side_chats: std::collections::HashMap::new(),
             side_chat_seq: 0,
             side_chat_creating: false,
+            detached_session_windows: std::collections::HashMap::new(),
             browsers: std::collections::HashMap::new(),
             browser_subs: std::collections::HashMap::new(),
             browser_seq: 0,
@@ -3273,6 +3281,13 @@ impl Shell {
         self.take_add_to_device_request(state, cx);
         self.refresh_harness_update_watch(cx);
         self.sync_search_warm(cx);
+        let chat_ids = state
+            .read(cx)
+            .chats
+            .iter()
+            .map(|chat| chat.id.clone())
+            .collect::<Vec<_>>();
+        self.close_deleted_detached_sessions(&chat_ids, cx);
         if state.read(cx).engine().is_none() {
             self.side_chats.clear();
             self.side_chat_creating = false;
@@ -4292,7 +4307,10 @@ impl Shell {
         let from_main = !self.active_chat.is_empty()
             && source == self.active_chat
             && self.state.read(cx).selected_chat.as_deref() == Some(self.active_chat.as_str());
-        if !from_main && !self.side_chat_open_here(&source, cx) {
+        if !from_main
+            && !self.side_chat_open_here(&source, cx)
+            && !self.detached_chat_open(&source, cx)
+        {
             return LinkOutcome::Rejected;
         }
         if activation.target.navigation.is_err() {
@@ -4531,6 +4549,10 @@ impl Shell {
             .values()
             .find(|side| side.state.read(cx).selected_chat.as_deref() == Some(chat_id))
             .map(|side| (chat_id.to_owned(), side.state.clone()))
+            .or_else(|| {
+                self.detached_chat_state(chat_id, cx)
+                    .map(|state| (chat_id.to_owned(), state))
+            })
     }
 
     /// Open or focus the editor for `path` owned by `owner` (chat id + the
@@ -11647,6 +11669,26 @@ impl Shell {
                     .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                     .child(SharedString::from("Rename"));
                 let menu = menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_RENAME, rename, cx));
+                let open_window_id = chat_id.clone();
+                let open_window = popover::menu_row(
+                    &theme,
+                    false,
+                    format!("chat-menu-new-window-{chat_id}"),
+                )
+                .id("chat-menu-new-window")
+                .debug_selector(|| "chat-menu-new-window".into())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.close_chat_menu(cx);
+                    this.open_detached_chat(open_window_id.clone(), cx);
+                }))
+                .child(
+                    icon(icons::ALT_ARROW_RIGHT)
+                        .size(px(16.0))
+                        .text_color(theme.text_muted),
+                )
+                .child(SharedString::from("Open in New Window"));
+                let menu =
+                    menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_NEW_WINDOW, open_window, cx));
                 let menu = if is_side_chat {
                     menu
                 } else {
