@@ -35,6 +35,7 @@ pub mod doc_host;
 mod fs_watch;
 pub mod git_actions;
 mod git_program;
+mod git_tree;
 pub mod harness_updates;
 mod idle_compaction;
 pub(crate) mod home_index;
@@ -136,6 +137,8 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Other(String),
+    #[error("chat has already started; its project can no longer be changed")]
+    ChatAlreadyStarted,
 }
 
 /// Epoch millis now — the doc/journal timestamp base.

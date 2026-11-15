@@ -276,6 +276,7 @@ const CHAT_MENU_ROW_UNREAD: u8 = 12;
 const CHAT_MENU_ROW_QUESTION_TIMEOUT: u8 = 13;
 const CHAT_MENU_ROW_NEW_WINDOW: u8 = 14;
 const CHAT_MENU_ROW_SCHEDULE: u8 = 15;
+const CHAT_MENU_ROW_REGENERATE_TITLE: u8 = 16;
 
 #[derive(Clone, Copy)]
 enum TabCloseAction {
@@ -6927,6 +6928,16 @@ impl Shell {
     /// The Archive session shortcut. With no chat open, or with an already
     /// archived one, it does nothing — the shortcut archives, it never
     /// unarchives.
+    /// Ask the engine for a new title from the chat's conversation; the
+    /// sidebar row updates when it lands.
+    fn regenerate_chat_title(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        self.close_chat_menu(cx);
+        self.mutate(
+            serde_json::json!({ "op": "regenerateChatTitle", "chatId": chat_id }),
+            cx,
+        );
+    }
+
     fn archive_selected_chat(&mut self, cx: &mut Context<Self>) {
         let Some(chat_id) = self
             .state
@@ -11678,6 +11689,28 @@ impl Shell {
                     .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                     .child(SharedString::from("Rename"));
                 let menu = menu.child(self.chat_menu_hover_row(CHAT_MENU_ROW_RENAME, rename, cx));
+                let regenerate_id = chat_id.clone();
+                let regenerate = popover::menu_row(
+                    &theme,
+                    false,
+                    format!("chat-menu-regenerate-title-{chat_id}"),
+                )
+                .id("chat-menu-regenerate-title")
+                .debug_selector(|| "chat-menu-regenerate-title".into())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.regenerate_chat_title(regenerate_id.clone(), cx)
+                }))
+                .child(
+                    icon(icons::MAGIC_STICK_3)
+                        .size(px(16.0))
+                        .text_color(theme.text_muted),
+                )
+                .child(SharedString::from("Regenerate title"));
+                let menu = menu.child(self.chat_menu_hover_row(
+                    CHAT_MENU_ROW_REGENERATE_TITLE,
+                    regenerate,
+                    cx,
+                ));
                 let open_window_id = chat_id.clone();
                 let open_window = popover::menu_row(
                     &theme,
@@ -12295,6 +12328,24 @@ impl Shell {
                 this.capture_navigation_focus(false, false, window, cx);
             }))
             .on_key_down(|event, _, cx| navigation_focus::copy_transcript_selection(event, cx))
+            // Reading-mode paging lives in the main navigation scope: clicking
+            // the transcript focuses `navigation_focus.main`, while a focused
+            // composer (or the right pane) leaves it unfocused, so typing and
+            // other panes are never intercepted. It has to sit on this
+            // ancestor: gpui dispatches key events along the focused node's
+            // ancestor path, so the transcript root (a descendant) never sees
+            // them when the pane owns focus. A dedicated track_focus handle on
+            // the transcript root would steal that focus on click.
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if this.navigation_focus.main.is_focused(window) {
+                    let transcript = this.transcript.clone();
+                    let handled = transcript
+                        .update(cx, |transcript, cx| transcript.on_reading_key(event, cx));
+                    if handled {
+                        cx.stop_propagation();
+                    }
+                }
+            }))
             .relative()
             .flex_1()
             .min_w_0()

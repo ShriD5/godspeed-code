@@ -296,6 +296,7 @@ enum Command {
     MissionControl,
     Theme(AppearanceMode),
     ArchiveThread,
+    RegenerateTitle,
     // Git write actions on the focused chat's checkout.
     GitCommit,
     GitPush,
@@ -316,6 +317,7 @@ impl Command {
             Self::Theme(AppearanceMode::Light) => "Switch to light theme",
             Self::Theme(AppearanceMode::Dark) => "Switch to dark theme",
             Self::ArchiveThread => "Archive thread",
+            Self::RegenerateTitle => "Regenerate thread title",
             Self::GitCommit => "Commit changes",
             Self::GitPush => "Push",
             Self::GitPull => "Pull",
@@ -327,6 +329,7 @@ impl Command {
     fn keywords(&self) -> &'static str {
         match self {
             Self::NewZoomie => "zoomie schedule recurring cron automate always-on agent",
+            Self::RegenerateTitle => "rename name session chat",
             _ => "",
         }
     }
@@ -341,6 +344,7 @@ impl Command {
             Self::MissionControl => icons::WIDGET,
             Self::Theme(mode) => mode.icon(),
             Self::ArchiveThread => icons::ARCHIVE_MINIMALISTIC,
+            Self::RegenerateTitle => icons::MAGIC_STICK_3,
             Self::GitCommit => icons::CHECK,
             Self::GitPush => icons::ARROW_UP,
             Self::GitPull => icons::ARROW_DOWN,
@@ -426,7 +430,8 @@ fn matches_query(query: &str, text: &str) -> bool {
     query.split_whitespace().all(|word| text.contains(word))
 }
 
-/// `can_archive`: a focused, unarchived chat exists for Archive thread.
+/// `can_archive`: a focused, unarchived chat exists for Archive thread and
+/// Regenerate thread title.
 fn commands_for(query: &str, is_dark: bool, can_archive: bool) -> Vec<Command> {
     [
         Command::NewChat,
@@ -442,7 +447,11 @@ fn commands_for(query: &str, is_dark: bool, can_archive: bool) -> Vec<Command> {
         }),
     ]
     .into_iter()
-    .chain(can_archive.then_some(Command::ArchiveThread))
+    .chain(
+        [Command::ArchiveThread, Command::RegenerateTitle]
+            .into_iter()
+            .filter(|_| can_archive),
+    )
     .filter(|command| {
         matches_query(query, command.label()) || matches_query(query, command.keywords())
     })
@@ -1150,6 +1159,16 @@ impl Shell {
             RowKind::Command(Command::MissionControl) => self.open_mission_control(window, cx),
             RowKind::Command(Command::Theme(_)) => unreachable!(),
             RowKind::Command(Command::ArchiveThread) => self.archive_selected_chat(cx),
+            RowKind::Command(Command::RegenerateTitle) => {
+                if let Some(chat_id) = self
+                    .state
+                    .read(cx)
+                    .archivable_selected_chat()
+                    .map(str::to_string)
+                {
+                    self.regenerate_chat_title(chat_id, cx);
+                }
+            }
             RowKind::Command(Command::GitCommit) => self.palette_commit(window, cx),
             RowKind::Command(Command::GitPush) => self.palette_sync_action(methods::GIT_PUSH, cx),
             RowKind::Command(Command::GitPull) => self.palette_sync_action(methods::GIT_PULL, cx),
@@ -1215,6 +1234,7 @@ impl Shell {
             Command::MissionControl => ShortcutId::MissionControl,
             Command::NewConductor
             | Command::NewZoomie
+            | Command::RegenerateTitle
             | Command::Theme(_)
             | Command::GitCommit
             | Command::GitPush
@@ -2088,6 +2108,19 @@ mod tests {
         assert_eq!(
             commands_for("archive", true, true),
             vec![Command::ArchiveThread]
+        );
+    }
+
+    #[test]
+    fn regenerate_title_is_offered_only_with_a_focused_chat() {
+        assert!(commands_for("title", true, false).is_empty());
+        assert_eq!(
+            commands_for("title", true, true),
+            vec![Command::RegenerateTitle]
+        );
+        assert_eq!(
+            commands_for("rename", true, true),
+            vec![Command::RegenerateTitle]
         );
     }
 
