@@ -603,3 +603,11 @@ async fn prompts_become_text_and_inlinable_image_parts() {
             .is_some_and(|s| !s.is_empty())
     );
 }
+
+/// A steer stays at its step boundary until a real Muse host has shown that
+/// a stop keeps its background work and doesn't abort a turn that is only
+/// writing (Codex's background commands stayed open and did just that).
+#[test]
+fn a_steer_does_not_stop_the_turn() {
+    assert!(!MuseHarness::new().steer_stops_tool());
+}

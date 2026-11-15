@@ -66,6 +66,11 @@ pub const STICK_THRESHOLD_PX: f32 = 70.0;
 pub const OVERDRAW_PX: f32 = 320.0;
 /// Show the scroll-to-bottom button beyond this distance from the end.
 pub const SCROLL_BUTTON_THRESHOLD_PX: f32 = 320.0;
+/// Reading-mode keyboard paging scrolls one viewport minus this overlap, so a
+/// couple of lines of context stay on screen between pages.
+const READING_PAGE_OVERLAP_PX: f32 = 48.0;
+/// Floor for a reading-mode page when the measured viewport is unusually short.
+const READING_PAGE_MIN_PX: f32 = 64.0;
 
 fn jump_visibility(was_shown: bool, distance: f32) -> bool {
     // Once offered, keep the control until close to the end. A single 320px
@@ -1214,6 +1219,9 @@ pub enum RowKind {
         source_chat_id: SharedString,
         source_title: SharedString,
     },
+    /// Where `/clear` started a new provider session: the agent doesn't see
+    /// the turns above it.
+    FreshSession,
     /// A finished turn's receipt ([`crate::receipt`]): a one-line summary
     /// that opens into the slip. Synthesized per turn, not per entry.
     Receipt {
@@ -1502,6 +1510,19 @@ pub fn rows_for_entry(
     let mut rows: Vec<Row> = Vec::new();
     let streaming = entry.status == Some(MessageStatus::Streaming);
     let entry_id: SharedString = entry.id.clone().into();
+
+    if entry.id.starts_with(zeron_doc::FRESH_SESSION_ENTRY_PREFIX) {
+        return vec![Row {
+            id: entry_id.clone(),
+            version: 0,
+            turn_start: true,
+            kind: RowKind::FreshSession,
+            entry_id,
+            timestamp: None,
+            copy_text: None,
+            compact_fold: None,
+        }];
+    }
 
     if entry.role == MessageRole::User {
         let raw: String = entry
@@ -6740,6 +6761,81 @@ impl Transcript {
         }
     }
 
+    /// Reading-mode keyboard paging for the transcript list. The shell calls
+    /// this only while its main navigation scope owns focus (i.e. after the
+    /// user clicks the transcript), never while the composer is focused, so
+    /// typing there is never intercepted. Returns true when the keystroke was
+    /// consumed. This only ADDS a keyboard path — mouse wheel/touch and
+    /// markdown text selection are untouched.
+    pub(crate) fn on_reading_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let keystroke = &event.keystroke;
+        let m = keystroke.modifiers;
+        let key = keystroke.key.as_str();
+        // Leave Control/Fn combinations — and anything not listed below —
+        // alone, so other shortcuts and IME keep working unchanged.
+        if m.control || m.function {
+            return false;
+        }
+        // gpui's ListState exposes the viewport bounds and a pixel `scroll_by`,
+        // so "one viewport height" is exact rather than a row estimate. Keep a
+        // small overlap so consecutive pages share a line of context.
+        let viewport = f32::from(self.list.viewport_bounds().size.height);
+        let page = (viewport - READING_PAGE_OVERLAP_PX).max(READING_PAGE_MIN_PX);
+
+        if key == "space" && !m.platform && !m.alt {
+            // Space pages down; Shift+Space back up.
+            self.page_scroll(if m.shift { -page } else { page }, cx);
+            true
+        } else if (key == "down" || key == "up") && m.alt && !m.platform && !m.shift {
+            // Option/Alt + arrow pages in that direction.
+            self.page_scroll(if key == "down" { page } else { -page }, cx);
+            true
+        } else if (key == "down" || key == "up") && m.platform && !m.alt && !m.shift {
+            // Cmd + Down/Up jump to the ends.
+            if key == "down" {
+                self.jump_to_bottom(cx);
+            } else {
+                self.jump_to_top(cx);
+            }
+            true
+        } else if (key == "end" || key == "home") && !m.alt && !m.shift {
+            // Home/End (with or without Cmd) are the alternative to Cmd+Up/Down.
+            if key == "end" {
+                self.jump_to_bottom(cx);
+            } else {
+                self.jump_to_top(cx);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// One keyboard page. Release the tail pin exactly like a wheel/selection
+    /// scroll does, move the list, then refresh the jump-button state and
+    /// repaint (programmatic `scroll_by` alone does not re-render).
+    fn page_scroll(&mut self, delta: f32, cx: &mut Context<Self>) {
+        self.begin_scroll_navigation();
+        self.list.scroll_by(px(delta));
+        self.last_scroll_distance = self.distance_from_bottom();
+        self.show_jump_button = jump_visibility(self.show_jump_button, self.last_scroll_distance);
+        cx.notify();
+    }
+
+    /// Keyboard "top": the first list item, unpinning so tail-follow does not
+    /// pull the viewport back down on the next frame.
+    fn jump_to_top(&mut self, cx: &mut Context<Self>) {
+        self.begin_scroll_navigation();
+        self.list.scroll_to(ListOffset::default());
+        self.last_scroll_distance = self.distance_from_bottom();
+        self.show_jump_button = jump_visibility(self.show_jump_button, self.last_scroll_distance);
+        cx.notify();
+    }
+
     fn image_menu_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
         use crate::popover::MenuKey;
         let Some(menu) = self.image_menu.open_mut() else {
@@ -8506,6 +8602,7 @@ impl Transcript {
             }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
             RowKind::ForkMarker { source_title, .. } => fork_marker(source_title.clone(), &theme),
+            RowKind::FreshSession => fresh_session_marker(&theme),
             RowKind::ModelSwitch { label } => model_switch_divider(label.clone(), &theme),
             RowKind::IdleCompaction {
                 label,
@@ -10703,6 +10800,27 @@ fn fork_marker(source_title: SharedString, theme: &Theme) -> AnyElement {
                     .child(source_title),
             ),
         )
+        .into_any_element()
+}
+
+fn fresh_session_marker(theme: &Theme) -> AnyElement {
+    let rule = || div().flex_1().min_w_0().h(px(1.0)).bg(theme.border_strong);
+    div()
+        .py(px(14.0))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(rule())
+        .child(
+            div()
+                .flex_none()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted.opacity(0.7))
+                .child("New session"),
+        )
+        .child(rule())
         .into_any_element()
 }
 

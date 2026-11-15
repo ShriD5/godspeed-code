@@ -308,6 +308,16 @@ struct RunHandle {
     /// stopping a turn when the driver [`Harness::stops_turn_in_place`].
     turn: TurnControl,
     stops_turn_in_place: bool,
+    /// An explicit steer arriving while a tool call is open stops the turn
+    /// in place first ([`Harness::steer_stops_tool`]).
+    steer_stops_tool: bool,
+    /// Tool calls of the turn in flight that have not returned yet (a
+    /// command running, a wait), kept by the run task.
+    open_tools: Arc<std::sync::atomic::AtomicUsize>,
+    /// A steer is stopping this turn ([`SessionsEngine::steer_now`]): the
+    /// steers the stop cancels go to `redeliver` instead of being dropped.
+    redeliver_on_stop: Arc<std::sync::atomic::AtomicBool>,
+    redeliver: Arc<Mutex<Vec<RoutedSteer>>>,
     /// The harness stream is open. Before that there is no runtime to keep:
     /// a stop tears the pending start down instead.
     started: Arc<std::sync::atomic::AtomicBool>,
@@ -558,6 +568,22 @@ impl SessionsEngine {
     /// completed exchange the run task fires it for still-untitled chats.
     pub fn set_titles(&self, titles: crate::titles::TitleGenerator) {
         let _ = self.inner.titles.set(titles);
+    }
+
+    /// Retitle `chat_id` from its conversation (see
+    /// [`crate::titles::TitleGenerator::regenerate`]).
+    pub fn regenerate_title(&self, chat_id: &str) -> Result<(), EngineError> {
+        let (Some(titles), Some(docs)) = (self.inner.titles.get(), self.inner.doc_host()) else {
+            return Err(EngineError::Other(
+                "title generation is not available".into(),
+            ));
+        };
+        if !titles.regenerate(chat_id, docs) {
+            return Err(EngineError::Other(
+                "a title is already being generated".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Wire the turn-start listener (called once at engine assembly).
@@ -875,6 +901,10 @@ impl SessionsEngine {
         // cross-harness delivery before recording or routing the user turn.
         zeron_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
+        if take_fresh_session(&mut request) && !idle {
+            self.start_fresh_session(chat_id, &request.cwd, message_id.as_deref())
+                .await?;
+        }
         // Another device's send names the same folder in its own spelling,
         // and leaves out roots it can't pick: run it as the chat runs.
         if let Some(live) = self.live_config_for(chat_id, harness_id) {
@@ -1182,6 +1212,12 @@ impl SessionsEngine {
                 steer_tx,
                 interrupt_token,
                 stops_turn_in_place: harness.supports_steering() && harness.stops_turn_in_place(),
+                steer_stops_tool: harness.supports_steering()
+                    && harness.stops_turn_in_place()
+                    && harness.steer_stops_tool(),
+                open_tools: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                redeliver_on_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                redeliver: Arc::new(Mutex::new(Vec::new())),
                 turn: turn.clone(),
                 started: started.clone(),
                 cancel: cancel_tx,
@@ -1295,6 +1331,21 @@ impl SessionsEngine {
         message_id: Option<String>,
         issued_at: i64,
     ) -> Result<SteerOutcome, EngineError> {
+        self.steer_with(chat_id, prompt, Vec::new(), message_id, issued_at)
+            .await
+    }
+
+    /// [`Self::steer_at`] carrying files: `attachments` (this device's
+    /// paths) ride the mailbox with the prompt, so a driver that inlines
+    /// images delivers them as images, as a run's do.
+    pub(crate) async fn steer_with(
+        &self,
+        chat_id: &str,
+        prompt: &str,
+        attachments: Vec<String>,
+        message_id: Option<String>,
+        issued_at: i64,
+    ) -> Result<SteerOutcome, EngineError> {
         let target = lock(&self.inner.runs)
             .get(chat_id)
             .filter(|h| h.steerable && !h.retiring.load(std::sync::atomic::Ordering::Acquire))
@@ -1320,7 +1371,7 @@ impl SessionsEngine {
         // message so a re-dispatch keeps it.
         let sent_with = self.last_request(chat_id).map(|mut request| {
             request.prompt = prompt.to_string();
-            request.attachments = Vec::new();
+            request.attachments = attachments.clone();
             Box::new(request)
         });
         let message = SteerMessage {
@@ -1330,7 +1381,7 @@ impl SessionsEngine {
                 zeron_proto::invocation::harness_prompt(delivered, harness_id)
             },
             message_id: Some(user_id.clone()),
-            attachments: Vec::new(),
+            attachments,
             config: None,
         };
         // Saturation is backpressure, not a dead runtime. Waiting for room
@@ -1387,6 +1438,114 @@ impl SessionsEngine {
         }
         self.inner.note_message(chat_id, prompt);
         Ok(SteerOutcome::Accepted)
+    }
+
+    /// Whether a steer for the chat would stop its turn first: a tool call
+    /// is open (a command running, a wait) in a live turn whose runtime
+    /// stops turns in place and opted in ([`Harness::steer_stops_tool`]).
+    /// Never while the agent waits on a question: answering it is the way
+    /// on.
+    pub fn steer_stops_tool(&self, chat_id: &str) -> bool {
+        use std::sync::atomic::Ordering::Acquire;
+        if !self.turn_in_flight(chat_id) {
+            return false;
+        }
+        lock(&self.inner.runs).get(chat_id).is_some_and(|h| {
+            h.steer_stops_tool
+                && h.steerable
+                && h.started.load(Acquire)
+                && !h.retiring.load(Acquire)
+                && h.open_tools.load(Acquire) > 0
+                && lock(&h.pending_inputs).is_empty()
+        })
+    }
+
+    /// An explicit steer, read by the agent at once. While a tool call is
+    /// open ([`Self::steer_stops_tool`]) the turn is stopped in place first:
+    /// the foreground call ends, the runtime and its background work (shells,
+    /// terminals, agents) stay, and the prompt starts the next turn in that
+    /// same runtime. Steers sent earlier that the stop cancelled go first,
+    /// under their own ids. Otherwise, or when the stop doesn't settle, it
+    /// is an ordinary steer ([`Self::steer_at`]), read at the next step
+    /// boundary. Nothing here tears a runtime down.
+    pub(crate) async fn steer_now(
+        &self,
+        chat_id: &str,
+        prompt: &str,
+        attachments: Vec<String>,
+        message_id: Option<String>,
+        issued_at: i64,
+    ) -> Result<SteerOutcome, EngineError> {
+        if self.steer_stops_tool(chat_id) && self.stop_turn_keeping_runtime(chat_id).await {
+            let earlier = lock(&self.inner.runs)
+                .get(chat_id)
+                .map(|h| std::mem::take(&mut *lock(&h.redeliver)))
+                .unwrap_or_default();
+            for steer in earlier {
+                let attachments = steer
+                    .request
+                    .as_ref()
+                    .map(|r| r.attachments.clone())
+                    .unwrap_or_default();
+                let outcome = self
+                    .steer_with(
+                        chat_id,
+                        &steer.prompt,
+                        attachments,
+                        Some(steer.message_id),
+                        now_ms(),
+                    )
+                    .await?;
+                if outcome != SteerOutcome::Accepted {
+                    tracing::warn!(chat = %chat_id, ?outcome, "an earlier steer didn't go again after the stop");
+                }
+            }
+        }
+        self.steer_with(chat_id, prompt, attachments, message_id, issued_at)
+            .await
+    }
+
+    /// End the in-flight turn in place for a steer, keeping the runtime and
+    /// its background work. Unlike [`Self::stop_turn`] it never falls back
+    /// to tearing the runtime down: false when the run can't stop in place
+    /// or the stop doesn't settle, and the steer then waits its turn.
+    async fn stop_turn_keeping_runtime(&self, chat_id: &str) -> bool {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+        const STOP_SETTLE: std::time::Duration = std::time::Duration::from_secs(15);
+        let target = lock(&self.inner.runs)
+            .get(chat_id)
+            .filter(|h| {
+                h.stops_turn_in_place && h.started.load(Acquire) && !h.retiring.load(Acquire)
+            })
+            .map(|h| {
+                (
+                    h.run_id.clone(),
+                    h.turn.clone(),
+                    h.redeliver_on_stop.clone(),
+                )
+            });
+        let Some((run_id, turn, redeliver_on_stop)) = target else {
+            return false;
+        };
+        if !self.turn_in_flight(chat_id) {
+            return false;
+        }
+        redeliver_on_stop.store(true, Release);
+        turn.stop_turn();
+        let deadline = tokio::time::Instant::now() + STOP_SETTLE;
+        while tokio::time::Instant::now() < deadline {
+            if !self.is_live(chat_id, &run_id) {
+                return false;
+            }
+            if !self.turn_in_flight(chat_id) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // Not settled: a late stop clears its steers as any stop does.
+        redeliver_on_stop.swap(false, AcqRel);
+        tracing::warn!(chat = %chat_id, "a steer's turn stop did not settle; it waits for the turn");
+        false
     }
 
     /// A Stop acting now cancels these messages, sent before it but still
@@ -1496,6 +1655,56 @@ impl SessionsEngine {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         Ok(true)
+    }
+
+    /// `/clear`: end the chat's provider session so the send that asked for
+    /// it starts a new one. The live runtime goes (its process holds the old
+    /// conversation), the stored session is tombstoned, and a marker entry
+    /// bounds what any history replay may carry into the new session. The
+    /// doc host may already have written the send's own message: the marker
+    /// goes before it.
+    async fn start_fresh_session(
+        &self,
+        chat_id: &str,
+        cwd: &str,
+        message_id: Option<&str>,
+    ) -> Result<(), EngineError> {
+        self.terminate(chat_id).await?;
+        lock(&self.inner.harness_sessions).insert(
+            chat_id.to_string(),
+            HarnessSessionRef {
+                session_id: String::new(),
+                cwd: cwd.to_string(),
+            },
+        );
+        if let Some(ws) = self.inner.workspace() {
+            ws.set_chat_harness_session(chat_id, "", cwd);
+        }
+        let handle = self.doc_handle(chat_id)?;
+        let doc = handle.doc();
+        doc.clear_carried_context()?;
+        doc.clear_context_usage()?;
+        let id = format!("{}{}", zeron_doc::FRESH_SESSION_ENTRY_PREFIX, new_id());
+        let marker = SessionMessageEntry {
+            id,
+            role: MessageRole::System,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "New session".into(),
+            }],
+            created_at: now_ms(),
+            device_id: self.inner.device_id.clone(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+            turn_stats: None,
+        };
+        match message_id {
+            Some(before) => doc.push_message_before(&marker, before)?,
+            None => doc.push_message(&marker)?,
+        }
+        tracing::info!(chat = %chat_id, "starting a fresh provider session");
+        Ok(())
     }
 
     /// Whether the chat has a run on this device (one `inject_event` can reach).
@@ -2403,6 +2612,8 @@ impl Inner {
             .into_iter()
             .filter(|entry| Some(entry.id.as_str()) != current)
             .collect();
+        // Nothing from before a `/clear` belongs in the session after it.
+        let start = zeron_doc::fresh_session_start(&entries);
         let end = match provider {
             ProviderSession::Fresh => entries.len(),
             ProviderSession::Continued(session) => {
@@ -2418,7 +2629,7 @@ impl Inner {
                 })?
             }
         };
-        let history: Vec<_> = entries[..end]
+        let history: Vec<_> = entries[start.min(end)..end]
             .iter()
             .map(|entry| {
                 let text = entry
@@ -2984,6 +3195,15 @@ struct RunResumeState {
     started: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Takes the sender's one-send [`zeron_proto::FRESH_SESSION_OPTION`] off the
+/// request, so it never reaches a harness or the chat's run configuration.
+fn take_fresh_session(request: &mut RunRequest) -> bool {
+    request
+        .model_options
+        .remove(zeron_proto::FRESH_SESSION_OPTION)
+        .is_some_and(|on| on == serde_json::Value::Bool(true))
+}
+
 fn cursor_unstarted_history(
     doc: &SessionDoc,
     current_id: &str,
@@ -2999,6 +3219,7 @@ fn cursor_unstarted_history(
         .iter()
         .take_while(|entry| entry.id != current_id)
         .collect();
+    let preceding = &preceding[zeron_doc::fresh_session_start(&entries).min(preceding.len())..];
     // With an existing session, only bridge the tail whose assistant never
     // produced content. A process can die before writing its SDK-side receipt,
     // even though an older session ID still exists.
@@ -3278,6 +3499,19 @@ async fn drive_run(
     // folding the echo would mint an orphan chip mid-text in the NEXT
     // segment — the mid-word transcript splits.
     let mut seen_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The turn's tool calls still running, published for a steer to read
+    // ([`SessionsEngine::steer_now`]).
+    let mut open_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // (A call that returned stays closed: drivers refresh a call in place.)
+    let mut closed_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let open_count = lock(&inner.runs)
+        .get(&chat_id)
+        .filter(|h| h.run_id == run_id)
+        .map(|h| h.open_tools.clone())
+        .unwrap_or_default();
+    let publish_open = |open: &std::collections::HashSet<String>| {
+        open_count.store(open.len(), std::sync::atomic::Ordering::Release);
+    };
     let mut seen_images = std::collections::HashSet::new();
     for entry in doc_ref.read_entries().unwrap_or_default() {
         for part in entry.parts {
@@ -4158,6 +4392,29 @@ async fn drive_run(
             }
             _ => {}
         }
+        match &event {
+            AgentEvent::ToolCall { id, .. }
+                if id != zeron_proto::LIVE_PLAN_TOOL_ID && !closed_tools.contains(id) =>
+            {
+                if open_tools.insert(id.clone()) {
+                    publish_open(&open_tools);
+                }
+            }
+            AgentEvent::ToolResult { id, .. } => {
+                closed_tools.insert(id.clone());
+                if open_tools.remove(id) {
+                    publish_open(&open_tools);
+                }
+            }
+            AgentEvent::Done { .. } => {
+                closed_tools.clear();
+                if !open_tools.is_empty() {
+                    open_tools.clear();
+                    publish_open(&open_tools);
+                }
+            }
+            _ => {}
+        }
 
         // Startup-crash retry: a run that dies before ever starting (errored
         // Done, no SessionStarted, nothing streamed) means the AGENT CHILD
@@ -4451,13 +4708,25 @@ async fn drive_run(
             // Working forever.
             let stopped_in_place =
                 *status == DoneStatus::Interrupted && stops_turn_in_place && !interrupted;
+            // A steer that stopped the turn to be read at once
+            // (`SessionsEngine::steer_now`) takes them to deliver again
+            // ahead of itself: they were sent first, and still go.
             if stopped_in_place
-                && let Some(ledger) = lock(&inner.runs)
+                && let Some((ledger, redeliver_on_stop, redeliver)) = lock(&inner.runs)
                     .get(&chat_id)
                     .filter(|h| h.run_id == run_id)
-                    .map(|h| h.routed_steers.clone())
+                    .map(|h| {
+                        (
+                            h.routed_steers.clone(),
+                            h.redeliver_on_stop.clone(),
+                            h.redeliver.clone(),
+                        )
+                    })
             {
-                lock(&ledger).clear();
+                let cancelled: Vec<RoutedSteer> = lock(&ledger).drain(..).collect();
+                if redeliver_on_stop.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    lock(&redeliver).extend(cancelled);
+                }
             }
             // An accepted steer awaiting its boundary owns the continuation:
             // the previous Done is an internal handoff, not a completion ping.
@@ -4761,6 +5030,45 @@ mod tests {
             "an unacknowledged prompt after an older checkpoint must survive"
         );
         assert_eq!(doc.read_entries().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn cursor_history_stops_at_a_fresh_session() {
+        let doc = zeron_doc::SessionDoc::init("cursor-cleared").unwrap();
+        let marker = format!("{}1", zeron_doc::FRESH_SESSION_ENTRY_PREFIX);
+        for (id, role, text) in [
+            ("u1", zeron_doc::MessageRole::User, "before the clear"),
+            (
+                marker.as_str(),
+                zeron_doc::MessageRole::System,
+                "New session",
+            ),
+            ("u2", zeron_doc::MessageRole::User, "after the clear"),
+            ("u3", zeron_doc::MessageRole::User, "current request"),
+        ] {
+            doc.push_message(&zeron_doc::SessionMessageEntry {
+                id: id.into(),
+                role,
+                parts: vec![zeron_doc::MessagePart::Text {
+                    id: format!("{id}-text"),
+                    text: text.into(),
+                }],
+                created_at: 0,
+                device_id: "test".into(),
+                status: None,
+                continuation_of: None,
+                duration_ms: None,
+                turn_stats: None,
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            super::cursor_unstarted_history(&doc, "u2", "after the clear", false).unwrap(),
+            "after the clear"
+        );
+        let prompt = super::cursor_unstarted_history(&doc, "u3", "current request", false).unwrap();
+        assert!(prompt.contains("after the clear"));
+        assert!(!prompt.contains("before the clear"));
     }
 
     use zeron_proto::{HarnessId, RunRequest, SandboxLevel};
