@@ -826,6 +826,33 @@ pub fn line_anchor(line: &DiffLine) -> Option<(CommentSide, u32)> {
 // Resolution + states (pure)
 // ---------------------------------------------------------------------------
 
+/// A chat on another device, as a `WatchCheckoutDiffs` asks for it: its host, and
+/// the chat, whose checkout that host only scans while it's being looked at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteDiffWatch {
+    pub device: String,
+    pub chat: String,
+}
+
+impl RemoteDiffWatch {
+    /// The watch for `chat`, when it isn't this device's.
+    pub(crate) fn of(chat: &Chat, local_device: Option<&str>) -> Option<Self> {
+        (local_device != Some(chat.device_id.as_str())).then(|| Self {
+            device: chat.device_id.clone(),
+            chat: chat.id.clone(),
+        })
+    }
+
+    pub(crate) fn params(watch: Option<&Self>) -> serde_json::Value {
+        match watch {
+            Some(watch) => {
+                serde_json::json!({ "targetDeviceId": watch.device, "chatId": watch.chat })
+            }
+            None => serde_json::json!({}),
+        }
+    }
+}
+
 /// The diff shown for a chat: `checkout_id` match first, then device+cwd,
 /// then cwd alone (§1.11).
 pub fn resolve_diff<'a>(diffs: &'a [CheckoutDiff], chat: &Chat) -> Option<&'a CheckoutDiff> {
@@ -1705,7 +1732,7 @@ pub struct Changes {
     /// `Some(id)` = a remote chat's host (relay-forwarded). The stream only
     /// carries the TARGET device's checkouts, so a selection change onto a
     /// chat hosted elsewhere tears the watch down and re-subscribes.
-    watch_target: Option<String>,
+    watch_target: Option<RemoteDiffWatch>,
     watch_task: Option<Task<()>>,
     parsed: Option<ParsedDiff>,
     parse_task: Option<Task<()>>,
@@ -1973,7 +2000,12 @@ impl Changes {
     /// Retries with a flat 2 s delay if the stream fails or ends; the last
     /// content stays visible under an error banner meanwhile.
     pub fn ensure_watch(&mut self, cx: &mut Context<Self>) {
-        let target = self.desired_target(cx);
+        let target = {
+            let state = self.state.read(cx);
+            state
+                .selected_chat_row()
+                .and_then(|chat| RemoteDiffWatch::of(chat, state.local_device_id.as_deref()))
+        };
         if self.started && self.watch_target == target {
             return;
         }
@@ -1994,23 +2026,16 @@ impl Changes {
 
     fn spawn_watch(
         engine: EngineHandle,
-        target: Option<String>,
+        target: Option<RemoteDiffWatch>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
-                let mut params = serde_json::Map::new();
-                if let Some(target) = &target {
-                    params.insert(
-                        "targetDeviceId".into(),
-                        serde_json::Value::String(target.clone()),
-                    );
-                }
                 let subscribed = engine
                     .client()
                     .subscribe(
                         methods::WATCH_CHECKOUT_DIFFS,
-                        serde_json::Value::Object(params),
+                        RemoteDiffWatch::params(target.as_ref()),
                     )
                     .await;
                 match subscribed {
@@ -2059,7 +2084,11 @@ impl Changes {
     /// `(additions, deletions)` of `chat`'s checkout, when this pane already
     /// watches the device hosting it (`local_device` stands for no target).
     pub fn diff_stats_for(&self, chat: &Chat, local_device: Option<&str>) -> Option<(u32, u32)> {
-        let watched = self.watch_target.as_deref().or(local_device)?;
+        let watched = self
+            .watch_target
+            .as_ref()
+            .map(|watch| watch.device.as_str())
+            .or(local_device)?;
         if !self.started || watched != chat.device_id {
             return None;
         }
@@ -6376,6 +6405,19 @@ rename to new_name.rs
         assert!(resolve_diff(&diffs, &c).is_none());
         let c = chat(None, "dev-a", Some("/elsewhere"));
         assert!(resolve_diff(&diffs, &c).is_none());
+    }
+
+    #[test]
+    fn a_remote_chats_diff_watch_names_the_chat_to_its_host() {
+        let mut remote = chat(None, "dev-b", Some("/repo"));
+        remote.id = "chat-b".into();
+        assert_eq!(RemoteDiffWatch::of(&remote, Some("dev-b")), None);
+        let watch = RemoteDiffWatch::of(&remote, Some("dev-a")).unwrap();
+        assert_eq!(
+            RemoteDiffWatch::params(Some(&watch)),
+            serde_json::json!({ "targetDeviceId": "dev-b", "chatId": "chat-b" })
+        );
+        assert_eq!(RemoteDiffWatch::params(None), serde_json::json!({}));
     }
 
     #[test]
