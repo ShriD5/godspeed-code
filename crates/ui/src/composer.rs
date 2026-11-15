@@ -48,6 +48,7 @@ mod prompt_recall;
 pub(crate) mod prompt_stash;
 mod recall_stash;
 mod relay_banner;
+mod fresh_session;
 mod zoomie;
 pub use zoomie::ZoomieCreated;
 pub use chip::ChipKind;
@@ -6081,6 +6082,7 @@ pub enum WorkspaceCommand {
     Terminal,
     Rename,
     Stop,
+    Clear,
 }
 
 impl WorkspaceCommand {
@@ -6110,6 +6112,12 @@ impl WorkspaceCommand {
                 true,
             ),
             (Self::Stop, "stop", "Godspeed: stop the active run", true),
+            (
+                Self::Clear,
+                "clear",
+                "Godspeed: start a fresh session in this conversation",
+                true,
+            ),
         ]
     }
 }
@@ -6119,6 +6127,11 @@ fn with_workspace_commands(
     in_chat: bool,
 ) -> Vec<InvocationCandidate> {
     rows.retain(|row| row.workspace_command.is_none());
+    // A provider's own `/clear` can't end the session Godspeed resumes, so
+    // Godspeed's takes the name in a conversation.
+    if in_chat {
+        rows.retain(|row| row.name != "clear");
+    }
     for &(command, name, description, needs_chat) in WorkspaceCommand::catalog() {
         if needs_chat && !in_chat {
             continue;
@@ -6138,6 +6151,20 @@ fn with_workspace_commands(
         });
     }
     rows
+}
+
+/// The Run's options, carrying the one-send fresh-session flag when armed.
+fn with_fresh_session(
+    mut options: serde_json::Map<String, serde_json::Value>,
+    fresh: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    if fresh {
+        options.insert(
+            zeron_proto::FRESH_SESSION_OPTION.into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    options
 }
 
 fn workspace_command_for_text(
@@ -6477,6 +6504,8 @@ pub struct Composer {
     /// another chat's request when the user navigates quickly.
     interrupting: HashSet<String>,
     interrupt_tasks: HashMap<String, Task<()>>,
+    /// Chats whose next message starts a fresh provider session (`/clear`).
+    fresh_sessions: HashSet<String>,
     // -- compact/expanded flip state (hysteresis; see `composer_flip`) --
     /// Current layout mode (persisted across frames — never derived fresh).
     expanded_mode: bool,
@@ -6756,6 +6785,7 @@ impl Composer {
             send_task: None,
             interrupting: HashSet::new(),
             interrupt_tasks: HashMap::new(),
+            fresh_sessions: HashSet::new(),
             editing_queued: None,
             queue_edit_lease_id: None,
             queue_edit_base_text_hash: None,
@@ -9288,7 +9318,11 @@ impl Composer {
         self.reset_slash(None, cx);
         self.failure = None;
         self.failure_key = None;
-        cx.emit(ComposerEvent::WorkspaceCommand(command));
+        if command == WorkspaceCommand::Clear {
+            self.arm_fresh_session(cx);
+        } else {
+            cx.emit(ComposerEvent::WorkspaceCommand(command));
+        }
         cx.notify();
     }
 
@@ -9485,6 +9519,19 @@ impl Composer {
             }
             state.unsaved_side_chat_create(&chat_id)
         });
+        let fresh = !is_new && self.fresh_sessions.contains(&chat_id);
+        if fresh && queue {
+            self.failure = Some(
+                "A fresh session starts once the agent stops. Stop it, or send when it's done."
+                    .into(),
+            );
+            self.failure_key = Some(self.current_key.clone());
+            cx.notify();
+            return;
+        }
+        if fresh {
+            self.fresh_sessions.remove(&chat_id);
+        }
         if queue && !is_new {
             let capability = if self.staged().is_empty() && self.staged_appshots().is_empty() {
                 capabilities::MESSAGE_QUEUE_V1
@@ -10033,7 +10080,7 @@ impl Composer {
                         harness: resolved.harness,
                         model: resolved.model.clone(),
                         reasoning: resolved.reasoning,
-                        model_options: resolved.model_options.clone(),
+                        model_options: with_fresh_session(resolved.model_options.clone(), fresh),
                         cwd,
                         sandbox: resolved.access_mode.legacy().0,
                         auto_approve: resolved.access_mode.legacy().1,
@@ -10176,6 +10223,9 @@ impl Composer {
                     };
                     composer.failure = Some(message.into());
                     composer.failure_key = Some(restore_key.clone());
+                    if fresh {
+                        composer.fresh_sessions.insert(err_chat_id.clone());
+                    }
                     composer.state.update(cx, |s, cx| {
                         s.remove_echo(&err_chat_id, &err_message_id);
                         s.end_pending_send(&err_chat_id, &err_message_id);
@@ -11741,6 +11791,10 @@ impl Render for Composer {
         let container = container.when_some(self.render_relay_banner(&theme, cx), |el, banner| {
             el.child(banner)
         });
+        let container = container
+            .when_some(self.render_fresh_session_banner(&theme, cx), |el, banner| {
+                el.child(banner)
+            });
 
         // What is waiting to be sent, stacked directly above the box it was
         // typed in — the queue is a property of this composer, not a panel
@@ -13210,7 +13264,7 @@ mod tests {
             vec![],
         );
         let rows = with_workspace_commands(native, true);
-        assert_eq!(rows.len(), 11);
+        assert_eq!(rows.len(), 12);
         assert!(rows[0].workspace_command.is_none());
         assert_eq!(rows[0].input_hint.as_deref(), Some("model id"));
         assert_eq!(workspace_command_for_text("/model", &rows), None);
@@ -13219,7 +13273,7 @@ mod tests {
             workspace_command_for_text("/godspeed:godspeed:model", &rows),
             Some(WorkspaceCommand::Model)
         );
-        assert_eq!(with_workspace_commands(rows, true).len(), 11);
+        assert_eq!(with_workspace_commands(rows, true).len(), 12);
         let draft_rows = with_workspace_commands(vec![], false);
         assert_eq!(draft_rows.len(), 4);
         assert_eq!(workspace_command_for_text("/diff", &draft_rows), None);
@@ -13241,6 +13295,36 @@ mod tests {
                 "{literal:?}"
             );
         }
+    }
+
+    #[test]
+    fn clear_starts_a_fresh_session_instead_of_the_provider_command() {
+        let native = || {
+            invocation_candidates(
+                vec![SlashCommand {
+                    name: "clear".into(),
+                    description: "Provider clear".into(),
+                    input_hint: None,
+                }],
+                vec![],
+            )
+        };
+        let rows = with_workspace_commands(native(), true);
+        assert_eq!(
+            workspace_command_for_text("/clear", &rows),
+            Some(WorkspaceCommand::Clear)
+        );
+        assert!(!rows.iter().any(|row| row.name == "godspeed:clear"));
+        let draft_rows = with_workspace_commands(native(), false);
+        assert_eq!(workspace_command_for_text("/clear", &draft_rows), None);
+        assert!(draft_rows.iter().any(|row| row.name == "clear"));
+
+        let options = with_fresh_session(Default::default(), true);
+        assert_eq!(
+            options.get(zeron_proto::FRESH_SESSION_OPTION),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(with_fresh_session(Default::default(), false).is_empty());
     }
 
     #[gpui::test]
