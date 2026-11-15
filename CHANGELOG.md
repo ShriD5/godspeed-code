@@ -4,6 +4,8 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+## 0.5.12 (2026-11-16)
+
 ### Added
 
 - **Settings → Accounts says when Claude Code bills an API key.** If the Claude CLI reports that it
