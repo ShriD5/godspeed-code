@@ -36,6 +36,7 @@ mod fs_watch;
 pub mod git_actions;
 mod git_program;
 pub mod harness_updates;
+mod idle_compaction;
 pub(crate) mod home_index;
 mod device_settings;
 mod http_error;
@@ -535,6 +536,13 @@ impl EngineCore {
         limit_recovery.start();
         let chat_lifecycle = chat_lifecycle::ChatLifecycleService::open(data_dir, workspace.clone());
         chat_lifecycle.start();
+        // Idle compaction reads the device setting live, on each decision.
+        {
+            let lifecycle = chat_lifecycle.clone();
+            sessions.set_idle_compaction_setting(Arc::new(move || {
+                lifecycle.settings().compact_idle_chats
+            }));
+        }
         let worktree_cleanup = worktree_cleanup::WorktreeCleanupService::open(
             data_dir,
             repos.clone(),

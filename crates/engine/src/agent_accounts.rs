@@ -4026,6 +4026,31 @@ fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
+/// Name a Claude Code login that bills an API key rather than a Claude
+/// subscription, the way T3 Code labels it ("Claude API Key"): the CLI's
+/// own report of the credential it uses (`source`, e.g. `ANTHROPIC_API_KEY`)
+/// joins the snapshot's warnings, so Settings → Accounts shows it under
+/// Claude Code whatever account rows are listed.
+pub(crate) fn note_api_key_login(snapshot: &mut AgentAccountsSnapshot, source: Option<String>) {
+    let Some(source) = source else {
+        return;
+    };
+    let message = format!(
+        "Claude Code is signed in with an API key ({source}), not a Claude subscription, \
+         so its runs bill that key."
+    );
+    if !snapshot
+        .warnings
+        .iter()
+        .any(|w| w.harness == HarnessId::ClaudeCode && w.message == message)
+    {
+        snapshot.warnings.push(AgentAccountWarning {
+            harness: HarnessId::ClaudeCode,
+            message,
+        });
+    }
+}
+
 /// The loopback port an authorize url's `redirect_uri` lands on — where the
 /// login's CLI (or our own listener) waits for the browser. `None` for flows
 /// that don't redirect to this machine.
@@ -4254,6 +4279,20 @@ fn stage_file_atomic(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_key_logins_join_the_claude_warnings_once() {
+        let mut snapshot = AgentAccountsSnapshot::default();
+        note_api_key_login(&mut snapshot, None);
+        assert!(snapshot.warnings.is_empty());
+        note_api_key_login(&mut snapshot, Some("ANTHROPIC_API_KEY".into()));
+        note_api_key_login(&mut snapshot, Some("ANTHROPIC_API_KEY".into()));
+        assert_eq!(snapshot.warnings.len(), 1);
+        let warning = &snapshot.warnings[0];
+        assert_eq!(warning.harness, HarnessId::ClaudeCode);
+        assert!(warning.message.contains("API key (ANTHROPIC_API_KEY)"));
+        assert!(warning.message.contains("not a Claude subscription"));
+    }
 
     #[test]
     fn plan_labels() {

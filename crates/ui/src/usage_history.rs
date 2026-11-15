@@ -249,6 +249,49 @@ pub fn format_usd(usd: f64) -> String {
     format!("${}", crate::receipt::format_count(usd.round() as u64))
 }
 
+/// What each kind of token cost at list prices (T3 Code's "Cost by type"):
+/// input, output, cache reads and cache writes, priced per model from the
+/// model breakdown. Models the price table doesn't know add nothing. Pure.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CostByType {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl CostByType {
+    pub fn of(by_model: &[UsageSlice]) -> Self {
+        let per = |tokens: u64, rate: f64| tokens as f64 * rate / 1_000_000.0;
+        let mut out = Self::default();
+        for slice in by_model {
+            let Some(price) = zeron_proto::pricing::price_for(&slice.key) else {
+                continue;
+            };
+            let t = &slice.amount.tokens;
+            out.input += per(t.input, price.input);
+            out.output += per(t.output, price.output);
+            out.cache_read += per(t.cache_read, price.cache_read);
+            out.cache_write += per(t.cache_write, price.cache_write);
+        }
+        out
+    }
+
+    fn total(&self) -> f64 {
+        self.input + self.output + self.cache_read + self.cache_write
+    }
+
+    /// A token tile's note: what that kind cost and its share of the
+    /// priced cost ("$4.10 · 38%"); `None` when nothing was priced.
+    pub fn note(&self, usd: f64) -> Option<String> {
+        let total = self.total();
+        (total >= 0.005).then(|| {
+            let share = (usd / total * 100.0).round();
+            format!("{} · {share:.0}%", format_usd(usd))
+        })
+    }
+}
+
 /// A slice's cost: "no price" when none of its tokens could be priced.
 /// Pure.
 pub fn amount_cost(amount: &UsageAmount) -> String {
@@ -551,6 +594,8 @@ impl UsageHistoryView {
     fn totals(history: &UsageHistory, theme: &Theme) -> AnyElement {
         let total = &history.total;
         let t = &total.tokens;
+        // Each token tile also says what that kind cost (T3 Code's "Cost by type").
+        let by_type = CostByType::of(&history.by_model);
         let cost_note = if total.unpriced_tokens > 0 {
             Some(format!(
                 "+{} tokens unpriced",
@@ -586,19 +631,29 @@ impl UsageHistoryView {
                     if history.sessions == 1 { "" } else { "s" }
                 )),
             ))
-            .child(Self::stat(theme, "Input", format_tokens(t.input), None))
-            .child(Self::stat(theme, "Output", format_tokens(t.output), None))
+            .child(Self::stat(
+                theme,
+                "Input",
+                format_tokens(t.input),
+                by_type.note(by_type.input),
+            ))
+            .child(Self::stat(
+                theme,
+                "Output",
+                format_tokens(t.output),
+                by_type.note(by_type.output),
+            ))
             .child(Self::stat(
                 theme,
                 "Cache read",
                 format_tokens(t.cache_read),
-                None,
+                by_type.note(by_type.cache_read),
             ))
             .child(Self::stat(
                 theme,
                 "Cache write",
                 format_tokens(t.cache_write),
-                None,
+                by_type.note(by_type.cache_write),
             ))
             .child(Self::stat(
                 theme,
@@ -1193,6 +1248,47 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc};
     use zeron_proto::{UsagePoint, UsageTokens};
+
+    #[test]
+    fn cost_by_type_prices_each_kind_per_model() {
+        let slice = |key: &str, tokens: UsageTokens| UsageSlice {
+            key: key.into(),
+            label: key.into(),
+            amount: UsageAmount {
+                tokens,
+                ..Default::default()
+            },
+        };
+        let million = UsageTokens {
+            input: 1_000_000,
+            output: 1_000_000,
+            cache_read: 1_000_000,
+            cache_write: 1_000_000,
+        };
+        let by_model = [
+            slice("claude-opus-5-5", million),
+            // Unknown models carry tokens but no cost.
+            slice("mystery-model", million),
+        ];
+        let price = zeron_proto::pricing::price_for("claude-opus-5-5").unwrap();
+        let by_type = CostByType::of(&by_model);
+        assert!((by_type.input - price.input).abs() < 1e-9);
+        assert!((by_type.output - price.output).abs() < 1e-9);
+        assert!((by_type.cache_read - price.cache_read).abs() < 1e-9);
+        assert!((by_type.cache_write - price.cache_write).abs() < 1e-9);
+        // The kinds add up to the model's cost at list prices.
+        let whole = price.cost(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        assert!((by_type.total() - whole).abs() < 1e-9);
+        let share = (price.output / whole * 100.0).round();
+        assert_eq!(
+            by_type.note(by_type.output),
+            Some(format!("{} · {share:.0}%", format_usd(price.output)))
+        );
+        // Nothing priced: no notes.
+        let unpriced = CostByType::of(&[slice("mystery-model", million)]);
+        assert_eq!(unpriced, CostByType::default());
+        assert_eq!(unpriced.note(0.0), None);
+    }
 
     fn amount(tokens: u64, cost: f64) -> UsageAmount {
         UsageAmount {

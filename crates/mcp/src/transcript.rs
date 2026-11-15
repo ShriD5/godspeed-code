@@ -150,6 +150,15 @@ fn render_one(entry: &SessionMessageEntry, options: RenderOptions) -> RenderedMe
             // The fork seam is a transcript marker, not agent content: an
             // orchestrator reads the copied history as ordinary turns.
             MessagePart::Fork { .. } => {}
+            // An idle compaction is host housekeeping: the agent already
+            // holds the summary, so the reader gets the label only.
+            MessagePart::Compaction { error: None, .. } => {
+                text_parts.push(zeron_doc::IDLE_COMPACTION_LABEL);
+            }
+            MessagePart::Compaction {
+                error: Some(reason),
+                ..
+            } => errors.push(zeron_doc::compaction_label(Some(reason))),
         }
     }
     RenderedMessage {
