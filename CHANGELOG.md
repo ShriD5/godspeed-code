@@ -24,12 +24,61 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
   and goes out right after it. Chats that are archived, settled, snoozed, waiting on you or busy
   are left alone, and so are API-key logins, whose five-minute cache would make it fire on every
   pause. Turn it off in Settings → General → Compact idle Claude chats.
+- **`/clear` starts a fresh session in the same chat.** Type `/clear` and a banner says the next
+  message starts fresh; that message goes to a new agent session that doesn't see the earlier
+  turns, and a "New session" divider marks where it began. Earlier messages and diffs stay where
+  they are, and "Keep the current session" on the banner cancels it.
+- **Regenerate a chat's title.** Right-click a chat and choose "Regenerate title" (or run
+  "Regenerate thread title" from Cmd+K) to rename it from the whole conversation, using your title
+  model and title instructions. If you rename the chat yourself while it runs, your name wins.
+- **Delete one archived chat.** Settings → Archived has a Delete button on each row, so you no longer
+  have to unarchive a chat just to delete it.
+- **Pick a project from the keyboard.** On a new chat, Cmd+P (Ctrl+P on Windows and Linux) opens the
+  project picker with the most recently used projects first. Hold the shortcut to see your four most
+  recent projects numbered 1-4 and press a number to pick one; with the picker open and the search
+  empty, 1-5 picks straight away. On iPhone and iPad the project chip opens a searchable list with
+  the same numbered recents.
+- **Scroll the transcript from the keyboard.** Click the transcript, then use Space and Shift+Space
+  or Option+Down and Option+Up (Alt on Windows) to page through it, and Cmd+Down/End or Cmd+Up/Home to jump to the
+  bottom or top. Typing in the composer is unaffected.
+- **Choose each Zoomie's access mode.** The Zoomies editor has an Access picker with the four modes,
+  each with a one-line note on what an unattended agent may do. Existing Zoomies keep their current
+  mode until you pick one.
+- **Agents can move a new chat to another project.** A chat's own agent can move itself into a
+  different project with the `set_chat_project` tool, but only before its first turn.
+- **Agents can work with long chats on other devices.** Reading, messaging and answering a long chat
+  hosted on another device no longer fails on its size: agents read the part of the transcript
+  they need, and large replies travel over the relay in pieces (from Zeron).
 
 ### Changed
 
 - **New Opus 5.5 and Fable 5 chats start at Medium effort.** That is Claude Code's own default for
   these models (and T3 Code's), where Godspeed started every model at High. Sonnet and older Opus
   still start at High. Existing chats and any effort you picked yourself are kept.
+- **Less background Git work.** Live diff checks now run only for chats you are looking at (an open
+  transcript, a project's file tree, or another device's Changes pane). A chat nobody has open
+  updates its diff stats when you open it again (from Zeron).
+- **Steering Claude during a long tool call takes effect right away.** Godspeed stops the tool in
+  place first instead of waiting for it to finish. Codex and Muse chats still steer at the next
+  step (from Zeron).
+- **Steering a queued message keeps its files.** A queued message sent early carries its attached
+  files, and one whose files are still uploading says so (from Zeron).
+- Windows lists microphones by their friendly names (from Zeron).
+
+### Fixed
+
+- Claude approval cards close by themselves when Claude withdraws the request (for example, when a
+  `PermissionRequest` hook already answered it), instead of staying open and later sending a stale
+  answer.
+- Markdown file previews no longer show a leading YAML frontmatter block (as in SKILL.md files) as a
+  rule and a giant heading. Checkbox toggles and line comments still land on the right lines.
+- On macOS 27.2, playing a chime could hang the Mac; chimes now go through the system sound server
+  instead of a separate player process (from Zeron).
+- On Windows, diff checks no longer leave Git processes running after they finish (from Zeron).
+- On iPhone and iPad, a new chat in a plain folder (not a Git repo) no longer asks for a worktree
+  (from Zeron).
+- An agent's `send_message` to another chat is delivered even when that chat's transcript can't be
+  read back afterwards (from Zeron).
 
 ## 0.5.11 (2026-11-06)
 
