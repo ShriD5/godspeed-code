@@ -1008,12 +1008,19 @@ async fn file_changes_fire_one_debounced_run() {
         draft(
             "Reviewer",
             "Review what changed.",
-            json!([{ "kind": "fileWatch", "paths": ["src"], "debounceMs": 300 }]),
+            // Wide enough that one burst cannot straddle two OS event batches
+            // on a loaded runner (FSEvents delivers with latency).
+            json!([{ "kind": "fileWatch", "paths": ["src"], "debounceMs": 1000 }]),
         ),
     )
     .await;
-    // Let the watch go live before writing (the hub installs it in a batch).
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Write only once the watch is live: the hub installs it in a batch, and
+    // a change made before the OS watch exists is never reported.
+    wait_for(
+        || w.core.agents.file_watches_live(&agent.id),
+        "file watch live",
+    )
+    .await;
     std::fs::write(src.join("a.rs"), "fn a() {}").unwrap();
     std::fs::write(src.join("b.rs"), "fn b() {}").unwrap();
     // Outside the watched path: never a reason to run.

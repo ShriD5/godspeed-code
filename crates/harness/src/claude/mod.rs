@@ -54,6 +54,7 @@
 
 pub mod catalog;
 mod discovery;
+mod fork_tail;
 mod normalize;
 mod wire;
 
@@ -80,6 +81,7 @@ use zeron_proto::{
 use crate::process::{Child, ChildStdin, Command, Stdio};
 use crate::{Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
 use catalog::{apply_ultrathink, to_effort};
+use fork_tail::ForkTail;
 use normalize::Normalizer;
 use wire::{ControlRequestFrame, Frame, allow_response, control_response_line};
 
@@ -275,9 +277,22 @@ impl ClaudeHarness {
 
     fn build_command(&self, exe: &PathBuf, request: &RunRequest, thinking_display: bool) -> Command {
         let mut cmd = Command::new(exe);
+        crate::process::owned::remove_claude_session_markers(&mut cmd);
         crate::compose_child_path(&mut cmd, exe);
+        // Without it, a foreground subagent's (or forked skill's) text and
+        // thinking never reach the stream, and its tab shows tool calls only.
+        // The variable rather than `--forward-subagent-text`: a CLI older
+        // than 2.1.211 ignores it, but exits on an unknown flag. A `claude`
+        // the run starts in turn inherits it. Outside stream-json print
+        // mode the CLI ignores it "so that nested invocations keep working
+        // when it's set process-wide"
+        // (https://code.claude.com/docs/en/env-vars). A nested stream-json
+        // `claude` (an Agent SDK script, `claude -p --output-format
+        // stream-json`) forwards its own subagents' text too, which only
+        // adds tagged frames to its stream.
+        cmd.env("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT", "1");
         cmd.args(Self::launch_args(request));
-        crate::apply_run_env(&mut cmd, &request.env);
+        crate::apply_run_env(&mut cmd, &request.env, crate::run_cwd(&request));
         // Newer Claude models emit no readable thinking text unless a
         // summary is asked for (raw reasoning stays provider-private). A CLI
         // without the flag exits on it, so it rides only where supported.
@@ -327,6 +342,7 @@ impl ClaudeHarness {
     async fn probe_initialize(&self, cwd: Option<&std::path::Path>) -> Result<Value, HarnessError> {
         let exe = self.resolve_executable()?;
         let mut cmd = Command::new(&exe);
+        crate::process::owned::remove_claude_session_markers(&mut cmd);
         // A project-less probe must not read the engine's cwd as a project.
         cmd.current_dir(cwd.map_or_else(crate::executable::neutral_cwd, |c| c.to_path_buf()));
         crate::compose_child_path(&mut cmd, &exe);
@@ -427,6 +443,7 @@ async fn supports_thinking_display(exe: &std::path::Path) -> bool {
         return known;
     }
     let mut cmd = Command::new(exe);
+    crate::process::owned::remove_claude_session_markers(&mut cmd);
     crate::compose_child_path(&mut cmd, exe);
     cmd.args(["--thinking-display", "summarized", SENTINEL])
         .current_dir(crate::executable::neutral_cwd())
@@ -457,6 +474,48 @@ async fn supports_thinking_display(exe: &std::path::Path) -> bool {
             .insert(key, verdict);
     }
     verdict
+}
+
+/// The API-key credential Claude Code bills, from the `account` its
+/// initialize response reports (T3 Code's "Claude API Key" auth label): a
+/// first-party login whose token source is an API key or auth token, or
+/// whose `apiKeySource` names a key in use (`ANTHROPIC_API_KEY`,
+/// `apiKeyHelper`, `/login managed key`). `None` for a Claude subscription
+/// (claude.ai OAuth, `apiKeySource: "none"`) and for third-party backends
+/// (Bedrock, Vertex, a gateway), which bill elsewhere.
+fn api_key_source(response: &Value) -> Option<String> {
+    let account = response.get("response")?.get("account")?;
+    let field = |key: &str| {
+        account
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    if field("apiProvider").is_some_and(|provider| provider != "firstParty") {
+        return None;
+    }
+    if let Some(source) = field("tokenSource") {
+        let normalized: String = source
+            .chars()
+            .filter(|c| !matches!(c, ' ' | '_' | '-'))
+            .flat_map(char::to_lowercase)
+            .collect();
+        if matches!(
+            normalized.as_str(),
+            "apikey" | "anthropicapikey" | "anthropicauthtoken"
+        ) {
+            return Some(source.to_owned());
+        }
+    }
+    field("apiKeySource")
+        .filter(|source| {
+            matches!(
+                *source,
+                "ANTHROPIC_API_KEY" | "apiKeyHelper" | "/login managed key"
+            )
+        })
+        .map(str::to_owned)
 }
 
 /// `commands` out of an `initialize` control_response payload
@@ -553,6 +612,10 @@ impl Harness for ClaudeHarness {
     /// Credential and executable identity scopes both initialize and catalog caches.
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
         crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
+    }
+    fn cached_api_key_source(&self) -> Option<String> {
+        let key = self.model_context().ok()??.key();
+        api_key_source(&self.initialize.cached(key)?)
     }
     fn fallback_models(&self) -> Vec<Model> {
         catalog::configured_models()
@@ -876,6 +939,21 @@ async fn stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<Std
     }
 }
 
+/// The Claude config root a run's transcripts land under: its own
+/// `CLAUDE_CONFIG_DIR` or `HOME` when the run sets one, else the process's.
+fn config_root(env: &std::collections::BTreeMap<String, String>) -> PathBuf {
+    if let Some(dir) = env.get("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    if let Some(home) = env.get("HOME").filter(|h| !h.is_empty()) {
+        return PathBuf::from(home).join(".claude");
+    }
+    crate::model_context::root(
+        "CLAUDE_CONFIG_DIR",
+        crate::executable::home_or_current_dir().join(".claude"),
+    )
+}
+
 struct Session {
     normalizer: Normalizer,
     title_only: bool,
@@ -971,8 +1049,19 @@ async fn run_session(session: Session) {
     // [`crate::shutdown_agent`]).
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut torn_down: Vec<i32> = Vec::new();
+    // The typed fork whose transcript is read off disk (see [`fork_tail`]).
+    let claude_root = config_root(&config.env);
+    let mut tail: Option<ForkTail> = None;
 
     'main: loop {
+        match norm.fork_to_follow() {
+            Some(fork) if tail.as_ref().is_none_or(|t| t.chip != fork.0) => {
+                tail = Some(ForkTail::new(&claude_root, fork));
+            }
+            Some(_) => {}
+            None => tail = None,
+        }
+        let tail_at = tail.as_ref().and_then(ForkTail::next_read);
         tokio::select! {
             line = stdout_lines.next_line() => match line {
                 Ok(Some(line)) => {
@@ -1153,6 +1242,17 @@ async fn run_session(session: Session) {
                 }
             },
 
+            // The typed fork's records, as it writes them.
+            _ = tokio::time::sleep_until(tail_at.unwrap_or_else(tokio::time::Instant::now)),
+                if tail_at.is_some() => {
+                let records = tail.as_mut().map_or_else(Vec::new, ForkTail::read);
+                for ev in records.into_iter().flat_map(|record| norm.fork_record(record)) {
+                    if event_tx.send(Ok(ev)).await.is_err() {
+                        break 'main;
+                    }
+                }
+            },
+
             steer = steering.recv(), if steering_open && !interrupted => match steer {
                 Some(msg) => {
                     // A message of ours now owns whatever result comes next.
@@ -1243,10 +1343,20 @@ async fn run_session(session: Session) {
                         error: None,
                         session_id: norm.session_id.clone(),
                     });
+                    // No result came to settle a typed fork: it ends here,
+                    // with the turn, or its chip runs on in the parked run.
+                    for ev in norm.settle_typed_fork(DoneStatus::Interrupted) {
+                        if event_tx.send(Ok(ev)).await.is_err() {
+                            break 'main;
+                        }
+                    }
                     if event_tx.send(Ok(done)).await.is_err() {
                         break 'main;
                     }
                     any_done = true;
+                    // The turn's tools ended with it, as on a normalized
+                    // Done: none may hold the next message back.
+                    open_tools.clear();
                     stop_done_at = Some(tokio::time::Instant::now());
                     active_since_stop = false;
                 }
@@ -2043,6 +2153,37 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn api_key_logins_are_named_and_subscriptions_are_not() {
+        let account = |account: Value| json!({ "response": { "account": account } });
+        // A Claude subscription: no key in use.
+        let max = account(json!({
+            "email": "a@b.c", "subscriptionType": "max", "apiKeySource": "none",
+            "apiProvider": "firstParty"
+        }));
+        assert_eq!(api_key_source(&max), None);
+        // An auth token in the environment reads as an API key (T3 Code).
+        let token = account(json!({
+            "tokenSource": "ANTHROPIC_AUTH_TOKEN", "apiKeySource": "none",
+            "apiProvider": "firstParty"
+        }));
+        assert_eq!(api_key_source(&token).as_deref(), Some("ANTHROPIC_AUTH_TOKEN"));
+        // A key the CLI says it bills, even beside a subscription.
+        for source in ["ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key"] {
+            let keyed = account(json!({
+                "subscriptionType": "max", "tokenSource": "none", "apiKeySource": source
+            }));
+            assert_eq!(api_key_source(&keyed).as_deref(), Some(source));
+        }
+        // Third-party backends bill elsewhere.
+        let bedrock = account(json!({
+            "apiKeySource": "ANTHROPIC_API_KEY", "apiProvider": "bedrock"
+        }));
+        assert_eq!(api_key_source(&bedrock), None);
+        // Older CLIs report no account at all.
+        assert_eq!(api_key_source(&json!({ "response": {} })), None);
+    }
+
+    #[test]
     fn parses_questions_tolerantly() {
         let input = json!({
             "questions": [
@@ -2095,6 +2236,7 @@ mod tests {
 
         let harness = ClaudeHarness::new();
         let request = RunRequest {
+            instance: None,
             mcp: None,
             prompt: "hi".into(),
             harness: None,
@@ -2280,6 +2422,47 @@ mod tests {
         assert_eq!(updated["answers"]["Pick one"], json!("B"));
         // Original input is preserved alongside the answers.
         assert!(updated["questions"].is_array());
+    }
+
+    #[test]
+    fn run_environment_forwards_subagent_text_and_leaves_the_launching_session() {
+        let request = RunRequest {
+            instance: None,
+            mcp: None,
+            prompt: "hi".into(),
+            harness: None,
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            cwd: String::new(),
+            sandbox: zeron_proto::SandboxLevel::WorkspaceWrite,
+            auto_approve: false,
+            attachments: Vec::new(),
+            worktree: None,
+            resume: None,
+            access: None,
+            env: Default::default(),
+        };
+        let mut cmd = ClaudeHarness::new().build_command(&PathBuf::from("claude"), &request, false);
+        let value = cmd
+            .as_std_mut()
+            .get_envs()
+            .find(|(key, _)| *key == "CLAUDE_CODE_FORWARD_SUBAGENT_TEXT")
+            .and_then(|(_, value)| value.map(|v| v.to_os_string()));
+        assert_eq!(value.as_deref(), Some(std::ffi::OsStr::new("1")));
+        // A Claude Code session that launched Godspeed exports these; a run
+        // that inherits them joins that session.
+        for key in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_EFFORT",
+        ] {
+            assert!(
+                cmd.as_std_mut().get_envs().any(|(k, v)| k == key && v.is_none()),
+                "{key} is passed on"
+            );
+        }
     }
 
     fn tool_request(tool: &str, input: Value) -> wire::ControlRequestBody {

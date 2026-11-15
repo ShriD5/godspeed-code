@@ -349,6 +349,7 @@ mod tests {
                 badges: Arc::default(),
                 sender: None,
                 pending: false,
+                markdown: None,
             },
             entry_id: id.to_owned().into(),
             timestamp: None,
@@ -436,6 +437,7 @@ mod tests {
             badges: Arc::default(),
             sender: None,
             pending: false,
+            markdown: None,
         };
         find.recount(&rows);
         assert_eq!(find.matches.len(), 4);

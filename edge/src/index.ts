@@ -6,6 +6,10 @@
  *
  * Routes:
  *   GET  /health
+ *   POST /telemetry/v1/ping           — anonymous daily usage ping (telemetry.ts)
+ *   POST /waitlist                    — iPhone beta waitlist sign-up (waitlist.ts)
+ *   GET  /admin, /admin/api/stats     — private dashboard, ADMIN_EMAILS only (admin.ts)
+ *   GET|POST /admin/access            — beta waitlist + approvals (admin-access.ts)
  *   POST /auth/exchange               — WorkOS code → tokens
  *   POST /auth/refresh                — WorkOS refresh → fresh tokens
  *   GET  /auth/orgs                   — caller's active org memberships
@@ -37,6 +41,7 @@
  *   GET  /chat2/:chatId/stats
  *   POST /chat2/:chatId/reset
  */
+import { handleAdminRoute } from "./admin";
 import { gateUser } from "./allowlist";
 import { authenticate } from "./auth";
 import { chatRoute } from "./chat-route";
@@ -45,12 +50,15 @@ import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
 import { SessionRoom } from "./session-room";
 import { previewRoute } from "./preview-route";
 import { PreviewRoom } from "./preview-room";
+import { TelemetryStore } from "./telemetry-store";
 import { DeviceRoom } from "./device-room";
 import { RegistryRoom } from "./registry-room";
 import { ChatRoom } from "./chat-room";
 import installSh from "./install.sh";
+import { countUpdateCheck, handleTelemetryPing } from "./telemetry";
+import { handleWaitlist } from "./waitlist";
 
-export { SessionRoom, DeviceRoom, RegistryRoom, ChatRoom, PreviewRoom };
+export { SessionRoom, DeviceRoom, RegistryRoom, ChatRoom, PreviewRoom, TelemetryStore };
 
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -113,8 +121,11 @@ const deviceParam = (url: URL): string => {
   return ID_RE.test(device) ? `&device=${device}` : "";
 };
 
+/** GitHub redirects `latest/download/<asset>` to the newest release's asset. */
+const GITHUB_RELEASES_LATEST = "https://github.com/ShriD5/godspeed-code/releases/latest/download";
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
@@ -122,10 +133,22 @@ export default {
       return json({ ok: true, auth: env.AUTH_MODE === "dev" ? "dev" : "workos" });
     }
 
+    // ── anonymous usage telemetry (unauthenticated, strictly validated) and
+    //    the admin dashboard (its own browser sign-in) ──────────────────────
+    if (url.pathname === "/telemetry/v1/ping") {
+      return handleTelemetryPing(request, env);
+    }
+    if (url.pathname === "/waitlist") {
+      return handleWaitlist(request, env);
+    }
+    const admin = await handleAdminRoute(request, env, url);
+    if (admin) return admin;
+
     // ── public install surface: the `curl | sh` installer and the release
     //    artifacts it downloads. Served only when a RELEASES bucket is bound.
     //    Godspeed's deployment binds none (releases live on GitHub, and
-    //    install.sh's base URL is still a placeholder), so both 404 there. ──
+    //    install.sh's base URL is still a placeholder): /install.sh 404s and
+    //    /releases/* redirects to GitHub (below). ──
     if (
       env.RELEASES &&
       url.pathname === "/install.sh" &&
@@ -161,6 +184,32 @@ export default {
         etag: object.httpEtag
       });
       return new Response(request.method === "HEAD" ? null : object.body, { headers });
+    }
+
+    // Without a bucket, /releases/<asset> bridges to GitHub Releases: apps
+    // up to 0.5.6 poll `{edge}/releases/manifest.json` and download artifacts
+    // beside it, and their updater follows HTTPS redirects. Newer apps read
+    // GitHub directly (crates/update DEFAULT_FEED_URL).
+    if (
+      !env.RELEASES &&
+      parts[0] === "releases" &&
+      parts.length === 2 &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      const asset = parts[1];
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(asset)) return json({ error: "bad request" }, 400);
+      // A legacy app's update check: the only signal from installs that
+      // predate telemetry. A per-day counter, nothing about the caller.
+      if (asset === "manifest.json" && request.method === "GET" && env.TELEMETRY) {
+        ctx.waitUntil(countUpdateCheck(env).catch(() => undefined));
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: `${GITHUB_RELEASES_LATEST}/${asset}`,
+          "cache-control": "public, max-age=60"
+        }
+      });
     }
 
     // ── WorkOS auth routes (pre-bearer: exchange/refresh/callback have no

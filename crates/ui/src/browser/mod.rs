@@ -11,6 +11,7 @@ use macos as native;
 mod windows_webview;
 #[cfg(windows)]
 use windows_webview as native;
+pub mod agent;
 pub mod model;
 pub(crate) mod profile;
 mod view;
@@ -74,6 +75,86 @@ pub enum BrowserEvent {
     Changed,
     NewTab(Option<String>),
     Close,
+    /// An element the user picked; `last` ends the pick (focus the composer).
+    Annotation {
+        annotation: zeron_proto::annotation::BrowserAnnotation,
+        /// The page's marker for the element, labelled once numbered.
+        marker: u32,
+        last: bool,
+    },
+    /// The user pressed Stop on the "Agent is using the preview" strip.
+    AgentStopped,
+}
+
+/// How long the "Agent is using the preview" strip lingers after an action.
+const AGENT_LINGER: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Agent control of a tab (`preview_*` tools).
+#[derive(Default)]
+struct AgentControl {
+    /// The agent opened or adopted this tab.
+    owned: bool,
+    /// The user took the tab back with Stop.
+    stopped: bool,
+    /// Actions in flight.
+    busy: u32,
+    /// The strip shows until then after the last action.
+    linger_until: Option<std::time::Instant>,
+    _linger: Option<gpui::Task<()>>,
+}
+
+/// The in-page picker (`annotate.js`), injected only while annotating.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const ANNOTATE_SCRIPT: &str = include_str!("annotate.js");
+/// How often an active pick is polled. Nothing polls otherwise.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const ANNOTATION_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// While the user picks elements on the page. Dropping it stops the poll.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+struct AnnotationSession {
+    nonce: u32,
+    /// Picks received so far; the session ends at [`MAX_ANNOTATION_PICKS`].
+    picks: usize,
+    /// Polls in a row that returned nothing readable.
+    misses: u32,
+    _poll: gpui::Task<()>,
+}
+
+/// One session's picks. The page's script answers the polls, so a hostile
+/// page could otherwise stream chips into the draft without a click.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const MAX_ANNOTATION_PICKS: usize = 24;
+/// Unreadable polls (about two seconds' worth) before the session gives up.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+const MAX_ANNOTATION_MISSES: u32 = 20;
+
+/// The overlay's palette and type, so the page chrome reads as Godspeed's.
+#[cfg(any(target_os = "macos", target_os = "linux", windows))]
+fn annotation_theme(cx: &App) -> serde_json::Value {
+    let theme = crate::theme::Theme::of(cx);
+    let css = |color: gpui::Hsla| {
+        let rgba: gpui::Rgba = color.into();
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            byte(rgba.r),
+            byte(rgba.g),
+            byte(rgba.b),
+            byte(rgba.a)
+        )
+    };
+    serde_json::json!({
+        "accent": css(theme.accent),
+        "surface": css(theme.surface_dialog),
+        "border": css(theme.border),
+        "text": css(theme.text),
+        "muted": css(theme.text_muted),
+        "faint": css(theme.text_faint),
+        "chip": css(theme.ink(0.09)),
+        "dark": theme.appearance.is_dark(),
+        "font": crate::typography::effective_family_name(cx).to_string(),
+    })
 }
 
 /// A profile's website data, allocated on first navigation. Default contexts are
@@ -116,6 +197,8 @@ pub struct BrowserSurface {
     #[cfg(feature = "browser-fixture")]
     fixture_preview_open: std::rc::Rc<std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>>,
     presentation: Presentation,
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    annotation: Option<AnnotationSession>,
     #[cfg(target_os = "macos")]
     resize_inset: gpui::Pixels,
     #[cfg(any(target_os = "macos", windows))]
@@ -136,6 +219,7 @@ pub struct BrowserSurface {
     /// The page's pointer cursor (Windows: GPUI owns the cursor).
     #[cfg(windows)]
     page_cursor: gpui::CursorStyle,
+    agent: AgentControl,
 }
 
 impl EventEmitter<BrowserEvent> for BrowserSurface {}
@@ -199,6 +283,8 @@ impl BrowserSurface {
             #[cfg(feature = "browser-fixture")]
             fixture_preview_open: Default::default(),
             presentation: Presentation::Hidden,
+            #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+            annotation: None,
             #[cfg(target_os = "macos")]
             resize_inset: gpui::px(0.0),
             #[cfg(any(target_os = "macos", windows))]
@@ -218,6 +304,7 @@ impl BrowserSurface {
             favicon_generation: 0,
             #[cfg(windows)]
             page_cursor: gpui::CursorStyle::Arrow,
+            agent: AgentControl::default(),
         }
     }
 
@@ -237,7 +324,13 @@ impl BrowserSurface {
             native.set_shortcuts(
                 crate::settings::ShortcutId::ALL
                     .iter()
-                    .filter(|id| **id != crate::settings::ShortcutId::SaveFile)
+                    .filter(|id| {
+                        !matches!(
+                            **id,
+                            crate::settings::ShortcutId::SaveFile
+                                | crate::settings::ShortcutId::StashPrompt
+                        )
+                    })
                     .map(|id| crate::settings::platform_combo(keymap.get(*id)))
                     .collect(),
             );
@@ -276,6 +369,9 @@ impl BrowserSurface {
     pub fn set_presentation(&mut self, presentation: Presentation, cx: &mut Context<Self>) {
         if self.presentation == presentation {
             return;
+        }
+        if presentation == Presentation::Hidden {
+            self.stop_annotation(cx);
         }
         self.presentation = presentation;
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -354,6 +450,22 @@ impl BrowserSurface {
     }
 
     pub fn navigate(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_with_focus(input, true, window, cx);
+    }
+
+    /// Load `input` without moving keyboard focus to the page: an agent's
+    /// navigation must not pull the user's typing out of the composer.
+    pub fn navigate_quietly(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigate_with_focus(input, false, window, cx);
+    }
+
+    fn navigate_with_focus(
+        &mut self,
+        input: &str,
+        take_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let url = match model::normalize_address(input) {
             Ok(url) => url,
             Err(message) => {
@@ -382,7 +494,7 @@ impl BrowserSurface {
             } else {
                 #[cfg(any(target_os = "macos", windows))]
                 {
-                    native::NativePage::new(window, &self.context.data, self.native_tx.clone())
+                    self.new_native_page(window)
                         .map(|mut native| {
                             native.present(self.presentation);
                             self.native = Some(native);
@@ -398,11 +510,13 @@ impl BrowserSurface {
             if let Err(error) = result {
                 self.page.error = Some(format!("Could not open this page: {error}"));
             }
-            window.focus(&self.focus, cx);
+            if take_focus {
+                window.focus(&self.focus, cx);
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
-            let _ = window;
+            let _ = (window, take_focus);
             cx.open_url(&url);
         }
         cx.emit(BrowserEvent::Changed);
@@ -442,6 +556,195 @@ impl BrowserSurface {
         }
     }
 
+    /// Return the OS keyboard from the page to GPUI (the pick finished and
+    /// the composer takes over).
+    pub fn release_keyboard(&self) {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(native) = &self.native {
+            native.focus_chrome();
+        }
+    }
+
+    pub fn annotating(&self) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        {
+            self.annotation.is_some()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        {
+            false
+        }
+    }
+
+    /// Annotation needs an embedded, loaded page.
+    pub fn can_annotate(&self) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        {
+            self.native.is_some() && self.page.url.is_some() && self.page.error.is_none()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        {
+            false
+        }
+    }
+
+    pub fn toggle_annotation(&mut self, cx: &mut Context<Self>) {
+        if self.annotating() {
+            self.stop_annotation(cx);
+        } else {
+            self.start_annotation(cx);
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn start_annotation(&mut self, cx: &mut Context<Self>) {
+        if !self.can_annotate() {
+            return;
+        }
+        // Below 2^32, so the page's JavaScript numbers hold it exactly.
+        let nonce = (uuid::Uuid::new_v4().as_u128() as u32).max(1);
+        self.evaluate(&format!(
+            "{ANNOTATE_SCRIPT}\n;window.__zeronAnnotator.start({nonce}, {}); 'started'",
+            annotation_theme(cx)
+        ));
+        #[cfg(windows)]
+        if let Some(native) = &self.native {
+            native.focus_page();
+        }
+        let poll = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ANNOTATION_POLL).await;
+                let polling = this.update(cx, |this, _| {
+                    let live = this
+                        .annotation
+                        .as_ref()
+                        .is_some_and(|session| session.nonce == nonce);
+                    if live {
+                        this.evaluate(&format!(
+                            "(() => {{ const a = window.__zeronAnnotator; return a ? a.take({nonce}) : '{{\"state\":\"gone\"}}'; }})()"
+                        ));
+                    }
+                    live
+                });
+                if !matches!(polling, Ok(true)) {
+                    return;
+                }
+            }
+        });
+        self.annotation = Some(AnnotationSession {
+            nonce,
+            picks: 0,
+            misses: 0,
+            _poll: poll,
+        });
+        cx.emit(BrowserEvent::Changed);
+        cx.notify();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    fn start_annotation(&mut self, _cx: &mut Context<Self>) {}
+
+    pub fn stop_annotation(&mut self, cx: &mut Context<Self>) {
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        if self.annotation.take().is_some() {
+            self.evaluate("(() => { window.__zeronAnnotator?.stop(); return 'stopped'; })()");
+            cx.emit(BrowserEvent::Changed);
+            cx.notify();
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        let _ = cx;
+    }
+
+    /// Picks arrive as the poll's string result. A `gone` state means the
+    /// picker left the page (it navigated), which ends the session.
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn on_evaluated(&mut self, value: Option<String>, cx: &mut Context<Self>) {
+        #[derive(serde::Deserialize)]
+        struct Pick {
+            #[serde(flatten)]
+            annotation: zeron_proto::annotation::BrowserAnnotation,
+            #[serde(default)]
+            marker: u32,
+        }
+        #[derive(serde::Deserialize)]
+        struct Poll {
+            state: String,
+            #[serde(default)]
+            picks: Vec<Pick>,
+        }
+        let Some(session) = self.annotation.as_mut() else {
+            return;
+        };
+        let Some(poll) = value.and_then(|text| serde_json::from_str::<Poll>(&text).ok()) else {
+            // Acknowledgements, other scripts' results, or a page that is
+            // briefly unreachable. Only a run of these ends the session.
+            session.misses += 1;
+            if session.misses >= MAX_ANNOTATION_MISSES {
+                self.stop_annotation(cx);
+            }
+            return;
+        };
+        session.misses = 0;
+        let room = MAX_ANNOTATION_PICKS.saturating_sub(session.picks);
+        let picks: Vec<Pick> = poll.picks.into_iter().take(room).collect();
+        session.picks += picks.len();
+        let finished = poll.state != "active" || session.picks >= MAX_ANNOTATION_PICKS;
+        let count = picks.len();
+        for (index, pick) in picks.into_iter().enumerate() {
+            cx.emit(BrowserEvent::Annotation {
+                annotation: pick.annotation.bounded(),
+                marker: pick.marker,
+                last: finished && index + 1 == count,
+            });
+        }
+        if finished {
+            // `stop` tidies the page's overlay when the cap, not the page,
+            // ended the session.
+            self.stop_annotation(cx);
+        }
+    }
+
+    /// Number a picked element's marker like its composer chip.
+    pub fn label_marker(&self, marker: u32, number: u32) {
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        self.evaluate(&format!(
+            "(() => {{ window.__zeronAnnotator?.label({marker}, {number}); return 'ok'; }})()"
+        ));
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        let _ = (marker, number);
+    }
+
+    /// Keep only the markers whose chips are still in the draft.
+    pub fn keep_markers(&self, numbers: &[u32]) {
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        self.evaluate(&format!(
+            "(() => {{ window.__zeronAnnotator?.keep({numbers:?}); return 'ok'; }})()"
+        ));
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        let _ = numbers;
+    }
+
+    /// Emphasize the marker of the chip under the pointer (`None`: none).
+    pub fn focus_marker(&self, number: Option<u32>) {
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        self.evaluate(&format!(
+            "(() => {{ window.__zeronAnnotator?.focus({}); return 'ok'; }})()",
+            number.unwrap_or(0)
+        ));
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        let _ = number;
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    fn evaluate(&self, script: &str) {
+        if let Some(native) = &self.native {
+            #[cfg(target_os = "linux")]
+            native.run_script(script);
+            #[cfg(not(target_os = "linux"))]
+            native.evaluate(script);
+        }
+    }
+
     fn history(&mut self, forward: bool) {
         #[cfg(any(target_os = "macos", target_os = "linux", windows))]
         if let Some(native) = &self.native {
@@ -459,6 +762,7 @@ impl BrowserSurface {
     }
 
     pub fn close(&mut self, cx: &mut Context<Self>) {
+        self.stop_annotation(cx);
         self.set_presentation(Presentation::Hidden, cx);
         self.clear_favicon(cx);
         #[cfg(target_os = "linux")]
@@ -482,6 +786,124 @@ impl BrowserSurface {
                 self.favicon_task = None;
                 self.favicon_generation += 1;
             }
+        }
+    }
+}
+
+/// Agent control (`preview_*` tools). The shell routes each action here;
+/// these are the tab's primitives.
+impl BrowserSurface {
+    #[cfg(target_os = "macos")]
+    fn new_native_page(&self, window: &mut Window) -> Result<native::NativePage, String> {
+        let page = native::NativePage::with_init_script(
+            window,
+            &self.context.data,
+            self.native_tx.clone(),
+            self.agent.owned.then_some(agent::AGENT_SCRIPT),
+        )?;
+        if self.agent.owned {
+            page.ensure_viewport();
+        }
+        Ok(page)
+    }
+
+    #[cfg(windows)]
+    fn new_native_page(&self, window: &mut Window) -> Result<native::NativePage, String> {
+        native::NativePage::new(window, &self.context.data, self.native_tx.clone())
+    }
+
+    /// The agent drives this tab from now on (until the user stops it).
+    pub fn mark_agent_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.agent.owned {
+            self.agent.owned = true;
+            cx.notify();
+        }
+    }
+
+    pub fn agent_owned(&self) -> bool {
+        self.agent.owned
+    }
+
+    pub fn agent_stopped(&self) -> bool {
+        self.agent.stopped
+    }
+
+    /// Whether the "Agent is using the preview" strip shows.
+    pub fn agent_using(&self) -> bool {
+        self.agent.owned
+            && !self.agent.stopped
+            && (self.agent.busy > 0
+                || self
+                    .agent
+                    .linger_until
+                    .is_some_and(|until| std::time::Instant::now() < until))
+    }
+
+    /// An agent action starts (`true`) or ends (`false`) on this tab.
+    pub fn agent_activity(&mut self, busy: bool, cx: &mut Context<Self>) {
+        if busy {
+            self.agent.busy += 1;
+        } else {
+            self.agent.busy = self.agent.busy.saturating_sub(1);
+            self.agent.linger_until = Some(std::time::Instant::now() + AGENT_LINGER);
+            self.agent._linger = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(AGENT_LINGER).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }));
+        }
+        cx.emit(BrowserEvent::Changed);
+        cx.notify();
+    }
+
+    /// The user takes the tab back: agent actions on it fail from now on.
+    pub fn stop_agent(&mut self, cx: &mut Context<Self>) {
+        if self.agent.owned && !self.agent.stopped {
+            self.agent.stopped = true;
+            self.agent.busy = 0;
+            self.agent.linger_until = None;
+            self.agent._linger = None;
+            cx.emit(BrowserEvent::AgentStopped);
+            cx.emit(BrowserEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// Whether the tab has a page to act on.
+    pub fn agent_ready(&self) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            if self.native.is_none() {
+                return Err("The preview tab has no page open yet; call preview_open first".into());
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Err("Agent preview tools are available on macOS for now".into())
+        }
+    }
+
+    /// Run `script` in the page; `done` gets its string result.
+    pub fn agent_evaluate(&self, script: &str, done: Box<dyn FnOnce(Result<String, String>)>) {
+        if let Err(error) = self.agent_ready() {
+            return done(Err(error));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.evaluate_with(script, done);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = script;
+    }
+
+    /// The rendered page as image bytes.
+    pub fn agent_capture(&self, done: Box<dyn FnOnce(Result<Vec<u8>, String>)>) {
+        if let Err(error) = self.agent_ready() {
+            return done(Err(error));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.snapshot(done);
         }
     }
 }
@@ -545,6 +967,13 @@ impl BrowserSurface {
                     window.defer(cx, move |window, cx| {
                         window.dispatch_keystroke(key, cx);
                     });
+                } else {
+                    tracing::info!(
+                        target: "godspeed::keys",
+                        keystroke = %key.unparse(),
+                        presentation = ?self.presentation,
+                        "dropped a shortcut forwarded by a preview page that is not live"
+                    );
                 }
             }
             #[cfg(windows)]
@@ -554,6 +983,7 @@ impl BrowserSurface {
                     cx.notify();
                 }
             }
+            native::NativeEvent::Evaluated(value) => self.on_evaluated(value, cx),
             native::NativeEvent::Favicon { page, url } => {
                 if self.page.url.as_deref() != Some(&page) || !model::allowed_navigation(&url) {
                     return;
@@ -760,7 +1190,11 @@ impl BrowserSurface {
         if let Some(native) = &self.native {
             native.evaluate(script);
         }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(windows)]
+        if let Some(native) = &self.native {
+            native.evaluate(script);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         let _ = script;
     }
 }

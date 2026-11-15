@@ -37,7 +37,12 @@ pub struct BadgeDetail {
 /// it. `None` when the message carries nothing of that kind.
 pub type Extractor = fn(&str) -> Option<(String, MessageBadge)>;
 
-const EXTRACTORS: &[Extractor] = &[crate::comments::extract_badge];
+const EXTRACTORS: &[Extractor] = &[
+    // Quotes are appended after review comments, so they are the trailing
+    // block. Lift them first and the comment block is trailing again.
+    crate::citations::extract_badge,
+    crate::comments::extract_badge,
+];
 
 /// Each extractor sees what the previous ones left behind, so two features can
 /// ride the same prompt.

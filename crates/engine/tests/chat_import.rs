@@ -1068,6 +1068,7 @@ async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
 
 fn run_request(prompt: &str, cwd: &str) -> RunRequest {
     RunRequest {
+        instance: None,
         mcp: None,
         prompt: prompt.into(),
         harness: None,

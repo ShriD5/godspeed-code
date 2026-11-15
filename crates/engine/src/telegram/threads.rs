@@ -134,6 +134,7 @@ impl Inner {
     fn start_thread(&self, link: &LinkedChat) -> Result<String, String> {
         let resolved = self.resolve(&link.defaults)?;
         let config = ChatConfig {
+            instance: None,
             harness: resolved.harness,
             model: resolved.model,
             reasoning: None,

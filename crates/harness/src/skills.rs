@@ -117,12 +117,15 @@ fn project_dirs(harness: HarnessId) -> &'static [&'static str] {
         HarnessId::Opencode => &[".claude/skills", ".agents/skills", ".opencode/skills"],
         HarnessId::Grok => &[".agents/skills", ".claude/skills", ".grok/skills"],
         HarnessId::Hermes => &[".agents/skills"],
+        HarnessId::Fx => &[".agents/skills", ".claude/skills", ".fx/skills"],
         HarnessId::Pi => &[".agents/skills", ".pi/skills"],
         HarnessId::Muse => &[".agents/skills"],
         HarnessId::Devin => &[".agents/skills"],
         HarnessId::Antigravity => &[".agents/skills", ".gemini/skills"],
         HarnessId::Codex => &[".agents/skills", ".codex/skills"],
         HarnessId::Mock => &[],
+        // Registry agents follow the cross-agent convention.
+        HarnessId::Acp(_) => &[".agents/skills"],
     }
 }
 

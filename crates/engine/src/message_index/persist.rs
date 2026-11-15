@@ -7,6 +7,9 @@
 //! before it. Any mismatch (magic, version, checksum, a truncated or
 //! malformed field) rejects the whole file; the caller rebuilds.
 
+// Only decoding runs outside tests now (migrating an old file).
+#![cfg_attr(not(test), allow(dead_code))]
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 

@@ -608,8 +608,10 @@ mod tests {
         seen
     }
 
+    /// Wait for `want`. A deadline, not a delay: it only runs out when the
+    /// signal never comes, so it is generous for a loaded runner.
     async fn expect(rx: &mut UnboundedReceiver<Seen>, want: Seen) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
             let got = tokio::time::timeout_at(deadline, rx.recv())
                 .await
@@ -751,7 +753,12 @@ mod tests {
         std::fs::write(a.join("deep/x.txt"), "x").unwrap();
         expect(&mut a_rx, Seen::Event).await;
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(drain(&mut b_rx).is_empty(), "a's event must not reach b");
+        // A pathless rescan is broadcast to every registration by design (the
+        // OS reports dropped events that way under load); a's path is not.
+        assert!(
+            !drain(&mut b_rx).contains(&Seen::Event),
+            "a's event must not reach b"
+        );
 
         std::fs::write(b.join("y.txt"), "y").unwrap();
         expect(&mut b_rx, Seen::Event).await;
@@ -776,12 +783,16 @@ mod tests {
     async fn registration_burst_applies_in_one_pass() {
         let (_tmp, root) = tree();
         let hub = FsWatchHub::new();
-        let mut watches = Vec::new();
-        for i in 0..8 {
-            let dir = root.join(format!("d{i}"));
-            std::fs::create_dir(&dir).unwrap();
-            watches.push(hub.watch(&dir, notify::RecursiveMode::Recursive, |_| {}));
+        let dirs: Vec<_> = (0..8).map(|i| root.join(format!("d{i}"))).collect();
+        for dir in &dirs {
+            std::fs::create_dir(dir).unwrap();
         }
+        // Register back to back: directory creation inside the burst could
+        // stall past the batch's quiet window on a loaded runner and split it.
+        let mut watches: Vec<_> = dirs
+            .iter()
+            .map(|dir| hub.watch(dir, notify::RecursiveMode::Recursive, |_| {}))
+            .collect();
         settle(&hub).await;
         assert!(watches.iter().all(FsWatch::is_live));
         assert_eq!(hub.installed().len(), 8);

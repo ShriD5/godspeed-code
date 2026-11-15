@@ -20,8 +20,14 @@
 //! unarchiving re-adds it).
 //!
 //! Fast recursive watches on the process-wide [`FsWatchHub`] (one watcher thread
-//! for every checkout; debounced [`WATCH_DEBOUNCE`]) are backed by a slow
-//! 2-minute repair tick because native watchers may coalesce or drop events.
+//! for every checkout; debounced [`WATCH_DEBOUNCE`]) carry every change; build
+//! output, dependency trees and git's object store are filtered out
+//! ([`NoiseFilter`]). Native watchers may coalesce or drop events, so repairs
+//! re-capture: on a watcher overflow (the hub's rescan signal), when a person
+//! comes back to the app ([`CheckoutDiffSync::note_user_activity`]), for a
+//! chat's checkout when its turn ends, and a slow safety pass every
+//! [`REPAIR_INTERVAL`] that only runs while someone is using the app or a run
+//! is live, skipping checkouts nothing has touched for [`STALE_AFTER`].
 //! Snapshots carry a sha256 checksum; an unchanged checksum publishes nothing.
 //!
 //! Reconcile is deliberately damped, because it runs on *every* workspace chat
@@ -74,8 +80,19 @@ pub const MAX_PATCH_BYTES: usize = 3 * 1024 * 1024;
 pub const MAX_DIFF_SOURCE_BYTES: usize = 2 * 1024 * 1024;
 /// Trailing debounce after a filesystem event burst.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Slow repair pass: re-reconcile + re-sync every checkout.
-const REPAIR_INTERVAL: Duration = Duration::from_secs(120);
+/// Slow safety repair: re-reconcile + re-sync every checkout. Each capture
+/// is about six git runs, so it only runs while someone uses the app or a run
+/// is live ([`repair_scope`]).
+const REPAIR_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// A person acting within this long counts as present for the safety repair.
+const USER_PRESENT_FOR: Duration = REPAIR_INTERVAL;
+/// Quiet this long, then any user action repairs (they are coming back).
+const RETURN_AFTER: Duration = Duration::from_secs(5 * 60);
+/// Activity-triggered repairs run at most this often.
+const MIN_REPAIR_GAP: Duration = Duration::from_secs(2 * 60);
+/// A live-watched checkout with no fs event or turn for this long is left out
+/// of the safety repair (user-triggered repairs still cover it).
+const STALE_AFTER: Duration = Duration::from_secs(6 * 60 * 60);
 /// How long an archived chat stays tracked after its last viewer leaves —
 /// flicking between chats must not tear down and rebuild (full capture) its
 /// checkout every time.
@@ -156,6 +173,11 @@ struct CheckoutEntry {
     /// walk + FSEvents registration) can block for seconds, so [`add_entry`]
     /// does it off the runtime and attaches the result here once ready.
     watchers: Mutex<Vec<FsWatch>>,
+    /// Last fs change (noise excluded) or turn end in this checkout.
+    touched: Arc<Mutex<Instant>>,
+    /// The worktree root itself is a watch target (within [`MAX_WATCH_DIRS`]);
+    /// with its watch live, "untouched" can be trusted to mean unchanged.
+    root_watched: AtomicBool,
 }
 
 /// Working-tree snapshot recorded when a chat's turn dispatches — the diff
@@ -207,7 +229,19 @@ struct DiffSyncInner {
     /// one root must never interleave. File-system watchers and read-only
     /// captures may still run concurrently.
     discard_lock: tokio::sync::Mutex<()>,
+    /// When a person last acted in the app (see [`crate::user_activity`]).
+    user_active_at: Mutex<Option<Instant>>,
+    /// When the last full repair ran (boot counts: every entry starts with a
+    /// fresh capture).
+    repaired_at: Mutex<Instant>,
+    /// Wakes the supervisor for an activity-triggered full repair.
+    repair_now: Arc<Notify>,
+    /// Whether a run is live; keeps the safety repair going unattended.
+    live_probe: Mutex<Option<LiveProbe>>,
 }
+
+/// Whether any agent run on this engine is live.
+pub type LiveProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Default)]
 struct Interest {
@@ -353,12 +387,17 @@ impl CheckoutDiffSync {
                 interest_linger,
                 interest_changed: Arc::new(Notify::new()),
                 discard_lock: tokio::sync::Mutex::new(()),
+                user_active_at: Mutex::new(None),
+                repaired_at: Mutex::new(Instant::now()),
+                repair_now: Arc::new(Notify::new()),
+                live_probe: Mutex::new(None),
             }),
         };
         let task = tokio::spawn(diff_sync_task(
             Arc::downgrade(&sync.inner),
             workspace.watch_chats(),
             sync.inner.interest_changed.clone(),
+            sync.inner.repair_now.clone(),
             sync.inner.cancel.clone(),
         ));
         *lock(&sync.inner.supervisor) = Some(task);
@@ -442,6 +481,35 @@ impl CheckoutDiffSync {
         ChatInterest {
             inner: Arc::downgrade(&self.inner),
             chat_id: chat_id.to_string(),
+        }
+    }
+
+    /// Keep the safety repair running while a run is live, even unattended.
+    pub fn set_live_probe(&self, probe: LiveProbe) {
+        *lock(&self.inner.live_probe) = Some(probe);
+    }
+
+    /// A person acted in the app. Coming back (window focus, or the first
+    /// action after [`RETURN_AFTER`] of quiet) repairs every checkout, at most
+    /// once per [`MIN_REPAIR_GAP`]: whatever the watchers dropped while nobody
+    /// looked is fixed by the time they do.
+    pub fn note_user_activity(&self, window_focused: bool) {
+        let now = Instant::now();
+        let previous = lock(&self.inner.user_active_at).replace(now);
+        let repaired_at = *lock(&self.inner.repaired_at);
+        if repair_on_activity(previous, repaired_at, now, window_focused) {
+            self.inner.repair_now.notify_one();
+        }
+    }
+
+    /// A chat's turn ended: re-capture its checkout (watchers may have
+    /// dropped some of the turn's writes) and mark it touched.
+    pub fn note_turn_end(&self, chat_id: &str) {
+        for entry in lock(&self.inner.entries).values() {
+            if lock(&entry.chats).iter().any(|chat| chat.id == chat_id) {
+                *lock(&entry.touched) = Instant::now();
+                let _ = entry.kick_tx.send(());
+            }
         }
     }
 
@@ -818,6 +886,8 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
         skipped_while_orphaned: AtomicBool::new(false),
         kick_tx: kick_tx.clone(),
         watchers: Mutex::new(Vec::new()),
+        touched: Arc::new(Mutex::new(Instant::now())),
+        root_watched: AtomicBool::new(false),
     });
     lock(&inner.entries).insert(entry.identity.id.clone(), entry.clone());
     tokio::spawn(entry_task(
@@ -840,7 +910,13 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
         let Some(entry) = weak.upgrade() else {
             return; // entry removed before watchers were ready
         };
-        let watchers = build_watchers(&FsWatchHub::global(), &entry.identity, &kick_tx);
+        let (watchers, root_watched) = build_watchers(
+            &FsWatchHub::global(),
+            &entry.identity,
+            &kick_tx,
+            &entry.touched,
+        );
+        entry.root_watched.store(root_watched, Ordering::Release);
         *lock(&entry.watchers) = watchers;
     });
 }
@@ -851,23 +927,91 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
 /// own; the hub's rescan signals (watch went live, events possibly lost) kick
 /// like any change. Failures are fine: the initial + repair sync still keep
 /// the snapshot correct. Blocking (budget walk) — call from the blocking pool.
+/// Returns the watches (the root's first, when it is watched) and whether
+/// the worktree root itself is a watch target.
 fn build_watchers(
     hub: &Arc<FsWatchHub>,
     identity: &CheckoutIdentity,
     kick_tx: &mpsc::UnboundedSender<()>,
-) -> Vec<FsWatch> {
+    touched: &Arc<Mutex<Instant>>,
+) -> (Vec<FsWatch>, bool) {
     let mut watchers = Vec::new();
+    let mut root_watched = false;
     for target in watch_targets(identity) {
+        let is_root = target == identity.root;
+        root_watched |= is_root;
+        let filter = NoiseFilter::new(&target, !is_root);
         let tx = kick_tx.clone();
+        let touched = touched.clone();
         watchers.push(
             hub.watch(&target, notify::RecursiveMode::Recursive, move |event| {
-                if is_checkout_change(event) {
+                if is_checkout_change(event) && !filter.ignores(event) {
+                    *lock(&touched) = Instant::now();
                     let _ = tx.send(());
                 }
             }),
         );
     }
-    watchers
+    (watchers, root_watched)
+}
+
+/// Paths under a watch that never change the checkout's diff: build output
+/// (`target/` at the root), dependency trees (`node_modules/` anywhere) and
+/// git's own bookkeeping (`objects/`, `logs/`, other worktrees' state). A
+/// cargo build or `npm install` writes thousands of files there; each burst
+/// used to end in a full capture. The refs, HEAD and index that a commit,
+/// checkout or `git add` moves still kick. An event is noise only when every
+/// path it names is; pathless events (overflow, rescan) always kick.
+#[derive(Clone)]
+struct NoiseFilter {
+    /// The watched path as given and canonicalized: event paths are real paths.
+    bases: Vec<PathBuf>,
+    /// The watch is a git dir (a linked worktree's), not a worktree root.
+    git_dir: bool,
+}
+
+impl NoiseFilter {
+    fn new(target: &Path, git_dir: bool) -> Self {
+        let mut bases = vec![target.to_path_buf()];
+        if let Ok(real) = std::fs::canonicalize(target)
+            && real != target
+        {
+            bases.push(real);
+        }
+        Self { bases, git_dir }
+    }
+
+    fn ignores(&self, event: &notify::Event) -> bool {
+        !event.need_rescan()
+            && !event.paths.is_empty()
+            && event.paths.iter().all(|path| {
+                self.bases
+                    .iter()
+                    .find_map(|base| path.strip_prefix(base).ok())
+                    .is_some_and(|relative| is_noise_path(relative, self.git_dir))
+            })
+    }
+}
+
+/// See [`NoiseFilter`]; `relative` is under the watched worktree root, or
+/// under a watched git dir when `git_dir`.
+fn is_noise_path(relative: &Path, git_dir: bool) -> bool {
+    let mut parts = relative.components().filter_map(|part| match part {
+        Component::Normal(name) => Some(name),
+        _ => None,
+    });
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if git_dir {
+        return first == "objects" || first == "logs";
+    }
+    if first == ".git" {
+        return parts
+            .next()
+            .is_some_and(|name| name == "objects" || name == "logs" || name == "worktrees");
+    }
+    first == "target" || first == "node_modules" || parts.any(|name| name == "node_modules")
 }
 
 /// Whether a watch event can change the checkout's diff. Opens and reads are
@@ -1037,6 +1181,7 @@ async fn diff_sync_task(
     inner: Weak<DiffSyncInner>,
     mut chats_rx: watch::Receiver<Vec<Chat>>,
     interest_changed: Arc<Notify>,
+    repair_now: Arc<Notify>,
     cancel: CancellationToken,
 ) {
     let mut repair = tokio::time::interval(REPAIR_INTERVAL);
@@ -1061,15 +1206,79 @@ async fn diff_sync_task(
                 let chats = chats_rx.borrow().clone();
                 reconcile(&inner, chats, false).await;
             }
+            // Someone came back to the app: repair everything.
+            _ = repair_now.notified() => {
+                let Some(inner) = inner.upgrade() else { break };
+                let chats = chats_rx.borrow().clone();
+                repair_checkouts(&inner, chats, RepairScope::All).await;
+            }
             _ = repair.tick() => {
                 let Some(inner) = inner.upgrade() else { break };
                 let chats = chats_rx.borrow().clone();
-                // Fresh: revalidate every memoized identity against git.
-                reconcile(&inner, chats, true).await;
-                for entry in lock(&inner.entries).values() {
-                    let _ = entry.kick_tx.send(());
+                let live = lock(&inner.live_probe).clone().is_some_and(|probe| probe());
+                let present = lock(&inner.user_active_at)
+                    .is_some_and(|at| at.elapsed() < USER_PRESENT_FOR);
+                match repair_scope(present, live) {
+                    Some(scope) => repair_checkouts(&inner, chats, scope).await,
+                    // Nobody here and nothing running: no git at all. The
+                    // memoized pass still retires orphaned entries.
+                    None => reconcile(&inner, chats, false).await,
                 }
             }
+        }
+    }
+}
+
+/// Whether a person's action (`window_focused`: the window came forward)
+/// triggers a full repair: they are coming back, and the last repair is at
+/// least [`MIN_REPAIR_GAP`] old.
+fn repair_on_activity(
+    previous_activity: Option<Instant>,
+    repaired_at: Instant,
+    now: Instant,
+    window_focused: bool,
+) -> bool {
+    let returning = window_focused
+        || previous_activity.is_none_or(|at| now.saturating_duration_since(at) >= RETURN_AFTER);
+    returning && now.saturating_duration_since(repaired_at) >= MIN_REPAIR_GAP
+}
+
+/// Which checkouts a repair re-captures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepairScope {
+    /// Every tracked checkout (someone came back).
+    All,
+    /// Skip live-watched checkouts untouched for [`STALE_AFTER`].
+    Recent,
+}
+
+/// The periodic safety repair's scope: only while someone is using the app
+/// or a run is live; `None` skips it entirely.
+fn repair_scope(user_present: bool, run_live: bool) -> Option<RepairScope> {
+    (user_present || run_live).then_some(RepairScope::Recent)
+}
+
+/// Whether a repair of `scope` re-captures a checkout last touched
+/// `untouched` ago.
+fn repairs_entry(scope: RepairScope, root_watched: bool, untouched: Duration) -> bool {
+    match scope {
+        RepairScope::All => true,
+        // An unwatched root's edits only arrive through repairs.
+        RepairScope::Recent => !root_watched || untouched < STALE_AFTER,
+    }
+}
+
+/// Fresh reconcile (revalidate every memoized identity against git), then
+/// kick the checkouts `scope` covers.
+async fn repair_checkouts(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>, scope: RepairScope) {
+    *lock(&inner.repaired_at) = Instant::now();
+    reconcile(inner, chats, true).await;
+    for entry in lock(&inner.entries).values() {
+        let untouched = lock(&entry.touched).elapsed();
+        let root_live = entry.root_watched.load(Ordering::Acquire)
+            && lock(&entry.watchers).first().is_some_and(FsWatch::is_live);
+        if repairs_entry(scope, root_live, untouched) {
+            let _ = entry.kick_tx.send(());
         }
     }
 }
@@ -2156,7 +2365,9 @@ mod watch_budget_tests {
         std::fs::write(root.join("a.txt"), "one\n").unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let hub = crate::fs_watch::FsWatchHub::new();
-        let watchers = super::build_watchers(&hub, &identity(&root, &root.join(".git")), &tx);
+        let touched = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let (watchers, _) =
+            super::build_watchers(&hub, &identity(&root, &root.join(".git")), &tx, &touched);
         // Install now (the batch worker would within ~100 ms) and expect the
         // attach rescan's kick; then let registration settle and drop
         // anything it raised.
@@ -2300,5 +2511,187 @@ mod watch_budget_tests {
         // A self-referential symlink cycle must not send the walk into a spin.
         std::os::unix::fs::symlink(root.join("real"), root.join("real/inner/loop")).unwrap();
         assert!(!exceeds_watch_budget(root)); // terminates, under budget
+    }
+}
+
+#[cfg(test)]
+mod repair_schedule_tests {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use super::{
+        MIN_REPAIR_GAP, NoiseFilter, RETURN_AFTER, RepairScope, STALE_AFTER, is_noise_path,
+        repair_on_activity, repair_scope, repairs_entry,
+    };
+
+    #[test]
+    fn safety_repair_runs_only_while_someone_is_here_or_a_run_is_live() {
+        assert_eq!(
+            repair_scope(false, false),
+            None,
+            "unattended and idle: no git"
+        );
+        assert_eq!(repair_scope(true, false), Some(RepairScope::Recent));
+        assert_eq!(repair_scope(false, true), Some(RepairScope::Recent));
+    }
+
+    #[test]
+    fn safety_repair_skips_long_untouched_watched_checkouts() {
+        let fresh = Duration::from_secs(60);
+        let stale = STALE_AFTER + Duration::from_secs(1);
+        assert!(repairs_entry(RepairScope::Recent, true, fresh));
+        assert!(!repairs_entry(RepairScope::Recent, true, stale));
+        // A root too big to watch only learns about edits from repairs.
+        assert!(repairs_entry(RepairScope::Recent, false, stale));
+        // Someone coming back repairs everything.
+        assert!(repairs_entry(RepairScope::All, true, stale));
+    }
+
+    #[test]
+    fn coming_back_repairs_once_and_steady_use_does_not() {
+        let t0 = Instant::now();
+        let later = |secs| t0 + Duration::from_secs(secs);
+        let repaired = t0;
+        // Window focus after the gap: repair.
+        assert!(repair_on_activity(
+            Some(later(10)),
+            repaired,
+            later(200),
+            true
+        ));
+        // Focus again right after a repair: rate-limited.
+        assert!(!repair_on_activity(
+            Some(later(10)),
+            repaired,
+            later(60),
+            true
+        ));
+        // Steady typing (activity a minute ago) never repairs by itself.
+        assert!(!repair_on_activity(
+            Some(later(140)),
+            repaired,
+            later(200),
+            false
+        ));
+        // The first action after a long quiet does.
+        let back = later(10) + RETURN_AFTER;
+        assert!(repair_on_activity(Some(later(10)), repaired, back, false));
+        // So does the first action ever, once past the boot capture.
+        assert!(repair_on_activity(
+            None,
+            repaired,
+            t0 + MIN_REPAIR_GAP,
+            false
+        ));
+        assert!(!repair_on_activity(None, repaired, later(5), false));
+    }
+
+    #[test]
+    fn build_output_dependencies_and_git_objects_are_noise() {
+        for noise in [
+            "target/debug/build/x/out.rs",
+            "target",
+            "node_modules/react/index.js",
+            "web/node_modules/.vite/deps/a.js",
+            ".git/objects/ab/cdef",
+            ".git/logs/HEAD",
+            ".git/worktrees/wt1/index",
+        ] {
+            assert!(is_noise_path(Path::new(noise), false), "{noise}");
+        }
+        for signal in [
+            "src/lib.rs",
+            "crates/target_cpu.rs",
+            "docs/node_modules.md",
+            ".git",
+            ".git/index",
+            ".git/HEAD",
+            ".git/refs/heads/main",
+            ".git/packed-refs",
+            ".gitignore",
+            "Cargo.lock",
+        ] {
+            assert!(!is_noise_path(Path::new(signal), false), "{signal}");
+        }
+        // A linked worktree's own git dir.
+        assert!(is_noise_path(Path::new("logs/HEAD"), true));
+        assert!(!is_noise_path(Path::new("index"), true));
+        assert!(!is_noise_path(Path::new("HEAD"), true));
+    }
+
+    #[test]
+    fn an_event_is_noise_only_when_every_path_is() {
+        use notify::event::{CreateKind, EventKind, Flag};
+        let root = Path::new("/repo");
+        let filter = NoiseFilter::new(root, false);
+        let event = |paths: &[&str]| {
+            let mut event = notify::Event::new(EventKind::Create(CreateKind::File));
+            for path in paths {
+                event = event.add_path(root.join(path));
+            }
+            event
+        };
+        assert!(filter.ignores(&event(&["target/debug/a", "node_modules/b"])));
+        assert!(!filter.ignores(&event(&["target/debug/a", "src/main.rs"])));
+        assert!(!filter.ignores(&event(&[])), "pathless events always kick");
+        let rescan = event(&["target/a"]).set_flag(Flag::Rescan);
+        assert!(!filter.ignores(&rescan), "an overflow rescan always kicks");
+        let outside = notify::Event::new(EventKind::Any).add_path("/elsewhere/target/x".into());
+        assert!(
+            !filter.ignores(&outside),
+            "unknown paths are not assumed noise"
+        );
+    }
+
+    /// Through a real watcher: a build writing into target/ and an install
+    /// into node_modules/ stay quiet, a source edit still kicks.
+    #[tokio::test]
+    async fn watcher_ignores_build_output_but_kicks_on_source_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::create_dir_all(root.join(".git/refs")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "one\n").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let hub = crate::fs_watch::FsWatchHub::new();
+        let touched = std::sync::Arc::new(std::sync::Mutex::new(
+            Instant::now() - Duration::from_secs(3600),
+        ));
+        let identity = super::CheckoutIdentity {
+            id: "test".into(),
+            root: root.clone(),
+            git_dir: root.join(".git"),
+        };
+        let (watchers, root_watched) = super::build_watchers(&hub, &identity, &tx, &touched);
+        hub.apply();
+        assert!(root_watched && watchers.iter().all(super::FsWatch::is_live));
+        rx.try_recv().expect("going live kicks a sync");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while rx.try_recv().is_ok() {}
+        let before = *touched.lock().unwrap();
+
+        std::fs::create_dir_all(root.join("target/debug/deps")).unwrap();
+        std::fs::write(root.join("target/debug/deps/libx.rlib"), "bin").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "x").unwrap();
+        std::fs::create_dir_all(root.join(".git/objects/ab")).unwrap();
+        std::fs::write(root.join(".git/objects/ab/cd"), "obj").unwrap();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "build output must not kick a capture"
+        );
+        assert_eq!(
+            *touched.lock().unwrap(),
+            before,
+            "noise does not count as a touch"
+        );
+
+        std::fs::write(root.join("src/lib.rs"), "two\n").unwrap();
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a source edit kicks a sync")
+            .expect("kick channel open");
+        assert!(*touched.lock().unwrap() > before, "a real edit is a touch");
     }
 }

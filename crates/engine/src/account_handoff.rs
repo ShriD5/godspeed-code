@@ -374,6 +374,7 @@ pub async fn continue_on_account(
             Some(config)
         }
         (config, _) => Some(ChatConfig {
+            instance: None,
             harness: target.harness,
             model: request.model.clone(),
             reasoning: None,
@@ -909,6 +910,7 @@ mod tests {
 
     fn run_request(harness: HarnessId, prompt: &str) -> zeron_proto::RunRequest {
         zeron_proto::RunRequest {
+            instance: None,
             mcp: None,
             prompt: prompt.into(),
             harness: Some(harness),

@@ -74,6 +74,42 @@ const SYNC_QUANTUM_MS: i64 = 30_000;
 const ACTIVE_SYNC_CAP: usize = 28;
 const SYNC_ADMISSION_BATCH: usize = 4;
 const SYNC_CATCH_UP_QUANTUM_MS: i64 = 300_000;
+/// Beside the journals dir: chats whose docs were verified healthy.
+const SALVAGE_LEDGER_FILE: &str = "transcript-salvage.json";
+/// Spacing between recovery attempts, and the first pause between passes.
+const SALVAGE_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+/// Longest pause between recovery passes while some salvage keeps failing.
+const SALVAGE_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Which journals the boot salvage already found healthy: chat id → the
+/// journal's size and mtime at that moment. A doc only loses its transcript
+/// in a session that also wrote its journal, so an unchanged journal needs no
+/// second look.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct SalvageLedger {
+    verified: HashMap<String, JournalStamp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct JournalStamp {
+    len: u64,
+    modified_ms: i64,
+}
+
+impl JournalStamp {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |at| at.as_millis() as i64);
+        Self {
+            len: meta.len(),
+            modified_ms,
+        }
+    }
+}
 
 // All live-transport scenarios share the process budget, including tests in
 // sibling modules. Hold through shutdown so one fixture cannot rotate another.
@@ -2806,13 +2842,24 @@ impl DocHost {
     /// replacement, no checkpoint surgery, every device converges through
     /// the normal room flow. Idempotent: a doc with any message entry is
     /// never touched, and the salvage only runs on the hosting device.
+    ///
+    /// Cheap on a healthy history: emptiness is the messages list's length
+    /// (no entry is decoded), and a journal whose size and mtime match the
+    /// last boot that found its doc healthy is skipped without loading the
+    /// doc at all (see [`SalvageLedger`]); a doc can only lose its transcript
+    /// in a session that also wrote its journal. Failed salvages retry with
+    /// backoff, and the retry loop ends once nothing is pending.
     pub fn spawn_transcript_salvage(&self, journals_dir: std::path::PathBuf) {
         let host = self.clone();
         self.spawn_worker(async move {
             // Let boot settle (registry load, room joins) before sweeping.
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             let Some(ws) = host.workspace() else { return };
+            let ledger_path = journals_dir.with_file_name(SALVAGE_LEDGER_FILE);
+            let mut ledger: SalvageLedger = crate::device_settings::load(&ledger_path);
+            let before = ledger.clone();
             let chats: Vec<zeron_proto::Chat> = ws.watch_chats().borrow().clone();
+            let mut hosted = std::collections::HashSet::new();
             for chat in chats {
                 if chat.device_id != host.inner.config.device_id {
                     continue; // only the host owns its chats' history
@@ -2821,27 +2868,53 @@ impl DocHost {
                     continue; // still s2-mode: transcript lives in its room
                 }
                 let journal = journals_dir.join(format!("{}.jsonl", chat.id));
-                let journaled = std::fs::metadata(&journal)
-                    .map(|m| m.len() > 0)
-                    .unwrap_or(false);
-                if !journaled {
+                let Some(stamp) = std::fs::metadata(&journal)
+                    .ok()
+                    .filter(|meta| meta.len() > 0)
+                    .map(|meta| JournalStamp::of(&meta))
+                else {
                     continue; // never ran here — an empty doc is just new
+                };
+                hosted.insert(chat.id.clone());
+                if ledger.verified.get(&chat.id) == Some(&stamp) {
+                    continue; // healthy at this journal; nothing ran since
                 }
-                if let Err(err) = host.salvage_chat_transcript(&chat.id).await {
-                    let _ = host.inner.store.schedule_sync_job(&chat.id, "recovery");
-                    tracing::warn!(chat = %chat.id, error = %err, "transcript salvage failed");
+                match host.salvage_chat_transcript(&chat.id).await {
+                    Ok(true) => {
+                        ledger.verified.insert(chat.id.clone(), stamp);
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        let _ = host.inner.store.schedule_sync_job(&chat.id, "recovery");
+                        tracing::warn!(chat = %chat.id, error = %err, "transcript salvage failed");
+                    }
                 }
             }
+            ledger.verified.retain(|chat, _| hosted.contains(chat));
+            if ledger != before
+                && let Err(err) = crate::device_settings::save(&ledger_path, &ledger)
+            {
+                tracing::debug!(%err, "transcript salvage ledger not saved");
+            }
+            // Only the sweep above queues recovery jobs (this boot's or an
+            // earlier one's): drain them, backing off between passes, and
+            // stop once none is left.
             let mut after = String::new();
+            let mut pass_delay = SALVAGE_RETRY;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                tokio::time::sleep(SALVAGE_RETRY).await;
                 let jobs = host
                     .inner
                     .store
                     .pending_sync_jobs("recovery", &after, 1)
                     .unwrap_or_default();
                 let Some(chat) = jobs.into_iter().next() else {
+                    if after.is_empty() {
+                        return; // nothing pending at all
+                    }
                     after.clear();
+                    tokio::time::sleep(pass_delay).await;
+                    pass_delay = (pass_delay * 2).min(SALVAGE_RETRY_MAX);
                     continue;
                 };
                 after = chat.clone();
@@ -2863,7 +2936,8 @@ impl DocHost {
         });
     }
 
-    async fn salvage_chat_transcript(&self, chat_id: &str) -> Result<(), String> {
+    /// `Ok(true)`: the doc already had (or now has) its transcript.
+    async fn salvage_chat_transcript(&self, chat_id: &str) -> Result<bool, String> {
         // Inspection must not register a handle or start sync. A healthy
         // history used to open one room per journal during every boot.
         let stored = self
@@ -2885,12 +2959,8 @@ impl DocHost {
                 {
                     raw.import(&update).map_err(|e| e.to_string())?;
                 }
-                if !SessionDoc::from_doc(raw)
-                    .read_entries()
-                    .map_err(|e| e.to_string())?
-                    .is_empty()
-                {
-                    return Ok(());
+                if SessionDoc::from_doc(raw).has_message_entries() {
+                    return Ok(true);
                 }
             }
         }
@@ -2905,14 +2975,16 @@ impl DocHost {
                     .filter(|(_, _, epoch)| *epoch < crate::chat2_host::CHAT2_DOC_EPOCH)
                     .map(|(bytes, _, _)| bytes)
             });
-        let Some(bytes) = source else { return Ok(()) };
+        let Some(bytes) = source else {
+            return Ok(false);
+        };
         let raw = loro::LoroDoc::new();
         raw.import(&bytes).map_err(|e| e.to_string())?;
         let fat = SessionDoc::from_doc(raw);
         let rebuilt = zeron_doc::rebuild::rebuild_thin_doc(&fat).map_err(|e| e.to_string())?;
         let entries = rebuilt.doc.read_entries().map_err(|e| e.to_string())?;
         if entries.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let handle = self.open(chat_id).map_err(|e| e.to_string())?;
         if self.inner.config.edge.is_some() {
@@ -2933,7 +3005,7 @@ impl DocHost {
             .map_err(|e| e.to_string())?
             .is_empty()
         {
-            return Ok(()); // transcript present — nothing lost
+            return Ok(true); // transcript present — nothing lost
         }
         // Fat source: the M3 adopt's rollback copy on disk. (The other
         // source — the legacy s2 room — went away with the s2 client; any
@@ -2966,7 +3038,7 @@ impl DocHost {
         }
         tracing::info!(chat = %chat_id, entries = entries.len(),
             "transcript salvaged into chat2 lineage");
-        Ok(())
+        Ok(true)
     }
 
     /// chat2 host duties on the doc-quiesce tick (docs/chat2-sync.md C3):
@@ -5211,6 +5283,16 @@ impl DocHost {
             .unwrap_or(self.inner.config.default_harness)
     }
 
+    /// The provider instance a chat's config records for `harness` — `None`
+    /// (the default instance) for chats from before instances, or when the
+    /// request switched the chat to another harness.
+    pub(crate) fn instance_for(&self, chat_id: &str, harness: HarnessId) -> Option<String> {
+        self.workspace()
+            .and_then(|ws| ws.chat_config(chat_id))
+            .filter(|config| config.harness == harness)
+            .and_then(|config| config.instance)
+    }
+
     /// The harness a request dispatches on: the request's own pick when it
     /// carries one (rides the command plane, immune to registry-row races),
     /// else [`Self::harness_for`].
@@ -5647,6 +5729,19 @@ impl DocHost {
                         fresh_worktree.as_ref(),
                     );
                 }
+                // A sender that names no access mode (phones before
+                // 2026-10-27) runs in the chat's own, not in whatever its
+                // legacy sandbox/auto-approve pair reads as: that pair lags a
+                // mode picked on the desktop, and the phantom change replaced
+                // the live agent and killed its background work.
+                if request.access.is_none()
+                    && let Some(mode) = self
+                        .workspace()
+                        .and_then(|ws| ws.chat_config(chat_id))
+                        .and_then(|config| config.access_mode)
+                {
+                    request.set_access_mode(mode);
+                }
                 let harness = self.harness_for_request(chat_id, &request);
                 // A row with no config renders no harness glyph (and every
                 // later dispatch falls back to the engine default), so stamp
@@ -5657,6 +5752,7 @@ impl DocHost {
                     && ws.chat_config(chat_id).is_none()
                 {
                     let config = zeron_proto::ChatConfig {
+                        instance: None,
                         harness,
                         model: request.model.clone(),
                         reasoning: request.reasoning,
@@ -6016,6 +6112,11 @@ impl DocHost {
         mut request: zeron_proto::RunRequest,
         message_id: Option<String>,
     ) -> Result<String, EngineError> {
+        if request.instance.is_none() {
+            request.instance = self.instance_for(chat_id, harness);
+        }
+        self.recreate_missing_worktree(chat_id, &request.cwd)
+            .await?;
         if let Some(environments) = self.worktree_environments()
             && !request.cwd.is_empty()
         {
@@ -6038,6 +6139,55 @@ impl DocHost {
         sessions
             .dispatch(chat_id, harness, request, message_id)
             .await
+    }
+
+    /// A chat whose worktree folder was deleted outside Godspeed gets it
+    /// back on its branch before the harness starts there; otherwise the
+    /// spawn fails in a folder that no longer exists.
+    async fn recreate_missing_worktree(&self, chat_id: &str, cwd: &str) -> Result<(), EngineError> {
+        if cwd.is_empty() || zeron_proto::projectless::is_scratch_cwd(cwd) {
+            return Ok(());
+        }
+        let (Some(repos), Ok(cwd)) = (self.inner.repos.get(), crate::repos::expand_home(cwd))
+        else {
+            return Ok(());
+        };
+        let cwd = Path::new(&cwd);
+        if tokio::fs::try_exists(cwd).await.unwrap_or(true) {
+            return Ok(());
+        }
+        let record = repos.worktree_records().containing(cwd);
+        let project = self
+            .workspace()
+            .and_then(|ws| {
+                let space_id = ws.chat(chat_id).ok()??.space_id?;
+                ws.space(&space_id).ok()?
+            })
+            .and_then(|space| crate::repos::expand_home(&space.path).ok());
+        let mut repo_paths: Vec<String> = record.iter().map(|r| r.repo_path.clone()).collect();
+        repo_paths.extend(project.filter(|path| !repo_paths.contains(path)));
+        let recorded = record
+            .as_ref()
+            .map(|r| (Path::new(&r.path), r.branch.as_str()));
+        for repo_path in &repo_paths {
+            match repos
+                .recreate_missing_worktree(Path::new(repo_path), cwd, recorded)
+                .await
+            {
+                Ok(Some(root)) => {
+                    tracing::info!(chat = %chat_id, path = %root.display(), "recreated the chat's deleted worktree");
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    return Err(EngineError::Other(format!(
+                        "This chat's worktree at {} was deleted and couldn't be recreated: {err}",
+                        cwd.display()
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn materialize_worktree(
@@ -6184,6 +6334,7 @@ impl DocHost {
         let config = chat.config;
         let access = config.as_ref().map(|c| c.effective_access_mode());
         let mut request = zeron_proto::RunRequest {
+            instance: None,
             mcp: None,
             prompt: prompt.to_string(),
             harness: config.as_ref().map(|c| c.harness),
@@ -7088,12 +7239,89 @@ mod publication_eviction_tests {
             store
                 .save_snapshot_with_cursor(&id, &doc.export_snapshot().unwrap(), 0, 2)
                 .unwrap();
-            host.salvage_chat_transcript(&id).await.unwrap();
+            assert!(host.salvage_chat_transcript(&id).await.unwrap(), "healthy");
         }
-        host.salvage_chat_transcript("no-recovery-source")
-            .await
-            .unwrap();
+        assert!(
+            !host
+                .salvage_chat_transcript("no-recovery-source")
+                .await
+                .unwrap()
+        );
         assert!(lock(&host.inner.handles).is_empty());
+        host.shutdown_workers().await;
+    }
+
+    /// The boot sweep records every healthy journaled chat, so the next boot
+    /// skips them until their journal changes; a chat it could not verify is
+    /// left out and looked at again.
+    #[tokio::test(start_paused = true)]
+    async fn salvage_sweep_remembers_healthy_journals() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store.clone(),
+            DocHostConfig {
+                device_id: "host".into(),
+                default_harness: HarnessId::Mock,
+                edge: None,
+            },
+        );
+        let workspace = crate::workspace_host::WorkspaceHost::open(
+            store.clone(),
+            crate::workspace_host::WorkspaceHostConfig {
+                device_id: "host".into(),
+                device_name: "Host".into(),
+                platform: "macos".into(),
+                org_id: "org".into(),
+                user_id: "user".into(),
+                edge: None,
+                local_only: true,
+            },
+        )
+        .unwrap();
+        let journals = dir.path().join("journals");
+        std::fs::create_dir_all(&journals).unwrap();
+        for (id, healthy) in [("healthy", true), ("blank", false)] {
+            workspace
+                .create_chat(id, None, Some("host"), None, None)
+                .unwrap();
+            let mut row = workspace.chat(id).unwrap().unwrap();
+            row.room_gen = Some(2);
+            workspace.import_chat_row(&row).unwrap();
+            let doc = SessionDoc::init(id).unwrap();
+            if healthy {
+                let entry: SessionMessageEntry = serde_json::from_value(serde_json::json!({
+                    "id": "message", "role": "user", "parts": [], "createdAt": 1, "deviceId": "host"
+                }))
+                .unwrap();
+                doc.push_message(&entry).unwrap();
+            }
+            store
+                .save_snapshot_with_cursor(id, &doc.export_snapshot().unwrap(), 0, 2)
+                .unwrap();
+            std::fs::write(journals.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        }
+        host.set_workspace(workspace);
+        host.spawn_transcript_salvage(journals.clone());
+        let ledger_path = journals.with_file_name(SALVAGE_LEDGER_FILE);
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            while !ledger_path.exists() {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        })
+        .await
+        .expect("the sweep saves its ledger");
+        let ledger: SalvageLedger = crate::device_settings::load(&ledger_path);
+        let stamp = JournalStamp::of(&std::fs::metadata(journals.join("healthy.jsonl")).unwrap());
+        assert_eq!(ledger.verified.get("healthy"), Some(&stamp));
+        assert!(
+            !ledger.verified.contains_key("blank"),
+            "unverified: checked again"
+        );
+        // A journal that grew no longer matches its stamp.
+        std::fs::write(journals.join("healthy.jsonl"), "{}\n{}\n").unwrap();
+        let grown = JournalStamp::of(&std::fs::metadata(journals.join("healthy.jsonl")).unwrap());
+        assert_ne!(grown, stamp);
         host.shutdown_workers().await;
     }
 

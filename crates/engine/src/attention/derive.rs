@@ -462,6 +462,7 @@ mod tests {
 
     fn with_config(mut chat: Chat) -> Chat {
         chat.config = Some(ChatConfig {
+            instance: None,
             harness: HarnessId::Codex,
             model: None,
             reasoning: None,

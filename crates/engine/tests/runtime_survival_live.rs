@@ -99,6 +99,7 @@ fn run(
     cwd: &str,
 ) -> RunRequest {
     RunRequest {
+        instance: None,
         mcp: None,
         prompt: prompt.into(),
         harness: Some(harness),
@@ -150,6 +151,7 @@ async fn agent_process_survives_sends_and_cancel() {
         .set_chat_config(
             CHAT,
             &ChatConfig {
+                instance: None,
                 harness: id,
                 model: model.clone(),
                 reasoning: None,

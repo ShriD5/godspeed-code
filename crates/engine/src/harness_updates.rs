@@ -27,6 +27,77 @@ use crate::registry::HarnessRegistry;
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_JITTER: u64 = 30 * 60;
 const FIRST_RETRY: Duration = Duration::from_secs(5 * 60);
+/// The first check after launch waits this long: `--version`, `claude
+/// doctor`, npm/GitHub and Homebrew queries must not compete with startup.
+const LAUNCH_DELAY: Duration = Duration::from_secs(90);
+/// The last complete check, so a relaunch inside [`CHECK_INTERVAL`] shows
+/// its answer instead of repeating every probe.
+const STATUS_CACHE_FILE: &str = "harness-update-status.json";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct StatusCache {
+    checked_at_ms: i64,
+    statuses: Vec<HarnessUpdateStatus>,
+}
+
+/// Fill the launch statuses from the last complete check. Only when it is
+/// younger than [`CHECK_INTERVAL`] and has a settled answer (current or
+/// available) for every monitored harness, i.e. every row starting as
+/// `Checking`; anything else checks afresh. "Available" is recomputed against
+/// the dismissals made since. Returns how long until the next check is due.
+fn restore_cached_statuses(
+    statuses: &mut HashMap<HarnessId, HarnessUpdateStatus>,
+    cache: &StatusCache,
+    dismissed: &HashMap<HarnessId, String>,
+    now_ms: i64,
+) -> Option<Duration> {
+    let age = Duration::from_millis(u64::try_from(now_ms - cache.checked_at_ms).ok()?);
+    let remaining = CHECK_INTERVAL.checked_sub(age)?;
+    let mut restored = Vec::new();
+    for (harness, status) in statuses.iter() {
+        if status.phase != HarnessUpdatePhase::Checking {
+            continue;
+        }
+        let cached = cache
+            .statuses
+            .iter()
+            .find(|cached| cached.harness == *harness)?;
+        if !matches!(
+            cached.phase,
+            HarnessUpdatePhase::Current | HarnessUpdatePhase::Available
+        ) {
+            return None;
+        }
+        let available = match (&cached.latest_version, &cached.installed_version) {
+            (Some(latest), Some(installed)) => {
+                version_is_newer(latest, installed)
+                    && dismissed
+                        .get(harness)
+                        .is_none_or(|version| version != latest)
+            }
+            _ => cached.phase == HarnessUpdatePhase::Available,
+        };
+        restored.push((*harness, cached.clone(), available));
+    }
+    for (harness, cached, available) in restored {
+        if let Some(status) = statuses.get_mut(&harness) {
+            status.installed_version = cached.installed_version;
+            status.latest_version = cached.latest_version;
+            status.channel = cached.channel;
+            status.source = cached.source;
+            status.checked_at = cached.checked_at;
+            status.can_apply = cached.can_apply;
+            status.manual_command = cached.manual_command;
+            status.phase = if available {
+                HarnessUpdatePhase::Available
+            } else {
+                HarnessUpdatePhase::Current
+            };
+        }
+    }
+    Some(remaining)
+}
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -107,6 +178,12 @@ enum UpdatePlan {
     AntigravityArchive,
     CodexStandalone(CodexStandaloneInstall),
     Homebrew(HomebrewPackage),
+    /// A WinGet package, upgraded by WinGet. The CLI's own updater asks
+    /// whether to install over it, and with nobody to answer waits for ever.
+    Winget {
+        winget: PathBuf,
+        id: &'static str,
+    },
 }
 
 struct ReleaseAsset {
@@ -240,6 +317,12 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: Some(&["update"]),
             manual_command: "grok update",
         },
+        HarnessId::Fx => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Manual,
+            update_args: None,
+            manual_command: "curl -fsSL https://fx.sh/setup.sh | bash",
+        },
         HarnessId::Hermes => ProviderSpec {
             version_args: &["--version"],
             latest: LatestSource::Hermes,
@@ -286,6 +369,13 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: None,
             manual_command: "",
         },
+        // Registry agents update from Settings → Providers → More agents.
+        HarnessId::Acp(_) => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Manual,
+            update_args: None,
+            manual_command: "Update it in Settings → Providers → More agents",
+        },
     }
 }
 
@@ -295,6 +385,12 @@ fn update_plan(harness: HarnessId, executable: &Path) -> Result<UpdatePlan, Stri
     }
     if harness == HarnessId::ClaudeCode && claude_package_manager_command(executable).is_some() {
         return Err("update Claude Code with its package manager".into());
+    }
+    if let Some(id) = winget_package(harness, executable) {
+        let winget = resolve_winget().ok_or_else(|| {
+            format!("WinGet installed this copy but wasn't found; update it with `winget upgrade --id {id}`")
+        })?;
+        return Ok(UpdatePlan::Winget { winget, id });
     }
     if let Some(args) = provider(harness).update_args {
         return Ok(UpdatePlan::Command {
@@ -328,6 +424,9 @@ fn manual_update_command(harness: HarnessId, executable: &Path, can_apply: bool)
     {
         return Some("Update Godspeed to install this release".into());
     }
+    if let Some(id) = winget_package(harness, executable) {
+        return Some(format!("winget upgrade --id {id}"));
+    }
     Some(
         claude_package_manager_command_for(harness, executable)
             .unwrap_or_else(|| provider(harness).manual_command.to_string()),
@@ -346,6 +445,11 @@ struct Inner {
     order: Vec<HarnessId>,
     prefs_path: PathBuf,
     prefs: Mutex<Preferences>,
+    /// See [`STATUS_CACHE_FILE`].
+    cache_path: PathBuf,
+    /// Wait before the worker's first check: [`LAUNCH_DELAY`], or until the
+    /// cached check is due.
+    first_check_in: Duration,
     statuses: Mutex<HashMap<HarnessId, HarnessUpdateStatus>>,
     status_tx: watch::Sender<Vec<HarnessUpdateStatus>>,
     cancellations: Mutex<HashMap<HarnessId, ActiveUpdate>>,
@@ -421,7 +525,10 @@ impl HarnessUpdateCoordinator {
         let order: Vec<_> = registry
             .descriptors()
             .into_iter()
-            .filter(|descriptor| descriptor.id != HarnessId::Mock)
+            // Registry agents update from "More agents", not by probing.
+            .filter(|descriptor| {
+                descriptor.id != HarnessId::Mock && descriptor.id.acp_agent().is_none()
+            })
             .map(|descriptor| descriptor.id)
             .collect();
         let enabled = registry.enabled_set();
@@ -455,6 +562,15 @@ impl HarnessUpdateCoordinator {
                 )
             })
             .collect();
+        let mut statuses = statuses;
+        let cache_path = data_dir.join(STATUS_CACHE_FILE);
+        let cache: StatusCache = std::fs::read_to_string(&cache_path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let first_check_in =
+            restore_cached_statuses(&mut statuses, &cache, &prefs.dismissed_versions, now_ms())
+                .map_or(LAUNCH_DELAY, |due| due.max(LAUNCH_DELAY));
         let initial = ordered_snapshot(&order, &statuses);
         let (status_tx, _) = watch::channel(initial);
         Self {
@@ -462,6 +578,8 @@ impl HarnessUpdateCoordinator {
                 registry,
                 order,
                 prefs_path,
+                cache_path,
+                first_check_in,
                 prefs: Mutex::new(prefs),
                 statuses: Mutex::new(statuses),
                 status_tx,
@@ -480,10 +598,15 @@ impl HarnessUpdateCoordinator {
         }
     }
 
-    /// Start the immediate check plus the six-hour jittered/retry loop. Bare
-    /// synchronous test assemblies simply omit the worker and can still use
-    /// the explicit RPC methods once running under Tokio.
+    /// Start the six-hour jittered/retry loop. The first check waits
+    /// [`LAUNCH_DELAY`], or until the cached check from an earlier launch is
+    /// due. Bare synchronous test assemblies simply omit the worker and can
+    /// still use the explicit RPC methods once running under Tokio.
     pub fn start(&self) {
+        self.start_after(self.inner.first_check_in);
+    }
+
+    fn start_after(&self, first: Duration) {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
@@ -493,6 +616,10 @@ impl HarnessUpdateCoordinator {
         }
         let coordinator = self.clone();
         *worker = Some(tokio::spawn(async move {
+            tokio::select! {
+                _ = coordinator.inner.shutdown.cancelled() => return,
+                _ = tokio::time::sleep(first) => {}
+            }
             let mut retry = FIRST_RETRY;
             loop {
                 // Shutdown must not wait out slow probes or registry requests.
@@ -553,7 +680,32 @@ impl HarnessUpdateCoordinator {
             .collect::<Vec<_>>()
             .await;
 
-        self.snapshot()
+        let snapshot = self.snapshot();
+        self.save_status_cache(&snapshot);
+        snapshot
+    }
+
+    /// Remember a complete check for the next launch (see
+    /// [`restore_cached_statuses`]).
+    fn save_status_cache(&self, statuses: &[HarnessUpdateStatus]) {
+        let cache = StatusCache {
+            checked_at_ms: now_ms(),
+            statuses: statuses.to_vec(),
+        };
+        let Ok(json) = serde_json::to_string(&cache) else {
+            return;
+        };
+        let temp = self.inner.cache_path.with_extension("json.tmp");
+        if let Err(error) = std::fs::write(&temp, json)
+            .and_then(|()| std::fs::rename(&temp, &self.inner.cache_path))
+        {
+            tracing::debug!(%error, "harness update status cache not saved");
+        }
+    }
+
+    /// An install changes what is installed: the next launch checks afresh.
+    fn forget_status_cache(&self) {
+        let _ = std::fs::remove_file(&self.inner.cache_path);
     }
 
     pub async fn check_one(&self, harness: HarnessId) -> Result<(), String> {
@@ -971,6 +1123,7 @@ impl HarnessUpdateCoordinator {
         if self.inner.shutdown.is_cancelled() {
             return Err("update cancelled".into());
         }
+        self.forget_status_cache();
         let current = self
             .snapshot()
             .into_iter()
@@ -1045,10 +1198,24 @@ impl HarnessUpdateCoordinator {
         let applied = match plan {
             UpdatePlan::Command { executable, args } => {
                 match self.begin_install(harness, &cancel) {
-                    Ok(()) => run_command(&executable, args, UPDATE_TIMEOUT).await,
+                    Ok(()) => run_command_output_watched(
+                        &executable,
+                        args,
+                        UPDATE_TIMEOUT,
+                        &[],
+                        updater_refusals(harness),
+                    )
+                    .await
+                    .map(drop),
                     Err(error) => Err(error),
                 }
             }
+            UpdatePlan::Winget { winget, id } => match self.begin_install(harness, &cancel) {
+                Ok(()) => run_command_output(&winget, &winget_upgrade_args(id), UPDATE_TIMEOUT)
+                    .await
+                    .map(drop),
+                Err(error) => Err(error),
+            },
             UpdatePlan::AntigravityArchive => {
                 let release = lock(&self.inner.antigravity_release)
                     .clone()
@@ -2219,6 +2386,59 @@ async fn run_command_output_env(
     timeout: Duration,
     env: &[(&str, &str)],
 ) -> Result<String, String> {
+    run_command_output_watched(executable, args, timeout, env, &[]).await
+}
+
+/// Output that means an updater has stopped to ask something nobody will
+/// answer (its stdin is closed): stop it at once with `message` rather than
+/// wait out [`UPDATE_TIMEOUT`].
+struct Refusal {
+    needle: &'static str,
+    message: &'static str,
+}
+
+/// OpenCode's `upgrade` notices a copy a package manager owns (WinGet,
+/// Scoop, Chocolatey…), prints this, and asks "Install anyways?", defaulting
+/// to No. A closed stdin doesn't answer it: it waits for ever.
+const OPENCODE_REFUSALS: &[Refusal] = &[
+    Refusal {
+        needle: "may be managed by a package manager",
+        message: "OpenCode's updater stopped to ask about installing over a copy a package manager \
+                  manages. Update OpenCode with the package manager that installed it.",
+    },
+    Refusal {
+        needle: "Install anyways?",
+        message: "OpenCode's updater stopped to ask whether to install anyway. Update OpenCode \
+                  with the package manager that installed it.",
+    },
+];
+
+fn updater_refusals(harness: HarnessId) -> &'static [Refusal] {
+    match harness {
+        HarnessId::Opencode => OPENCODE_REFUSALS,
+        _ => &[],
+    }
+}
+
+/// The updater printed a [`Refusal`]'s needle.
+#[derive(Debug)]
+struct Refused(&'static str);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+async fn run_command_output_watched(
+    executable: &Path,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+    refusals: &[Refusal],
+) -> Result<String, String> {
     let mut command = Command::new(executable);
     command
         .args(args)
@@ -2226,7 +2446,8 @@ async fn run_command_output_env(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .env("NO_COLOR", "1");
+        .env("NO_COLOR", "1")
+        .env("CLAUDE_CODE_ENTRYPOINT", "godspeed");
     for (key, value) in env {
         command.env(*key, *value);
     }
@@ -2243,17 +2464,14 @@ async fn run_command_output_env(
     let mut stderr = child.stderr.take().expect("updater stderr is piped");
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
-    let result = {
-        use tokio::io::AsyncReadExt as _;
-        tokio::time::timeout(timeout, async {
-            tokio::try_join!(
-                child.wait(),
-                stdout.read_to_end(&mut stdout_bytes),
-                stderr.read_to_end(&mut stderr_bytes),
-            )
-        })
-        .await
-    };
+    let result = tokio::time::timeout(timeout, async {
+        tokio::try_join!(
+            child.wait(),
+            read_to_end_watched(&mut stdout, &mut stdout_bytes, refusals),
+            read_to_end_watched(&mut stderr, &mut stderr_bytes, refusals),
+        )
+    })
+    .await;
     // Stop descendants before returning and releasing the execution lease,
     // including when the leader exited but a descendant kept its pipes open.
     #[cfg(unix)]
@@ -2265,6 +2483,21 @@ async fn run_command_output_env(
             let _ = child.wait().await;
             return Err(match error {
                 Err(_) => format!("{} timed out", executable.display()),
+                Ok(Err(error)) if error.get_ref().is_some_and(|inner| inner.is::<Refused>()) => {
+                    let output = String::from_utf8_lossy(&[stdout_bytes, stderr_bytes].concat())
+                        .into_owned();
+                    let start = output
+                        .char_indices()
+                        .rev()
+                        .nth(3999)
+                        .map_or(0, |(index, _)| index);
+                    tracing::warn!(
+                        executable = %executable.display(),
+                        output = %&output[start..],
+                        "agent CLI updater stopped to ask a question; stopped it"
+                    );
+                    error.to_string()
+                }
                 Ok(Err(error)) => format!("could not run {}: {error}", executable.display()),
                 Ok(Ok(_)) => unreachable!(),
             });
@@ -2291,6 +2524,34 @@ async fn run_command_output_env(
     Ok(if stdout.is_empty() { stderr } else { stdout })
 }
 
+/// Read `pipe` to its end into `bytes`, failing with [`Refused`] as soon as
+/// the output holds one of `refusals`' needles.
+async fn read_to_end_watched(
+    pipe: &mut (impl tokio::io::AsyncRead + Unpin),
+    bytes: &mut Vec<u8>,
+    refusals: &[Refusal],
+) -> std::io::Result<()> {
+    use tokio::io::AsyncReadExt as _;
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        let read = pipe.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(());
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        // Only what's new, plus enough before it for a needle split across reads.
+        for refusal in refusals {
+            let start = bytes.len().saturating_sub(read + refusal.needle.len());
+            if bytes[start..]
+                .windows(refusal.needle.len())
+                .any(|window| window == refusal.needle.as_bytes())
+            {
+                return Err(std::io::Error::other(Refused(refusal.message)));
+            }
+        }
+    }
+}
+
 fn version_tokens(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split(|character: char| {
         !(character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '+'))
@@ -2308,7 +2569,21 @@ fn installed_version(harness: HarnessId, output: &str) -> Option<String> {
         return zeron_harness::acp::antigravity_build_version(output)
             .or_else(|| output.lines().next().and_then(extract_version));
     }
+    if harness == HarnessId::Muse {
+        return muse_build_version(output).or_else(|| extract_version(output));
+    }
     extract_version(output)
+}
+
+/// The build Muse says it's on (`Muse Code 1.4.14 (1.4.14-R7309.1)`): what its
+/// release feed names, where the first version alone would read as older than
+/// the build it is.
+fn muse_build_version(output: &str) -> Option<String> {
+    version_tokens(output).find(|version| {
+        version
+            .split_once("-R")
+            .is_some_and(|(_, build)| build.starts_with(|c: char| c.is_ascii_digit()))
+    })
 }
 
 /// Update checks name the installed release before the candidate
@@ -2320,12 +2595,100 @@ fn extract_latest_version(text: &str) -> Option<String> {
 fn version_numbers(version: &str) -> Option<Vec<u64>> {
     let version = version.trim().trim_start_matches('v');
     let numeric = version.split(['-', '+']).next()?;
-    let values: Vec<u64> = numeric
+    let mut values: Vec<u64> = numeric
         .split('.')
         .map(str::parse)
         .collect::<Result<_, _>>()
         .ok()?;
+    // Muse numbers its builds of one release `-R<n>[.<m>]`: later builds
+    // are newer, and a bare release is older than any of its builds.
+    if let Some(revision) = version
+        .split_once('-')
+        .and_then(|(_, rest)| rest.split('+').next()?.strip_prefix('R'))
+        && let Ok(parts) = revision
+            .split('.')
+            .map(str::parse)
+            .collect::<Result<Vec<u64>, _>>()
+    {
+        values.resize(values.len().max(3), 0);
+        values.extend(parts);
+    }
     (values.len() >= 2).then_some(values)
+}
+
+/// WinGet's id for OpenCode's package.
+const OPENCODE_WINGET_ID: &str = "SST.opencode";
+
+/// The WinGet package that installed `executable`, when Godspeed knows how to
+/// upgrade it: WinGet unpacks portable packages to
+/// `%LOCALAPPDATA%\Microsoft\WinGet\Packages\<id>_<source>\`, and its
+/// `Links\opencode.exe` points there.
+fn winget_package(harness: HarnessId, executable: &Path) -> Option<&'static str> {
+    let id = match harness {
+        HarnessId::Opencode => OPENCODE_WINGET_ID,
+        _ => return None,
+    };
+    let canonical = std::fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+    [executable, canonical.as_path()]
+        .into_iter()
+        .any(|path| in_winget_package(path, id))
+        .then_some(id)
+}
+
+/// `path` lies inside `…\WinGet\Packages\<id>_<source>\`.
+fn in_winget_package(path: &Path, id: &str) -> bool {
+    let prefix = format!("{}_", id.to_ascii_lowercase());
+    let parts: Vec<String> = path
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+    parts.windows(3).any(|window| {
+        window[0] == "winget" && window[1] == "packages" && window[2].starts_with(&prefix)
+    })
+}
+
+/// The arguments that upgrade one WinGet package with nobody there to answer.
+fn winget_upgrade_args(id: &str) -> Vec<&str> {
+    vec![
+        "upgrade",
+        "--id",
+        id,
+        "--silent",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+        "--disable-interactivity",
+    ]
+}
+
+/// WinGet: on `PATH`, or its app execution alias in `WindowsApps` (a reparse
+/// point that only `symlink_metadata` can see).
+fn resolve_winget() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    winget_from(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+    )
+}
+
+fn winget_from(
+    path: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let on_path = path
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join("winget.exe"));
+    let alias = local_app_data.map(|dir| {
+        Path::new(dir)
+            .join("Microsoft")
+            .join("WindowsApps")
+            .join("winget.exe")
+    });
+    on_path
+        .chain(alias)
+        .find(|candidate| candidate.symlink_metadata().is_ok())
 }
 
 fn opencode_release_package(installed: &str) -> &'static str {
@@ -2589,7 +2952,7 @@ mod tests {
         registry.register(Arc::new(ExecutableHarness(executable, HarnessId::Grok)));
         let coordinator = super::HarnessUpdateCoordinator::new(temp.path(), registry);
         let mut watch = coordinator.watch();
-        coordinator.start();
+        coordinator.start_after(Duration::ZERO);
         // The startup check is now blocked in the CLI's version probe.
         tokio::time::timeout(Duration::from_secs(5), async {
             while coordinator.status(HarnessId::Grok).phase != HarnessUpdatePhase::Checking
@@ -2603,6 +2966,139 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), coordinator.shutdown())
             .await
             .expect("shutdown waited for a probe that can take the full command timeout");
+    }
+
+    /// Launch does not probe: the worker's first check waits, and a fresh
+    /// cached check from the last launch is shown instead of re-run.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_waits_and_relaunch_reuses_a_fresh_check() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("grok");
+        let calls = temp.path().join("calls");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\necho \"$1\" >> '{}'\ncase \"$1:$2\" in\n  version:) echo 'grok 1.0.4' ;;\n  update:--check) echo 'A new version of Grok Build is available: 1.0.4 -> 1.0.41 [stable]' ;;\n  *) exit 2 ;;\nesac\n",
+                calls.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let registry = Arc::new(HarnessRegistry::new());
+        registry.register(Arc::new(ExecutableHarness(executable, HarnessId::Grok)));
+
+        // First launch: nothing cached, the check waits out the launch delay.
+        let first = super::HarnessUpdateCoordinator::new(temp.path(), registry.clone());
+        assert_eq!(first.inner.first_check_in, super::LAUNCH_DELAY);
+        first.start();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!calls.exists(), "no CLI probe at launch");
+        assert_eq!(
+            first.status(HarnessId::Grok).phase,
+            HarnessUpdatePhase::Checking
+        );
+        first.check_all().await;
+        assert_eq!(
+            first.status(HarnessId::Grok).phase,
+            HarnessUpdatePhase::Available
+        );
+        first.shutdown().await;
+        let probes = std::fs::read_to_string(&calls).unwrap().lines().count();
+
+        // Relaunch: the cached answer shows at once and the next check is
+        // hours away, not at launch.
+        let second = super::HarnessUpdateCoordinator::new(temp.path(), registry.clone());
+        let status = second.status(HarnessId::Grok);
+        assert_eq!(status.phase, HarnessUpdatePhase::Available);
+        assert_eq!(status.installed_version.as_deref(), Some("1.0.4"));
+        assert_eq!(status.latest_version.as_deref(), Some("1.0.41"));
+        assert!(second.inner.first_check_in > Duration::from_secs(5 * 60 * 60));
+        second.start();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            std::fs::read_to_string(&calls).unwrap().lines().count(),
+            probes
+        );
+        // A dismissal made after the check holds across the relaunch.
+        second.dismiss(HarnessId::Grok, None);
+        second.shutdown().await;
+        let third = super::HarnessUpdateCoordinator::new(temp.path(), registry);
+        assert_eq!(
+            third.status(HarnessId::Grok).phase,
+            HarnessUpdatePhase::Current
+        );
+    }
+
+    #[test]
+    fn stale_or_unsettled_caches_are_not_restored() {
+        use std::collections::HashMap;
+        use zeron_proto::{HarnessUpdatePolicy, HarnessUpdateStatus};
+        let status = |phase| HarnessUpdateStatus {
+            harness: HarnessId::Grok,
+            installed_version: Some("1.0.0".into()),
+            latest_version: Some("1.1.0".into()),
+            channel: None,
+            source: Default::default(),
+            policy: HarnessUpdatePolicy::default(),
+            phase,
+            progress: None,
+            checked_at: Some(0),
+            error: None,
+            can_apply: true,
+            manual_command: None,
+        };
+        let launch = || HashMap::from([(HarnessId::Grok, status(HarnessUpdatePhase::Checking))]);
+        let now = 10 * 60 * 60 * 1000;
+        let cache = |age_ms: i64, phase| super::StatusCache {
+            checked_at_ms: now - age_ms,
+            statuses: vec![status(phase)],
+        };
+        let none = HashMap::new();
+        let mut fresh = launch();
+        let due = super::restore_cached_statuses(
+            &mut fresh,
+            &cache(60 * 60 * 1000, HarnessUpdatePhase::Available),
+            &none,
+            now,
+        );
+        assert_eq!(due, Some(super::CHECK_INTERVAL - Duration::from_secs(3600)));
+        assert_eq!(fresh[&HarnessId::Grok].phase, HarnessUpdatePhase::Available);
+        // Too old.
+        let too_old = super::CHECK_INTERVAL.as_millis() as i64 + 1;
+        let mut stale = launch();
+        assert_eq!(
+            super::restore_cached_statuses(
+                &mut stale,
+                &cache(too_old, HarnessUpdatePhase::Current),
+                &none,
+                now
+            ),
+            None
+        );
+        assert_eq!(stale[&HarnessId::Grok].phase, HarnessUpdatePhase::Checking);
+        // A failed check is retried, not restored.
+        let mut failed = launch();
+        assert_eq!(
+            super::restore_cached_statuses(
+                &mut failed,
+                &cache(1000, HarnessUpdatePhase::Failed),
+                &none,
+                now
+            ),
+            None
+        );
+        // A harness the cache never saw: check everything afresh.
+        let mut missing = launch();
+        let empty = super::StatusCache {
+            checked_at_ms: now - 1000,
+            statuses: Vec::new(),
+        };
+        assert_eq!(
+            super::restore_cached_statuses(&mut missing, &empty, &none, now),
+            None
+        );
     }
 
     #[cfg(unix)]
@@ -2639,6 +3135,29 @@ esac
             provider(HarnessId::Pi).latest,
             LatestSource::Npm("@earendil-works/pi-coding-agent")
         ));
+    }
+
+    #[test]
+    fn muse_is_on_the_build_it_names_not_only_its_release() {
+        // As `muse --version` prints it.
+        let output = "Muse Code 1.4.14 (1.4.14-R7309.1)";
+        let installed = installed_version(HarnessId::Muse, output).unwrap();
+        assert_eq!(installed, "1.4.14-R7309.1");
+        // The feed's own build: nothing to update, and verification passes.
+        assert!(!version_is_newer("1.4.14-R7309.1", &installed));
+        // A later build, or a later release, is an update.
+        assert!(version_is_newer("1.4.14-R7310", &installed));
+        assert!(version_is_newer("1.4.15", &installed));
+        // A launcher that names only its release still reads.
+        assert_eq!(
+            installed_version(HarnessId::Muse, "Muse Code 1.4.14").as_deref(),
+            Some("1.4.14")
+        );
+        // Only Muse goes by this: another tool's first version stands.
+        assert_eq!(
+            installed_version(HarnessId::Codex, "codex 0.155.1 (x 1.0.0-R2)").as_deref(),
+            Some("0.155.1")
+        );
     }
 
     #[test]
@@ -3752,5 +4271,161 @@ esac
             super::homebrew_url_component("claude-code@latest"),
             "claude-code%40latest"
         );
+    }
+}
+
+#[cfg(test)]
+mod winget_tests {
+    use super::*;
+
+    // (Windows paths: only Windows reads them as paths.)
+    #[cfg(windows)]
+    const PACKAGE: &str = r"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\SST.opencode_Microsoft.Winget.Source_8wekyb3d8bbwe\opencode.exe";
+
+    #[cfg(windows)]
+    #[test]
+    fn a_winget_package_is_known_by_its_folder() {
+        assert!(in_winget_package(Path::new(PACKAGE), OPENCODE_WINGET_ID));
+        assert!(in_winget_package(
+            Path::new(&PACKAGE.to_ascii_uppercase()),
+            OPENCODE_WINGET_ID
+        ));
+        for other in [
+            r"C:\Users\me\.opencode\bin\opencode.exe",
+            r"C:\Users\me\scoop\apps\opencode\current\opencode.exe",
+            r"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\SST.opencodeX_src\opencode.exe",
+            r"C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\Other.tool_src\opencode.exe",
+        ] {
+            assert!(
+                !in_winget_package(Path::new(other), OPENCODE_WINGET_ID),
+                "{other}"
+            );
+        }
+        assert_eq!(
+            winget_package(HarnessId::Opencode, Path::new(PACKAGE)),
+            Some(OPENCODE_WINGET_ID)
+        );
+        // Only OpenCode's WinGet package is upgraded through WinGet here.
+        assert_eq!(winget_package(HarnessId::Codex, Path::new(PACKAGE)), None);
+    }
+
+    #[test]
+    fn winget_is_found_on_path_or_as_its_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let alias = dir.path().join("Microsoft").join("WindowsApps");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&alias).unwrap();
+        let local = dir.path().as_os_str();
+        assert_eq!(winget_from(Some(bin.as_os_str()), Some(local)), None);
+        std::fs::write(alias.join("winget.exe"), "").unwrap();
+        assert_eq!(
+            winget_from(Some(bin.as_os_str()), Some(local)),
+            Some(alias.join("winget.exe"))
+        );
+        std::fs::write(bin.join("winget.exe"), "").unwrap();
+        assert_eq!(
+            winget_from(Some(bin.as_os_str()), Some(local)),
+            Some(bin.join("winget.exe"))
+        );
+    }
+
+    #[test]
+    fn winget_upgrades_without_asking() {
+        assert_eq!(
+            winget_upgrade_args(OPENCODE_WINGET_ID).join(" "),
+            "upgrade --id SST.opencode --silent --accept-package-agreements \
+             --accept-source-agreements --disable-interactivity"
+        );
+    }
+
+    /// The question can arrive split across reads.
+    #[tokio::test]
+    async fn a_refusal_is_seen_across_reads() {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        let writing = tokio::spawn(async move {
+            writer
+                .write_all(b"x  opencode is installed to C:\\x and may be man")
+                .await
+                .unwrap();
+            writer.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            writer
+                .write_all(b"aged by a package manager\n")
+                .await
+                .unwrap();
+            // Then waits, as the prompt does.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let mut tail = Vec::new();
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            read_to_end_watched(&mut reader, &mut tail, OPENCODE_REFUSALS),
+        )
+        .await
+        .expect("seen without waiting for the pipe to close")
+        .unwrap_err();
+        assert!(error.get_ref().is_some_and(|inner| inner.is::<Refused>()));
+        assert!(
+            error
+                .to_string()
+                .contains("package manager that installed it")
+        );
+        writing.abort();
+    }
+
+    /// A real process that asks and then waits: stopped at once, with a
+    /// reason, instead of at the timeout.
+    #[tokio::test]
+    async fn an_updater_that_asks_is_stopped_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let script = {
+            let script = dir.path().join("opencode.cmd");
+            std::fs::write(
+                &script,
+                "@echo off\r\necho x  opencode is installed to C:\\x and may be managed by a package manager\r\necho *  Install anyways?\r\nping -n 30 127.0.0.1 >nul\r\n",
+            )
+            .unwrap();
+            script
+        };
+        #[cfg(unix)]
+        let script = {
+            use std::os::unix::fs::PermissionsExt as _;
+            let script = dir.path().join("opencode");
+            std::fs::write(
+                &script,
+                "#!/bin/sh\necho 'x  opencode is installed to /x and may be managed by a package manager'\necho '*  Install anyways?'\nsleep 30\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            script
+        };
+        let started = std::time::Instant::now();
+        let error = run_command_output_watched(
+            &script,
+            &["upgrade"],
+            Duration::from_secs(60),
+            &[],
+            updater_refusals(HarnessId::Opencode),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            error.contains("package manager that installed it"),
+            "{error}"
+        );
+        // Without the refusal it's the timeout that ends it.
+        let error =
+            run_command_output_watched(&script, &["upgrade"], Duration::from_secs(2), &[], &[])
+                .await
+                .unwrap_err();
+        assert!(error.ends_with("timed out"), "{error}");
     }
 }

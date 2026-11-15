@@ -44,6 +44,8 @@ pub struct Tools {
     // Remember successful sends on this MCP connection so wait_for_turn after
     // wait:false also waits for a newly created chat with no session row yet.
     pending_turns: tokio::sync::Mutex<HashMap<String, Arc<PendingTurn>>>,
+    /// A desktop window can drive this chat's preview browser.
+    preview: bool,
 }
 
 fn chat_key_schema(extra: Value) -> Value {
@@ -120,7 +122,7 @@ fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "create_chat",
-            description: "Create a standalone session visible in Sessions with kind chat, or a child with kind side. Omitted kind preserves the default: side with an origin/parent, standalone otherwise. A side chat cannot create chats. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt and wait for the reply. Returns the new chat id. For parallel delegation use create_chats, or leave wait=false on every launch and wait only after all chats have been started.",
+            description: "Create a standalone session visible in Sessions with kind chat, or a child with kind side. Omitted kind preserves the default: side with an origin/parent, standalone otherwise. A side chat cannot create chats. Select a project and/or device; catalogs are validated on that host. Optionally send a first prompt and wait for the reply. Returns the new chat id. For parallel delegation use create_chats, or leave wait=false on every launch and wait only after all chats have been started. When several chats will edit the same repository at once, pass worktree \"new\" so each works in its own git worktree and branch instead of overwriting each other's files.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -130,13 +132,15 @@ fn catalog() -> Vec<ToolDef> {
                     "parent": { "type": "string", "description": "Parent chat to record (id, prefix, or title). Defaults to the chat you are speaking from." },
                     "notify": { "type": "boolean", "default": false, "description": "Wake this parent with durable notifications when the child needs approval, completes, or fails. Requires parent and child on the same device." },
                     "harness": { "type": "string", "description": "Harness id (see list_harnesses with the chosen device). Defaults to claude-code when available." },
-                    "model": { "type": "string", "description": "Model id from list_models on the chosen device. Omit for the harness default." },
+                    "model": { "type": "string", "description": "Model id from list_models on the chosen device. Omit for the harness default. For Cursor, also accepts any model id its CLI supports (e.g. a parameterized id like grok-4.7-high), even if list_models doesn't enumerate it." },
                     "reasoning": { "type": "string", "description": "Reasoning level the model supports (e.g. low, medium, high, max)." },
                     "sandbox": { "type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"], "default": "workspace-write" },
                     "access_mode": { "type": "string", "enum": ["supervised", "auto-accept-edits", "auto", "full-access"], "description": "What the new chat's agent may do before it asks. Defaults to your own chat's mode and never exceeds it." },
                     "title": { "type": "string", "description": "Sidebar title. Otherwise the engine titles it from the first exchange." },
                     "branch": { "type": "string", "description": "Branch label to record on the chat." },
-                    "cwd": { "type": "string", "description": "Working directory override (an existing worktree path). Defaults to the project folder." },
+                    "cwd": { "type": "string", "description": "Working directory override (any folder on the host). Defaults to the parent's checkout or the project folder. Prefer worktree for checkouts." },
+                    "worktree": { "type": "string", "description": WORKTREE_ARG_DESCRIPTION },
+                    "base": { "type": "string", "description": "With worktree \"new\": the branch, tag or commit the new worktree starts from. Defaults to the parent chat's branch, else the project's checked-out branch." },
                     "prompt": { "type": "string", "description": "First message to send right away." },
                     "wait": { "type": "boolean", "default": false, "description": "With prompt: block until the first turn finishes and return the reply." },
                     "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 600 }
@@ -224,7 +228,7 @@ fn catalog() -> Vec<ToolDef> {
         (
             "create_chats",
             "create_chat",
-            "Create multiple standalone or side chats concurrently (kind per request). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false. Results preserve request order and include per-request errors; successful requests are not rolled back.",
+            "Create multiple standalone or side chats concurrently (kind per request). Put each chat's prompt in its request to start all work together. Prefer this for parallel delegation, including harnesses that execute tool calls sequentially. Each request has create_chat arguments; wait defaults to false. Give every request that edits the same repository worktree \"new\" so the chats don't edit one checkout at once. Results preserve request order and include per-request errors; successful requests are not rolled back.",
         ),
         (
             "send_messages",
@@ -232,12 +236,15 @@ fn catalog() -> Vec<ToolDef> {
             "Send messages to multiple independent chats concurrently. Prefer this to delegate parallel work to existing chats. Each request has send_message arguments; wait defaults to false. If wait=true, requests still run concurrently. Results preserve request order and include per-request errors; successful sends are not rolled back. Do not include dependent messages to the same chat.",
         ),
     ] {
-        let item_schema = tools
+        // The single tool documents every argument; repeating those
+        // descriptions here would double what the model reads for nothing.
+        let mut item_schema = tools
             .iter()
             .find(|tool| tool.name == single)
             .unwrap()
             .input_schema
             .clone();
+        strip_property_descriptions(&mut item_schema);
         tools.push(ToolDef {
             name, description,
             input_schema: json!({
@@ -267,8 +274,74 @@ fn catalog() -> Vec<ToolDef> {
             "required": ["script", "title"]
         }),
     });
+    tools.push(ToolDef {
+        name: SHOW_IMAGE,
+        description: SHOW_IMAGE_DESCRIPTION,
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The image file on this machine, absolute or relative to your working directory."
+                }
+            },
+            "required": ["path"]
+        }),
+    });
+    tools.extend(crate::preview::catalog());
     tools
 }
+
+/// The server instructions every chat gets. Clients put them in the agent's
+/// prompt on every turn (Claude Code even when it defers the tool schemas),
+/// so they carry only what steers behaviour; argument details live in the
+/// tool schemas, which are read when a tool is used.
+const INSTRUCTIONS: &str = "\
+Godspeed runs coding agents in chats, each hosted on a device and optionally in a project (a \
+folder on that device). These tools drive the local Godspeed engine. Refer to a chat by id, unique \
+id prefix, or exact title; `whoami` names your own chat. Your messages are attributed to your chat, \
+and a chat cannot message itself. For one reply, use `send_message` with `wait: true`. To delegate \
+in parallel, use `create_chats` (a prompt per chat) or `send_messages`: they launch concurrently even \
+when your tool calls run one at a time. Or launch every chat with `wait: false`, then collect the \
+replies with `wait_for_turn`. Never wait for one worker before launching the next independent one. \
+`kind: chat` creates a standalone session in Sessions (no parent); `kind: side` creates a child of \
+a parent or of your chat. Side chats cannot create chats. Find hosts with `list_devices`, then \
+`list_projects`, `list_harnesses` and `list_models` for a device. Answer a chat that is \
+`awaitingInput` with `respond_to_input`.";
+
+/// Instructions for the tools that show things in the calling chat.
+const VISUAL_INSTRUCTIONS: &str = "\n\n\
+When a chart, table, diagram, dashboard or 3D view says more than prose, show it with \
+`show_visual` (a Luau script) before your final reply, and don't restate it there. Show an image \
+file (a screenshot, a rendered PNG) with `show_image`.";
+
+/// Instructions for the `preview_*` tools, when a window can serve them.
+const PREVIEW_INSTRUCTIONS: &str = "\n\n\
+To check UI you built, drive your chat's preview browser in the Godspeed window: `preview_open` a \
+local dev server, `preview_snapshot` for element refs, `preview_click` / `preview_type` / \
+`preview_scroll` by ref, `preview_wait` for a change, `preview_console` for errors, and \
+`preview_screenshot` to see it.";
+
+/// Drop each top-level property's `description`, keeping names, types,
+/// enums, defaults and bounds. `worktree` keeps its own: parallel chats
+/// editing one repository must pick it per request.
+fn strip_property_descriptions(schema: &mut Value) {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for (name, property) in properties.iter_mut() {
+            if let Some(property) = property.as_object_mut().filter(|_| name != "worktree") {
+                property.remove("description");
+            }
+        }
+    }
+}
+
+const WORKTREE_ARG_DESCRIPTION: &str = "\
+Where the chat works, in its project's repository. \"parent\" (default): share the parent chat's \
+checkout (the project folder without a parent). \"new\": a fresh git worktree on its own new branch, \
+started from the parent's branch (or base) and set up like worktrees made in the app (copied .env \
+files, reserved ports, setup commands); use it for parallel edits so chats don't overwrite each \
+other. Or an existing worktree of the project, by folder path or by the branch it has checked out. \
+Needs a project; can't be combined with cwd.";
 
 /// Shows a page in the CALLING chat, so it is offered only to an agent that
 /// Godspeed launched (`GODSPEED_CHAT_ID` set).
@@ -282,12 +355,23 @@ fn is_conductor_tool(name: &str) -> bool {
         CONDUCTOR_INFO | "conductor_notes_read" | "conductor_notes_write"
     )
 }
+/// Shows an image file in the CALLING chat; offered like `show_visual`.
+const SHOW_IMAGE: &str = "show_image";
+
+const SHOW_IMAGE_DESCRIPTION: &str = "\
+Show an image file (a screenshot, a rendered chart or diagram, a photo) inline in this chat, above \
+your final text reply; call it before writing that reply, once per image, in the order they should \
+appear. PNG, JPEG, WebP, or GIF, at most 10 MB and 4096 pixels on a side. Godspeed copies the file \
+into the chat, so it stays visible after the file changes or is deleted. The reader \
+already sees the image, so the reply should not announce or describe it: add only what the image \
+doesn't show.";
 
 const SHOW_VISUAL_DESCRIPTION: &str = "\
 Show an interactive visual (chart, table, dashboard, diagram, simulation, 3D view) inline in this \
 chat, above your final text reply; call it before writing that reply. Use it when a visual says more \
 than prose. The reader already sees it, so the reply should not announce, locate, or restate it: add \
-only what the visual doesn't say.\n\
+only what the visual doesn't say. To show an image file as it is (a screenshot, a photo), use \
+show_image instead.\n\
 \n\
 A visual is a Luau script (Lua 5.1 plus `+=`, `continue`, and `if` expressions). Godspeed runs it in a \
 sandbox (no I/O or network; math.random is seeded, so data is the same on every render) and renders \
@@ -478,7 +562,39 @@ async fn read_visual_assets(
     Ok(out)
 }
 
+/// Read `show_image`'s file (a path relative to the agent's working
+/// directory), bounded however the file changes (or lies about its size).
+async fn read_image(path: &str) -> anyhow::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+    use zeron_proto::IMAGE_MAX_BYTES;
+    let too_large = || anyhow::anyhow!("{path} is over {} MB", IMAGE_MAX_BYTES / (1024 * 1024));
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("can't read {path}"))?;
+    anyhow::ensure!(metadata.is_file(), "{path} is not a file");
+    if metadata.len() > IMAGE_MAX_BYTES as u64 {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("can't read {path}"))?
+        .take(IMAGE_MAX_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .with_context(|| format!("can't read {path}"))?;
+    if bytes.len() > IMAGE_MAX_BYTES {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+
 // ---- argument shapes ---------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ShowImageArgs {
+    path: String,
+}
 
 #[derive(Deserialize)]
 struct ShowVisualArgs {
@@ -556,10 +672,43 @@ struct CreateChatArgs {
     title: Option<String>,
     branch: Option<String>,
     cwd: Option<String>,
+    worktree: Option<String>,
+    base: Option<String>,
     prompt: Option<String>,
     #[serde(default)]
     wait: bool,
     timeout_secs: Option<u64>,
+}
+
+/// `create_chat`'s `worktree` argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorktreeChoice {
+    /// The parent's checkout (today's behaviour).
+    Parent,
+    /// A fresh worktree on its own branch.
+    New,
+    /// An existing checkout, by folder or branch.
+    Existing(String),
+}
+
+impl WorktreeChoice {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).filter(|w| !w.is_empty()) {
+            None => Self::Parent,
+            Some(w) if w.eq_ignore_ascii_case("parent") => Self::Parent,
+            Some(w) if w.eq_ignore_ascii_case("new") => Self::New,
+            Some(w) => Self::Existing(w.to_owned()),
+        }
+    }
+}
+
+/// Where `place_chat` put a new chat.
+struct Placement {
+    /// `parent`, `new` or `existing`, as reported back.
+    mode: &'static str,
+    path: String,
+    branch: Option<String>,
+    setup_error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -698,7 +847,29 @@ impl Tools {
         Self {
             godspeed,
             pending_turns: Default::default(),
+            preview: true,
         }
+    }
+
+    /// Offer the `preview_*` tools only when a window can serve them
+    /// (default: yes). Without one every preview call fails, so listing them
+    /// would only cost the agent prompt tokens on every turn.
+    pub fn with_preview(mut self, preview: bool) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// The server's `instructions`, which clients put in the agent's prompt
+    /// on every turn: only the parts for tools this chat is offered.
+    pub fn instructions(&self) -> String {
+        let mut text = String::from(INSTRUCTIONS);
+        if self.godspeed.origin().chat_id.is_some() {
+            text.push_str(VISUAL_INSTRUCTIONS);
+            if self.preview {
+                text.push_str(PREVIEW_INSTRUCTIONS);
+            }
+        }
+        text
     }
 
     /// The tools offered to this server's chat. Conductor tools are listed
@@ -722,8 +893,14 @@ impl Tools {
 
     fn callable(&self) -> impl Iterator<Item = ToolDef> {
         let in_chat = self.godspeed.origin().chat_id.is_some();
+        let preview = in_chat && self.preview;
         catalog().into_iter().filter(move |tool| {
-            in_chat || (tool.name != SHOW_VISUAL && !is_conductor_tool(tool.name))
+            if crate::preview::is_preview_tool(tool.name) {
+                return preview;
+            }
+            in_chat
+                || (![SHOW_VISUAL, SHOW_IMAGE].contains(&tool.name)
+                    && !is_conductor_tool(tool.name))
         })
     }
 
@@ -751,6 +928,8 @@ impl Tools {
             CONDUCTOR_INFO => self.conductor_info().await,
             "conductor_notes_read" => self.conductor_notes_read().await,
             "conductor_notes_write" => self.conductor_notes_write(parse(args)?).await,
+            SHOW_IMAGE => self.show_image(parse(args)?).await,
+            name if crate::preview::is_preview_tool(name) => return self.preview(name, args).await,
             other => return Err(format!("unknown tool: {other}")),
         };
         result.map_err(|e| format!("{e:#}"))
@@ -1012,18 +1191,59 @@ impl Tools {
                 short(parent)
             );
         }
-        if let Some(parent) = parent_chat_id.as_deref() {
-            let chat = self.godspeed.resolve_chat(parent).await?;
-            self.ensure_may_parent(
-                &chat,
-                "Cannot create a child of a side chat. Choose a top-level parent chat.",
-            )
-            .await?;
-        }
+        let parent_chat = match parent_chat_id.as_deref() {
+            Some(parent) => {
+                let chat = self.godspeed.resolve_chat(parent).await?;
+                self.ensure_may_parent(
+                    &chat,
+                    "Cannot create a child of a side chat. Choose a top-level parent chat.",
+                )
+                .await?;
+                Some(chat)
+            }
+            None => None,
+        };
+        let worktree_choice = WorktreeChoice::parse(args.worktree.as_deref());
+        let explicit_cwd = args
+            .cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_owned);
+        anyhow::ensure!(
+            worktree_choice == WorktreeChoice::Parent || explicit_cwd.is_none(),
+            "worktree and cwd can't be combined: worktree already picks the folder"
+        );
+        let base = args
+            .base
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .map(str::to_owned);
+        anyhow::ensure!(
+            base.is_none() || worktree_choice == WorktreeChoice::New,
+            "base only applies to worktree \"new\""
+        );
+        // A worktree lives in a project: the parent's when none is named.
+        let project = args.project.clone().or_else(|| {
+            (worktree_choice != WorktreeChoice::Parent)
+                .then(|| parent_chat.as_ref()?.space_id.clone())
+                .flatten()
+        });
         let (space, device_id) = self
             .godspeed
-            .resolve_target(args.project.as_deref(), args.device.as_deref())
+            .resolve_target(project.as_deref(), args.device.as_deref())
             .await?;
+        if worktree_choice != WorktreeChoice::Parent {
+            let space = space.as_ref().context(
+                "worktree needs a project: pass project (a git repository), or create the chat from a parent that has one",
+            )?;
+            anyhow::ensure!(
+                space.git_detected,
+                "project {} isn't a git repository, so it has no worktrees",
+                space.display_name()
+            );
+        }
         if args.notify {
             let parent = self
                 .godspeed
@@ -1046,7 +1266,16 @@ impl Tools {
             }
             None => default_harness(&harnesses).with_context(|| format!("device {device_id}"))?,
         };
-        if let Some(model) = args.model.as_deref() {
+        if let Some(model) = args.model.as_deref()
+            // Cursor's catalog lists each base model's parameter choices
+            // (e.g. reasoning effort) as options on one entry, but its CLI
+            // also accepts the parameterized id directly (`grok-4.7-high`),
+            // which never appears as its own catalog entry. Godspeed can't
+            // enumerate every such id, so for Cursor the CLI is the
+            // validator: let it through and surface the harness's own error
+            // if the id turns out to be wrong.
+            && harness != HarnessId::Cursor
+        {
             let models = self.godspeed.models_on(harness, Some(&device_id)).await?;
             anyhow::ensure!(
                 models.iter().any(|m| m.id == model),
@@ -1085,6 +1314,7 @@ impl Tools {
             );
         }
         let config = ChatConfig {
+            instance: None,
             harness,
             model: args.model.clone(),
             reasoning,
@@ -1092,6 +1322,31 @@ impl Tools {
             sandbox: access_mode.map_or(sandbox, |mode| mode.legacy().0),
             access_mode,
         };
+        anyhow::ensure!(
+            worktree_choice != WorktreeChoice::New || config.sandbox != SandboxLevel::ReadOnly,
+            "A read-only chat can't edit files, so it doesn't need its own worktree. Use worktree \"parent\", or a mode that may edit."
+        );
+        // Every refusal above comes before anything is created on disk.
+        let placement = self
+            .place_chat(
+                &worktree_choice,
+                space.as_ref(),
+                &device_id,
+                parent_chat.as_ref(),
+                base,
+            )
+            .await?;
+        let mut branch = args
+            .branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .map(str::to_owned);
+        if let Some(placed) = &placement
+            && (branch.is_none() || placed.mode != "parent")
+        {
+            branch = placed.branch.clone().or(branch);
+        }
 
         let chat_id = uuid::Uuid::new_v4().to_string();
         let mut mutate = json!({
@@ -1109,20 +1364,10 @@ impl Tools {
         if args.notify {
             mutate["notifyParent"] = json!(true);
         }
-        if let Some(branch) = args
-            .branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|b| !b.is_empty())
-        {
+        if let Some(branch) = &branch {
             mutate["branch"] = json!(branch);
         }
-        let mut cwd = args
-            .cwd
-            .as_deref()
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(str::to_owned);
+        let mut cwd = explicit_cwd.or_else(|| placement.as_ref().map(|p| p.path.clone()));
         // A projectless chat runs in its own scratch folder on a host that
         // creates them; naming it here keeps createChat and the first run
         // in agreement.
@@ -1143,7 +1388,33 @@ impl Tools {
         if let Some(cwd) = &cwd {
             mutate["cwd"] = json!(cwd);
         }
-        self.godspeed.mutate(mutate).await?;
+        if let Err(err) = self.godspeed.mutate(mutate).await {
+            // A refused chat (e.g. the conductor's sub-agent cap) must not
+            // leave the worktree made for it behind.
+            if let Some(placed) = placement.as_ref().filter(|p| p.mode == "new") {
+                let space = space.as_ref().expect("a new worktree has a project");
+                let removed = self
+                    .godspeed
+                    .call(
+                        zeron_rpc::methods::DELETE_WORKTREE,
+                        json!({
+                            "repoPath": space.path,
+                            "worktreePath": placed.path,
+                            "force": true,
+                            "targetDeviceId": device_id,
+                        }),
+                    )
+                    .await;
+                return Err(match removed {
+                    Ok(_) => err.context("the chat wasn't created, so its new worktree was removed"),
+                    Err(cleanup) => err.context(format!(
+                        "the chat wasn't created, and removing its new worktree at {} failed too: {cleanup}",
+                        placed.path
+                    )),
+                });
+            }
+            return Err(err);
+        }
         if let Some(title) = args
             .title
             .as_deref()
@@ -1166,6 +1437,17 @@ impl Tools {
             "title": args.title,
             "parentChatId": parent_chat_id,
         });
+        if let Some(placed) = &placement {
+            result["branch"] = json!(branch);
+            result["worktree"] = json!({
+                "mode": placed.mode,
+                "path": placed.path,
+                "branch": placed.branch,
+            });
+            if let Some(error) = &placed.setup_error {
+                result["worktree"]["setupError"] = json!(error);
+            }
+        }
         if let Some(prompt) = args.prompt.filter(|p| !p.trim().is_empty()) {
             // The row may not have folded into WatchChats yet; build the
             // chat locally from what we just wrote rather than re-reading.
@@ -1175,7 +1457,7 @@ impl Tools {
                 title: args.title.clone(),
                 archived: false,
                 cwd: cwd.clone(),
-                branch: args.branch.clone(),
+                branch: branch.clone(),
                 checkout_id: None,
                 source_context: None,
                 config: Some(config),
@@ -1354,6 +1636,61 @@ impl Tools {
         }))
     }
 
+    async fn show_image(&self, args: ShowImageArgs) -> anyhow::Result<Value> {
+        use base64::Engine as _;
+        let chat_id = self
+            .godspeed
+            .origin()
+            .chat_id
+            .clone()
+            .context("show_image only works from an agent Godspeed launched in a chat")?;
+        let bytes = read_image(&args.path).await?;
+        let name = std::path::Path::new(&args.path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "image".into());
+        let shown = self
+            .godspeed
+            .call(
+                zeron_rpc::methods::PUBLISH_IMAGE,
+                json!({
+                    "chatId": chat_id,
+                    "name": name,
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                }),
+            )
+            .await?;
+        Ok(json!({
+            "image": shown,
+            "message": "Shown to the reader above your reply. Don't mention or describe the image; reply with only what it doesn't already show.",
+        }))
+    }
+
+    /// One `preview_*` tool: drive this chat's preview tab in the window.
+    async fn preview(&self, name: &str, args: Value) -> Result<Value, String> {
+        let chat_id = self.godspeed.origin().chat_id.clone().ok_or_else(|| {
+            format!("{name} only works from an agent Godspeed launched in a chat")
+        })?;
+        let action = crate::preview::action(name, args)?;
+        let value = self
+            .godspeed
+            .call(
+                zeron_rpc::methods::PREVIEW_ACT,
+                json!({ "chatId": chat_id, "action": action }),
+            )
+            .await
+            .map_err(|e| {
+                // The engine's message is for the agent; drop the method name.
+                let message = format!("{e:#}");
+                let prefix = format!("{}: ", zeron_rpc::methods::PREVIEW_ACT);
+                message
+                    .strip_prefix(&prefix)
+                    .map(str::to_owned)
+                    .unwrap_or(message)
+            })?;
+        Ok(crate::preview::present(&action, value))
+    }
+
     async fn interrupt_chat(&self, args: ChatArgs) -> anyhow::Result<Value> {
         let chat = self.godspeed.resolve_chat(&args.chat).await?;
         let command_id = self
@@ -1498,6 +1835,114 @@ impl Tools {
             )
             .await?;
         Ok(json!({ "chatId": chat.id, "requestId": request_id, "commandId": command_id }))
+    }
+
+    /// Where a new chat in `space` works, per its `worktree` argument.
+    /// `None` keeps the old default (the project folder, or a scratch folder
+    /// without a project). A fresh worktree is created here, on the host,
+    /// through the same path the app uses (environment, ports, setup).
+    async fn place_chat(
+        &self,
+        choice: &WorktreeChoice,
+        space: Option<&Space>,
+        device_id: &str,
+        parent: Option<&Chat>,
+        base: Option<String>,
+    ) -> anyhow::Result<Option<Placement>> {
+        let Some(space) = space else {
+            return Ok(None);
+        };
+        // The parent's checkout counts only when it is in this project on
+        // this host; anywhere else it means nothing here.
+        let parent_here = parent.filter(|p| {
+            p.device_id == device_id && p.space_id.as_deref() == Some(space.id.as_str())
+        });
+        let unsupported = |err: anyhow::Error| {
+            if err.to_string().contains("nknown method") {
+                anyhow::anyhow!("device {device_id} runs an older Godspeed without worktree support for agents; update it there")
+            } else {
+                err
+            }
+        };
+        match choice {
+            WorktreeChoice::Parent => Ok(parent_here.and_then(|p| {
+                Some(Placement {
+                    mode: "parent",
+                    path: p.cwd.clone()?,
+                    branch: p.branch.clone(),
+                    setup_error: None,
+                })
+            })),
+            WorktreeChoice::Existing(target) => {
+                let resolved: zeron_proto::ResolvedWorktree = serde_json::from_value(
+                    self.godspeed
+                        .call(
+                            zeron_rpc::methods::RESOLVE_WORKTREE,
+                            json!({ "repoPath": space.path, "target": target, "targetDeviceId": device_id }),
+                        )
+                        .await
+                        .map_err(unsupported)?,
+                )
+                .context("ResolveWorktree reply")?;
+                Ok(Some(Placement {
+                    mode: "existing",
+                    path: resolved.path,
+                    branch: resolved.branch,
+                    setup_error: None,
+                }))
+            }
+            WorktreeChoice::New => {
+                let base = match base {
+                    Some(base) => base,
+                    None => self.parent_base(space, device_id, parent_here).await,
+                };
+                let outcome: zeron_proto::CreateWorktreeOutcome = serde_json::from_value(
+                    self.godspeed
+                        .call(
+                            zeron_rpc::methods::CREATE_WORKTREE,
+                            json!({
+                                "repoPath": space.path,
+                                "branch": base,
+                                "spaceId": space.id,
+                                "targetDeviceId": device_id,
+                            }),
+                        )
+                        .await
+                        .map_err(unsupported)
+                        .with_context(|| format!("couldn't create a worktree off {base}"))?,
+                )
+                .context("CreateWorktree reply")?;
+                Ok(Some(Placement {
+                    mode: "new",
+                    path: outcome.worktree.path,
+                    branch: Some(outcome.worktree.branch),
+                    setup_error: outcome.setup_error,
+                }))
+            }
+        }
+    }
+
+    /// What a new worktree starts from by default: the branch (or detached
+    /// commit) the parent's checkout is on, else the project's checked-out
+    /// branch (`HEAD` of its folder).
+    async fn parent_base(&self, space: &Space, device_id: &str, parent: Option<&Chat>) -> String {
+        let Some(parent) = parent else {
+            return "HEAD".into();
+        };
+        if let Some(cwd) = parent.cwd.as_deref()
+            && let Ok(reply) = self
+                .godspeed
+                .call(
+                    zeron_rpc::methods::RESOLVE_WORKTREE,
+                    json!({ "repoPath": space.path, "target": cwd, "targetDeviceId": device_id }),
+                )
+                .await
+            && let Ok(resolved) = serde_json::from_value::<zeron_proto::ResolvedWorktree>(reply)
+            && let Some(base) = resolved.branch.or(resolved.head)
+        {
+            return base;
+        }
+        parent.branch.clone().unwrap_or_else(|| "HEAD".into())
     }
 
     /// A chat may start sub-agents when it is top-level or a conductor member
@@ -1671,10 +2116,7 @@ impl Tools {
             }
             _ => short(origin_id).to_owned(),
         };
-        format!(
-            "[Message from Godspeed chat {label}. Reply to it with the Godspeed `send_message` tool, chat {}.]\n\n{text}",
-            origin_id
-        )
+        zeron_proto::agent_messages::agent_message(&label, origin_id, text)
     }
 
     /// Pick and perform the delivery the composer would.
@@ -1717,6 +2159,7 @@ impl Tools {
                     .or_else(|| space.map(|s| s.path.clone()))
                     .unwrap_or_else(|| "~".into());
                 let request = RunRequest {
+                    instance: None,
                     mcp: None,
                     prompt: text,
                     harness: Some(harness),
@@ -1978,7 +2421,9 @@ mod tests {
                     { "id": "claude-code", "name": "Claude Code", "supportsSteering": true,
                       "steeringMode": "step-boundary", "reasoningLevels": [], "installed": true, "enabled": true },
                     { "id": "codex", "name": "Codex", "supportsSteering": true,
-                      "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false, "enabled": true }
+                      "steeringMode": "turn-boundary", "reasoningLevels": [], "installed": false, "enabled": true },
+                    { "id": "cursor", "name": "Cursor", "supportsSteering": true,
+                      "steeringMode": "step-boundary", "reasoningLevels": [], "installed": true, "enabled": true }
                 ])),
                 methods::LIST_MODELS if remote => RpcReply::Value(json!([
                     {"id":"remote-model", "label":"Remote model"}
@@ -2002,6 +2447,35 @@ mod tests {
                         .unwrap()
                         .push((method.to_owned(), params.clone()));
                     RpcReply::Value(json!({ "id": "v:1", "title": params["title"] }))
+                }
+                methods::PREVIEW_ACT => {
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params.clone()));
+                    match params["action"]["action"].as_str() {
+                        Some("screenshot") => RpcReply::Value(json!({
+                            "png": "iVBORw0KGgo=", "width": 640, "height": 400,
+                            "url": "http://localhost:3000/"
+                        })),
+                        Some("snapshot") => RpcReply::Value(json!({
+                            "title": "Todo", "url": "http://localhost:3000/",
+                            "outline": "button \"Add\" [ref=e1]"
+                        })),
+                        Some("click") => {
+                            return Err(RpcError::Failed(
+                                zeron_proto::preview_agent::PREVIEW_NEEDS_WINDOW.into(),
+                            ));
+                        }
+                        _ => RpcReply::Value(json!({ "ok": true })),
+                    }
+                }
+                methods::PUBLISH_IMAGE => {
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((method.to_owned(), params.clone()));
+                    RpcReply::Value(json!({ "id": "img:1", "name": params["name"] }))
                 }
                 methods::MUTATE | methods::QUEUE_COMMAND | methods::QUEUE_MESSAGE => {
                     self.writes
@@ -2094,6 +2568,46 @@ mod tests {
     }
 
     #[test]
+    fn worktree_is_documented_for_single_and_batch_creation() {
+        assert_eq!(WorktreeChoice::parse(None), WorktreeChoice::Parent);
+        assert_eq!(WorktreeChoice::parse(Some(" Parent ")), WorktreeChoice::Parent);
+        assert_eq!(WorktreeChoice::parse(Some("NEW")), WorktreeChoice::New);
+        assert_eq!(
+            WorktreeChoice::parse(Some("feat/x")),
+            WorktreeChoice::Existing("feat/x".into())
+        );
+        for name in ["create_chat", "create_chats"] {
+            let tool = catalog().into_iter().find(|tool| tool.name == name).unwrap();
+            assert!(tool.description.contains("worktree \"new\""), "{name}");
+            let props = if name == "create_chat" {
+                tool.input_schema["properties"].clone()
+            } else {
+                tool.input_schema["properties"]["requests"]["items"]["properties"].clone()
+            };
+            let doc = props["worktree"]["description"].as_str().unwrap();
+            assert!(doc.contains("\"new\"") && doc.contains("\"parent\""), "{doc}");
+            assert!(props["base"].is_object());
+        }
+    }
+
+    #[tokio::test]
+    async fn worktree_without_a_project_is_refused_before_any_write() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Origin::default());
+        let err = tools
+            .call("create_chat", json!({ "worktree": "new" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("needs a project"), "{err}");
+        let err = tools
+            .call("create_chat", json!({ "project": "space-1", "worktree": "new", "cwd": "/x" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("can't be combined"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn the_show_visual_example_passes_its_own_check() {
         let start = SHOW_VISUAL_DESCRIPTION.find("local s = ui.state").unwrap();
         let end = start
@@ -2144,6 +2658,73 @@ mod tests {
         assert_eq!(method, methods::PUBLISH_VISUAL);
         assert_eq!(params["chatId"], "chat-alpha-1");
         assert_eq!(params["script"], "return ui.text 'chart'");
+    }
+
+    #[tokio::test]
+    async fn show_image_sends_the_file_only_from_inside_a_chat() {
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("before.png");
+        std::fs::write(&file, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let world = Arc::new(World::default());
+        let outside = tools(world.clone(), Origin::default());
+        assert!(!outside.has("show_image"));
+        assert!(
+            outside
+                .call("show_image", json!({ "path": path }))
+                .await
+                .is_err()
+        );
+
+        let inside = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: Some("dev-local".into()),
+                ..Default::default()
+            },
+        );
+        assert!(inside.has("show_image"));
+        let shown = inside
+            .call("show_image", json!({ "path": path }))
+            .await
+            .unwrap();
+        assert_eq!(shown["image"]["name"], "before.png");
+        {
+            let writes = world.writes.lock().unwrap();
+            let (method, params) = writes.last().unwrap();
+            assert_eq!(method, methods::PUBLISH_IMAGE);
+            assert_eq!(params["chatId"], "chat-alpha-1");
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(params["data"].as_str().unwrap())
+                .unwrap();
+            assert_eq!(data, b"\x89PNG\r\n\x1a\nfixture");
+        }
+
+        let missing = inside
+            .call("show_image", json!({ "path": "/nonexistent/shot.png" }))
+            .await
+            .unwrap_err();
+        assert!(
+            missing.contains("can't read /nonexistent/shot.png"),
+            "{missing}"
+        );
+        let huge = dir.path().join("huge.png");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(zeron_proto::IMAGE_MAX_BYTES as u64 + 1)
+            .unwrap();
+        let error = inside
+            .call("show_image", json!({ "path": huge.to_string_lossy() }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("over 10 MB"), "{error}");
+        assert_eq!(
+            world.writes.lock().unwrap().len(),
+            1,
+            "nothing else was sent"
+        );
     }
 
     #[tokio::test]
@@ -2633,6 +3214,150 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_tools_drive_only_the_calling_chat() {
+        let world = Arc::new(World::default());
+        let outside = tools(world.clone(), Origin::default());
+        assert!(!outside.has("preview_open"));
+        assert!(
+            !outside
+                .list()
+                .await
+                .iter()
+                .any(|t| t.name.starts_with("preview_"))
+        );
+        let inside = tools(
+            world.clone(),
+            Origin {
+                chat_id: Some("chat-alpha-1".into()),
+                device_id: Some("dev-local".into()),
+            },
+        );
+        for name in crate::preview::TOOLS {
+            assert!(inside.has(name), "{name}");
+        }
+        // Validation happens before the engine is called.
+        let err = inside
+            .call("preview_open", json!({ "url": "file:///etc/passwd" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("blocked"), "{err}");
+        assert!(world.writes.lock().unwrap().is_empty());
+
+        inside
+            .call("preview_open", json!({ "url": "localhost:3000" }))
+            .await
+            .unwrap();
+        let (method, params) = world.writes.lock().unwrap().last().unwrap().clone();
+        assert_eq!(method, methods::PREVIEW_ACT);
+        assert_eq!(params["chatId"], "chat-alpha-1");
+        assert_eq!(params["action"], json!({ "action": "open", "url": "localhost:3000" }));
+
+        let snapshot = inside.call("preview_snapshot", json!({})).await.unwrap();
+        assert!(snapshot.as_str().unwrap().contains("[ref=e1]"));
+
+        // The engine's error reaches the agent as the tool's error.
+        let err = inside
+            .call("preview_click", json!({ "ref": "e1" }))
+            .await
+            .unwrap_err();
+        assert_eq!(err, zeron_proto::preview_agent::PREVIEW_NEEDS_WINDOW);
+
+        // A screenshot comes back as an MCP image block plus text.
+        let reply = crate::jsonrpc::handle_request(
+            &inside,
+            json!(7),
+            "tools/call",
+            json!({ "name": "preview_screenshot", "arguments": {} }),
+        )
+        .await;
+        let content = reply["result"]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["mimeType"], "image/png");
+        assert_eq!(content[0]["data"], "iVBORw0KGgo=");
+        assert_eq!(content[1]["type"], "text");
+        assert!(reply["result"]["structuredContent"].get("$image").is_none());
+        assert_eq!(reply["result"]["structuredContent"]["width"], 640);
+    }
+
+    #[tokio::test]
+    async fn preview_tools_and_their_instructions_need_a_window() {
+        let world = Arc::new(World::default());
+        let origin = Origin {
+            chat_id: Some("chat-alpha-1".into()),
+            device_id: Some("dev-local".into()),
+        };
+        let windowed = tools(world.clone(), origin.clone());
+        assert!(windowed.instructions().contains("`preview_open`"));
+        assert!(windowed.instructions().contains("`show_visual`"));
+        let headless = tools(world.clone(), origin).with_preview(false);
+        assert!(!headless.has("preview_open"));
+        assert!(
+            !headless
+                .list()
+                .await
+                .iter()
+                .any(|t| t.name.starts_with("preview_"))
+        );
+        assert!(headless.has(SHOW_VISUAL) && headless.has("create_chat"));
+        assert!(!headless.instructions().contains("preview_"));
+        assert!(headless.instructions().contains("`show_visual`"));
+        // The initialize reply carries the instructions for this chat.
+        let init =
+            crate::jsonrpc::handle_request(&headless, json!(1), "initialize", json!({})).await;
+        assert_eq!(init["result"]["instructions"], headless.instructions());
+        let outside = tools(world, Origin::default());
+        assert!(!outside.instructions().contains("show_visual"));
+        assert!(!outside.instructions().contains("preview_"));
+    }
+
+    #[test]
+    fn batch_items_take_the_single_tools_arguments_without_their_prose() {
+        let tools = catalog();
+        let find = |name: &str| tools.iter().find(|t| t.name == name).unwrap();
+        for (batch, single) in [
+            ("create_chats", "create_chat"),
+            ("send_messages", "send_message"),
+        ] {
+            let items =
+                find(batch).input_schema["properties"]["requests"]["items"]["properties"].clone();
+            let props = find(single).input_schema["properties"].clone();
+            let names = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+            assert_eq!(names(&items), names(&props), "{batch}");
+            for (name, property) in items.as_object().unwrap() {
+                assert_eq!(
+                    property.get("description").is_some(),
+                    name == "worktree",
+                    "{batch}.{name}"
+                );
+                let mut documented = props[name].clone();
+                documented.as_object_mut().unwrap().remove("description");
+                let mut kept = property.clone();
+                kept.as_object_mut().unwrap().remove("description");
+                assert_eq!(kept, documented, "{batch}.{name}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_results_reach_the_model_as_compact_json() {
+        let world = Arc::new(World::default());
+        let tools = tools(world, Origin::default());
+        let reply = crate::jsonrpc::handle_request(
+            &tools,
+            json!(3),
+            "tools/call",
+            json!({ "name": "list_devices", "arguments": {} }),
+        )
+        .await;
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains('\n'), "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            reply["result"]["structuredContent"]
+        );
+    }
+
+    #[tokio::test]
     async fn conductor_tools_are_listed_only_for_members() {
         let world = Arc::new(World {
             conductor: vec![("chat-boss-3", 0)],
@@ -2829,6 +3554,28 @@ mod tests {
         assert_eq!(writes[1].1["op"], "renameChat");
         assert_eq!(writes[2].0, methods::QUEUE_COMMAND);
         assert_eq!(writes[2].1["command"]["request"]["prompt"], "go");
+    }
+
+    /// Cursor's catalog only lists each base model's parameter choices as
+    /// options, not every parameterized id its CLI accepts directly (e.g.
+    /// `grok-4.7-high`), so godspeed can't validate those ids against the
+    /// catalog. Unlike other harnesses, an unrecognized model id passes
+    /// through for Cursor and lets the CLI be the validator.
+    #[tokio::test]
+    async fn create_chat_lets_cursor_models_bypass_the_catalog() {
+        let world = Arc::new(World::default());
+        let tools = tools(world.clone(), Origin::default());
+        let created = tools
+            .call(
+                "create_chat",
+                json!({ "project": "space-1", "harness": "cursor", "model": "grok-4.7-high" }),
+            )
+            .await
+            .unwrap();
+        let writes = world.writes.lock().unwrap();
+        assert_eq!(writes[0].1["config"]["harness"], "cursor");
+        assert_eq!(writes[0].1["config"]["model"], "grok-4.7-high");
+        assert!(created["chatId"].as_str().is_some());
     }
 
     #[tokio::test]

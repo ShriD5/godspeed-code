@@ -110,6 +110,22 @@ impl Schedule {
     }
 }
 
+/// The first fire of a freshly saved `trigger` after `now`, with the same
+/// validation `CreateAgent` applies: `Err` is the user-facing reason the
+/// engine would reject it, `Ok(None)` an event trigger (webhook, file watch)
+/// or a one-shot already in the past. Lets a client preview a schedule.
+pub(crate) fn preview_next_fire(
+    trigger: &AgentTrigger,
+    now: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, String> {
+    Ok(
+        Schedule::parse(trigger)?.and_then(|schedule| match schedule {
+            Schedule::Once { at } => (at > now).then_some(at),
+            schedule => schedule.next_after(now, now, false),
+        }),
+    )
+}
+
 /// Persisted per-trigger state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TriggerState {
@@ -198,6 +214,40 @@ fn count_between(
 mod tests {
     use super::*;
     use chrono::TimeZone as _;
+
+    #[test]
+    fn preview_matches_what_the_engine_would_schedule() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        // 18:00 in Kolkata is 12:30 UTC, still ahead today (a Wednesday).
+        let weekdays = AgentTrigger::Cron {
+            expr: "0 18 * * 1-5".into(),
+            timezone: "Asia/Kolkata".into(),
+        };
+        assert_eq!(
+            preview_next_fire(&weekdays, now),
+            Ok(Some(Utc.with_ymd_and_hms(2026, 10, 28, 12, 30, 0).unwrap()))
+        );
+        let hourly = AgentTrigger::Interval { every_secs: 3600 };
+        assert_eq!(
+            preview_next_fire(&hourly, now),
+            Ok(Some(now + TimeDelta::hours(1)))
+        );
+        let past = AgentTrigger::Once {
+            at: now - TimeDelta::minutes(1),
+        };
+        assert_eq!(preview_next_fire(&past, now), Ok(None));
+        assert_eq!(preview_next_fire(&AgentTrigger::Webhook, now), Ok(None));
+        assert!(
+            preview_next_fire(&AgentTrigger::Interval { every_secs: 30 }, now)
+                .unwrap_err()
+                .contains("at least")
+        );
+        let bad_zone = AgentTrigger::Cron {
+            expr: "0 9 * * *".into(),
+            timezone: "Mars/Olympus".into(),
+        };
+        assert!(preview_next_fire(&bad_zone, now).is_err());
+    }
 
     fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap()

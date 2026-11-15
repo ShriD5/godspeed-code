@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import { createBlobStore } from "../../src/blobs";
 import {
   appendRow,
+  appendRows,
+  batchIndex,
   CHECKPOINT_BLOB,
+  CHUNK_MAX_BYTES,
   commitCheckpoint,
   ensureChatLog,
   FRONTIER_BLOB,
@@ -154,6 +157,55 @@ describe("chat2 log on real DO SQLite", () => {
       }
       expect(headSeq(sql)).toBe(200);
       expect(seqFloor(sql)).toBe(200);
+    });
+  });
+
+  it("continues a pre-chunk room: legacy rows first, then chunks, one seq line", async () => {
+    await inRoom("legacy", (sql) => {
+      const blobs = createBlobStore(sql);
+      // What a room written before chunking holds: one row per update and
+      // the head in meta.
+      for (let seq = 1; seq <= 3; seq++) {
+        sql.exec(
+          "INSERT INTO rows (seq, device, batch_id, bytes, received_at) VALUES (?, ?, ?, ?, ?)",
+          seq, "old", `legacy-${seq}`, bytesOf(10, seq).buffer, seq
+        );
+      }
+      sql.exec("INSERT INTO meta (key, value) VALUES ('headSeq', '3')");
+      expect(appendRow(sql, "old", "legacy-2", bytesOf(10, 2), 9)).toEqual({ ok: true, seq: 2, dup: true });
+      const first = appendRows(sql, [4, 5, 6].map((i) => ({ device: "new", batchId: `n${i}`, bytes: bytesOf(10, i) })), 9);
+      expect(first).toBe(4);
+      expect(headSeq(sql)).toBe(6);
+      expect([...rowsAfter(sql, 0)].map((r) => r.batchId)).toEqual(["legacy-1", "legacy-2", "legacy-3", "n4", "n5", "n6"]);
+      expect([...rowsAfter(sql, 2, "old")].map((r) => r.seq)).toEqual([4, 5, 6]);
+      expect([...rowsAfter(sql, 4)].map((r) => r.seq)).toEqual([5, 6]);
+      expect(batchIndex(sql).get("n5")).toBe(5);
+      expect(logStats(sql)).toMatchObject({ headSeq: 6, rowCount: 6, rowBytes: 60 });
+      // A checkpoint inside the chunk drops every legacy row, keeps the chunk
+      // for the rows it does not cover.
+      expect(commitCheckpoint(sql, blobs, 5, bytesOf(4, 1), bytesOf(100, 1), 1)).toEqual({ ok: true, seqFloor: 5, pruned: 5 });
+      expect([...rowsAfter(sql, 0)].map((r) => r.batchId)).toEqual(["n6"]);
+      expect(logStats(sql)).toMatchObject({ headSeq: 6, seqFloor: 5, rowCount: 1, rowBytes: 10 });
+      // Covering the head deletes the last chunk; the head survives in meta.
+      expect(commitCheckpoint(sql, blobs, 6, bytesOf(4, 2), bytesOf(100, 2), 2).ok).toBe(true);
+      expect([...sql.exec("SELECT COUNT(*) AS n FROM chunks")][0]!.n).toBe(0);
+      expect(headSeq(sql)).toBe(6);
+      expect(appendRow(sql, "new", "n7", bytesOf(10, 7), 3)).toEqual({ ok: true, seq: 7, dup: false });
+    });
+  });
+
+  it("packs a window into one SQL row, splitting only past the per-row cap", async () => {
+    await inRoom("packing", (sql) => {
+      const small = Array.from({ length: 50 }, (_, i) => ({ device: "d", batchId: `s${i}`, bytes: bytesOf(500, i) }));
+      appendRows(sql, small, 1);
+      expect([...sql.exec("SELECT COUNT(*) AS n FROM chunks")][0]!.n).toBe(1);
+      const big = [0, 1, 2].map((i) => ({ device: "d", batchId: `b${i}`, bytes: bytesOf(CHUNK_MAX_BYTES / 2 + 1, i) }));
+      appendRows(sql, big, 2);
+      expect([...sql.exec("SELECT COUNT(*) AS n FROM chunks")][0]!.n).toBe(4);
+      const rows = [...rowsAfter(sql, 0)];
+      expect(rows.map((r) => r.seq)).toEqual(Array.from({ length: 53 }, (_, i) => i + 1));
+      expect(sameBytes(rows[51]!.bytes, big[1]!.bytes)).toBe(true);
+      expect(sameBytes(rows[7]!.bytes, small[7]!.bytes)).toBe(true);
     });
   });
 });

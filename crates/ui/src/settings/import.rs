@@ -596,3 +596,13 @@ mod tests {
         assert_eq!(importable(&project), 2);
     }
 }
+
+/// The demo recording shows found chats without an engine.
+#[cfg(feature = "demo-fixture")]
+impl ImportPage {
+    pub fn fixture_previews(&mut self, previews: Vec<ChatImportPreview>, cx: &mut Context<Self>) {
+        self.previews = Some(previews);
+        self.error = None;
+        cx.notify();
+    }
+}
