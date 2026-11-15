@@ -54,7 +54,6 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Appearance | Diff color scheme | `settingsSearch.ts` ("Diff colors") | MISSING: diff colors come from the theme | low |
 | Appearance | Separate prompt font | `settingsSearch.ts` ("Prompt font", "Separate fonts") | PARTIAL: UI, code and terminal fonts (`settings/appearance.rs`) | low |
 | Appearance | Time format (relative or absolute, 12 or 24 hour); font smoothing; environment-identification badge | `apps/web/src/timestampFormat.ts`; `settingsSearch.ts` ("Time format", "Font smoothing", "Environment identification") | MISSING | low |
-| Sidebar | Regenerate a thread's title on demand | `apps/web/src/components/Sidebar.tsx` ("Failed to regenerate thread title") | MISSING: manual rename only (no regenerate RPC in `crates/engine/src/titles.rs` or `crates/proto`) | med |
 | Sidebar | Auto-settle a thread when its PR merges; keep threads that have an open PR | `settingsSearch.ts` ("Auto-settle merged threads", "Keep threads with a PR"); `packages/contracts/src/settings.ts` (`sidebarAutoSettleOnMerge`) | PARTIAL: auto-settle after 1 day, 3 days or 1 week idle only (`crates/ui/src/settings/thread_lifecycle.rs`); no merged-PR trigger, no keep-PR rule | med |
 | Sidebar | Compact idle threads before the prompt cache expires | `packages/contracts/src/settings.ts` (`idleCompaction`); `settingsSearch.ts` ("Compact idle threads") | MISSING (T3-WATCH lists it as queued) | med |
 | Sidebar | Unsent-draft rows in the sidebar, with open and discard | `apps/web/src/components/sidebar/SidebarDraftBlock.tsx` | MISSING: drafts persist per chat but never appear as sidebar rows | low |
@@ -64,6 +63,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Composer | Default setting: a follow-up queues or steers the running turn | `packages/contracts/src/settings.ts` (`followUpBehavior`); `settingsSearch.ts` ("Follow-up behavior") | MISSING: chosen per message, no default setting | low |
 | Composer | Send shortcut modes (Enter / Mod+Enter multiline / Mod+Enter) | `packages/contracts/src/settings.ts` (`sendShortcut`) | PARTIAL: Enter or Mod+Enter (`settings.rs` `ComposerSendBehavior`) | low |
 | Composer | Collapse the composer to one line while scrolling the conversation | `apps/web/src/components/chat/ChatComposer.tsx`; `packages/contracts/src/settings.ts` (`composerCollapseOnScroll`) | MISSING | low |
+| Composer | Reply to an assistant response from its hover actions; sent quotes show as inset cards | `apps/web/src` (T3 `c0f85e7f79`, `1a8ecc64b7`) | PARTIAL: Ask quotes a text selection (`transcript.rs`); no whole-response Reply, sent quotes are plain blockquotes | med |
 | Composer | Hide or reorder models in the picker | `packages/contracts/src/settings.ts` (`hiddenModels`, `modelOrder`); `apps/web/src/modelPickerVisibility.ts` | MISSING: favorites only (`crates/ui/src/settings/composer.rs`) | med |
 | Composer | Model picker keys: Mod+1-9 inside the picker; Mod+Shift+arrows to switch provider | `packages/shared/src/keybindings.ts` (`modelPicker.*`) | PARTIAL: arrow-key navigation in the compact picker (`crates/ui/src/pickers/compact.rs`) | low |
 | Composer | Attach a pull request to the prompt as a context chip | `apps/web/src/components/composerContextPresentation.tsx`; `apps/web/src/components/chat/UserMessageContextChips.tsx` | MISSING | low |
@@ -221,6 +221,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |
 | Delete one archived session from Settings → Archived (confirmed, next to Unarchive), not only Delete all | #99 |
