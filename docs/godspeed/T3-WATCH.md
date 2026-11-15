@@ -33,6 +33,40 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-11-10 | Commit, push & PR refuses to push the default branch into itself (`ad91636f0b`) | skipped (`git_actions.rs` `create_pull_request` already returns `OnBaseBranch`) |
 | 2026-11-10 | Use T3 Code from another app over MCP, approved with T3 Connect (`965ddc1d6c`, `dd0737d3e2`, `9a0d02723c`) | skipped (T3-GAPS already tracks the HTTP MCP endpoint; T3 Connect is out of scope) |
 | 2026-11-10 | ~105 other commits: mobile (Expo, Android, iOS), desktop Electron fixes, web re-render perf, Welcome page, keybinding `when` conditions, IME fixes, relay/SSH/updater, forge fixes, pricing tables, server segment reads, CI | skipped (internal/minor) |
+| 2026-11-09 | Approval, question and MCP form cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`, reviewed 2026-11-02) | PR #101 |
+| 2026-11-09 | Steering during a Claude compaction reads as stopped, not failed (`2b65ffb641`) | queued (with the 2026-10-27 steer-during-compaction row) |
+| 2026-11-09 | Focus returns to the composer after answering an approval or question in the timeline (`69dd6956d5`) | queued (check composer focus after answering a card) |
+| 2026-11-09 | Idle parents wake for a delegated result that lands after they settled (`36d0dcbf55`) | queued (with the 2026-10-26 delegated-run row) |
+| 2026-11-09 | Labs: suggest your next prompt after Claude and Codex turns (`b24959d579`) | queued (new T3-GAPS row) |
+| 2026-11-09 | Chat links to `cursor://` and `vscode://` open the editor (`ea9fbc1a07`); terminal types macOS Option-layer characters (`4549bee918`) | queued (check our link opener and the terminal's Option key) |
+| 2026-11-09 | Side chats start with the parent's permission mode and reasoning level (`e455200077`) | skipped (`FORK_SIDE_CHAT` copies the source chat's config: model, effort, access) |
+| 2026-11-09 | macOS Bash terminals start as login shells (`f92daf1fcf`) | skipped (`engine/src/terminals.rs` already launches every shell with `-l`) |
+| 2026-11-09 | Settings reclaims freed database space in one click (`8969e1d8d0`) | skipped (`workspace_host.rs` already vacuums on its own thresholds) |
+| 2026-11-09 | Text generators: model APIs write titles, commits and transcript cleanup (`eb97d82156`); @-mention a model to name it for the agent (`88109cea46`) | skipped (Godspeed writes generated text through the installed harness CLIs; agents already pick models with `list_models` / `create_chat`) |
+| 2026-11-09 | Move a scheduled task to another thread (`8e6a732305`); sudo passwords and sign-in links on the secret card (`743bb8cf3d`, `3bb4544f90`) | skipped (no thread-bound scheduled tasks; secret card is the existing T3-GAPS row) |
+| 2026-11-09 | ~105 other commits: mobile/Android/iOS, desktop startup and CLI shim, release CI, forge shell-merge aliases, Antigravity/Cursor/Pi/Muse fixes, worktree perf, search ranking, marketing localisation | skipped (internal/minor) |
+| 2026-11-07 | Delete a single archived thread from the archive page, next to Unarchive (`c864b1c1e1`) | PR #99 |
+| 2026-11-07 | ACP subagent tool output streamed before the tool call is known is kept (`fd1adc888a`) | queued (check `harness/src/acp/normalize.rs` for updates that arrive before their tool call) |
+| 2026-11-07 | Theme files saved with a UTF-8 BOM load instead of being rejected (`ce9b80671b`) | queued (check theme JSON loading in `theme_library.rs`) |
+| 2026-11-07 | Git failures read in English when macOS git follows the system language (`f901c37e7f`) | skipped (`engine/src/git_actions.rs` already runs git with `LC_ALL=C` where stderr is classified) |
+| 2026-11-07 | PRs stay "review required" until required reviewers approve (`95e7dbfdaf`) | skipped (`source_control.rs` uses GitHub's `reviewDecision` directly) |
+| 2026-11-07 | Usage-limit auto-resume survives a server restart (`240446e2d9`) | skipped (limit-recovery timers already persist across engine restarts) |
+| 2026-11-06 | Auto-settle inactive threads after 7 days by default (`d4247a5a19`) | skipped (Godspeed's auto-settle stays opt-in; 1 week is one of its spans) |
+| 2026-11-07 | Active thread rows show the latest reply's age (`08a3909406`) | skipped (sidebar ages already use `last_message_at`) |
+| 2026-11-06 | Cloud dictation, transcription model picker and first-run voice setup (`fe901ac7ba`, `c09060b62b`, `4bd82b2177`, `15b7275595`) | skipped (no dictation in Godspeed; tracked as a larger gap, not a one-run port) |
+| 2026-11-07 | ~45 minor: Azure DevOps PR lookups, server tracing/perf, Pi thinking controls, Grok titles, mobile, Electron/desktop, marketing, release CI, Teams in preview, sidebar collapse persistence, citation comment box | skipped (internal/minor or hosts Godspeed lacks) |
+| 2026-11-06 | `/clear` starts a fresh provider session in the same chat; the send carries the request and the thread marks "New session" (`99e361e415`, `e139768a7e`) | PR #94 |
+| 2026-11-06 | Scheduled tasks can run in one thread with a fresh session each run (`4aab23cd72`); tasks link to their thread (`4a087861d0`) | queued (always-on agents could set `FRESH_SESSION_OPTION` per run once `/clear` lands) |
+| 2026-11-06 | Project actions a user opted in stop when their thread settles (`dd059b40bc`) | queued (Godspeed project actions keep running after the turn) |
+| 2026-11-06 | Command output keeps text after an unterminated OSC, drops escape bytes with intermediates, and keeps colours past underline styles (`e4ff8433ee`, `cd890ba346`, `a7f6c68fe9`) | queued (check the tool-output ANSI parser against the same inputs) |
+| 2026-11-06 | A branch tracking another local branch no longer shows that branch's PR (`9bf7dcd92d`); threads follow their worktree's branch changes (`02cb2fc465`) | queued (check the PR lookup and branch label for both cases) |
+| 2026-11-06 | Terminal links keep route and pnpm paths whole (`1b14cb3d8c`); shortened `/tmp/...` agent paths no longer become broken file chips (`47a89f2ee7`) | queued (check `terminal` link detection and transcript file chips) |
+| 2026-11-06 | Side chats inherit the parent's permissions by default (`725cfc9c3d`) | skipped (Godspeed already freezes the parent's sandbox into a new side chat's config: `composer.rs` `send`) |
+| 2026-11-06 | Labs setting hides tool calls so threads read like a chat (`3d78e915e3`) | skipped (Godspeed's compact mode folds tool work into one header) |
+| 2026-11-06 | Ultracode on any effort and on Sonnet/Haiku 5.5 (`2d0efd3584`, `4bfb896d00`); Claude turns use the downloaded catalog (`43cf364dd2`) | skipped (Claude catalog details; Godspeed reads its catalog from Claude Code) |
+| 2026-11-06 | Snooze pending input requests (`e66c3168a4`); one usage-limit recovery notice (`c7537d0264`); PR comments into the chat and @/# completion in PR composers (`f08d8dd0a5`, `7bc2a40ced`, `e4ff5da0d3`) | skipped (minor; PR-comment chips added to T3-GAPS) |
+| 2026-11-06 | Secret providers for agent credentials and secret requests (`4a94658ab4`, `7462b16f36`, `187781e9a0`); dictation on a chosen environment (`b8dce83214`, `a9a1b8c4be`, `aabd5629c9`) | skipped (secrets are a T3 Labs flag; Godspeed dictates on the local device with Parakeet) |
+| 2026-11-06 | ~170 other commits: GitLab/Forgejo/GitCafe fixes, mobile and Android, server perf (PR cache, live events, shutdown), Windows git, Antigravity installs, CI and release, tests | skipped (internal/minor) |
 | 2026-11-01 | Worktree chats get a branch when a plain branch named like the prefix exists (`t3` blocks `t3/...`), and names with a nested branch under them count as taken (`1917c8a33a`) | PR #85 |
 | 2026-11-01 | Child-thread approvals show in the parent with Approve/Decline, so you answer without switching threads; Claude dangerous-rm checks in bypass mode deny with the warning (`70f475f511`) | queued (lanes card shows a child's Needs approval status and opens it in the right pane; no inline card in the parent) |
 | 2026-11-01 | Stopping a Claude turn no longer hangs when interrupt is never acknowledged (`7195b69954`) | queued (with the force-stop item: time-box Claude interrupt in `harness/src/claude`) |
@@ -64,7 +98,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 | 2026-11-04 | ~310 other commits: server recovery perf, Pi/Codex/OpenCode/Cursor/Antigravity fixes, forge (GitLab/Forgejo/Azure) fixes, Tailscale, managed policy, secret providers, emoji-safe truncation, mobile, marketing, evals and CI | skipped (internal/minor) |
 | 2026-11-02 | Claude threads no longer join the Claude Code session that launched T3: its session id, messaging socket and token, and effort are dropped from the agent's environment (`47f2c8d29e`) | PR #87 |
 | 2026-11-02 | Threads show a divider when you switch model or effort between messages (`c65f8d552b`) | queued (Godspeed keeps only the chat's current config; needs the model and effort recorded per turn) |
-| 2026-11-02 | Approval cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`) | queued (`claude/wire.rs` ignores `control_cancel_request`, so the card waits forever) |
+| 2026-11-02 | Approval cards close when Claude withdraws the request, e.g. a PermissionRequest hook answered it (`41588d4520`) | PR #101 |
 | 2026-11-02 | Managed policy file for organization-wide configuration (`d897d3f3f0`) | queued (T3-GAPS row; Theo hyped it) |
 | 2026-11-02 | Turn diffs keep the agent's files when git's `diff.relative` is on (`f2527c2c00`) | queued (`diff_sync.rs` runs `git diff` without `-c diff.relative=false`) |
 | 2026-11-02 | Show why Codex hooks stopped a turn (`9b7208832e`) | queued (Codex normalizer has no hook stop reason) |

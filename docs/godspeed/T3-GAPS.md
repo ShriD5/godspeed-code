@@ -59,6 +59,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Sidebar | Compact idle threads before the prompt cache expires | `packages/contracts/src/settings.ts` (`idleCompaction`); `settingsSearch.ts` ("Compact idle threads") | MISSING (T3-WATCH lists it as queued) | med |
 | Sidebar | Unsent-draft rows in the sidebar, with open and discard | `apps/web/src/components/sidebar/SidebarDraftBlock.tsx` | MISSING: drafts persist per chat but never appear as sidebar rows | low |
 | Sidebar | Copy a thread's branch name or relative path (Copy submenu) | `apps/web/src/components/Sidebar.tsx` ("Branch copied", "Path copied") | PARTIAL: Copy submenu has Path, Godspeed link, harness link, harness session ID (`shell.rs` `render_chat_copy_submenu`); no branch, no relative path | low |
+| Composer | Suggested next prompt after a Claude or Codex turn (Labs) | `b24959d579` | MISSING | low |
 | Composer | Send in background, or send and open a new thread | `packages/shared/src/keybindings.ts` (`composer.sendBackground`, `composer.sendAndNewThread`) | MISSING | low |
 | Composer | Default setting: a follow-up queues or steers the running turn | `packages/contracts/src/settings.ts` (`followUpBehavior`); `settingsSearch.ts` ("Follow-up behavior") | MISSING: chosen per message, no default setting | low |
 | Composer | Send shortcut modes (Enter / Mod+Enter multiline / Mod+Enter) | `packages/contracts/src/settings.ts` (`sendShortcut`) | PARTIAL: Enter or Mod+Enter (`settings.rs` `ComposerSendBehavior`) | low |
@@ -68,6 +69,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Composer | Attach a pull request to the prompt as a context chip | `apps/web/src/components/composerContextPresentation.tsx`; `apps/web/src/components/chat/UserMessageContextChips.tsx` | MISSING | low |
 | Composer | Code block language picker in the composer | `apps/web/src/components/chat/ComposerCodeBlockLanguagePicker.tsx` | MISSING | low |
 | Composer | Show skills in the slash menu (toggle) | `settingsSearch.ts` ("Show skills in slash menu") | MISSING as a setting | low |
+| Chat | Add a pull request's review comments to the composer as context | `apps/web/src/components/chat/` (`f08d8dd0a5`) | MISSING: PR threads are answered from the PR pane only | low |
 | Chat | Run a code block's command in the terminal | `apps/web/src/components/chat/MarkdownCodeBlock.tsx` ("Run in terminal") | MISSING | med |
 | Chat | Fork a new thread from any response | `apps/web/src/components/chat/TimelineAssistantRows.tsx` ("Fork from this response") | PARTIAL: side chat forks the conversation through its latest completed reply (`crates/ui/src/shell/side_chats.rs` `fork_chat`); no pick of an earlier response | med |
 | Chat | Response streaming mode: turn or paragraph | `packages/contracts/src/settings.ts` (`ResponseStreamingMode`) | MISSING: live streaming only | low |
@@ -132,7 +134,6 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 | Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
 | Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
 | Chat | Divider in the thread when the model or effort changes between messages ("Opus 5.5 high → Sonnet 5.5") | `apps/server/src/orchestration-v2/modelSwitch.ts`; `apps/web/src/components/chat/V2LifecycleRow.tsx` (`ModelSwitchRow`) | MISSING: only the chat's current config is kept (`proto/src/entities.rs` `ChatConfig`) | med |
-| Agents | Claude approval cards close when Claude withdraws the request | `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts` (`cancelWithdrawnRequest`) | MISSING: `control_cancel_request` is ignored (`harness/src/claude/wire.rs`) | med |
 | Settings | Managed policy: an organization-wide file that pins T3 settings | T3 `d897d3f3f0` | MISSING: no policy layer | med |
 | Source control | Mark ready for review, back to draft, close, reopen; delete the branch after merge | `pullRequest.ts` (actions `ready`, `draft`, `close`, `reopen`, `delete-branch`) | MISSING: `gh pr create --draft` only (`source_control.rs`) | Med |
 | Source control | Update a PR branch from its base (merge or rebase) | `pullRequest.ts` (action `update-branch`, `updateMethods`) | MISSING | Med |
@@ -221,6 +222,9 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 | Feature | Godspeed PR |
 |---|---|
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
+| Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |
+| Delete one archived session from Settings → Archived (confirmed, next to Unarchive), not only Delete all | #99 |
+| `/clear` starts a fresh provider session in the same chat: a banner arms it (dismiss keeps the session), the next send runs without resume or replayed history, and the transcript marks "New session" | #94 |
 | Worktree chats still get a branch when the repo has a plain branch named like the prefix (`godspeed` flattens to `godspeed-<name>`), and a branch nested under a candidate name counts as taken | #85 |
 | Antigravity turns that go silent mid-prompt end with an error after 15 minutes instead of staying Working (open tools and approvals pause the clock) | #91 |
 | Claude runs start as their own session when a Claude Code session launched Godspeed (session id, messaging socket and token, effort and IDE markers are not inherited) | #87 |
