@@ -1,6 +1,6 @@
 //! Settings → Archived (feature-inventory §1.5): archived chats across
 //! devices, with Unarchive (Mutate setChatArchived false) and a confirmed
-//! Delete all (Mutate deleteChat per archived chat).
+//! Delete for one row or all of them (Mutate deleteChat per archived chat).
 
 use gpui::{
     AnyElement, Context, Entity, SharedString, Subscription, Task, Window, div, prelude::*, px,
@@ -26,17 +26,22 @@ fn archive_page(total: usize, requested: usize) -> usize {
     requested.min(total.saturating_sub(1) / ARCHIVE_PAGE_SIZE)
 }
 
+/// The open Delete dialog. It deletes exactly `ids`, never a chat archived
+/// while it was open; `single` holds the row's title when one row asked.
+struct DeleteConfirm {
+    ids: Vec<String>,
+    single: Option<String>,
+}
+
 pub struct ArchivedPage {
     state: Entity<AppState>,
     scroll: widgets::PageScroll,
     error: Option<SharedString>,
     /// Chat with an in-flight unarchive (button shows working state).
     busy: Option<String>,
-    /// Archived ids captured when Delete all was clicked. The dialog deletes
-    /// exactly these, never a chat archived while it was open.
-    delete_all_confirm: Option<Vec<String>>,
-    /// In-flight Delete all; held so repeat clicks can't start a second run.
-    delete_all_task: Option<Task<()>>,
+    delete_confirm: Option<DeleteConfirm>,
+    /// In-flight delete; held so repeat clicks can't start a second run.
+    delete_task: Option<Task<()>>,
     page: usize,
     task: Option<Task<()>>,
     _observe: Subscription,
@@ -50,8 +55,8 @@ impl ArchivedPage {
             scroll: widgets::PageScroll::default(),
             error: None,
             busy: None,
-            delete_all_confirm: None,
-            delete_all_task: None,
+            delete_confirm: None,
+            delete_task: None,
             page: 0,
             task: None,
             _observe: observe,
@@ -84,7 +89,7 @@ impl ArchivedPage {
     }
 
     fn request_delete_all(&mut self, cx: &mut Context<Self>) {
-        if self.delete_all_task.is_some() {
+        if self.delete_task.is_some() {
             return;
         }
         let ids: Vec<String> = archived_chats(&self.state.read(cx).chats)
@@ -92,27 +97,38 @@ impl ArchivedPage {
             .map(|chat| chat.id.clone())
             .collect();
         if !ids.is_empty() {
-            self.delete_all_confirm = Some(ids);
+            self.delete_confirm = Some(DeleteConfirm { ids, single: None });
             cx.notify();
         }
     }
 
-    /// Escape that reached Settings unclaimed closes the Delete all dialog
+    fn request_delete(&mut self, chat_id: String, title: String, cx: &mut Context<Self>) {
+        if self.delete_task.is_some() {
+            return;
+        }
+        self.delete_confirm = Some(DeleteConfirm {
+            ids: vec![chat_id],
+            single: Some(title),
+        });
+        cx.notify();
+    }
+
+    /// Escape that reached Settings unclaimed closes the Delete dialog
     /// first, so it never closes Settings under the dialog (this page
     /// outlives Settings, and the dialog would reopen with it).
     pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.delete_all_confirm.take().is_none() {
+        if self.delete_confirm.take().is_none() {
             return false;
         }
         cx.notify();
         true
     }
 
-    fn delete_all(&mut self, cx: &mut Context<Self>) {
-        let Some(ids) = self.delete_all_confirm.take() else {
+    fn delete_confirmed(&mut self, cx: &mut Context<Self>) {
+        let Some(DeleteConfirm { ids, .. }) = self.delete_confirm.take() else {
             return;
         };
-        if self.delete_all_task.is_some() {
+        if self.delete_task.is_some() {
             return;
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -124,7 +140,7 @@ impl ArchivedPage {
         // One request per chat, like the sidebar's section archive: the
         // registry tombstones each row, so it leaves this list and the
         // sidebar's Archived shelf as soon as its delete lands.
-        self.delete_all_task = Some(cx.spawn(async move |this, cx| {
+        self.delete_task = Some(cx.spawn(async move |this, cx| {
             let mut failed = 0;
             for chat_id in ids {
                 // Unarchived since the confirmation (here, or on another
@@ -147,9 +163,9 @@ impl ArchivedPage {
                 }
             }
             this.update(cx, |page, cx| {
-                page.delete_all_task = None;
+                page.delete_task = None;
                 if failed > 0 {
-                    page.error = Some(delete_all_failure(failed).into());
+                    page.error = Some(delete_failure(failed).into());
                 }
                 cx.notify();
             })
@@ -158,24 +174,17 @@ impl ArchivedPage {
         cx.notify();
     }
 
-    fn render_delete_all_dialog(
+    fn render_delete_dialog(
         &mut self,
         viewport: gpui::Size<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let count = self.delete_all_confirm.as_ref()?.len();
+        let (heading, body, confirm_label) = delete_copy(self.delete_confirm.as_ref()?);
         let theme = Theme::of(cx).for_popup();
         // Same card as the sidebar's single "Delete session?" confirmation.
         let card = popover::dialog_card(&theme)
-            .child(popover::dialog_title(
-                &theme,
-                "Delete all archived sessions?",
-            ))
-            .child(
-                div()
-                    .mt(px(6.0))
-                    .child(popover::dialog_body(&theme, delete_all_body(count))),
-            )
+            .child(popover::dialog_title(&theme, heading))
+            .child(div().mt(px(6.0)).child(popover::dialog_body(&theme, body)))
             .child(
                 div()
                     .mt(px(16.0))
@@ -187,14 +196,14 @@ impl ArchivedPage {
                         popover::btn_ghost(&theme, "Cancel", "delete-archived-cancel")
                             .id("delete-archived-cancel")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.delete_all_confirm = None;
+                                this.delete_confirm = None;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        popover::btn_danger(&theme, "Delete all")
+                        popover::btn_danger(&theme, confirm_label)
                             .id("delete-archived-confirm")
-                            .on_click(cx.listener(|this, _, _, cx| this.delete_all(cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.delete_confirmed(cx))),
                     ),
             )
             .into_any_element();
@@ -221,7 +230,7 @@ impl popover::ScrollRailHost for ArchivedPage {
 impl Render for ArchivedPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::toast::take_error(&mut self.error, cx);
-        let dialog = self.render_delete_all_dialog(window.viewport_size(), cx);
+        let dialog = self.render_delete_dialog(window.viewport_size(), cx);
         let theme = Theme::of(cx).for_settings_surface();
         let now = chrono::Utc::now();
         let (rows, device_names, count): (
@@ -251,6 +260,7 @@ impl Render for ArchivedPage {
             (rows, names, count)
         };
         let busy = self.busy.clone();
+        let deleting = self.delete_task.is_some();
         let page = self.page;
         let items: Vec<AnyElement> = rows
             .into_iter()
@@ -274,8 +284,10 @@ impl Render for ArchivedPage {
                     crate::state::chat_location(&chat).map(Into::into);
                 let is_busy = busy.as_deref() == Some(chat.id.as_str());
                 let chat_id = chat.id.clone();
+                let delete_id = chat.id.clone();
+                let delete_title = title.to_string();
                 // godspeed settings.archived.tsx row: archive tile, medium title
-                // + tabular time, quiet device · location meta, Unarchive.
+                // + tabular time, quiet device · location meta, Unarchive, Delete.
                 div()
                     .id(("archived-row", ix))
                     .flex()
@@ -393,6 +405,39 @@ impl Render for ArchivedPage {
                                 "Unarchive"
                             })),
                     )
+                    .child(
+                        div()
+                            .id(("delete-archived", ix))
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .px(px(10.0))
+                            .py(px(4.0))
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .opacity(0.8)
+                            .when(deleting, |el| el.opacity(0.4).cursor_default())
+                            .when(!deleting, |el| el.cursor_pointer())
+                            .hover(|s| s.bg(theme.surface_raised).text_color(theme.danger))
+                            .tab_index(0)
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Delete {delete_title}"))
+                            .focus_visible(|s| s.border_2().border_color(theme.accent).opacity(1.0))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_delete(delete_id.clone(), delete_title.clone(), cx);
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("Delete")),
+                    )
                     .into_any_element()
             })
             .collect();
@@ -486,7 +531,6 @@ impl Render for ArchivedPage {
                         .child("Next"),
                 )
         });
-        let deleting = self.delete_all_task.is_some();
         let delete_all = (count > 0).then(|| {
             widgets::action_button(&theme, widgets::ActionTone::Danger)
                 .id("archived-delete-all")
@@ -560,16 +604,28 @@ impl Render for ArchivedPage {
     }
 }
 
-fn delete_all_body(count: usize) -> String {
-    match count {
+/// Heading, body and confirm label for the Delete dialog.
+fn delete_copy(confirm: &DeleteConfirm) -> (&'static str, String, &'static str) {
+    if let Some(title) = &confirm.single {
+        let title = crate::transcript::single_line(title);
+        return (
+            "Delete session?",
+            format!(
+                "\u{201C}{title}\u{201D} will be permanently deleted. This can\u{2019}t be undone."
+            ),
+            "Delete",
+        );
+    }
+    let body = match confirm.ids.len() {
         1 => "1 archived session will be permanently deleted. This can\u{2019}t be undone.".into(),
         n => format!(
             "{n} archived sessions will be permanently deleted. This can\u{2019}t be undone."
         ),
-    }
+    };
+    ("Delete all archived sessions?", body, "Delete all")
 }
 
-fn delete_all_failure(failed: usize) -> String {
+fn delete_failure(failed: usize) -> String {
     match failed {
         1 => "Couldn\u{2019}t delete 1 archived session. Try again.".into(),
         n => format!("Couldn\u{2019}t delete {n} archived sessions. Try again."),
@@ -662,19 +718,19 @@ mod tests {
                 // Escape closes the dialog before it can close Settings.
                 page.request_delete_all(cx);
                 assert!(page.dismiss_on_escape(cx));
-                assert!(page.delete_all_confirm.is_none());
+                assert!(page.delete_confirm.is_none());
                 assert!(!page.dismiss_on_escape(cx));
                 page.request_delete_all(cx);
                 assert_eq!(
-                    page.delete_all_confirm.as_deref(),
+                    page.delete_confirm.as_ref().map(|c| c.ids.as_slice()),
                     Some(&["b".to_string(), "c".to_string(), "restored".to_string()][..])
                 );
                 // Archived while the dialog was open: not part of what the
                 // user confirmed, so it must survive.
                 page.state
                     .update(cx, |state, _| state.chats.push(chat("late", true)));
-                page.delete_all(cx);
-                assert!(page.delete_all_confirm.is_none());
+                page.delete_confirmed(cx);
+                assert!(page.delete_confirm.is_none());
             })
             .unwrap();
         for (index, expected) in ["b", "c"].into_iter().enumerate() {
@@ -720,7 +776,7 @@ mod tests {
         );
         window
             .update(cx, |page, _, cx| {
-                assert!(page.delete_all_task.is_none());
+                assert!(page.delete_task.is_none());
                 let notice = page
                     .error
                     .clone()
@@ -733,10 +789,94 @@ mod tests {
             .unwrap();
     }
 
+    #[gpui::test]
+    fn deleting_one_row_deletes_only_that_chat(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (out, mut requests) = tokio::sync::mpsc::channel(16);
+        let (replies, inbound) = tokio::sync::mpsc::channel(16);
+        let engine =
+            crate::state::EngineHandle::from_test_client(zeron_rpc::RpcClient::new(out, inbound));
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            crate::settings::init(Default::default(), dir.path(), cx);
+            gpui_base::init(cx);
+            cx.set_global(crate::theme::Theme::default());
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| {
+                let mut state = AppState::new();
+                state.chats = vec![chat("a", true), chat("b", true)];
+                state.set_test_engine(engine);
+                state
+            });
+            ArchivedPage::new(state, cx)
+        });
+        window
+            .update(cx, |page, _, cx| {
+                page.request_delete("b".into(), "Fix login".into(), cx);
+                // A second row's Delete while the dialog is open replaces it.
+                page.request_delete("a".into(), "Old idea".into(), cx);
+                page.delete_confirmed(cx);
+                // No new dialog while the delete is in flight.
+                page.request_delete("b".into(), "Fix login".into(), cx);
+                page.request_delete_all(cx);
+                assert!(page.delete_confirm.is_none());
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let request: serde_json::Value =
+            serde_json::from_str(&requests.try_recv().expect("The row is deleted")).unwrap();
+        assert_eq!(request["params"]["op"], "deleteChat");
+        assert_eq!(request["params"]["chatId"], "a");
+        runtime.block_on(async {
+            let reply = serde_json::json!({"id":request["id"],"ok":{"ok":true}});
+            replies.send(reply.to_string()).await.unwrap();
+            while replies.capacity() < replies.max_capacity() {
+                tokio::task::yield_now().await;
+            }
+        });
+        cx.run_until_parked();
+        assert!(requests.try_recv().is_err(), "Only the one row is deleted");
+        window
+            .update(cx, |page, _, _| {
+                assert!(page.delete_task.is_none());
+                assert!(page.error.is_none());
+            })
+            .unwrap();
+    }
+
     #[test]
-    fn delete_all_copy_handles_one_and_many() {
-        assert!(delete_all_body(1).starts_with("1 archived session will"));
-        assert!(delete_all_body(146).starts_with("146 archived sessions will"));
+    fn delete_copy_names_one_row_and_counts_delete_all() {
+        let single = DeleteConfirm {
+            ids: vec!["a".into()],
+            single: Some("Fix\nlogin".into()),
+        };
+        let (heading, body, label) = delete_copy(&single);
+        assert_eq!((heading, label), ("Delete session?", "Delete"));
+        assert!(
+            body.starts_with("\u{201C}Fix login\u{201D} will be"),
+            "{body}"
+        );
+        let all = |n: usize| DeleteConfirm {
+            ids: vec![String::new(); n],
+            single: None,
+        };
+        assert_eq!(delete_copy(&all(1)).2, "Delete all");
+        assert!(
+            delete_copy(&all(1))
+                .1
+                .starts_with("1 archived session will")
+        );
+        assert!(
+            delete_copy(&all(146))
+                .1
+                .starts_with("146 archived sessions will")
+        );
     }
 
     #[test]
