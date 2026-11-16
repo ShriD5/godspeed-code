@@ -14854,10 +14854,6 @@ impl Render for Shell {
             .on_modifiers_changed(
                 cx.listener(|this, event, _, cx| this.on_modifiers_changed(event, cx)),
             )
-            .on_key_up(cx.listener(|this, event: &gpui::KeyUpEvent, window, cx| {
-                let pickers = this.composer.read(cx).pickers().clone();
-                pickers.update(cx, |p, cx| p.on_space_key_up(event.keystroke.key.as_str(), window, cx));
-            }))
             .on_action(cx.listener(|this, _: &ToggleCommandPalette, window, cx| {
                 tracing::info!(
                     target: "godspeed::keys",
