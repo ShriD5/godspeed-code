@@ -5592,9 +5592,15 @@ impl DocHost {
             return;
         };
         for path in attachments.iter_mut() {
-            if let Some(abs) = uploads.resolve_pending(path) {
+            if let Some(abs) = uploads.localize(path) {
                 *prompt = prompt.replace(path.as_str(), &abs);
                 *path = abs;
+            }
+        }
+        // Paths only the prompt names (older clients sent no list).
+        for path in crate::uploads::attachment_lines_in(&prompt.clone()) {
+            if let Some(abs) = uploads.localize(&path) {
+                *prompt = prompt.replace(path.as_str(), &abs);
             }
         }
     }
@@ -5628,8 +5634,8 @@ impl DocHost {
             return prompt.to_string();
         };
         let mut out = prompt.to_string();
-        for r in crate::uploads::pending_refs_in(prompt) {
-            if let Some(abs) = uploads.resolve_pending(&r) {
+        for r in crate::uploads::attachment_lines_in(prompt) {
+            if let Some(abs) = uploads.localize(&r) {
                 out = out.replace(&r, &abs);
             }
         }
