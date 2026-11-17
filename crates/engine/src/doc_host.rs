@@ -517,6 +517,17 @@ pub(crate) fn queued_message_prompt(text: &str, attachments: &[String]) -> Strin
     format!("{body}{trailer}")
 }
 
+/// What a queue row says: its words, or for files with no words, what a run
+/// of them says. A row needs text on every device (one without is refused and
+/// dropped as read), so files alone must not come to an empty one.
+fn queued_row_text(text: &str, has_files: bool) -> &str {
+    if has_files && text.trim().is_empty() {
+        ATTACHMENT_ONLY_PROMPT
+    } else {
+        text
+    }
+}
+
 fn queue_text_hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
@@ -3721,7 +3732,7 @@ impl DocHost {
         let id = new_id();
         handle.doc.push_queued(&QueuedMessage {
             id: id.clone(),
-            text: text.to_string(),
+            text: queued_row_text(text, !attachments.is_empty()).to_string(),
             attachments,
             hold_for_turn_end,
             issued_by: self.inner.config.device_id.clone(),
@@ -4078,7 +4089,10 @@ impl DocHost {
             }
 
             let replacement = match action {
-                FinishQueueEditAction::Commit => Some(text.unwrap_or_default()),
+                FinishQueueEditAction::Commit => Some(queued_row_text(
+                    text.unwrap_or_default(),
+                    attachments.map_or(!item.attachments.is_empty(), |kept| !kept.is_empty()),
+                )),
                 FinishQueueEditAction::Cancel | FinishQueueEditAction::ReleaseUnchanged => None,
                 FinishQueueEditAction::Discard => Some(""),
             };
