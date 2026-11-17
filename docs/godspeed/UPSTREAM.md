@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@7437e3e9 (2026-11-11)
+Synced through: zeronsh/zeron@09766b39 (2026-11-16)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -115,6 +115,71 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
   - Partly ported: 68c7ea28 (long chats on other devices) keeps Godspeed's relay without
     per-conn device checks and its own turn status report; respond_to_input still reads the
     whole transcript when it names a question older than the newest.
+- Deferred 2026-11-17 (7437e3e9..09766b39: 888 commits, 627 non-merge, 333 of them
+  `apps/zgx` only). 20 ported, the rest deferred or skipped. Full list:
+  `git log --no-merges 7437e3e9..09766b39`.
+  - zgx-only, deferred with zgx: every `apps/zgx` commit, zgx dictation (d9fbc6e5,
+    17c30f63, 3d513729, cf6dda0e, 86105fa5, 63774eef), the engine `plugins` API
+    (8e582ffc, 9bfdac98, 02a8ad24, b5f053f2, cdbd99f6, b2688c29, 564da441, e9a956ec,
+    a11374a6, c7020611, 99056a1f, 89a8f081, 8ea7bf8c, 8a91a02d, adcac463, 1ff869f7,
+    91d8a010), zgx Cloud and launch (08f06796, fe0f4f26, c44c6cf6, 0731c9e7).
+  - Durable Cloud, R2 attachments and Cloud wakes (built on cc7da5c2): e3c83bd8, 029fea30,
+    de157638, 6c4d8a0e, ae03b84a, c1eebcbc, 9c5ade8b, 9de23cf8, 415f1f24, 10019ccd,
+    8085dc59, 9742ffcd, 7537ba9d, 6c19e751, ff655e0e, dc8ae9dc, 1372e45d, 6da445f5,
+    c9b08217, 84f24f36, 321f14a1, 6bd35c92, d0a451a0, 451822be, db606643, d911ca96,
+    d96f4af7, a6839b28, 6e8b4c8a and 5b3f50b3 (keep every send until removed), 3324f850
+    and 2569857b (damaged chat store rebuilt), c7ea42df, 5ebeef3d, 538fd2b0, 9f43edfe,
+    c10b5ac3 (banners; Godspeed has no engine `desktop_notify`).
+  - The relay layer (chat generation 3, `chat2_host`) and everything built on it,
+    including the snapshot-delta and registry write series: a9883e58, cbee9590, adb3a9ed,
+    4fa6fb26, 17bb92de, 3c45b6d3, 2a56dca5, f85f3444, 83004279, eb2ff018, ba79b4df,
+    25ece15a, f2197ca0, d2dce83c, d46de0ea, cee503f5, 0a49ea3e, f9608906, 93da4b72,
+    6e473538, bf2c8e94, 09811cf5, 20bd70a5, bff39897, ec959a2f, 12c03242, 4257eb8c,
+    bee81e89, ea2c29cc, f295d210, a3f6c352, d1d862f3, fe5f24a8, 5528c750, 631622ed,
+    bb247410, e9e78b38, 3182a970, fe70ba30, 5f0f79d1, b987c50e, 2f2be538, d3391b2c,
+    a0eca081, e8abc385, ba533912, aec924c1, 09b2c76b, 5ac47758, a2497307, 7c553f43,
+    8602f872, cb3b88a0, 398cdabb, 5f299638, 4fc08058, 7ff0c663, a6336cb0, 7748351f,
+    cd3d0020, 29ad3524, c004d547, ebf1c437, 6f4e0e51, a18277f5, b306399c, 3fb3dbbc,
+    1783a9e1, 705b3084, bd0c5329, 6248f098, df4eecfe, 91033835, 8ada39b7, b36652c7,
+    7a062eeb, 95d7bfc0, b9cf705c, da3ec3f4, fa55493f, 98199a5b, 41417142, e6b95954,
+    952ec8a3, 3510f868, bd379611, 3ea858b9, 1a7dc2e4.
+  - Update transaction and beta channel (with a8d1dc6e): e9d377c0, 645290f7, 080a3c39,
+    644961c8, b5ebb7c7, dde81854, 132bc5f1, 68cc6347, 108b4444, a0a4efcc, 71144518,
+    bb9ba180, 989c418c, ee37cc50, 7f01dad0, 6bf63430.
+  - Worth dedicated ports (standalone, but conflict with Godspeed's own design):
+    - 9290078c (deleting a chat ends its run and takes its children): conflicts with
+      Godspeed's session wake/upsert, title regeneration and run start; also wires
+      plugins and Cloud machine deletion.
+    - 61d91d37 (preview scan via libproc instead of lsof/ps): Godspeed's
+      `discovery.rs` differs; ~400 lines of FFI.
+    - device_stats MCP tool: e1525b28, 325f478a, d45a30af.
+    - Tool result images: c17262cf, bce5f058, a2115820, 3ef287e2, 204f9ca2, 1e910d91,
+      067b9e7d, a4401fef.
+    - Model picker provider names and Claude model ordering: f545d1d7, 33cc9d4e,
+      d8f9a1ad, 60d85b85, 80b3d416, f5d0530e, f224da9e; hosted model list 7a1f03f7.
+    - Provider accounts for Pi/OpenCode/Hermes, API keys: a26f5f4c, 6c7b1ac2, 24cae278,
+      3d07f58d, 4ec5b50c, 59b2f1c4, adc82e90.
+    - Upstream's Auto access mode: 4b983c6c, e934f876, 31ac609b (Godspeed has its own
+      `Auto`; see 1295d577).
+    - A project's name and icon belong to its repository: 446e4343, 04d5f345.
+    - c1168b6b (a send taken before the open chat's publish): ported alone, its test
+      still saw a send in a 3,000-entry chat wait 195 ms vs 17 ms; it needs the read
+      cache series above (4fc08058, 398cdabb, b36652c7) to pay off. Its test e6b95954
+      goes with it.
+    - A revived turn waits for the IPC port: 3b434a68, a1847745, 69e03cbc, b6b79ab3,
+      003b4feb, fd3bb08c (need `deferred.rs` and run recovery from 2e151ca6).
+    - iOS/Android: 2e5a678a, 5986bf3b (Activity; need a02a326b), fe8be7fe, 1bc3bcdc,
+      bindings regenerations 263fd8d8, 4e4faa64, f852eab0.
+  - Partly ported: 6ab00cf5 without the provider-switch hold (cc7da5c2); 75fbbbb6's
+    test without the deferred a2113ac8 Tool fields; 50ba9b78 with its test rewritten for
+    Godspeed's access model; ac1700f2 without its update-status test hunks.
+  - Skipped: version bumps (854248bd, 51d069c7, 53fa1720, 8f75cc28, 0733d73d, 703500ee,
+    464377bb, 82502ace, 2d480e9f, e48dcbed, 55a5c392), edge-only, CI and release
+    scripts, relay design docs, d0c77e9c (`apps/zeron`), 7cf2ba66 (zgx exe icon),
+    0f9a7500 (`crates/cli` log rotation; Godspeed has no `crates/cli`), 2252f736 (fixes a
+    codex `account_id` check Godspeed doesn't have; see adf87317), 58236762 (Linux
+    release LTO), 749ed748 (a test for upstream's generic
+    `TranscriptFrame::reset`, which Godspeed's isn't).
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
