@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-18 | Keep the computer awake while agents work, on by default with a setting; released a minute after the last run (`587deab7d3`, `8a6342e761`) | PR #TBD |
+| 2026-11-18 | Keep the computer awake while agents work, on by default with a setting; released a minute after the last run (`587deab7d3`, `8a6342e761`) | PR #112 |
 | 2026-11-18 | Resume a stopped Claude, Codex, OpenCode or Cursor thread natively, without sending a new user message (`9e19b7f7e1`) | queued (check how our Continue after a stop resumes; with the 2026-11-12 context-handoff row) |
 | 2026-11-18 | Issue tracking: an Issues page for GitHub, GitLab, Azure DevOps, Forgejo and Linear issues, linked to threads, with issue tools for agents (`20501a0221`, `85dcfa61ca`, `adffb3623f`, `0597b9edcd`, `86863beede`, `60f7e5d9b1`) | queued (new T3-GAPS row; large, not a one-run port) |
 | 2026-11-18 | `t3.json` names sparse-checkout patterns for new worktrees (`4f781196e1`) | queued (new T3-GAPS row; `repos.rs` worktree creation) |
