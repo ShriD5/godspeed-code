@@ -309,6 +309,15 @@ impl ClaudeHarness {
         // stream-json`) forwards its own subagents' text too, which only
         // adds tagged frames to its stream.
         cmd.env("CLAUDE_CODE_FORWARD_SUBAGENT_TEXT", "1");
+        // No session title of the CLI's own. Godspeed titles chats itself and
+        // nothing reads the CLI's title, but in stream-json mode the CLI
+        // sends one more Haiku request to name every session whose first
+        // prompt is 10+ characters: the chat's run, and every titling run
+        // too (its prompt is long), ~4.3 KB each on every new chat. The
+        // variable latches the CLI's titling as done (2.1.322 `hhi()`); it
+        // also leaves the process title and terminal tab alone, which a
+        // piped CLI never shows anyway. A `claude` the run starts inherits it.
+        cmd.env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
         // "200K" really limits the window (see `caps_context_at_200k`).
         if caps_context_at_200k(request) {
             cmd.env("CLAUDE_CODE_DISABLE_1M_CONTEXT", "1");
@@ -2556,6 +2565,14 @@ mod tests {
             .find(|(key, _)| *key == "CLAUDE_CODE_FORWARD_SUBAGENT_TEXT")
             .and_then(|(_, value)| value.map(|v| v.to_os_string()));
         assert_eq!(value.as_deref(), Some(std::ffi::OsStr::new("1")));
+        // No Haiku session-title request of the CLI's own: Godspeed titles
+        // chats itself.
+        let title = cmd
+            .as_std_mut()
+            .get_envs()
+            .find(|(key, _)| *key == "CLAUDE_CODE_DISABLE_TERMINAL_TITLE")
+            .and_then(|(_, value)| value.map(|v| v.to_os_string()));
+        assert_eq!(title.as_deref(), Some(std::ffi::OsStr::new("1")));
         // A Claude Code session that launched Godspeed exports these; a run
         // that inherits them joins that session.
         for key in [
