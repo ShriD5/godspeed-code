@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@09766b39 (2026-11-16)
+Synced through: zeronsh/zeron@c58f65e8 (2026-11-18)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -180,6 +180,43 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     codex `account_id` check Godspeed doesn't have; see adf87317), 58236762 (Linux
     release LTO), 749ed748 (a test for upstream's generic
     `TranscriptFrame::reset`, which Godspeed's isn't).
+- Deferred 2026-11-18 (09766b39..c58f65e8: 150 commits, 124 non-merge, 49 of them
+  `apps/zgx` only, deferred with zgx). 13 ported, the rest below.
+  - Agents' Godspeed tools served from the engine over Streamable HTTP, not a process per
+    agent: c48876c38, with 4f95a9bd6 and 509857e4f (endpoint limits), 5b5d6a04b (no token
+    on the command line) and 4b0f499ef (no fsync of the private MCP config). Godspeed
+    still passes `--mcp-config` on the command line and has no `mcp/src/http.rs`.
+  - Idle agent stop (an idle agent process ends after 2 min, 30 s when no window shows
+    its chat): c987be092, 519fec249, dd48d0360, ed0f2729d, 89b6f7baa, 94bb83933,
+    74cd87f16, 7c6f3e6b8. Conflicts in sessions.rs/process.rs; worth a dedicated port.
+  - Warm starts (an agent launched while the first message is typed): 4941b7b90,
+    7661575d4, 9e44ed8f5, e737faf46 (need `managed.rs`; the UI half is zgx).
+  - Agents die with their engine (pid registry, PR_SET_PDEATHSIG): f558b51af. Worth a
+    dedicated port; builds on the Claude refresh lock (dd0c36fa).
+  - The idle engine series (one wall-clock beat grid in `zeron_sync::wake`, OS wake
+    notices, sleeping reapers and watchers): 9a11f98d7, 39277756e, 357cf2813, bd579e57d,
+    413382fc7, a881538ca, 025bec869, 9237a0390, 7c8fa5edc, 18fc4b086, a9b4790e1 (relay
+    layer), 8f8f39cff (needs 61d91d37), 20dadc810 and 69768a512 (upstream's tagged
+    allocator wrapper), 8a8cdc607 and 7654168e6 (`idle_rig` needs `connect_ipc`).
+    Ported from it: 45b79a8f1, 98924b823, c19d45922 (by hand), f1ecad286, 445f70a00.
+  - Keep running after quit: 758e7a7a1, ebb7dd048 (zgx setting, engine `keep_running.rs`).
+  - Titles and `first_word` tracing: 9c80a0e1c, dd460b304, 82ce7506f, e068e04a7 (need
+    `wake_trace` and upstream's title trigger).
+  - Commands on other devices, Cloud isolation: eb42145a9, 41135ffcb, 198324c09,
+    c8ea12ceb, 7ca6d8577, 5a63a5803, 85d2dc3a7, e8069c403, 6069c35c9, 8206fe614 (need
+    `agent_gate.rs`, the background band and Cloud).
+  - b0e62255d (keep chats on this device while signed in): its engine half has no
+    setting in Godspeed's UI yet.
+  - c58f65e8a (iOS sidebar hide button): Godspeed's iOS toolbar (inbox, board) differs.
+  - Partly ported: f38065825 brought only `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` (its MCP
+    instructions rewrite is Zeron's text); 8815fb235 brought `bounded_file` and the
+    model-context hash only (its other readers aren't in Godspeed); e51676b29 without
+    the deferred `tool_exchange`; 6191678a6 without its cut-off-turn test (Godspeed
+    doesn't revive a turn cut off by a graceful shutdown).
+  - Skipped: fee8cfa1b (upstream retires the GPUI app, which is Godspeed's), 8b2f4b02b
+    (landing), 85c1fe2b0 (version bump), bc1ecbb3f and 4e86e6bcc (3 warm docs, then
+    back to 12: no net change), 9a6c3d9e3 and f0ab203f6 (mock `/longthread`, `/stream`
+    bench modes for Zeron's ademark rig).
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
