@@ -1949,6 +1949,8 @@ impl SessionsEngine {
                 tracing::warn!(chat = %chat_id, error = %err, "shutdown interrupt failed");
             }
         }
+        // Lines still waiting to be written (`run_journal`'s batching).
+        self.inner.journal.flush_all();
     }
 
     fn is_live(&self, chat_id: &str, run_id: &str) -> bool {
@@ -3947,6 +3949,8 @@ async fn drive_run(
                     for sink in subagents.values_mut() {
                         sink.flush(&device_id);
                     }
+                    // The journal keeps up with the transcript it backs.
+                    inner.journal.flush(&chat_id);
                     continue;
                 }
                 // Turn-quiesce watchdog (see the knob above). Armed only when the
