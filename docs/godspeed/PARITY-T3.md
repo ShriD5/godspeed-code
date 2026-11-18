@@ -342,7 +342,8 @@ directly comparable; the movers are listed below.
 | Fonts: UI, code, terminal; sizes | ✅ | no separate prompt font |
 | Chat width | ✅ | |
 | Theme from server (`t3 theme set`) | ❌ | |
-| Launch at login, menu-bar item, keep awake while working | ❌ | |
+| Launch at login, menu-bar item | ❌ | |
+| Keep awake while agents work | ✅ | `engine/src/keep_awake.rs`: `caffeinate -i` / `systemd-inhibit` while runs work or wait, released a minute after; Settings → General |
 | ➕ Wallpapers, glass, accent presets, Appshots | ➕ | `settings/appearance.rs`, `appshots.rs` |
 
 ## 16. Onboarding, desktop, CLI, updates

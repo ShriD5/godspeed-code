@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
+Reviewed T3 through: pingdotgg/t3code@6a29d58d14 (2026-11-18)
 
 ## Rules
 
@@ -23,6 +23,18 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-18 | Keep the computer awake while agents work, on by default with a setting; released a minute after the last run (`587deab7d3`, `8a6342e761`) | PR #TBD |
+| 2026-11-18 | Resume a stopped Claude, Codex, OpenCode or Cursor thread natively, without sending a new user message (`9e19b7f7e1`) | queued (check how our Continue after a stop resumes; with the 2026-11-12 context-handoff row) |
+| 2026-11-18 | Issue tracking: an Issues page for GitHub, GitLab, Azure DevOps, Forgejo and Linear issues, linked to threads, with issue tools for agents (`20501a0221`, `85dcfa61ca`, `adffb3623f`, `0597b9edcd`, `86863beede`, `60f7e5d9b1`) | queued (new T3-GAPS row; large, not a one-run port) |
+| 2026-11-18 | `t3.json` names sparse-checkout patterns for new worktrees (`4f781196e1`) | queued (new T3-GAPS row; `repos.rs` worktree creation) |
+| 2026-11-18 | Drop folders on the sidebar to add them as projects (`f419698aea`); add-project folder search matches substrings and fuzzy subsequences (`752bdaeb70`) | queued (new T3-GAPS row; our drop zone only attaches files to the composer) |
+| 2026-11-18 | Choose the terminal's interactive shell (`9795f45f23`); terminal close confirmation becomes optional (`48a64a8b68`) | queued (check `engine/src/terminals.rs` shell choice) |
+| 2026-11-18 | Unassign default shortcuts (`d27002bf99`) | queued (Godspeed shortcuts have no unbound state; see PR #106 notes) |
+| 2026-11-18 | Sidebar titles glimmer while they regenerate (`ccf96b2f65`) | queued (small follow-up to PR #106) |
+| 2026-11-18 | Agents restyle T3 with theme colors, CSS and full-size background images (`42057b82d0`, `7d32075e37`, `e82050b8b9`, `9d28fc921b`) | skipped (CSS theming is web-only; Godspeed themes are JSON plus wallpapers) |
+| 2026-11-18 | Edit earlier messages for Antigravity and Cursor by rewinding (`a99faf5a62`, `13ecf5b22e`) | skipped (rewind is out of scope) |
+| 2026-11-18 | Usage history retention, OpenCode usage limits, Codex cyber access program, CLI model options, PR filter views, spreadsheet column resize, copy snapshots, issue-closing for denounced authors, check-suite PR watch, T3 Connect device approval, Windows service updates, voice streaming and local speech model picks (`428d365932`, `63d5c6dfe4`, `359daaf367`, `84d34d40f8`, `2d265dc410`, `5cff012416`, `750e492ed6`, `88621ac593`, `e0d6aadb88`, `a2edd281df`, `4247b5aa1a`, `bfd37b2b53`) | skipped (usage page and Connect out of scope; minor or host-specific) |
+| 2026-11-18 | ~1,600 other commits: server/web perf (long-thread reads, git status, terminal batching), mobile, desktop/Electron, SSH, relay, Pi/Cursor/Grok/ACP fixes, GitLab/Azure DevOps/Forgejo, settings i18n, CI and docs | skipped (internal/minor) |
 | 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |

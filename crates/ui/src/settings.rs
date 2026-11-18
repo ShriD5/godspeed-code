@@ -29,6 +29,7 @@ pub mod servers;
 pub mod files;
 pub mod harnesses;
 pub mod import;
+pub mod keep_awake;
 pub mod notifications;
 pub mod question_timeout;
 pub mod shortcuts;

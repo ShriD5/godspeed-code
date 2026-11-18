@@ -42,6 +42,7 @@ pub(crate) mod home_index;
 mod device_settings;
 mod http_error;
 pub mod instance_lock;
+pub mod keep_awake;
 pub mod limit_recovery;
 pub mod local_import;
 pub mod message_index;
@@ -218,6 +219,9 @@ pub struct EngineCore {
     pub limit_recovery: limit_recovery::LimitRecoveryService,
     /// Snooze wake and opt-in auto-settle for the chats hosted here.
     pub chat_lifecycle: chat_lifecycle::ChatLifecycleService,
+    /// Holds off system sleep while runs here work. Opened with the core;
+    /// holding starts with [`EngineRuntime::start_keep_awake`].
+    pub keep_awake: keep_awake::KeepAwakeService,
     /// Storage listing and the opt-in sweep of merged or untouched worktrees.
     pub worktree_cleanup: worktree_cleanup::WorktreeCleanupService,
     pub device_id: String,
@@ -557,6 +561,7 @@ impl EngineCore {
             ),
         );
         worktree_cleanup.start();
+        let keep_awake = keep_awake::KeepAwakeService::open(data_dir);
         let delegations = delegation::DelegationNotifications::start(
             data_dir,
             workspace.clone(),
@@ -588,6 +593,7 @@ impl EngineCore {
             delegations,
             limit_recovery,
             chat_lifecycle,
+            keep_awake,
             worktree_cleanup,
             device_id,
             local_import,
@@ -736,6 +742,7 @@ impl EngineCore {
         .with_pr_watch(self.pr_watch.clone())
         .with_limit_recovery(self.limit_recovery.clone())
         .with_chat_lifecycle(self.chat_lifecycle.clone())
+        .with_keep_awake(self.keep_awake.clone())
         .with_worktree_cleanup(self.worktree_cleanup.clone())
         .with_chat_import(self.chat_import.clone())
         .with_message_index(self.message_index.clone())
@@ -780,6 +787,7 @@ impl EngineCore {
         self.agents.shutdown().await;
         self.limit_recovery.shutdown().await;
         self.chat_lifecycle.shutdown().await;
+        self.keep_awake.shutdown().await;
         self.worktree_cleanup.shutdown().await;
         self.previews.shutdown().await;
         self.harness_updates.shutdown().await;
@@ -902,6 +910,14 @@ impl EngineRuntime {
     /// checks. Never from unit tests: it publishes process-wide state.
     pub fn start_build_slots(&self) {
         self.core.build_slots.start();
+    }
+
+    /// Hold off system sleep while runs work (unless turned off). Never from
+    /// unit tests: the hold is machine-wide.
+    pub fn start_keep_awake(&self) {
+        self.core
+            .keep_awake
+            .start(self.core.sessions.watch_sessions());
     }
 
     /// Start the anonymous daily usage ping to `{edge_url}/telemetry/v1/ping`
@@ -1241,6 +1257,7 @@ impl Engine {
         let runtime = Self::assemble_runtime(&config, auth, profile).await?;
         runtime.start_telemetry(&config.edge_url, false);
         runtime.start_build_slots();
+        runtime.start_keep_awake();
         // The desktop app or `godspeed update` may install a newer binary under
         // a running service; restart into it once no run or terminal is live.
         if let Some(updater) = runtime.core().updater() {

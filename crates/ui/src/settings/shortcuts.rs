@@ -101,6 +101,8 @@ pub struct ShortcutsPage {
     thread_naming: Entity<crate::settings::thread_naming::ThreadNamingCard>,
     /// Settings → General's usage-limit recovery default.
     usage_limits: Entity<crate::settings::usage_limits::UsageLimitsCard>,
+    /// Settings → General's keep-awake-while-agents-work switch.
+    keep_awake: Entity<crate::settings::keep_awake::KeepAwakeCard>,
     /// Settings → General's opt-in auto-settle of inactive threads.
     thread_lifecycle: Entity<crate::settings::thread_lifecycle::ThreadLifecycleCard>,
     /// Settings → General's opt-in question timeout default.
@@ -160,6 +162,10 @@ impl ShortcutsPage {
             usage_limits: {
                 let state = state.clone();
                 cx.new(|cx| crate::settings::usage_limits::UsageLimitsCard::new(state, cx))
+            },
+            keep_awake: {
+                let state = state.clone();
+                cx.new(|cx| crate::settings::keep_awake::KeepAwakeCard::new(state, cx))
             },
             thread_lifecycle: {
                 let state = state.clone();
@@ -1175,6 +1181,7 @@ impl Render for ShortcutsPage {
                                     ))
                                     .child(self.thread_naming.clone())
                                     .child(self.usage_limits.clone())
+                                    .child(self.keep_awake.clone())
                                     .child(self.thread_lifecycle.clone())
                                     .child(self.question_timeout.clone())
                                     .child(self.worktrees.clone())
