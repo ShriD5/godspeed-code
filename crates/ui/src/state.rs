@@ -452,6 +452,8 @@ impl EngineHandle {
                     // engine starts (Settings → General → Builds).
                     #[cfg(not(test))]
                     engine_runtime.start_build_slots();
+                    #[cfg(not(test))]
+                    engine_runtime.start_keep_awake();
                     *runtime_for_boot.lock().await = Some(engine_runtime);
                     if service_for_boot.set(service).is_err() {
                         state_tx.send_replace(DeferredEngineState::Failed(

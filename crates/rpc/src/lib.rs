@@ -428,6 +428,12 @@ pub mod methods {
     /// `{chatId}` → `ConductorMembership | null`.
     pub const GET_CONDUCTOR_MEMBERSHIP: &str = "GetConductorMembership";
 
+    // Keep awake while agents work: a setting of the engine that runs them.
+    /// `{}` → `KeepAwakeSettings`.
+    pub const GET_KEEP_AWAKE_SETTINGS: &str = "GetKeepAwakeSettings";
+    /// `KeepAwakeSettings` → `KeepAwakeSettings`.
+    pub const SET_KEEP_AWAKE_SETTINGS: &str = "SetKeepAwakeSettings";
+
     // Usage-limit recovery (`zeron_proto::ChatLimit`). Relay-forwardable: the
     // chat's host device owns the recovery timer and its default.
     /// `{}` → `LimitRecoverySettings`.

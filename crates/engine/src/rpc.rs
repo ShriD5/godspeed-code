@@ -61,6 +61,7 @@ mod chat_lifecycle;
 mod worktree_cleanup;
 mod conductor;
 mod git_actions;
+mod keep_awake;
 mod limit_recovery;
 mod message_search;
 mod preview_agent;
@@ -845,6 +846,7 @@ pub struct EngineRpc {
     pr_watch: Option<crate::pr_watch::PrWatchService>,
     limit_recovery: Option<crate::limit_recovery::LimitRecoveryService>,
     chat_lifecycle: Option<crate::chat_lifecycle::ChatLifecycleService>,
+    keep_awake: Option<crate::keep_awake::KeepAwakeService>,
     worktree_cleanup: Option<crate::worktree_cleanup::WorktreeCleanupService>,
     telemetry: Option<crate::Telemetry>,
     /// Shared by every clone: the window attached as the preview driver.
@@ -924,6 +926,7 @@ impl EngineRpc {
             pr_watch: None,
             limit_recovery: None,
             chat_lifecycle: None,
+            keep_awake: None,
             worktree_cleanup: None,
             telemetry: None,
             preview_driver,
@@ -1018,6 +1021,11 @@ impl EngineRpc {
         lifecycle: crate::chat_lifecycle::ChatLifecycleService,
     ) -> Self {
         self.chat_lifecycle = Some(lifecycle);
+        self
+    }
+
+    pub fn with_keep_awake(mut self, keep_awake: crate::keep_awake::KeepAwakeService) -> Self {
+        self.keep_awake = Some(keep_awake);
         self
     }
 
@@ -2603,6 +2611,9 @@ impl RpcService for EngineRpc {
         }
         if chat_lifecycle::handles(method) {
             return self.chat_lifecycle_rpc(method, params);
+        }
+        if keep_awake::handles(method) {
+            return self.keep_awake_rpc(method, params);
         }
         if worktree_cleanup::handles(method) {
             return self.worktree_cleanup_rpc(method, params).await;

@@ -119,7 +119,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 
 - Decided out in `docs/godspeed/T3-WATCH.md`: plan mode, rewind and edit-from-here, checkpoints, account fallback, mid-thread provider switching, T3 Connect, guest share, mobile compatibility, SnapShots, browser cookie import, usage and cost page, Telegram.
 - Skipped in the T3-WATCH ledger: PDF, SVG, audio and office previews, T3's settings-as-modal design, Mermaid (Godspeed already renders it).
-- No T3 counterpart, so not gaps: menu-bar tray item, launch at login, keep the Mac awake. T3 has no tray, login item or keep-awake code.
+- No T3 counterpart, so not gaps: menu-bar tray item, launch at login. T3 has no tray or login item.
 - Already present (no row): element picker and annotation chips (`crates/ui/src/browser/annotate.js`), cite selection (`transcript.rs` `render_cite_button`), mark unread (`shell.rs` `CHAT_MENU_ROW_UNREAD`), settle with an undo toast (`shell/thread_lifecycle.rs` `remember_lifecycle_undo`), custom snooze time (`SnoozeCustom`), working duration and diff stats on sidebar rows (`shell/spaces.rs`), composer list continuation and renumbering (`composer_markdown.rs`, `composer.rs` `newline_edit`), copy message, find in thread, sidebar pin drag.
 
 ## Stale rows in docs/godspeed/PARITY-T3.md
@@ -132,6 +132,9 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 |---|---|---|---|---|
 | Agents | Child-thread approvals appear in the parent thread with the child's name and Approve / Decline, answerable without switching threads | `apps/web/src/components/chat/ChildThreadApprovals.tsx`; `packages/client-runtime/src/state/threadRequests.ts` (`createChildThreadApprovalsAtom`) (`70f475f511`) | PARTIAL: the lanes card shows a child's Needs approval status and opens it in the right pane (`ui/src/shell/session_lanes.rs`); no inline card in the parent composer | Med |
 | Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
+| Projects | Drop folders on the sidebar to add them as projects; add-project folder search matches fuzzy subsequences | `apps/web` (`f419698aea`, `752bdaeb70`) | MISSING: the window drop zone attaches files to the composer (`shell/chat_dropzone.rs`) | low |
+| Worktrees | Name sparse-checkout patterns for new worktrees in the project config | `t3.json` (`4f781196e1`) | MISSING: worktrees check out the whole tree (`engine/src/repos.rs`) | low |
+| Issues | Issues page for GitHub, GitLab, Azure DevOps, Forgejo and Linear: filter, sort, link an issue to a thread, issue tools for agents | `apps/server` issues core (`20501a0221`, `0597b9edcd`, `86863beede`, `60f7e5d9b1`) | MISSING: Godspeed reads PRs only (`source_control.rs`) | med |
 | Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
 | Chat | Divider in the thread when the model or effort changes between messages ("Opus 5.5 high → Sonnet 5.5") | `apps/server/src/orchestration-v2/modelSwitch.ts`; `apps/web/src/components/chat/V2LifecycleRow.tsx` (`ModelSwitchRow`) | MISSING: only the chat's current config is kept (`proto/src/entities.rs` `ChatConfig`) | med |
 | Settings | Managed policy: an organization-wide file that pins T3 settings | T3 `d897d3f3f0` | MISSING: no policy layer | med |
@@ -221,6 +224,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Keep the computer awake while agents work (on by default, Settings → General); the hold ends a minute after the last run | #112 |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |

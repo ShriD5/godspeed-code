@@ -462,6 +462,25 @@ pub struct LimitRecoverySettings {
     pub auto_resume: bool,
 }
 
+/// Device setting (`GetKeepAwakeSettings`): hold off system sleep while runs
+/// on this engine work or wait on input. A closed laptop lid still sleeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepAwakeSettings {
+    #[serde(default = "keep_awake_default")]
+    pub enabled: bool,
+}
+
+fn keep_awake_default() -> bool {
+    true
+}
+
+impl Default for KeepAwakeSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// A choice from the composer's limit banner (`SetChatLimitRecovery`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
