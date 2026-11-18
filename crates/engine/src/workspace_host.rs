@@ -1869,6 +1869,11 @@ async fn relay_probe_task(weak: Weak<WorkspaceHostInner>) {
 /// and refreshes presence every [`PRESENCE_INTERVAL_MS`]. Holds only a weak
 /// handle so a dropped host tears the task down.
 async fn workspace_task(weak: Weak<WorkspaceHostInner>, mut changed_rx: watch::Receiver<u64>) {
+    // Presence is other devices' and ours to them, through the edge: a
+    // local profile (no edge, this device alone) has none to refresh.
+    let synced = weak
+        .upgrade()
+        .is_some_and(|inner| inner.config.edge.is_some());
     let mut presence =
         tokio::time::interval(std::time::Duration::from_millis(PRESENCE_INTERVAL_MS));
     presence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1897,7 +1902,7 @@ async fn workspace_task(weak: Weak<WorkspaceHostInner>, mut changed_rx: watch::R
                     tracing::warn!(%error, "registry snapshot worker failed");
                 }
             }
-            _ = presence.tick() => {
+            _ = presence.tick(), if synced => {
                 let Some(inner) = weak.upgrade() else { break };
                 inner.presence_tick();
                 // Re-publish on the same cadence: remote heartbeats decay when a
