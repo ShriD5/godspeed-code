@@ -477,6 +477,7 @@ mod tests {
             started_at: pid as u64,
             address: ([127, 0, 0, 1], port).into(),
             zeron_owned: true,
+            test_run: false,
         }
     }
     #[test]
