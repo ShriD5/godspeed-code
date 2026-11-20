@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
+Reviewed T3 through: pingdotgg/t3code@2c33cbdf02 (2026-11-20)
 
 ## Rules
 
@@ -23,6 +23,16 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-20 | Usage limit rows show your pace (ahead, on or under) and a mark for the time left in the window (`669e2ea8e7`) | PR #114 |
+| 2026-11-20 | Agents read, open, update, respond to and merge PRs, read failing CI logs and re-run checks, and land a GitHub stack, through MCP tools (`5d05902ddd`, `f7041fabc8`, `37f8a5325c`) | queued (our MCP server has chat and preview tools only; agents use `gh` directly) |
+| 2026-11-20 | Reference a side chat from its main thread with Add to chat and @ (`bb1a66a3a4`) | queued (check the composer @ picker in `ui/src/composer`) |
+| 2026-11-20 | Archiving a thread also archives its side chats (`ae3c7a68b4`) | queued (check the archive path in `doc_host.rs`; delete already cascades) |
+| 2026-11-20 | A thread that finished while you were away opens at its end (`284d3de3cc`) | queued (check transcript scroll restore on reopen) |
+| 2026-11-20 | Closing a terminal also stops its background jobs (`207fc2c48b`) | queued (check the PTY close kills the whole process group) |
+| 2026-11-20 | Agents on hosts without swap are OOM-killed instead of throttled for hours (`f9e45e4363`) | queued (with the memory-pressure guard idea from Theo's notes; Linux only) |
+| 2026-11-20 | Agents can tell another agent's message from the user's (`b0b2c4f952`) | skipped (MCP `send_message` already attributes the sending chat) |
+| 2026-11-20 | Issues page polish (hover cards, project filter, linked threads, fork upstream issues), preview tunnels and port forwarding between environments, pairing-link DPoP renewal, fx backends (`378584a760`, `cbae97f620`, `420d1b5900`, `dd512d86c5`, `00c6adbdce` and follow-ups) | skipped (Issues page is still queued as a whole; environment links and fx are T3 relay or CLI specific) |
+| 2026-11-20 | ~360 minor fixes: mobile, Cursor/Pi/Hermes/Antigravity/OpenCode/ACP providers, RTF and notebook attachments, SSH, perf in T3's server and client runtime, i18n, themes, release feed, docs | skipped (internal/minor) |
 | 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |

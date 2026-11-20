@@ -157,6 +157,62 @@ pub fn window_summary(window: &AgentUsageWindow, now: DateTime<Utc>) -> String {
     line
 }
 
+/// How fast a window is being spent against an even burn to its reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pace {
+    Ahead,
+    On,
+    Under,
+}
+
+impl Pace {
+    pub fn label(self) -> &'static str {
+        match self {
+            Pace::Ahead => "Ahead of pace",
+            Pace::On => "On pace",
+            Pace::Under => "Under pace",
+        }
+    }
+}
+
+/// Points of usage either side of the elapsed share that still read as on pace.
+const PACE_BAND: f32 = 0.05;
+
+fn window_length(kind: WindowKind) -> Option<chrono::TimeDelta> {
+    match kind {
+        WindowKind::FiveHour => Some(chrono::TimeDelta::hours(5)),
+        WindowKind::Weekly => Some(chrono::TimeDelta::days(7)),
+        WindowKind::Other => None,
+    }
+}
+
+/// The share of the window already elapsed (0.0..=1.0), for windows with a
+/// known length and reset time. Pure.
+pub fn elapsed_share(window: &AgentUsageWindow, now: DateTime<Utc>) -> Option<f32> {
+    let length = window_length(window_kind(&window.label))?.num_seconds() as f32;
+    let left = (window.resets_at? - now).num_seconds() as f32;
+    Some(((length - left) / length).clamp(0.0, 1.0))
+}
+
+/// Whether usage runs ahead of, on, or under the elapsed share. Pure.
+pub fn pace(window: &AgentUsageWindow, now: DateTime<Utc>) -> Option<Pace> {
+    let gap = window.used_fraction.clamp(0.0, 1.0) - elapsed_share(window, now)?;
+    Some(if gap > PACE_BAND {
+        Pace::Ahead
+    } else if gap < -PACE_BAND {
+        Pace::Under
+    } else {
+        Pace::On
+    })
+}
+
+/// "Ahead of pace · 40% of the window left", or `None` without a pace. Pure.
+pub fn pace_summary(window: &AgentUsageWindow, now: DateTime<Utc>) -> Option<String> {
+    let pace = pace(window, now)?;
+    let left = ((1.0 - elapsed_share(window, now)?) * 100.0).round() as u32;
+    Some(format!("{} · {left}% of the window left", pace.label()))
+}
+
 /// The tachometer's hover: each window on its own line, 5-hour first.
 pub fn gauge_tooltip(account: &AgentAccount, now: DateTime<Utc>) -> String {
     let mut lines: Vec<String> = ordered_windows(account)
@@ -858,6 +914,30 @@ mod tests {
             window_summary(&window("Month", 0.5, None), now),
             "Month 50%"
         );
+    }
+
+    #[test]
+    fn pace_compares_usage_with_the_elapsed_window() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 20, 12, 0, 0).unwrap();
+        let in_hours = |hours: i64| Some(now + chrono::TimeDelta::hours(hours));
+        // Three of five hours left: 40% elapsed.
+        let session = |used: f32| window("Session", used, in_hours(3));
+        assert_eq!(pace(&session(0.70), now), Some(Pace::Ahead));
+        assert_eq!(pace(&session(0.43), now), Some(Pace::On));
+        assert_eq!(pace(&session(0.10), now), Some(Pace::Under));
+        assert_eq!(
+            pace_summary(&session(0.70), now).as_deref(),
+            Some("Ahead of pace · 60% of the window left")
+        );
+        let week = window("Week", 0.5, in_hours(84));
+        assert_eq!(elapsed_share(&week, now), Some(0.5));
+        assert_eq!(pace(&week, now), Some(Pace::On));
+        assert_eq!(
+            elapsed_share(&window("Session", 0.1, in_hours(-1)), now),
+            Some(1.0)
+        );
+        assert_eq!(pace(&window("Month", 0.9, in_hours(24)), now), None);
+        assert_eq!(pace(&window("Session", 0.9, None), now), None);
     }
 
     #[test]
