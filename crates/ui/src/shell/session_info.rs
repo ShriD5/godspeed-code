@@ -104,11 +104,13 @@ fn limit_summary(limit: &zeron_proto::ChatLimit, now: chrono::DateTime<Utc>) -> 
 }
 
 /// One Usage row: a limit window of the chat's account, or its context
-/// window. `used` is `None` while the context window has no token count.
+/// window. `used` is `None` while the context window has no token count;
+/// `elapsed` is the share of a limit window already gone, for its pace mark.
 #[derive(Debug, Clone, PartialEq)]
 struct UsageRow {
     label: SharedString,
     used: Option<f32>,
+    elapsed: Option<f32>,
     detail: SharedString,
 }
 
@@ -123,10 +125,18 @@ fn usage_rows(
         .map(crate::usage_cockpit::ordered_windows)
         .unwrap_or_default()
         .into_iter()
-        .map(|window| UsageRow {
-            label: crate::usage_cockpit::window_label(window).into(),
-            used: Some(window.used_fraction.clamp(0.0, 1.0)),
-            detail: crate::usage_cockpit::window_summary(window, now).into(),
+        .map(|window| {
+            let mut detail = crate::usage_cockpit::window_summary(window, now);
+            if let Some(pace) = crate::usage_cockpit::pace_summary(window, now) {
+                detail.push('\n');
+                detail.push_str(&pace);
+            }
+            UsageRow {
+                label: crate::usage_cockpit::window_label(window).into(),
+                used: Some(window.used_fraction.clamp(0.0, 1.0)),
+                elapsed: crate::usage_cockpit::elapsed_share(window, now),
+                detail: detail.into(),
+            }
         })
         .collect();
     if crate::context_usage::has_window(context) {
@@ -135,13 +145,15 @@ fn usage_rows(
             used: context
                 .and_then(zeron_proto::ContextUsage::fraction)
                 .map(|fraction| fraction.clamp(0.0, 1.0) as f32),
+            elapsed: None,
             detail: crate::context_usage::details(context).into(),
         });
     }
     rows
 }
 
-/// A Usage row: label, bar, percent used; hover for resets or tokens.
+/// A Usage row: label, bar with a mark at the elapsed share, percent used;
+/// hover for resets and pace, or tokens.
 fn usage_row(row: UsageRow, index: usize, theme: &Theme) -> AnyElement {
     use crate::settings::accounts::{UsageLevel, usage_color, usage_level};
     let level = row.used.map(usage_level);
@@ -168,20 +180,34 @@ fn usage_row(row: UsageRow, index: usize, theme: &Theme) -> AnyElement {
         )
         .child(
             div()
+                .relative()
                 .flex_1()
                 .h(px(4.0))
-                .rounded_full()
-                .overflow_hidden()
-                .bg(theme.wash(0.08))
-                .children(row.used.zip(fill).filter(|(used, _)| *used > 0.0).map(
-                    |(used, fill)| {
-                        div()
-                            .h_full()
-                            .w(gpui::relative(used.max(0.015)))
-                            .rounded_full()
-                            .bg(fill.opacity(0.85))
-                    },
-                )),
+                .child(
+                    div()
+                        .size_full()
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(theme.wash(0.08))
+                        .children(row.used.zip(fill).filter(|(used, _)| *used > 0.0).map(
+                            |(used, fill)| {
+                                div()
+                                    .h_full()
+                                    .w(gpui::relative(used.max(0.015)))
+                                    .rounded_full()
+                                    .bg(fill.opacity(0.85))
+                            },
+                        )),
+                )
+                .children(row.elapsed.map(|elapsed| {
+                    div()
+                        .absolute()
+                        .top(px(-2.5))
+                        .left(gpui::relative(elapsed))
+                        .w(px(1.0))
+                        .h(px(9.0))
+                        .bg(theme.text.opacity(0.6))
+                })),
         )
         .child(
             div()
@@ -902,6 +928,26 @@ mod tests {
         assert_eq!(rows[0].used, Some(1.0));
         assert_eq!(rows[2].used, Some(0.25));
         assert!(rows[2].detail.contains("150,000 tokens remaining"));
+    }
+
+    #[test]
+    fn limit_rows_mark_the_elapsed_window_and_name_the_pace() {
+        let now = Utc::now();
+        let mut account = account(&[("session", 0.8), ("month", 0.2)]);
+        for window in &mut account.usage_windows {
+            window.resets_at = Some(now + chrono::TimeDelta::hours(4));
+        }
+        let rows = usage_rows(Some(&account), None, now);
+        assert_eq!(rows[0].elapsed, Some(0.2));
+        assert!(
+            rows[0]
+                .detail
+                .ends_with("\nAhead of pace · 80% of the window left"),
+            "{}",
+            rows[0].detail
+        );
+        assert_eq!(rows[1].elapsed, None, "a month has no known length");
+        assert!(!rows[1].detail.contains("pace"));
     }
 
     #[test]
