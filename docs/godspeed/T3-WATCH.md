@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-20 | Usage limit rows show your pace (ahead, on or under) and a mark for the time left in the window (`669e2ea8e7`) | PR #TBD |
+| 2026-11-20 | Usage limit rows show your pace (ahead, on or under) and a mark for the time left in the window (`669e2ea8e7`) | PR #114 |
 | 2026-11-20 | Agents read, open, update, respond to and merge PRs, read failing CI logs and re-run checks, and land a GitHub stack, through MCP tools (`5d05902ddd`, `f7041fabc8`, `37f8a5325c`) | queued (our MCP server has chat and preview tools only; agents use `gh` directly) |
 | 2026-11-20 | Reference a side chat from its main thread with Add to chat and @ (`bb1a66a3a4`) | queued (check the composer @ picker in `ui/src/composer`) |
 | 2026-11-20 | Archiving a thread also archives its side chats (`ae3c7a68b4`) | queued (check the archive path in `doc_host.rs`; delete already cascades) |
