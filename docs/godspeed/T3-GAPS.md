@@ -71,6 +71,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Composer | Show skills in the slash menu (toggle) | `settingsSearch.ts` ("Show skills in slash menu") | MISSING as a setting | low |
 | Chat | Add a pull request's review comments to the composer as context | `apps/web/src/components/chat/` (`f08d8dd0a5`) | MISSING: PR threads are answered from the PR pane only | low |
 | Chat | Run a code block's command in the terminal | `apps/web/src/components/chat/MarkdownCodeBlock.tsx` ("Run in terminal") | MISSING | med |
+| Chat | Reference a side chat from its main thread with Add to chat and @ | #38323 `bb1a66a3a4` | MISSING (unverified): no Add to chat or @ reference for side chats found; check the composer @ picker | med |
 | Chat | Fork a new thread from any response | `apps/web/src/components/chat/TimelineAssistantRows.tsx` ("Fork from this response") | PARTIAL: side chat forks the conversation through its latest completed reply (`crates/ui/src/shell/side_chats.rs` `fork_chat`); no pick of an earlier response | med |
 | Chat | Response streaming mode: turn or paragraph | `packages/contracts/src/settings.ts` (`ResponseStreamingMode`) | MISSING: live streaming only | low |
 | Chat | GitHub alert blocks and `<details>` collapsibles in replies | `apps/web/src/markdownGithubAlerts.test.tsx`; `apps/web/src/components/chat/MarkdownDetails.tsx` | MISSING: `crates/ui/src/markdown/` has no alert or details rendering | low |
@@ -130,6 +131,7 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Agents | Agents read, open, update, review and merge PRs, read failing CI logs and re-run checks, and land a stack, through MCP tools | #26751 `5d05902ddd`; #26752 `f7041fabc8`; #38973 `37f8a5325c` | MISSING: Godspeed MCP has chat, device and preview tools; agents fall back to `gh` | med |
 | Agents | Child-thread approvals appear in the parent thread with the child's name and Approve / Decline, answerable without switching threads | `apps/web/src/components/chat/ChildThreadApprovals.tsx`; `packages/client-runtime/src/state/threadRequests.ts` (`createChildThreadApprovalsAtom`) (`70f475f511`) | PARTIAL: the lanes card shows a child's Needs approval status and opens it in the right pane (`ui/src/shell/session_lanes.rs`); no inline card in the parent composer | Med |
 | Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
 | Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
@@ -221,6 +223,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Usage limit pace: ahead, on or under pace and a time-elapsed mark on each limit bar in the session card | #TBD |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |
