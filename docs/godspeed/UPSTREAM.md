@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@c58f65e8 (2026-11-18)
+Synced through: zeronsh/zeron@2e3513c6 (2026-11-20)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -217,6 +217,26 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     (landing), 85c1fe2b0 (version bump), bc1ecbb3f and 4e86e6bcc (3 warm docs, then
     back to 12: no net change), 9a6c3d9e3 and f0ab203f6 (mock `/longthread`, `/stream`
     bench modes for Zeron's ademark rig).
+- Deferred 2026-11-20 (c58f65e8..2e3513c6: 24 commits, 20 non-merge, 8 of them
+  `apps/zgx` only, deferred with zgx: cef90597, 4aac725b, 2c965d7a, b1064c1b, 774dd72e,
+  c5f65ea0, e393c4a8, 4820dd83). 1 ported (bc14b5b1, by hand), the rest below.
+  - d3a76091e (a long chat reopened with rows held sends its newest entries first):
+    builds on the deferred snapshot-delta series (`entry_sum`, `orderSum`, `known`).
+  - e66369f48 (reopening a remote chat asks the room and its host for what it missed):
+    the relay layer (`chat_relay.rs`).
+  - 17d777fa0 (Grok Auto mapped to Grok Build's auto mode, Full access always-approve,
+    reviewer's reason on approvals): built on upstream's Auto access mode (4b983c6c).
+  - 890c4527e (Antigravity 1.5.0 hardening: step-boundary steering, stall watchdog,
+    effort ladder, corrupt-session recovery, Neon thoughts; plus queued provider/model
+    switches and the provider-switch seam): its tests and engine half need provider
+    switching (cc7da5c2) and run recovery (2e151ca6). The Antigravity harness half is
+    worth a dedicated port.
+  - 8c5549ecb (Cloud: every built-in agent with every local login): Cloud (cc7da5c2).
+  - Partly ported: bc14b5b12 brought the 3 s probe settle and test-run exclusion; its
+    "environment read empty" half is about upstream's origin-marker cache, which
+    Godspeed's cwd-based discovery doesn't have.
+  - Skipped: version bumps (c7f63a53, 29ec0489, 22eb085c, 5ac8d75a), 81cbda60 (CI apt
+    retry), 8fe624f8 (edge credit rate config).
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
