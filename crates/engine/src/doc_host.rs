@@ -393,6 +393,20 @@ impl Drop for TransferProgressGuard<'_> {
 /// is never delayed.
 const DEGRADE_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// How often the connectivity monitor looks once the posture has held
+/// healthy for [`CONNECTIVITY_SETTLE_TICKS`] seconds. A fresh degradation is
+/// then seen up to this late, on top of its [`DEGRADE_GRACE`]; recovery from
+/// one is still seen within a second, as the monitor looks every second
+/// while anything is degraded.
+const CONNECTIVITY_STEADY: std::time::Duration = std::time::Duration::from_secs(5);
+const CONNECTIVITY_SETTLE_TICKS: u32 = 3;
+
+/// Nothing degraded: local, or connected with every open chat connected.
+fn connectivity_healthy(posture: &zeron_proto::Connectivity) -> bool {
+    use zeron_proto::ConnectivityState as S;
+    matches!(posture.state, S::Connected | S::Disabled) && posture.chats.iter().all(|chat| chat.connected)
+}
+
 /// One tracked degradation source in [`DegradeGrace`].
 enum GraceKey<'a> {
     OsPath,
@@ -437,6 +451,11 @@ impl DegradeGrace {
         }
         let since = *slot.get_or_insert(now);
         now.duration_since(since) >= DEGRADE_GRACE
+    }
+
+    /// A degradation is being timed: the report may change with time alone.
+    fn timing(&self) -> bool {
+        self.os_path.is_some() || self.registry.is_some() || !self.chats.is_empty()
     }
 
     /// Drop timers for chats that no longer have open docs.
@@ -515,6 +534,17 @@ pub(crate) fn queued_message_prompt(text: &str, attachments: &[String]) -> Strin
         body
     };
     format!("{body}{trailer}")
+}
+
+/// What a queue row says: its words, or for files with no words, what a run
+/// of them says. A row needs text on every device (one without is refused and
+/// dropped as read), so files alone must not come to an empty one.
+fn queued_row_text(text: &str, has_files: bool) -> &str {
+    if has_files && text.trim().is_empty() {
+        ATTACHMENT_ONLY_PROMPT
+    } else {
+        text
+    }
 }
 
 fn queue_text_hash(text: &str) -> String {
@@ -1544,6 +1574,10 @@ impl DocHost {
     /// Materialize one authoritative local document without acquiring a network
     /// connection. Durable publication is installed before exposing any writer.
     pub fn open_local(&self, chat_id: &str) -> Result<Arc<ChatDocHandle>, EngineError> {
+        // A chat with no id has no room to sync with: it dialed one forever.
+        if chat_id.is_empty() {
+            return Err(EngineError::Other("a chat needs an id".into()));
+        }
         // The registry names the sync room generation (docs/chat2-sync.md
         // M2): absent row / absent field = legacy s2. Read it BEFORE the
         // cached-handle check — a cached s2-mode handle for a chat another
@@ -3393,10 +3427,13 @@ impl DocHost {
     }
 
     /// The connectivity stream: current posture first, then every change.
-    /// Lazily starts a monitor — a 1s recompute over in-memory stats
-    /// (atomics + small locks), published only when the value changes. The
-    /// retry countdown renders client-side from `retry_at_ms`, so quiet
-    /// periods emit nothing at all.
+    /// Lazily starts a monitor — a recompute over in-memory stats (atomics +
+    /// small locks), published only when the value changes: every second
+    /// while it's changing, degraded or timing a degradation's grace, and
+    /// every [`CONNECTIVITY_STEADY`] once it has held healthy (or local) for
+    /// a few seconds, so a settled engine isn't woken each second to find
+    /// nothing changed. The retry countdown renders client-side from
+    /// `retry_at_ms`, so quiet periods emit nothing at all.
     pub fn watch_connectivity(&self) -> watch::Receiver<zeron_proto::Connectivity> {
         let tx = self
             .inner
@@ -3408,12 +3445,17 @@ impl DocHost {
         {
             let host = self.clone();
             self.spawn_worker(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                let mut held = 0u32;
                 loop {
-                    tick.tick().await;
+                    let wait = if held >= CONNECTIVITY_SETTLE_TICKS {
+                        CONNECTIVITY_STEADY
+                    } else {
+                        std::time::Duration::from_secs(1)
+                    };
+                    tokio::time::sleep(wait).await;
                     let next = host.compute_connectivity();
-                    if let Some(tx) = host.inner.connectivity.get() {
+                    let healthy = connectivity_healthy(&next);
+                    let changed = host.inner.connectivity.get().is_some_and(|tx| {
                         tx.send_if_modified(|cur| {
                             if *cur == next {
                                 false
@@ -3421,8 +3463,10 @@ impl DocHost {
                                 *cur = next;
                                 true
                             }
-                        });
-                    }
+                        })
+                    });
+                    let timing = lock(&host.inner.connectivity_grace).timing();
+                    held = if changed || timing || !healthy { 0 } else { held.saturating_add(1) };
                 }
             });
         }
@@ -3721,7 +3765,7 @@ impl DocHost {
         let id = new_id();
         handle.doc.push_queued(&QueuedMessage {
             id: id.clone(),
-            text: text.to_string(),
+            text: queued_row_text(text, !attachments.is_empty()).to_string(),
             attachments,
             hold_for_turn_end,
             issued_by: self.inner.config.device_id.clone(),
@@ -4078,7 +4122,10 @@ impl DocHost {
             }
 
             let replacement = match action {
-                FinishQueueEditAction::Commit => Some(text.unwrap_or_default()),
+                FinishQueueEditAction::Commit => Some(queued_row_text(
+                    text.unwrap_or_default(),
+                    attachments.map_or(!item.attachments.is_empty(), |kept| !kept.is_empty()),
+                )),
                 FinishQueueEditAction::Cancel | FinishQueueEditAction::ReleaseUnchanged => None,
                 FinishQueueEditAction::Discard => Some(""),
             };
@@ -5420,9 +5467,17 @@ impl DocHost {
                         self.arm_attachment_wait(handle);
                         return; // preserve order; UploadCommit / the wait timer re-kick
                     }
+                    // In-flight claim, as for an execute: between the mark and
+                    // the outcome, a racing drain's dead-command sweep would
+                    // otherwise take this for a crash and write its own reason.
+                    if !lock(&self.inner.executing).insert(entry.id.clone()) {
+                        skipped.insert(entry.id.clone());
+                        continue;
+                    }
                     if let Err(err) = self.inner.store.mark_processed(&entry.id) {
                         tracing::error!(chat = %handle.chat_id, error = %err,
                             "processed-ledger write failed; halting drain");
+                        lock(&self.inner.executing).remove(&entry.id);
                         return;
                     }
                     tracing::warn!(chat = %handle.chat_id, command = %entry.id,
@@ -5433,6 +5488,7 @@ impl DocHost {
                         SessionCommandStatus::Rejected,
                         Some("attachments never arrived"),
                     );
+                    lock(&self.inner.executing).remove(&entry.id);
                     continue;
                 }
             }
@@ -5565,9 +5621,15 @@ impl DocHost {
             return;
         };
         for path in attachments.iter_mut() {
-            if let Some(abs) = uploads.resolve_pending(path) {
+            if let Some(abs) = uploads.localize(path) {
                 *prompt = prompt.replace(path.as_str(), &abs);
                 *path = abs;
+            }
+        }
+        // Paths only the prompt names (older clients sent no list).
+        for path in crate::uploads::attachment_lines_in(&prompt.clone()) {
+            if let Some(abs) = uploads.localize(&path) {
+                *prompt = prompt.replace(path.as_str(), &abs);
             }
         }
     }
@@ -5601,8 +5663,8 @@ impl DocHost {
             return prompt.to_string();
         };
         let mut out = prompt.to_string();
-        for r in crate::uploads::pending_refs_in(prompt) {
-            if let Some(abs) = uploads.resolve_pending(&r) {
+        for r in crate::uploads::attachment_lines_in(prompt) {
+            if let Some(abs) = uploads.localize(&r) {
                 out = out.replace(&r, &abs);
             }
         }
@@ -5775,7 +5837,17 @@ impl DocHost {
                         tracing::warn!(chat = %chat_id, error = %err, "run-config backfill failed");
                     }
                 }
-                if sessions.defers_to_turn_end(chat_id, Some((harness, &request))) {
+                // Sent before the turn now running had started: the sender never
+                // saw that turn, so it can't be a steer into it. Two messages sent
+                // to a sleeping machine (or an offline host) start one turn
+                // each; steering the second into the first cut the first off with
+                // an empty reply.
+                // Only when an earlier send started that turn: nothing else changes.
+                let sent_before_turn = sessions
+                    .turn_started_ms(chat_id)
+                    .is_some_and(|started| entry.issued_at < started)
+                    && self.live_turn_sent_earlier(handle, entry, message_id);
+                if sent_before_turn || sessions.defers_to_turn_end(chat_id, Some((harness, &request))) {
                     self.hold_until_turn_end(
                         handle,
                         message_id,
@@ -5944,6 +6016,36 @@ impl DocHost {
     /// Park a prompt for a turn-boundary agent in the visible queue instead
     /// of its mailbox, keeping the message id so the transcript entry written
     /// at delivery is the same message. Steers lead ordinary rows.
+    /// The running turn is the latest message in the transcript, sent as a run no
+    /// later than `entry` and not `entry`'s own: a second send that went out while
+    /// the host was away, now arriving behind the first.
+    fn live_turn_sent_earlier(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        entry: &SessionCommandEntry,
+        message_id: &str,
+    ) -> bool {
+        let Some(live) = handle.doc.read_entries().ok().and_then(|entries| {
+            entries
+                .iter()
+                .rev()
+                .find(|e| e.role == MessageRole::User)
+                .map(|e| e.id.clone())
+        }) else {
+            return false;
+        };
+        if live == message_id {
+            return false;
+        }
+        handle.doc.read_commands().is_ok_and(|commands| {
+            commands.iter().any(|c| {
+                c.id != entry.id
+                    && c.issued_at <= entry.issued_at
+                    && matches!(&c.payload, SessionCommandPayload::Run { message_id, .. } if *message_id == live)
+            })
+        })
+    }
+
     fn hold_until_turn_end(
         &self,
         handle: &Arc<ChatDocHandle>,
@@ -6099,9 +6201,15 @@ impl DocHost {
     async fn capture_source_context(&self, cwd: &str) -> Option<ConversationSourceContext> {
         let repos = self.inner.repos.get()?;
         let path = Path::new(cwd);
-        let identity = repos.checkout_identity(path).await.ok()?;
-        let branch = repos.current_branch(path).await.ok()?;
-        let head_sha = repos.head_sha(path).await.ok().flatten();
+        // Three `git` processes: side by side, not one after another.
+        let (identity, branch, head_sha) = tokio::join!(
+            repos.checkout_identity(path),
+            repos.current_branch(path),
+            repos.head_sha(path),
+        );
+        let identity = identity.ok()?;
+        let branch = branch.ok()?;
+        let head_sha = head_sha.ok().flatten();
         Some(ConversationSourceContext {
             checkout_id: identity.id,
             repo_root: identity.root.to_string_lossy().into_owned(),
@@ -6113,10 +6221,13 @@ impl DocHost {
     }
 
     /// Every fresh harness dispatch crosses this boundary, including
-    /// steer/input fallbacks and crash recovery. Capture immediately before
-    /// dispatch so the conversation records the checkout the harness will
-    /// actually observe, rather than whichever checkout state was current on
-    /// an earlier turn.
+    /// steer/input fallbacks and crash recovery. The conversation records
+    /// the checkout the harness will actually observe, rather than whichever
+    /// checkout state was current on an earlier turn: read as the dispatch
+    /// starts, beside it rather than before it. Its `git` processes took
+    /// ~25 ms (M5 Max; more on slower Macs) in front of every agent start,
+    /// and the agent reads nothing of its checkout for far longer than that
+    /// (its own startup is ~250 ms before its first request).
     pub(crate) async fn dispatch_with_source_context(
         &self,
         sessions: &SessionsEngine,
@@ -6143,11 +6254,21 @@ impl DocHost {
                 request.env.entry(name).or_insert(value);
             }
         }
-        if let Some(workspace) = self.workspace()
-            && let Some(context) = self.capture_source_context(&request.cwd).await
-            && let Err(err) = workspace.set_chat_source_context(chat_id, &context)
-        {
-            tracing::warn!(chat = %chat_id, error = %err, "conversation source stamp failed");
+        // Stamped on a task of its own: the drain resolves the command as
+        // soon as the run is dispatched, never behind the `git` processes.
+        if self.workspace().is_some() {
+            let host = self.clone();
+            let chat_id = chat_id.to_owned();
+            let cwd = request.cwd.clone();
+            self.spawn_worker(async move {
+                if let Some(workspace) = host.workspace()
+                    && let Some(context) = host.capture_source_context(&cwd).await
+                    && let Err(err) = workspace.set_chat_source_context(&chat_id, &context)
+                {
+                    tracing::warn!(chat = %chat_id, error = %err, "conversation source stamp failed");
+                }
+                tracing::debug!(target: "first_word", chat = %chat_id, "source context: stamped");
+            });
         }
         sessions
             .dispatch(chat_id, harness, request, message_id)
@@ -7226,6 +7347,26 @@ mod publication_eviction_tests {
         let same = host.open("local").unwrap();
         assert!(Arc::ptr_eq(&handle, &same));
         assert!(handle.sync_requested.load(Ordering::Acquire));
+        host.shutdown_workers().await;
+    }
+
+    #[tokio::test]
+    async fn a_chat_without_an_id_is_never_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+        let host = DocHost::new(
+            store.clone(),
+            DocHostConfig {
+                device_id: "writer".into(),
+                default_harness: HarnessId::Mock,
+                edge: Some(EdgeConfig::with_static_token("http://127.0.0.1:1", "test")),
+            },
+        );
+        assert!(host.open("").is_err());
+        assert!(host.open_local("").is_err());
+        let steer = SessionCommandPayload::Steer { prompt: "hi".into(), message_id: None };
+        assert!(host.queue_command_with_transfers("", steer, Vec::new()).is_err());
+        assert!(lock(&host.inner.handles).is_empty());
         host.shutdown_workers().await;
     }
 
