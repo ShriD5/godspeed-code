@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@2e3513c6 (2026-11-20)
+Synced through: zeronsh/zeron@46f18fe4 (2026-11-21)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -237,6 +237,14 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     Godspeed's cwd-based discovery doesn't have.
   - Skipped: version bumps (c7f63a53, 29ec0489, 22eb085c, 5ac8d75a), 81cbda60 (CI apt
     retry), 8fe624f8 (edge credit rate config).
+- Deferred 2026-11-21 (2e3513c6..46f18fe4: 19 commits, 10 non-merge; `apps/zgx` only,
+  deferred with zgx: 2c8001a8, 9fb81caa, 3f5381c1, 0dbdf725, 613accb2). 1 ported (865308ff,
+  voice ort features), the rest below.
+  - 21ec6f8b3 (Antigravity dynamic updates, opt-in Code Mode for Codex and Muse): +916
+    lines over 100 files, half of them zgx; the engine half edits `warm_start.rs` (warm
+    starts, deferred) and builds on the deferred Antigravity hardening (890c4527e). Its
+    new proto field touches every engine/harness test initializer. Port with 890c4527e.
+  - Skipped: version bumps (b7b1e2d3, 26000a74), 46f18fe4 (Cloud install script, edge).
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
