@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-21 | Copy a previewed file's contents from a header button (`07fe456146`) | PR #TBD |
+| 2026-11-21 | Copy a previewed file's contents from a header button (`07fe456146`) | PR #115 |
 | 2026-11-21 | Sign in to an agent's MCP server from its auth warning (`669d8941e2`) | queued (check how Godspeed surfaces MCP auth failures) |
 | 2026-11-21 | Claude's answer before a late-read steer stays visible (`0b02be3d5f`) | queued (with the 2026-11-12 Claude steer row) |
 | 2026-11-21 | Tell threads when a provider runtime exit kills their background work (`87707319cf`) | queued (check Claude background-task rows on process exit) |

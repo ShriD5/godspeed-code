@@ -222,7 +222,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
-| Copy a previewed file's whole contents from the Files header (unsaved edits included; hidden for truncated, binary and empty reads) | #TBD |
+| Copy a previewed file's whole contents from the Files header (unsaved edits included; hidden for truncated, binary and empty reads) | #115 |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |
