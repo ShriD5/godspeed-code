@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
+Reviewed T3 through: pingdotgg/t3code@0dc32b5c8b (2026-11-21)
 
 ## Rules
 
@@ -23,6 +23,18 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-21 | Copy a previewed file's contents from a header button (`07fe456146`) | PR #115 |
+| 2026-11-21 | Sign in to an agent's MCP server from its auth warning (`669d8941e2`) | queued (check how Godspeed surfaces MCP auth failures) |
+| 2026-11-21 | Claude's answer before a late-read steer stays visible (`0b02be3d5f`) | queued (with the 2026-11-12 Claude steer row) |
+| 2026-11-21 | Tell threads when a provider runtime exit kills their background work (`87707319cf`) | queued (check Claude background-task rows on process exit) |
+| 2026-11-21 | Explain checkout failures caused by local changes (`6f94a06384`) | queued (check the branch picker's checkout error text) |
+| 2026-11-21 | Sidebar New starts the thread in the scoped project (`46ee2fc7ff`); numbered jumps include unsent drafts (`5093d11490`) | queued (check the sidebar New button with a filtered project) |
+| 2026-11-21 | PR tools: create pushes an unpushed branch and keeps drafts as drafts; watch on a merged PR reports it; merge accepts a short SHA (`3e837d0bdb`, `f08272f965`, `b076d8c8bf`, `fe9baf8cbb`, `5e59fc677f`) | queued (with the agent PR/CI MCP tools item) |
+| 2026-11-21 | Auto-settle waits while the thread's terminal runs a program (`6cbda0cd0a`) | skipped (Godspeed terminals aren't owned by a chat in the engine, and settling is days-scale idle in `chat_lifecycle.rs`) |
+| 2026-11-21 | Option + a letter records the letter in the shortcut recorder (`e97e360cfc`) | skipped (GPUI's `Keystroke.key` is already the unmodified letter; the glyph is in `key_char`) |
+| 2026-11-21 | A project covers several repositories (`60863edc41`); linked environments read each other's threads (`1cb3a8c753`, `d7f6b3efca`, `6f644f6e91`); environments map (`ccabed086a`) | skipped (large model change / T3 Connect relay, out of scope) |
+| 2026-11-21 | Copy a chat table as HTML (`b9879ede83`); click the Tab hint to use the suggested prompt (`1d975f53ea`); thread chip hover cards (`bac0508e08`); browser Reload and Duplicate tab menu items (`a6e81f3002`, `e8b28328da`); Verilog/VHDL highlighting (`f8f4a0b057`); Apple Speech dictation (`285558eb10`); typed turn results (`2770bf3c61`) | skipped (minor or no Godspeed counterpart yet) |
+| 2026-11-21 | ~200 minor fixes: Antigravity, mobile, SSH, Linear/GitLab/Azure, launch videos, evals, perf in T3's git/diff server, a11y, i18n, desktop update capsule | skipped (internal/minor) |
 | 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |

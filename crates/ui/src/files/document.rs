@@ -306,6 +306,19 @@ impl FileDocument {
         self.saved_revision = self.revision;
     }
 
+    /// The whole file as read, when there is one to copy: a truncated read
+    /// would copy only part of it.
+    pub fn copyable_text(&self) -> Option<&str> {
+        if matches!(self.phase, DocumentPhase::Loading | DocumentPhase::Error(_)) {
+            return None;
+        }
+        self.file
+            .as_ref()
+            .filter(|file| !file.truncated)
+            .and_then(|file| file.text.as_deref())
+            .filter(|text| !text.is_empty())
+    }
+
     pub fn content_hash(&self) -> Option<&str> {
         self.file.as_ref()?.content_hash.as_deref()
     }
@@ -428,6 +441,29 @@ mod tests {
         document.begin_load();
         assert!(!document.accepts(&key("src/lib.rs"), generation));
         assert!(!document.accepts(&key("src/main.rs"), document.generation));
+    }
+
+    #[test]
+    fn only_a_complete_non_empty_read_can_be_copied() {
+        let mut document = FileDocument::loading(key("src/lib.rs"));
+        assert_eq!(document.copyable_text(), None);
+        document.set_loaded(text_file());
+        assert_eq!(document.copyable_text(), Some("fn main() {}"));
+
+        let mut truncated = text_file();
+        truncated.truncated = true;
+        document.set_loaded(truncated);
+        assert_eq!(document.copyable_text(), None);
+
+        let mut empty = text_file();
+        empty.text = Some(String::new());
+        document.set_loaded(empty);
+        assert_eq!(document.copyable_text(), None);
+
+        let mut binary = text_file();
+        binary.text = None;
+        document.set_loaded(binary);
+        assert_eq!(document.copyable_text(), None);
     }
 
     #[test]
