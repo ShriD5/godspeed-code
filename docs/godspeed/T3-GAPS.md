@@ -57,6 +57,7 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Sidebar | Auto-settle a thread when its PR merges; keep threads that have an open PR | `settingsSearch.ts` ("Auto-settle merged threads", "Keep threads with a PR"); `packages/contracts/src/settings.ts` (`sidebarAutoSettleOnMerge`) | PARTIAL: auto-settle after 1 day, 3 days or 1 week idle only (`crates/ui/src/settings/thread_lifecycle.rs`); no merged-PR trigger, no keep-PR rule | med |
 | Sidebar | Compact idle threads before the prompt cache expires | `packages/contracts/src/settings.ts` (`idleCompaction`); `settingsSearch.ts` ("Compact idle threads") | MISSING (T3-WATCH lists it as queued) | med |
 | Sidebar | Unsent-draft rows in the sidebar, with open and discard | `apps/web/src/components/sidebar/SidebarDraftBlock.tsx` | MISSING: drafts persist per chat but never appear as sidebar rows | low |
+| Agents | Sign in to an agent's MCP server from its auth warning | `669d8941e2` | MISSING: check how MCP auth failures show in Godspeed | med |
 | Sidebar | Copy a thread's branch name or relative path (Copy submenu) | `apps/web/src/components/Sidebar.tsx` ("Branch copied", "Path copied") | PARTIAL: Copy submenu has Path, Godspeed link, harness link, harness session ID (`shell.rs` `render_chat_copy_submenu`); no branch, no relative path | low |
 | Composer | Suggested next prompt after a Claude or Codex turn (Labs) | `b24959d579` | MISSING | low |
 | Composer | Send in background, or send and open a new thread | `packages/shared/src/keybindings.ts` (`composer.sendBackground`, `composer.sendAndNewThread`) | MISSING | low |
@@ -221,6 +222,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Copy a previewed file's whole contents from the Files header (unsaved edits included; hidden for truncated, binary and empty reads) | #TBD |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |

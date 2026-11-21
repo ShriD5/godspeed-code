@@ -7,8 +7,8 @@ use std::{
 
 use gpui::{
     AnyElement, App, Context, Entity, Focusable as _, HighlightStyle, ListAlignment, ListOffset,
-    ListSizingBehavior, ListState, Render, ScrollHandle, SharedString, Subscription, Window, div,
-    font, list, point, prelude::*, px,
+    ListSizingBehavior, ListState, Render, ScrollHandle, SharedString, Subscription, Task, Window,
+    div, font, list, point, prelude::*, px,
 };
 use gpui_base::input::{RopeExt as _, TextDecoration, TextDecorationCollection};
 use zeron_proto::{
@@ -114,6 +114,8 @@ pub(super) struct FilePreviewState {
     comment_draft: Option<EditorCommentDraft>,
     active_comment: Option<String>,
     typography_generation: u32,
+    copied_path: Option<String>,
+    copied_clear: Option<Task<()>>,
 }
 
 impl FilePreviewState {
@@ -142,6 +144,8 @@ impl FilePreviewState {
             comment_draft: None,
             active_comment: None,
             typography_generation: 0,
+            copied_path: None,
+            copied_clear: None,
         }
     }
 
@@ -2299,6 +2303,34 @@ impl FilesSurface {
             .into_any_element()
     }
 
+    /// Copy the open file: the editor's text when it has one, so unsaved
+    /// edits come along, else the text as read.
+    fn copy_document_contents(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(document) = self.preview.documents.get(path) else {
+            return;
+        };
+        let Some(read) = document.copyable_text() else {
+            return;
+        };
+        let text = match &document.editor {
+            Some(editor) => editor.read(cx).value().to_string(),
+            None => read.to_string(),
+        };
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.preview.copied_path = Some(path.to_string());
+        self.preview.copied_clear = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1200))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.preview.copied_path = None;
+                this.preview.copied_clear = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     pub(super) fn render_editor_header(
         &mut self,
         theme: &Theme,
@@ -2338,6 +2370,14 @@ impl FilesSurface {
             .collect::<Vec<_>>();
         let reveal_path = path.to_string();
         let system_path = self.system_open_path(path);
+        let copyable = !showing_markdown
+            && self
+                .preview
+                .documents
+                .get(path)
+                .is_some_and(|document| document.copyable_text().is_some());
+        let copied = self.preview.copied_path.as_deref() == Some(path);
+        let copy_path = path.to_string();
         let tooltip_path: SharedString = path.to_string().into();
         let can_save = !self.target_change_pending
             && self
@@ -2526,6 +2566,22 @@ impl FilesSurface {
                             .text_color(theme.text_muted),
                     ),
             )
+            .when(copyable, |element| {
+                element.child(
+                    toolbar_button(
+                        "files-copy-contents",
+                        if copied { "Copied" } else { "Copy contents" },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy_document_contents(&copy_path, cx)
+                    }))
+                    .child(
+                        icon(if copied { icons::CHECK } else { icons::COPY })
+                            .size(px(crate::surface_chrome::ICON_SIZE))
+                            .text_color(theme.text_muted),
+                    ),
+                )
+            })
             .when_some(system_path, |element, system_path| {
                 element.child(
                     toolbar_button("files-open-with-system", "Open in default editor")
