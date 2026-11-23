@@ -130,6 +130,10 @@ These rows say MISSING or PARTIAL but the code has them now: mark unread, settle
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Git | The app's own git commands never start Git's auto maintenance, so a failing `gc --auto` can't strand a full-size `tmp_pack_*` after every fetch | `apps/server/src/vcs/VcsProcess.ts` (`serverGitConfigEnv`, `58aa80dcdf`) | MISSING (no `gc.auto`/`maintenance.auto` override on the engine's `git_program()` spawns) | Med |
+| Git | Branch switches are refused while a chat is working in the same shared checkout | `571b8697da` | MISSING (unverified; check the branch picker against a running chat) | Med |
+| Agents | Durable workflows: scripted multi-step runs with signals, store keys and questions, on web and mobile | `e414cfd4be`, `69c1d53826` | MISSING (always-on agents and conductors cover part of it) | Low |
+| Agents | Agents file problems with the app itself upstream when feedback is turned on (Theo's Cmd+K "triage") | `fe9c98c98f` | MISSING | Low |
 | Agents | Child-thread approvals appear in the parent thread with the child's name and Approve / Decline, answerable without switching threads | `apps/web/src/components/chat/ChildThreadApprovals.tsx`; `packages/client-runtime/src/state/threadRequests.ts` (`createChildThreadApprovalsAtom`) (`70f475f511`) | PARTIAL: the lanes card shows a child's Needs approval status and opens it in the right pane (`ui/src/shell/session_lanes.rs`); no inline card in the parent composer | Med |
 | Agents | MCP Apps: a Claude tool call that returns an MCP App UI resource renders it inline in the thread | `a21d788752` | MISSING (Godspeed renders `show_visual` Luau visuals, not MCP App resources) | Low |
 | Projects | Clone repositories into ghq-style `<host>/<owner>/<repo>` folders (setting) | `packages/shared/src/cloneUrl.ts` (`707dcdaa16`) | MISSING (`project_transfer.rs` clones into a flat folder) | Low |
@@ -221,6 +225,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| A slash command promoted during a turn waits for the turn end instead of steering; its queue row offers Send next | #116 |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |

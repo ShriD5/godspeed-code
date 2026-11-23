@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
+Reviewed T3 through: pingdotgg/t3code@5b643a4913 (2026-11-23)
 
 ## Rules
 
@@ -23,6 +23,16 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-23 | A slash command promoted during a turn waits for the turn end instead of steering, since a provider runs a steered command in place of the turn's task (`c385377544`) | PR #116 |
+| 2026-11-23 | Git commands the app runs itself never start Git's auto maintenance (`maintenance.auto=false`, `gc.auto=0`): a failing `gc --auto` reruns after each fetch and strands a full-size `tmp_pack_*` (`58aa80dcdf`) | queued (9 `git_program()` spawn sites in the engine; add the env in one helper) |
+| 2026-11-23 | Refuse branch switches while a thread works in the shared checkout (`571b8697da`) | queued (check our branch picker against a running chat in the same folder) |
+| 2026-11-23 | Claude turns no longer stall on empty or partial stream usage frames (`66ca7cdbb1`); a Claude turn reads messages added in a terminal (`350b05ac3c`); steer replies written as thinking show (`6ba17d97a1`); wake the agent when Claude exits while awaiting background work (`03920ad8aa`) | queued (check `harness/src/claude` usage parsing and exit path) |
+| 2026-11-23 | Limits shows why a provider's usage is unavailable (`ba4f99ae43`, `9c25b71395`) | queued (our usage rows go blank on a probe error) |
+| 2026-11-23 | Agents file T3 problems when feedback is on (`fe9c98c98f`) | skipped (needs an upstream tracker; noted in T3-GAPS with Theo's triage idea) |
+| 2026-11-23 | Durable workflows on server, web and mobile (`e414cfd4be`, `69c1d53826`) | skipped (large; overlaps always-on agents and conductors, added to T3-GAPS) |
+| 2026-11-23 | ACP handshake bound (`2f19cec079`), queued message on the thread's current pick (`08804b2170`), commands verbatim with pending context (`ecdd8e2c21`), image uploads before send (`3b3f8808f4`), Queue for sessions that can't steer (`c3a330d834`) | skipped (Godspeed already does these) |
+| 2026-11-23 | Sidebar rows show the environment instead of the branch (`cd3a57ac72`), sidebar folder button picks a project (`dbb5bdb582`), multiple Linear accounts, outside-agent MCP events, server metrics scripts | skipped (design choice, covered by #96, no Linear integration, T3-internal) |
+| 2026-11-23 | ~300 minor fixes: git status perf, Office/RTF/ODT previews and attachments, Antigravity/Cursor/Pi/OpenCode, Windows, mobile, i18n, relay, issues, CI | skipped (internal/minor) |
 | 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |
