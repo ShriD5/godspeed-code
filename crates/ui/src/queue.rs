@@ -111,7 +111,7 @@ impl QueuePrimaryAction {
     fn tooltip(self) -> &'static str {
         match self {
             Self::Steer => "Steer (keep current work running)",
-            Self::SendNext => "Send at the next turn (this agent cannot steer mid-turn)",
+            Self::SendNext => "Send when the current turn ends",
             Self::SendNow => "Send now (interrupt)",
         }
     }
@@ -574,7 +574,9 @@ impl Composer {
             interaction_blocked,
             host_supports_actions,
             !item.attachments.is_empty(),
-            self.pickers().read(cx).steers_mid_turn(cx),
+            self.pickers()
+                .read(cx)
+                .steers_prompt_mid_turn(&item.text, cx),
         );
         let primary_action = resolved_primary.unwrap_or(QueuePrimaryAction::SendNow);
         let primary_id = item.id.clone();
@@ -1409,7 +1411,7 @@ impl Composer {
         if self.editing_queued.is_some() {
             return;
         }
-        let (id, delivery_blocked, host_supports_actions, has_attachments) = {
+        let (id, text, delivery_blocked, host_supports_actions, has_attachments) = {
             let state = self.state.read(cx);
             let Some(chat_id) = state.selected_chat.as_deref() else {
                 return;
@@ -1419,6 +1421,7 @@ impl Composer {
             };
             (
                 item.id.clone(),
+                item.text.clone(),
                 item.delivery_gate.is_some(),
                 state.chat_host_supports(
                     chat_id,
@@ -1431,7 +1434,7 @@ impl Composer {
             delivery_blocked,
             host_supports_actions,
             has_attachments,
-            self.pickers().read(cx).steers_mid_turn(cx),
+            self.pickers().read(cx).steers_prompt_mid_turn(&text, cx),
         ) else {
             return;
         };

@@ -4287,10 +4287,11 @@ impl DocHost {
                 "queued message is blocked for editing or review".into(),
             ));
         }
-        if self
-            .sessions()
-            .is_some_and(|sessions| sessions.defers_to_turn_end(chat_id, None))
-        {
+        if self.sessions().is_some_and(|sessions| {
+            sessions.defers_to_turn_end(chat_id, None)
+                || (candidate.attachments.is_empty()
+                    && sessions.holds_command_until_turn_end(chat_id, &candidate.text))
+        }) {
             // Send next: lead the ordinary rows; the drain delivers it the
             // moment the current turn ends.
             let Some(item) = handle.doc.take_queued(id)? else {
@@ -6011,7 +6012,9 @@ impl DocHost {
         let unsteerable_turn =
             sessions.turn_in_flight(chat_id) && !sessions.live_run_steerable(chat_id);
         if !prompt.trim().is_empty()
-            && (unsteerable_turn || sessions.defers_to_turn_end(chat_id, None))
+            && (unsteerable_turn
+                || sessions.defers_to_turn_end(chat_id, None)
+                || sessions.holds_command_until_turn_end(chat_id, &prompt))
         {
             let id = message_id.unwrap_or_else(new_id);
             self.hold_until_turn_end(handle, &id, &prompt, issued_at, true, None)?;
