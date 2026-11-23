@@ -662,6 +662,15 @@ impl SessionsEngine {
             .is_some_and(is_active)
     }
 
+    /// A native command sent during a turn waits for the turn to end: steered
+    /// in, the provider would run it in place of the turn's task.
+    pub fn holds_command_until_turn_end(&self, chat_id: &str, prompt: &str) -> bool {
+        self.turn_in_flight(chat_id)
+            && lock(&self.inner.runs).get(chat_id).is_some_and(|h| {
+                zeron_proto::invocation::native_command(prompt, h.runtime_config.harness_id)
+            })
+    }
+
     /// Whether the chat's live runtime reports background work (subagents,
     /// background shells) still running — parked or not.
     pub fn holds_background_work(&self, chat_id: &str) -> bool {
@@ -2598,7 +2607,7 @@ impl Inner {
         current: Option<&str>,
         provider: ProviderSession<'_>,
     ) -> Option<String> {
-        if native_command(prompt, harness_id)
+        if zeron_proto::invocation::native_command(prompt, harness_id)
             || !self
                 .workspace()
                 .and_then(|ws| ws.chat(chat_id).ok().flatten())
@@ -2659,18 +2668,6 @@ impl Inner {
             )
         })
     }
-}
-
-/// Whether the provider routes this prompt as a native command: its delivered
-/// text leads with `/name` (Codex `command_request`, OpenCode commands, Claude
-/// slash commands). Anything put in front of it would make it model input.
-fn native_command(prompt: &str, harness: HarnessId) -> bool {
-    let delivered = if harness == HarnessId::Codex {
-        zeron_proto::invocation::invocation_prompt(prompt)
-    } else {
-        zeron_proto::invocation::harness_prompt(prompt, harness)
-    };
-    zeron_proto::invocation::leading_command(&delivered).is_some()
 }
 
 /// A turn is in flight: streaming, or parked on a question it is still owed an
@@ -3370,7 +3367,7 @@ async fn drive_run(
     } else if request.resume.is_none()
         && !resume_state.idle
         && !carried_history
-        && !native_command(&request.prompt, harness_id)
+        && !zeron_proto::invocation::native_command(&request.prompt, harness_id)
         && let Some(brief) = doc.carried_context()
     {
         request.prompt = format!("{brief}\n\n{}", request.prompt);
@@ -3379,7 +3376,7 @@ async fn drive_run(
     // its role and the notes. Slash commands are left bare so they still parse.
     if request.resume.is_none()
         && !resume_state.idle
-        && !native_command(&request.prompt, harness_id)
+        && !zeron_proto::invocation::native_command(&request.prompt, harness_id)
         && let Some(workspace) = inner.workspace()
         && let Some(prefix) = crate::conductor::conductor_prompt_prefix(&workspace, &chat_id)
     {

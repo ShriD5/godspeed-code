@@ -850,6 +850,49 @@ async fn held_policy_keeps_a_steerable_message_visible_until_steer_now() {
     core.shutdown().await;
 }
 
+/// A command steered into a running turn would replace its task, so even a
+/// mid-turn agent gets it next, ahead of ordinary rows, once the turn ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steer_now_sends_a_command_next_instead_of_into_the_turn() {
+    let (core, harness, prompts) = setup(SteeringMode::StepBoundary).await;
+
+    core.doc_host
+        .queue_message(CHAT, "opening", Vec::new())
+        .expect("queue opening");
+    wait_for(
+        || prompts.lock().unwrap().iter().any(|p| p == "opening"),
+        "the first turn to start",
+    )
+    .await;
+    core.doc_host
+        .queue_message(CHAT, "ordinary", Vec::new())
+        .expect("queue ordinary message");
+    let command = core
+        .doc_host
+        .queue_message(CHAT, "/compact", Vec::new())
+        .expect("queue command");
+
+    assert!(
+        core.doc_host
+            .steer_queued_now(CHAT, &command)
+            .await
+            .unwrap()
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(queue_texts(&core), vec!["/compact", "ordinary"]);
+    assert_eq!(*prompts.lock().unwrap(), vec!["opening".to_owned()]);
+
+    let _ = harness.finish.send(());
+    wait_for(
+        || prompts.lock().unwrap().iter().any(|p| p == "/compact"),
+        "the command at the turn end",
+    )
+    .await;
+    assert_eq!(queue_texts(&core), vec!["ordinary"]);
+    let _ = harness.finish.send(());
+    core.shutdown().await;
+}
+
 /// Send next on a turn-boundary agent: the row jumps ahead of ordinary rows
 /// and goes out the moment the current turn ends, not into the transcript now.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

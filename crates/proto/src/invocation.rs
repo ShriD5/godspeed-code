@@ -286,6 +286,18 @@ pub fn leading_command(text: &str) -> Option<(&str, &str)> {
     Some((name, parts.next().unwrap_or_default().trim()))
 }
 
+/// Whether the provider routes this prompt as a native command: its delivered
+/// text leads with `/name` (Codex `command_request`, OpenCode commands, Claude
+/// slash commands). Anything put in front of it would make it model input.
+pub fn native_command(prompt: &str, harness: crate::HarnessId) -> bool {
+    let delivered = if harness == crate::HarnessId::Codex {
+        invocation_prompt(prompt)
+    } else {
+        harness_prompt(prompt, harness)
+    };
+    leading_command(&delivered).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

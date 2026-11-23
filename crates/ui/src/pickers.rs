@@ -1699,6 +1699,15 @@ impl Pickers {
             })
     }
 
+    /// Whether a queued `prompt` would steer into the running turn: a native
+    /// command waits for the turn to end instead.
+    pub(crate) fn steers_prompt_mid_turn(&self, prompt: &str, cx: &App) -> bool {
+        self.steers_mid_turn(cx)
+            && !self
+                .effective_harness(cx)
+                .is_some_and(|harness| zeron_proto::invocation::native_command(prompt, harness))
+    }
+
     /// The fully-resolved config the composer threads into the Run request and
     /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
     /// loaded (no "engine picks a default" passthrough).
