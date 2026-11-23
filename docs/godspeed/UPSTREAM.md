@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@46f18fe4 (2026-11-21)
+Synced through: zeronsh/zeron@b2ee6d1b (2026-11-23)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -245,6 +245,15 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     starts, deferred) and builds on the deferred Antigravity hardening (890c4527e). Its
     new proto field touches every engine/harness test initializer. Port with 890c4527e.
   - Skipped: version bumps (b7b1e2d3, 26000a74), 46f18fe4 (Cloud install script, edge).
+- Deferred 2026-11-23 (46f18fe4..b2ee6d1b: 19 commits, 17 non-merge). Ported b5cfaaccd (Pi
+  set_model refusal) and the `crates/mobile` half of 8141d7d9e (image-named attachment chips).
+  - e595626b0 (Antigravity disconnects in Cloud Runner): the engine half is Cloud
+    (`credentials.rs`, antigravity_proxy); the harness half needs the CCPA thoughts proxy
+    (`acp/ccpa_thoughts.rs`) from the deferred Antigravity hardening (890c4527e). Port with it.
+  - aad53585e (Cloud delegates childKind): Cloud.
+  - `apps/zgx` only, deferred with zgx: 66d025b24, 7662482bf, e131c1ba0, 80b78c1e8,
+    2fcd150ea, e88155990, 225078f9e, 7b2eae9f7, 55ca07782, 838478e24.
+  - Skipped: version bumps (b289003b7, b2ee6d1b9), aec10cd12 (docs rewritten for ZGX).
 - Partly ported (2026-11-02): 2500e8b3 brought only the Muse crash-exit race fix. Its CI
   restructure (single ci.yml with admission/reuse, nextest profile, merged `tests/misc`
   binaries) is Zeron's CI; its term-link race fix needs the deferred `zeron-term-link` crate
