@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-24 | Run the project's setup when a removed worktree is restored for its thread (`e65b19d15e`) | PR #TBD |
+| 2026-11-24 | Run the project's setup when a removed worktree is restored for its thread (`e65b19d15e`) | PR #117 |
 | 2026-11-24 | Claude context is measured from the last main-model pass, so an advisor call no longer double-counts it (`e632155b3a`) | queued (check `usage.iterations` handling in `harness/src/claude` context usage) |
 | 2026-11-24 | An accepted Stop no longer ends the run as completed (`3f09ad9127`); a parent parked on subagents no longer reads as Thinking (`a6c69be8df`) | queued (check turn status after Stop and the parent row while children run) |
 | 2026-11-24 | Multi-select questions can be answered with nothing checked (`72e7e8b044`) | queued (check the input card's submit gate for multi-select) |
