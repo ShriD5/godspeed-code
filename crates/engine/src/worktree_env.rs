@@ -160,20 +160,43 @@ impl WorktreeEnvironments {
         }
     }
 
+    /// Set up a worktree that was recreated after its folder was deleted, as
+    /// if it were new: copy the project's untracked files again and start
+    /// its setup. Ports and setup steps stay with the worktree's record.
+    pub async fn restore_setup(
+        &self,
+        scope: &ProjectScope,
+        worktree_path: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Option<ProjectActionRun>, EngineError> {
+        if let Some(environment) = self.environment(scope)? {
+            let (main, path, rules) = (
+                scope.root.clone(),
+                worktree_path.to_path_buf(),
+                environment.copy,
+            );
+            tokio::task::spawn_blocking(move || copy::copy_untracked(&main, &path, &rules))
+                .await
+                .map_err(|error| EngineError::Other(format!("copying files stopped: {error}")))?
+                .map_err(EngineError::Other)?;
+        }
+        self.launch_setup(scope, worktree_path, cols, rows)
+    }
+
     /// Start the new worktree's setup in one "(setup)" terminal: the
     /// environment's setup steps, then the project's setup Action. `None`
     /// when the project has neither.
     pub fn launch_setup(
         &self,
         scope: &ProjectScope,
-        worktree: &Worktree,
+        worktree_path: &Path,
         cols: u16,
         rows: u16,
     ) -> Result<Option<ProjectActionRun>, EngineError> {
         let action = self
             .project_actions
             .setup_action(&scope.space_id, &scope.space_path)?;
-        let worktree_path = Path::new(&worktree.path);
         let record = self.repos.worktree_records().get(worktree_path);
         let environment = record
             .as_ref()

@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
+Reviewed T3 through: pingdotgg/t3code@2cc8e73014 (2026-11-24)
 
 ## Rules
 
@@ -23,6 +23,15 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-24 | Run the project's setup when a removed worktree is restored for its thread (`e65b19d15e`) | PR #117 |
+| 2026-11-24 | Claude context is measured from the last main-model pass, so an advisor call no longer double-counts it (`e632155b3a`) | queued (check `usage.iterations` handling in `harness/src/claude` context usage) |
+| 2026-11-24 | An accepted Stop no longer ends the run as completed (`3f09ad9127`); a parent parked on subagents no longer reads as Thinking (`a6c69be8df`) | queued (check turn status after Stop and the parent row while children run) |
+| 2026-11-24 | Multi-select questions can be answered with nothing checked (`72e7e8b044`) | queued (check the input card's submit gate for multi-select) |
+| 2026-11-24 | Model picker search finds a model by its ID (`2ced06ef4a`); editing a queued message keeps its model choice (`d572ce9afe`) | queued (minor; check our picker filter and queued-message edit) |
+| 2026-11-24 | Opening a thread lands at its end (`4508c70681`); a run finishing in a background window stays unread (`0a7864c887`) | queued (joins the 2026-11-20 finished-while-away item) |
+| 2026-11-24 | Providers find a shell PATH that arrives after startup (`9563012455`); terminal copy with no selection no longer types escape codes (`b4345bf904`); unfinished control sequences no longer delay terminal output (`28c58b19b5`) | queued (check `shell_env.rs` reprobe and terminal key handling) |
+| 2026-11-24 | Starting providers show their real startup step and logo (`ff6b10e0a0`); HTML preview width setting (`14ea095b0a`); GitHub issue statuses and stacked auto-merge (`f46fa62d59`, `69d8f4217f`) | skipped (minor or no matching Godspeed surface yet) |
+| 2026-11-24 | ~270 minor fixes: Esc/IME handling in T3's React dialogs, mobile, desktop/Electron, SSH, relay, Office/EPUB/RTF previews, workflows, scripts and benchmarks, CI, security scoping of T3's server, half-emoji truncations | skipped (internal/minor) |
 | 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |
