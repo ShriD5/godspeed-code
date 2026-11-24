@@ -4366,11 +4366,9 @@ impl RpcService for EngineRpc {
                     setup_error: None,
                 };
                 if let Some(scope) = scope {
-                    let mut worktree = outcome.worktree.clone();
-                    if let Ok(root) = std::fs::canonicalize(&worktree.path) {
-                        worktree.path = root.to_string_lossy().into_owned();
-                    }
-                    match environments.launch_setup(&scope, &worktree, 80, 24) {
+                    let path = std::fs::canonicalize(&outcome.worktree.path)
+                        .unwrap_or_else(|_| std::path::PathBuf::from(&outcome.worktree.path));
+                    match environments.launch_setup(&scope, &path, 80, 24) {
                         Ok(run) => outcome.setup_action = run,
                         Err(err) => {
                             tracing::warn!(

@@ -475,7 +475,7 @@ async fn check_worktree_setup_and_reuse(use_project_symlink: bool, test_setup: b
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_deleted_worktree_is_recreated_before_the_next_turn() {
+async fn a_deleted_worktree_is_recreated_and_set_up_before_the_next_turn() {
     let tmp = tempfile::tempdir().unwrap();
     let tmp_path = tmp.path().canonicalize().unwrap();
     let repo_dir = tmp_path.join("repo");
@@ -518,6 +518,20 @@ async fn a_deleted_worktree_is_recreated_before_the_next_turn() {
         )
         .await
         .expect("choose worktree directory");
+    std::fs::write(repo_dir.join(".env"), "SECRET=1\n").unwrap();
+    client
+        .call(
+            zeron_rpc::methods::SET_WORKTREE_ENVIRONMENT,
+            serde_json::json!({
+                "spaceId": "space-deleted-worktree",
+                "environment": {
+                    "copy": [".env"],
+                    "setup": ["printf setup >> setup-runs"],
+                },
+            }),
+        )
+        .await
+        .expect("save environment");
     client
         .call(
             zeron_rpc::methods::MUTATE,
@@ -542,6 +556,8 @@ async fn a_deleted_worktree_is_recreated_before_the_next_turn() {
         .expect("queue run command");
     wait_for(|| complete_assistant_count(&core) == 1, "first turn").await;
     let worktree = cwds.lock().unwrap()[0].clone();
+    let setup_runs = PathBuf::from(&worktree).join("setup-runs");
+    wait_for(|| setup_runs.is_file(), "first setup").await;
     let branch = core.workspace.chat(CHAT).unwrap().unwrap().branch.unwrap();
     std::fs::remove_dir_all(&worktree).unwrap();
 
@@ -567,6 +583,12 @@ async fn a_deleted_worktree_is_recreated_before_the_next_turn() {
         "hello\n"
     );
     assert_eq!(core.repos.current_branch(&worktree).await.unwrap(), branch);
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".env")).unwrap(),
+        "SECRET=1\n"
+    );
+    wait_for(|| setup_runs.is_file(), "setup of the recreated worktree").await;
+    assert_eq!(std::fs::read_to_string(&setup_runs).unwrap(), "setup");
 
     core.shutdown().await;
 }

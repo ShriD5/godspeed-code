@@ -6170,13 +6170,15 @@ impl DocHost {
             return Ok(());
         }
         let record = repos.worktree_records().containing(cwd);
-        let project = self
-            .workspace()
-            .and_then(|ws| {
-                let space_id = ws.chat(chat_id).ok()??.space_id?;
-                ws.space(&space_id).ok()?
-            })
-            .and_then(|space| crate::repos::expand_home(&space.path).ok());
+        let space = self.workspace().and_then(|ws| {
+            let space_id = ws.chat(chat_id).ok()??.space_id?;
+            ws.space(&space_id).ok()?
+        });
+        let space_id = space
+            .as_ref()
+            .map(|space| space.id.clone())
+            .or_else(|| record.as_ref()?.space_id.clone());
+        let project = space.and_then(|space| crate::repos::expand_home(&space.path).ok());
         let mut repo_paths: Vec<String> = record.iter().map(|r| r.repo_path.clone()).collect();
         repo_paths.extend(project.filter(|path| !repo_paths.contains(path)));
         let recorded = record
@@ -6189,6 +6191,10 @@ impl DocHost {
             {
                 Ok(Some(root)) => {
                     tracing::info!(chat = %chat_id, path = %root.display(), "recreated the chat's deleted worktree");
+                    if let Some(space_id) = &space_id {
+                        self.restore_worktree_setup(chat_id, space_id, repo_path, &root)
+                            .await;
+                    }
                     return Ok(());
                 }
                 Ok(None) => {}
@@ -6201,6 +6207,27 @@ impl DocHost {
             }
         }
         Ok(())
+    }
+
+    /// A recreated worktree is as bare as a new one, so its setup runs
+    /// again. The turn goes ahead even when setup can't start.
+    async fn restore_worktree_setup(
+        &self,
+        chat_id: &str,
+        space_id: &str,
+        repo_path: &str,
+        root: &Path,
+    ) {
+        let Some(environments) = self.worktree_environments() else {
+            return;
+        };
+        let restored = match self.project_scope(space_id, repo_path) {
+            Ok(scope) => environments.restore_setup(&scope, root, 120, 32).await,
+            Err(err) => Err(err),
+        };
+        if let Err(err) = restored {
+            tracing::warn!(chat = %chat_id, path = %root.display(), error = %err, "recreated worktree setup failed");
+        }
     }
 
     async fn materialize_worktree(
@@ -6280,7 +6307,7 @@ impl DocHost {
         let environments = self
             .worktree_environments()
             .ok_or_else(|| EngineError::Other("project actions not wired".into()))?;
-        let setup_action = environments.launch_setup(&scope, worktree, 120, 32)?;
+        let setup_action = environments.launch_setup(&scope, Path::new(&worktree.path), 120, 32)?;
         Ok(ProjectActionSetupHandoff {
             setup_action,
             setup_error: None,
