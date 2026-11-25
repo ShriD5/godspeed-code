@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-25 | Keybindings cycle through terminals: Cmd+Shift+] / [ on macOS, Ctrl+Alt+] / [ elsewhere, while a terminal is focused; wraps through the drawer's or right panel's terminals; rebindable (`b6869fad67`) | PR #TBD |
+| 2026-11-25 | Keybindings cycle through terminals: Cmd+Shift+] / [ on macOS, Ctrl+Alt+] / [ elsewhere, while a terminal is focused; wraps through the drawer's or right panel's terminals; rebindable (`b6869fad67`) | PR #118 |
 | 2026-11-25 | Settle, pin, snooze and more for the current thread from Cmd+K (`95411e3cd7`) | queued (our palette has Archive and Regenerate title, not Settle or Pin) |
 | 2026-11-25 | Option and Cmd arrows reach full-screen terminal apps (`89047261b1`) | queued (check `terminal/view.rs` `route_key` for alt/cmd arrows in the alternate screen) |
 | 2026-11-25 | A query in double quotes finds its words together, in thread search and the palette (`62e8042b21`) | queued |

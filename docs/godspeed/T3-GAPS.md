@@ -223,7 +223,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
-| Cycle terminals from the keyboard (Cmd+Shift+] / [ on macOS, Ctrl+Alt+] / [ elsewhere) while one is focused: the drawer's tabs, or the right pane's terminal tabs; rebindable under Panels | #TBD |
+| Cycle terminals from the keyboard (Cmd+Shift+] / [ on macOS, Ctrl+Alt+] / [ elsewhere) while one is focused: the drawer's tabs, or the right pane's terminal tabs; rebindable under Panels | #118 |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |
