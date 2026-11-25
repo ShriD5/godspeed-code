@@ -58,7 +58,7 @@ const BLINK_IDLE: Duration = Duration::from_secs(15);
 /// The copy flash's fade.
 const COPY_FLASH: Duration = Duration::from_millis(320);
 
-actions!(terminal, [ToggleTerminal]);
+actions!(terminal, [ToggleTerminal, NextTerminalTab, PrevTerminalTab]);
 
 /// Bind the terminal keymap (global): Cmd+J on macOS, Ctrl+J elsewhere.
 pub fn init(cx: &mut App) {
@@ -115,6 +115,15 @@ pub fn slide_offset(ix: usize, from: usize, over: usize) -> f32 {
         1.0
     } else {
         0.0
+    }
+}
+
+/// The tab `forward` (or back) from `active`, wrapping at either end.
+pub fn cycled_index(active: usize, len: usize, forward: bool) -> usize {
+    match (len, forward) {
+        (0, _) => 0,
+        (_, true) => (active + 1) % len,
+        (_, false) => (active + len - 1) % len,
     }
 }
 
@@ -1863,6 +1872,21 @@ impl TerminalPanel {
 
     // ---- tab management ----
 
+    /// Next/previous terminal from the keyboard. Embedded, the shell's
+    /// surface strip owns the order, so the action carries on up to it.
+    fn cycle_tab(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if self.embedded {
+            cx.propagate();
+            return;
+        }
+        let chat = self.selected_chat(cx);
+        let Some(tabs) = self.chats.get(&chat) else {
+            return;
+        };
+        let ix = cycled_index(tabs.active, tabs.tabs.len(), forward);
+        self.select_tab(&chat, ix, cx);
+    }
+
     fn select_tab(&mut self, chat: &str, ix: usize, cx: &mut Context<Self>) {
         if let Some(tabs) = self.chats.get_mut(chat)
             && ix < tabs.tabs.len()
@@ -2392,6 +2416,12 @@ impl Render for TerminalPanel {
                     .track_focus(&self.focus_handle)
                     .on_hover(cx.listener(Self::on_terminal_hover))
                     .on_key_down(cx.listener(Self::on_key_down))
+                    .on_action(
+                        cx.listener(|this, _: &NextTerminalTab, _, cx| this.cycle_tab(true, cx)),
+                    )
+                    .on_action(
+                        cx.listener(|this, _: &PrevTerminalTab, _, cx| this.cycle_tab(false, cx)),
+                    )
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                     .on_mouse_move(cx.listener(Self::on_mouse_move))
                     // Bound on the window, not the element: a drag that ends
@@ -2485,6 +2515,34 @@ mod tests {
         assert_eq!(sent(&panel, cx), b"ls -a\r");
         cx.simulate_keystrokes("ctrl-c alt-b");
         assert_eq!(sent(&panel, cx), b"ls -a\r\x03\x1bb");
+    }
+
+    #[gpui::test]
+    fn the_cycle_shortcuts_step_through_tabs_and_wrap(cx: &mut gpui::TestAppContext) {
+        let (panel, cx) = focused_panel(cx);
+        cx.update(|_, cx| {
+            cx.bind_keys([
+                KeyBinding::new("cmd-shift-]", NextTerminalTab, Some("Terminal")),
+                KeyBinding::new("cmd-shift-[", PrevTerminalTab, Some("Terminal")),
+            ])
+        });
+        let keys = panel.update(cx, |panel, cx| {
+            let first = panel.active_tab(cx).unwrap().key;
+            let second = panel.reserve_tab_for_chat("chat".into(), "Two", cx);
+            let third = panel.reserve_tab_for_chat("chat".into(), "Three", cx);
+            [first, second, third]
+        });
+        let active = |cx: &mut gpui::VisualTestContext| {
+            panel.read_with(cx, |panel, cx| panel.active_tab(cx).unwrap().key)
+        };
+        assert_eq!(active(cx), keys[2]);
+        cx.simulate_keystrokes("cmd-shift-]");
+        assert_eq!(active(cx), keys[0]);
+        cx.simulate_keystrokes("cmd-shift-[");
+        assert_eq!(active(cx), keys[2]);
+        cx.simulate_keystrokes("cmd-shift-[ cmd-shift-[");
+        assert_eq!(active(cx), keys[0]);
+        assert!(sent(&panel, cx).is_empty());
     }
 
     #[gpui::test]

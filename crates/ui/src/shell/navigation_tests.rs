@@ -32,6 +32,12 @@ impl Render for NavigationHost {
                 .on_action(cx.listener(|shell, _: &PrevSession, window, cx| {
                     shell.cycle_navigation(false, window, cx);
                 }))
+                .on_action(cx.listener(|shell, _: &NextTerminalTab, window, cx| {
+                    shell.cycle_right_terminals(true, window, cx);
+                }))
+                .on_action(cx.listener(|shell, _: &PrevTerminalTab, window, cx| {
+                    shell.cycle_right_terminals(false, window, cx);
+                }))
                 .child(div().h(px(40.)).child(shell.render_right_tab_strip(cx)))
                 .child(
                     div()
@@ -389,6 +395,45 @@ fn embedded_terminal_and_browser_focus_route_to_right_tabs(cx: &mut TestAppConte
     cx.update(|window, cx| window.draw(cx).clear());
     press(cx, true);
     assert_surface(&shell, cx, RightSurface::Subagent(1));
+}
+
+#[gpui::test]
+fn terminal_shortcuts_cycle_only_the_right_pane_terminals(cx: &mut TestAppContext) {
+    let (shell, cx) = setup(cx);
+    let [first, second] = [0, 1].map(|ix| {
+        shell.update(cx, |shell, cx| {
+            // No engine here: reserve the emulator tab the surface then names.
+            let key = shell.right_terminal_panel(cx).update(cx, |panel, cx| {
+                panel.reserve_tab_for_chat("parent".into(), format!("Terminal {ix}"), cx)
+            });
+            shell.add_terminal_surface(cx);
+            key
+        })
+    });
+    cx.update(|window, cx| window.draw(cx).clear());
+    let step = |cx: &mut VisualTestContext, id: ShortcutId| {
+        cx.simulate_keystrokes(&platform_combo(id.default_combo()));
+        cx.update(|window, cx| window.draw(cx).clear());
+    };
+    let assert_terminal = |cx: &mut VisualTestContext, key: u64| {
+        cx.update(|window, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(shell.resolved_right_active(cx), RightSurface::Terminal(key));
+            let terminal = shell.right_terminal.as_ref().unwrap().read(cx);
+            assert!(terminal.focus_handle().is_focused(window));
+        });
+    };
+    assert_terminal(cx, second);
+    step(cx, ShortcutId::NextTerminal);
+    assert_terminal(cx, first);
+    step(cx, ShortcutId::PrevTerminal);
+    assert_terminal(cx, second);
+    shell.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell.state.read(cx).selected_chat.as_deref(),
+            Some("parent")
+        );
+    });
 }
 
 #[gpui::test]

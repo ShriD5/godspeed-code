@@ -832,7 +832,9 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::ToggleFiles
         | ShortcutId::ToggleTerminal
         | ShortcutId::ToggleDiffPane
-        | ShortcutId::ReopenClosedTab => "Panels",
+        | ShortcutId::ReopenClosedTab
+        | ShortcutId::NextTerminal
+        | ShortcutId::PrevTerminal => "Panels",
         ShortcutId::NewProject | ShortcutId::OpenProjectPicker => "Projects",
         ShortcutId::ToggleDictation => "Voice",
         ShortcutId::OpenModelPicker
