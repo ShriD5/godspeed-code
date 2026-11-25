@@ -1326,6 +1326,8 @@ async fn recover_stale_journal_settles_chips_in_completed_local_entries() {
             },
         )
         .unwrap();
+    // Written out before the engine opens its own journal: appends batch.
+    drop(journal);
     let doc = SessionDoc::init(CHAT).unwrap();
     for (id, device) in [("local", device_id), ("remote", "other-device")] {
         doc.push_message(&SessionMessageEntry {

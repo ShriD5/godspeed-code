@@ -34,8 +34,11 @@ fn launch(cwd: &std::path::Path, http: bool) -> Child {
             .unwrap(),
     )
 }
+/// How long discovery may take to list a server: a listener is probed only
+/// once it has stayed up 3 s, and a busy machine slows every scan.
+const CONVERGE: Duration = Duration::from_secs(30);
 async fn wait(service: &PreviewService, expected_pid: Option<u32>) {
-    tokio::time::timeout(Duration::from_secs(12), async {
+    tokio::time::timeout(CONVERGE, async {
         loop {
             let services = service.catalog().snapshot().services;
             if match expected_pid {

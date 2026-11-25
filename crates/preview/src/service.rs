@@ -26,10 +26,28 @@ use tokio_util::sync::CancellationToken;
 /// cycle already proves the same process still owns the same port. Sockets
 /// that did not answer HTTP (a server bound but not yet serving) are retried
 /// with a capped exponential backoff instead of on every cycle.
+///
+/// Nor is a socket probed before it has stayed up [`PROBE_SETTLE`]: a test
+/// suite's fixture server answers a scripted number of connections and is
+/// gone in moments, and a probe taking one of them fails the test.
 #[derive(Default)]
 pub(crate) struct ProbeMemory {
     verdicts: HashMap<(u32, u64, SocketAddr), Verdict>,
+    /// When each listed socket was first seen by a scan.
+    first_seen: HashMap<(u32, u64, SocketAddr), Instant>,
 }
+/// How long a listener must have stayed up (seen by an earlier scan, this
+/// long before) before discovery connects to it. A test's fixture server
+/// lives for its test, milliseconds to a second or two, while a dev server
+/// stays up for minutes or hours, so 3 s spares nearly every fixture (those
+/// of test runners Godspeed recognises are never probed at all:
+/// [`discovery::Listener::is_test_run`]) and costs a dev server about 3 s
+/// before it is listed. It is above [`ACTIVE_SCAN`], so a listener is never
+/// probed by the scan right after the one that first saw it.
+const PROBE_SETTLE: Duration = Duration::from_secs(3);
+/// The least wait before the scan that probes a listener done settling
+/// (its time may have come while this scan probed others).
+const SETTLED_RESCAN_MIN: Duration = Duration::from_millis(100);
 enum Verdict {
     Http,
     NotHttp {
@@ -69,8 +87,16 @@ pub(crate) fn scan_delay(
 const NOT_HTTP_INITIAL_BACKOFF: Duration = Duration::from_secs(4);
 const NOT_HTTP_MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-/// (servers already confirmed HTTP, listeners to probe this cycle)
-type Planned<T> = (Vec<(T, discovery::Listener)>, Vec<(T, discovery::Listener)>);
+/// One cycle's candidates, sorted by [`ProbeMemory::plan`].
+pub(crate) struct Planned<T> {
+    /// Servers already confirmed HTTP.
+    pub known: Vec<(T, discovery::Listener)>,
+    /// Listeners to probe this cycle.
+    pub probe: Vec<(T, discovery::Listener)>,
+    /// When the first listener still settling ([`PROBE_SETTLE`]) may be
+    /// probed: the scan after that lists it.
+    pub settling_until: Option<Instant>,
+}
 
 fn probe_key(listener: &discovery::Listener) -> (u32, u64, SocketAddr) {
     (listener.pid, listener.started_at, listener.address)
@@ -78,8 +104,10 @@ fn probe_key(listener: &discovery::Listener) -> (u32, u64, SocketAddr) {
 
 impl ProbeMemory {
     /// Splits this cycle's candidates into servers already known to speak
-    /// HTTP and listeners that need a probe now. Verdicts for sockets that
-    /// are no longer listed are forgotten so a reused port is probed afresh.
+    /// HTTP, listeners that need a probe now, and listeners not up long
+    /// enough to probe yet ([`PROBE_SETTLE`]). Sockets that are no longer
+    /// listed are forgotten (their verdicts and when they were first seen)
+    /// so a reused port is probed afresh, after settling afresh.
     pub(crate) fn plan<T>(
         &mut self,
         candidates: Vec<(T, discovery::Listener)>,
@@ -88,16 +116,31 @@ impl ProbeMemory {
         let present: std::collections::HashSet<_> =
             candidates.iter().map(|(_, l)| probe_key(l)).collect();
         self.verdicts.retain(|key, _| present.contains(key));
-        let mut known = Vec::new();
-        let mut probe = Vec::new();
+        self.first_seen.retain(|key, _| present.contains(key));
+        let mut planned = Planned {
+            known: Vec::new(),
+            probe: Vec::new(),
+            settling_until: None,
+        };
         for candidate in candidates {
-            match self.verdicts.get(&probe_key(&candidate.1)) {
-                Some(Verdict::Http) => known.push(candidate),
+            let key = probe_key(&candidate.1);
+            // First seen by this scan: an earlier one must have seen it too,
+            // PROBE_SETTLE before, for it to be probed.
+            let eligible = *self.first_seen.entry(key).or_insert(now) + PROBE_SETTLE;
+            match self.verdicts.get(&key) {
+                Some(Verdict::Http) => planned.known.push(candidate),
                 Some(Verdict::NotHttp { retry_at, .. }) if *retry_at > now => {}
-                _ => probe.push(candidate),
+                _ if eligible > now => {
+                    planned.settling_until = Some(
+                        planned
+                            .settling_until
+                            .map_or(eligible, |until| until.min(eligible)),
+                    );
+                }
+                _ => planned.probe.push(candidate),
             }
         }
-        (known, probe)
+        planned
     }
     pub(crate) fn record(&mut self, listener: &discovery::Listener, http: bool, now: Instant) {
         let key = probe_key(listener);
@@ -360,6 +403,7 @@ impl PreviewService {
                                 l.address.port() != zeron_proto::PREVIEW_PROXY_PORT
                                     && l.pid != std::process::id()
                                     && !l.is_authentication_command()
+                                    && !l.is_test_run()
                             })
                             .filter_map(|listener| {
                                 roots
@@ -372,7 +416,11 @@ impl PreviewService {
                     })
                     .await
                     .unwrap_or_default();
-                    let (mut servers, probe) = memory.plan(candidates, Instant::now());
+                    let Planned {
+                        known: mut servers,
+                        probe,
+                        settling_until,
+                    } = memory.plan(candidates, Instant::now());
                     let probed: Vec<_> = stream::iter(probe)
                         .map(|(root, listener)| async move {
                             let http = discovery::is_http(listener.address).await;
@@ -391,9 +439,20 @@ impl PreviewService {
                     if let Err(error) = catalog.replace_local(servers) {
                         tracing::warn!(%error, "could not update preview services");
                     }
+                    settling_until
                 };
-                tokio::select! { _ = stop.cancelled() => break, _ = scan => {} }
-                let delay = service.scan_delay();
+                let settling_until =
+                    tokio::select! { _ = stop.cancelled() => break, until = scan => until };
+                let mut delay = service.scan_delay();
+                // A listener waiting out PROBE_SETTLE is probed by the first
+                // scan after it may be, however slow the cadence is.
+                if let Some(until) = settling_until {
+                    delay = delay.min(
+                        until
+                            .saturating_duration_since(Instant::now())
+                            .max(SETTLED_RESCAN_MIN),
+                    );
+                }
                 tokio::select! {
                     _ = stop.cancelled() => break,
                     _ = tokio::time::sleep(delay) => {}
@@ -478,6 +537,7 @@ mod tests {
             started_at: 1_000,
             address: ([127, 0, 0, 1], port).into(),
             zeron_owned: false,
+            test_run: false,
         }
     }
     #[test]
@@ -512,53 +572,146 @@ mod tests {
         assert_eq!(service.scan_delay(), QUIET_SCAN);
     }
 
+    fn at(t0: Instant, secs: u64) -> Instant {
+        t0 + Duration::from_secs(secs)
+    }
     #[test]
     fn a_confirmed_http_server_is_never_probed_again() {
         let mut memory = ProbeMemory::default();
         let t0 = Instant::now();
-        let (known, probe) = memory.plan(vec![((), listener(7, 8081))], t0);
-        assert!(known.is_empty());
-        assert_eq!(probe.len(), 1);
-        memory.record(&probe[0].1, true, t0);
-        for cycle in 1..1_000u64 {
-            let now = t0 + Duration::from_secs(2 * cycle);
-            let (known, probe) = memory.plan(vec![((), listener(7, 8081))], now);
-            assert_eq!(known.len(), 1, "cycle {cycle} must reuse the verdict");
-            assert!(probe.is_empty(), "cycle {cycle} must not send a request");
+        let planned = memory.plan(vec![((), listener(7, 8081))], t0);
+        assert!(
+            planned.known.is_empty() && planned.probe.is_empty(),
+            "settling"
+        );
+        let planned = memory.plan(vec![((), listener(7, 8081))], at(t0, 3));
+        assert!(planned.known.is_empty());
+        assert_eq!(planned.probe.len(), 1);
+        memory.record(&planned.probe[0].1, true, at(t0, 3));
+        for cycle in 2..1_000u64 {
+            let now = at(t0, 2 * cycle);
+            let planned = memory.plan(vec![((), listener(7, 8081))], now);
+            assert_eq!(
+                planned.known.len(),
+                1,
+                "cycle {cycle} must reuse the verdict"
+            );
+            assert!(
+                planned.probe.is_empty(),
+                "cycle {cycle} must not send a request"
+            );
+            assert_eq!(planned.settling_until, None);
         }
     }
     #[test]
     fn non_http_listeners_back_off_and_reused_ports_are_probed_afresh() {
         let mut memory = ProbeMemory::default();
         let t0 = Instant::now();
-        let (_, probe) = memory.plan(vec![((), listener(7, 8081))], t0);
-        memory.record(&probe[0].1, false, t0);
-        let (_, probe) = memory.plan(vec![((), listener(7, 8081))], t0 + Duration::from_secs(2));
-        assert!(probe.is_empty(), "the very next cycle is skipped");
-        let (_, probe) = memory.plan(vec![((), listener(7, 8081))], t0 + Duration::from_secs(5));
-        assert_eq!(probe.len(), 1, "retried after the initial backoff");
-        memory.record(&probe[0].1, false, t0 + Duration::from_secs(5));
-        let (_, probe) = memory.plan(vec![((), listener(7, 8081))], t0 + Duration::from_secs(10));
-        assert!(probe.is_empty(), "backoff doubled");
-        // A different process on the same port carries no verdict over.
-        let (_, probe) = memory.plan(vec![((), listener(8, 8081))], t0 + Duration::from_secs(10));
-        assert_eq!(probe.len(), 1);
-        // The original socket, once absent, is forgotten and re-probed on return.
-        memory.record(&probe[0].1, true, t0);
-        let (known, probe) =
-            memory.plan(vec![((), listener(7, 8081))], t0 + Duration::from_secs(11));
-        assert!(known.is_empty());
-        assert_eq!(probe.len(), 1);
+        let probe = |memory: &mut ProbeMemory, pid, secs| {
+            memory
+                .plan(vec![((), listener(pid, 8081))], at(t0, secs))
+                .probe
+        };
+        assert!(probe(&mut memory, 7, 0).is_empty(), "settling");
+        let probed = probe(&mut memory, 7, 3);
+        assert_eq!(probed.len(), 1);
+        memory.record(&probed[0].1, false, at(t0, 3));
+        assert!(
+            probe(&mut memory, 7, 5).is_empty(),
+            "the very next cycle is skipped"
+        );
+        let probed = probe(&mut memory, 7, 8);
+        assert_eq!(probed.len(), 1, "retried after the initial backoff");
+        memory.record(&probed[0].1, false, at(t0, 8));
+        assert!(probe(&mut memory, 7, 13).is_empty(), "backoff doubled");
+        // A different process on the same port carries nothing over: no
+        // verdict, and not the time the first was seen either.
+        assert!(
+            probe(&mut memory, 8, 13).is_empty(),
+            "a new listener settles first"
+        );
+        let probed = probe(&mut memory, 8, 16);
+        assert_eq!(probed.len(), 1);
+        memory.record(&probed[0].1, true, at(t0, 16));
+        // The original socket, once absent, is forgotten: settled and
+        // probed afresh on its return.
+        assert!(probe(&mut memory, 7, 17).is_empty());
+        let planned = memory.plan(vec![((), listener(7, 8081))], at(t0, 20));
+        assert!(planned.known.is_empty());
+        assert_eq!(planned.probe.len(), 1);
+    }
+    /// A listener is probed only once it has stayed up PROBE_SETTLE: seen by
+    /// an earlier scan that long ago. A test's fixture server, up for a
+    /// moment, is never connected to.
+    #[test]
+    fn listeners_are_probed_only_once_they_have_stayed_up() {
+        let t0 = Instant::now();
+        // Seen once, however late the scan: an earlier scan must have seen it.
+        let mut memory = ProbeMemory::default();
+        let planned = memory.plan(vec![((), listener(7, 8081))], at(t0, 60));
+        assert!(planned.probe.is_empty());
+        assert_eq!(planned.settling_until, Some(at(t0, 60) + PROBE_SETTLE));
+        // A fixture up across two scans, gone by the third: never probed.
+        let mut memory = ProbeMemory::default();
+        for secs in [0, 2] {
+            assert!(
+                memory
+                    .plan(vec![((), listener(7, 8081))], at(t0, secs))
+                    .probe
+                    .is_empty()
+            );
+        }
+        let planned = memory.plan(Vec::<((), _)>::new(), at(t0, 4));
+        assert!(planned.probe.is_empty() && planned.settling_until.is_none());
+        // Back again (the next test's fixture on the same port, say): it
+        // settles afresh, not from when the first was seen.
+        assert!(
+            memory
+                .plan(vec![((), listener(7, 8081))], at(t0, 6))
+                .probe
+                .is_empty()
+        );
+        assert!(
+            memory
+                .plan(vec![((), listener(7, 8081))], at(t0, 8))
+                .probe
+                .is_empty()
+        );
+        assert_eq!(
+            memory
+                .plan(vec![((), listener(7, 8081))], at(t0, 9))
+                .probe
+                .len(),
+            1
+        );
+        // Just short of PROBE_SETTLE is not enough; the earliest listener
+        // still settling says when the next scan is due.
+        let mut memory = ProbeMemory::default();
+        memory.plan(vec![((), listener(7, 8081))], t0);
+        let both = || vec![((), listener(7, 8081)), ((), listener(9, 8082))];
+        let planned = memory.plan(both(), at(t0, 2));
+        assert_eq!(planned.settling_until, Some(t0 + PROBE_SETTLE));
+        let planned = memory.plan(both(), t0 + PROBE_SETTLE - Duration::from_millis(1));
+        assert!(planned.probe.is_empty());
+        let planned = memory.plan(both(), t0 + PROBE_SETTLE);
+        assert_eq!(planned.probe.len(), 1);
+        assert_eq!(planned.probe[0].1.pid, 7);
+        assert_eq!(planned.settling_until, Some(at(t0, 2) + PROBE_SETTLE));
+        assert!(
+            PROBE_SETTLE > ACTIVE_SCAN,
+            "never the scan right after the first sighting"
+        );
     }
     #[test]
     fn backoff_is_capped() {
         let mut memory = ProbeMemory::default();
         let mut now = Instant::now();
+        memory.plan(vec![((), listener(7, 8081))], now);
         for _ in 0..20 {
             memory.record(&listener(7, 8081), false, now);
             now += NOT_HTTP_MAX_BACKOFF;
         }
-        let (_, probe) = memory.plan(vec![((), listener(7, 8081))], now);
+        let probe = memory.plan(vec![((), listener(7, 8081))], now).probe;
         assert_eq!(probe.len(), 1, "still retried once per max backoff");
     }
 }

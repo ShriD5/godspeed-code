@@ -324,6 +324,7 @@ pub mod acp_registry;
 pub(crate) mod adapter_install;
 pub mod approval;
 pub mod archive_install;
+pub mod bounded_file;
 pub mod build_env;
 mod catalog;
 mod catalog_failure;
