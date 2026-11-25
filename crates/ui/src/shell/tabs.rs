@@ -126,6 +126,32 @@ impl Shell {
         }
     }
 
+    /// Next/previous terminal tab in the right pane, skipping its other
+    /// surfaces; the bottom drawer cycles its own tabs.
+    pub(super) fn cycle_right_terminals(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.navigation_overlay_open(cx) || !self.right_pane_open(cx) {
+            return;
+        }
+        let terminals: Vec<RightSurface> = self
+            .right_surface_rows(cx)
+            .into_iter()
+            .filter_map(|(surface, ..)| {
+                matches!(surface, RightSurface::Terminal(_)).then_some(surface)
+            })
+            .collect();
+        let active = self.resolved_right_active(cx);
+        let Some(at) = terminals.iter().position(|surface| *surface == active) else {
+            return;
+        };
+        let next = crate::terminal::panel::cycled_index(at, terminals.len(), forward);
+        self.activate_right_surface(terminals[next], window, cx);
+    }
+
     fn navigation_overlay_open(&self, cx: &App) -> bool {
         self.overlay_owns_keyboard(cx)
             || self.sync_flow.has_visible_overlay()

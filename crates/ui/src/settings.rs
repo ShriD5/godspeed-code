@@ -1528,13 +1528,15 @@ pub enum ShortcutId {
     NavigateForward,
     ToggleDiffPane,
     ReopenClosedTab,
+    NextTerminal,
+    PrevTerminal,
     MissionControl,
     StashPrompt,
     JumpSession(usize),
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 26 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 28 + JUMP_SLOTS] = [
         ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
@@ -1559,6 +1561,8 @@ impl ShortcutId {
         ShortcutId::NavigateForward,
         ShortcutId::ToggleDiffPane,
         ShortcutId::ReopenClosedTab,
+        ShortcutId::NextTerminal,
+        ShortcutId::PrevTerminal,
         ShortcutId::MissionControl,
         ShortcutId::StashPrompt,
         ShortcutId::JumpSession(0),
@@ -1603,6 +1607,8 @@ impl ShortcutId {
             ShortcutId::NavigateForward => "Go forward",
             ShortcutId::ToggleDiffPane => "Toggle changes pane",
             ShortcutId::ReopenClosedTab => "Reopen closed tab",
+            ShortcutId::NextTerminal => "Next terminal",
+            ShortcutId::PrevTerminal => "Previous terminal",
             ShortcutId::MissionControl => "Open Mission Control",
             ShortcutId::StashPrompt => "Stash prompt",
             ShortcutId::JumpSession(slot) => JUMP_LABELS.get(slot).copied().unwrap_or(""),
@@ -1661,6 +1667,11 @@ impl ShortcutId {
             ShortcutId::NavigateForward => "mod-]",
             ShortcutId::ToggleDiffPane => "mod-shift-g",
             ShortcutId::ReopenClosedTab => "mod-shift-t",
+            // Off macOS ctrl is the primary, and Ctrl+[ is Escape to a shell.
+            ShortcutId::NextTerminal if mac => "mod-shift-]",
+            ShortcutId::NextTerminal => "mod-alt-]",
+            ShortcutId::PrevTerminal if mac => "mod-shift-[",
+            ShortcutId::PrevTerminal => "mod-alt-[",
             ShortcutId::MissionControl => "mod-shift-k",
             // Shares Save file's key: see `shares_combo`.
             ShortcutId::StashPrompt => "mod-s",
@@ -1719,6 +1730,8 @@ pub struct KeymapConfig {
     pub navigate_forward: String,
     pub toggle_diff_pane: String,
     pub reopen_closed_tab: String,
+    pub next_terminal: String,
+    pub prev_terminal: String,
     pub mission_control: String,
     pub stash_prompt: String,
     /// One combo per jump slot, in slot order. A list rather than nine fields:
@@ -1801,6 +1814,8 @@ impl Default for KeymapConfig {
             navigate_forward: ShortcutId::NavigateForward.default_combo().into(),
             toggle_diff_pane: ShortcutId::ToggleDiffPane.default_combo().into(),
             reopen_closed_tab: ShortcutId::ReopenClosedTab.default_combo().into(),
+            next_terminal: ShortcutId::NextTerminal.default_combo().into(),
+            prev_terminal: ShortcutId::PrevTerminal.default_combo().into(),
             mission_control: ShortcutId::MissionControl.default_combo().into(),
             stash_prompt: ShortcutId::StashPrompt.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
@@ -1836,6 +1851,8 @@ impl KeymapConfig {
             ShortcutId::NavigateForward => &self.navigate_forward,
             ShortcutId::ToggleDiffPane => &self.toggle_diff_pane,
             ShortcutId::ReopenClosedTab => &self.reopen_closed_tab,
+            ShortcutId::NextTerminal => &self.next_terminal,
+            ShortcutId::PrevTerminal => &self.prev_terminal,
             ShortcutId::MissionControl => &self.mission_control,
             ShortcutId::StashPrompt => &self.stash_prompt,
             ShortcutId::JumpSession(slot) => self
@@ -1872,6 +1889,8 @@ impl KeymapConfig {
             ShortcutId::NavigateForward => self.navigate_forward = combo,
             ShortcutId::ToggleDiffPane => self.toggle_diff_pane = combo,
             ShortcutId::ReopenClosedTab => self.reopen_closed_tab = combo,
+            ShortcutId::NextTerminal => self.next_terminal = combo,
+            ShortcutId::PrevTerminal => self.prev_terminal = combo,
             ShortcutId::MissionControl => self.mission_control = combo,
             ShortcutId::StashPrompt => self.stash_prompt = combo,
             ShortcutId::JumpSession(slot) => {

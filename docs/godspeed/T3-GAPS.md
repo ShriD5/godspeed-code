@@ -81,6 +81,8 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 | Chat | Context meter marks where Claude auto-compacts | #22654 `159a914d6b`; #27892 `961026c6c9` | PARTIAL: meter and token counts (`crates/ui/src/context_usage.rs`), no auto-compact mark | low |
 | Sidebar | Turn a No project thread into a project | #26767 `58e60bf5e8` | MISSING | low |
 | Chat | Related threads: link threads to each other, see them in the details panel | `apps/web/src/components/chat/ThreadRelationshipsControl.tsx` | MISSING: session card only (`crates/ui/src/shell/session_info.rs`) | low |
+| Palette | Settle, pin, snooze, rename and more for the current thread from Cmd+K | `95411e3cd7` | PARTIAL: Archive and Regenerate title only (`shell/command_palette.rs`) | med |
+| Terminal | Option and Cmd arrows reach full-screen terminal apps | `89047261b1` | CHECK: `terminal/view.rs` `route_key` | low |
 | Terminal | Split a terminal side by side or stacked; split horizontally or vertically | `apps/web/src/components/ThreadTerminalDrawer.tsx` ("Split Terminal Horizontally", "Single / Stacked / Side by side"); `packages/shared/src/keybindings.ts` (`terminal.split`) | MISSING: one terminal per tab (`crates/ui/src/terminal/panel.rs`) | med |
 | Terminal | Right-click menu: copy, paste, select all, jump to latest, add selection to chat | `apps/web/src/components/ThreadTerminalDrawer.tsx` (context menu items) | MISSING: right-click goes to the PTY or nowhere (`terminal/panel.rs` `on_other_mouse_down`) | med |
 | Terminal | Clickable links and file paths in terminal output | `apps/web/src/components/ThreadTerminalDrawer.tsx` ("Unable to open link", "Unable to open path") | MISSING: no link detection in `crates/ui/src/terminal/` | med |
@@ -221,6 +223,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Cycle terminals from the keyboard (Cmd+Shift+] / [ on macOS, Ctrl+Alt+] / [ elsewhere) while one is focused: the drawer's tabs, or the right pane's terminal tabs; rebindable under Panels | #118 |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |

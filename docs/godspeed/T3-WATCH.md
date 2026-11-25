@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
+Reviewed T3 through: pingdotgg/t3code@21a96989b0 (2026-11-25)
 
 ## Rules
 
@@ -23,6 +23,20 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-25 | Keybindings cycle through terminals: Cmd+Shift+] / [ on macOS, Ctrl+Alt+] / [ elsewhere, while a terminal is focused; wraps through the drawer's or right panel's terminals; rebindable (`b6869fad67`) | PR #118 |
+| 2026-11-25 | Settle, pin, snooze and more for the current thread from Cmd+K (`95411e3cd7`) | queued (our palette has Archive and Regenerate title, not Settle or Pin) |
+| 2026-11-25 | Option and Cmd arrows reach full-screen terminal apps (`89047261b1`) | queued (check `terminal/view.rs` `route_key` for alt/cmd arrows in the alternate screen) |
+| 2026-11-25 | A query in double quotes finds its words together, in thread search and the palette (`62e8042b21`) | queued |
+| 2026-11-25 | Default branch found and branch names kept when the primary remote isn't `origin` or contains slashes (`e5dfa6ee0c`, `53294d5a4f`, `6c0621f78a`) | queued (`engine/src/repos.rs` reads `origin` directly in places) |
+| 2026-11-25 | A Codex command whose shell exited stops showing Running after its turn (`fdce61c022`) | queued (check `harness/src/codex` item completion on turn end) |
+| 2026-11-25 | Worktree layout commands from a project file run only after a person approves them (`924d9c1fff`) | queued (trust prompt for `launch_setup` from a repo's config) |
+| 2026-11-25 | `/clear` boundary respected in fork handoffs and merge-back (`854f02bc2d`) | queued (check side-chat fork copies only messages after a fresh-session marker) |
+| 2026-11-25 | Claude asks to sign in to each MCP server once per thread (`1a01d7ee6f`); Claude no longer shows Connecting on every turn (`38adba87b3`) | queued (with the MCP sign-in item from 2026-11-21) |
+| 2026-11-25 | Hide and restore the sidebar by dragging its edge (`801b32f3a6`) | queued (low; Cmd+B already toggles) |
+| 2026-11-25 | Deleting a thread removes its history (`91f0b32e2d`); unreadable sessions don't block older history (`79be5ad616`) | skipped (T3 orchestration store; our delete drops the doc) |
+| 2026-11-25 | Workflows: question kinds and tags, described choices, withdraw a question, named concurrency pools (`5ac27b4007`, `7be3a767cc`, `3b5033a28c`, `462596a0f7`) | skipped (T3 Workflows product; no Godspeed equivalent planned) |
+| 2026-11-25 | User-hosted HTTP quota sources (`16742ca802`), Connect device sign-in notice (`ece5f21b17`), relay/telemetry/analytics fixes | skipped (niche or out of scope) |
+| 2026-11-25 | ~200 minor fixes: Esc handling in web dialogs, emoji/surrogate truncation, office/notebook previews, Pi/Antigravity/Cursor provider fixes, mobile, CLI trace, checkpoint perf | skipped (internal/minor or React-specific) |
 | 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |

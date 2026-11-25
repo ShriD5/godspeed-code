@@ -61,7 +61,9 @@ use crate::state::{
     AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator, OrgRow,
     format_time_ago, org_name_valid, parse_orgs, sort_memberships,
 };
-use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
+use crate::terminal::panel::{
+    NextTerminalTab, PrevTerminalTab, TerminalPanel, ToggleTerminal, clamp_terminal_height,
+};
 use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 
@@ -610,6 +612,20 @@ pub fn apply_keymap(
     bind_unless_taken(cx, keymap, ShortcutId::ToggleDiffPane, ToggleDiffPane);
     bind_unless_taken(cx, keymap, ShortcutId::ReopenClosedTab, ReopenClosedTab);
     bind_unless_taken(cx, keymap, ShortcutId::MissionControl, ToggleMissionControl);
+    bind_unless_taken_in(
+        cx,
+        keymap,
+        ShortcutId::NextTerminal,
+        NextTerminalTab,
+        Some("Terminal"),
+    );
+    bind_unless_taken_in(
+        cx,
+        keymap,
+        ShortcutId::PrevTerminal,
+        PrevTerminalTab,
+        Some("Terminal"),
+    );
     // Off macOS the primary is ctrl, and ctrl+[ is Escape to a terminal.
     if !cfg!(target_os = "macos") {
         for id in [ShortcutId::NavigateBack, ShortcutId::NavigateForward] {
@@ -768,6 +784,16 @@ fn bind_unless_taken<A: gpui::Action>(
     id: ShortcutId,
     action: A,
 ) {
+    bind_unless_taken_in(cx, keymap, id, action, None);
+}
+
+fn bind_unless_taken_in<A: gpui::Action>(
+    cx: &mut App,
+    keymap: &KeymapConfig,
+    id: ShortcutId,
+    action: A,
+    context: Option<&str>,
+) {
     let keystroke = |combo: &str| Keystroke::parse(&platform_combo(combo)).ok();
     let Some(combo) = [keymap.get(id), id.default_combo()]
         .into_iter()
@@ -783,7 +809,7 @@ fn bind_unless_taken<A: gpui::Action>(
         tracing::warn!(?id, "shortcut combo already in use; leaving it unbound");
         return;
     }
-    cx.bind_keys([KeyBinding::new(&platform_combo(combo), action, None)]);
+    cx.bind_keys([KeyBinding::new(&platform_combo(combo), action, context)]);
 }
 
 /// The settings sections (feature-inventory §1.5 routes).
@@ -14774,6 +14800,12 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &PrevSession, window, cx| {
                 this.cycle_navigation(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextTerminalTab, window, cx| {
+                this.cycle_right_terminals(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &PrevTerminalTab, window, cx| {
+                this.cycle_right_terminals(false, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleChanges, window, cx| {
                 if matches!(this.route, Route::PullRequests) {
