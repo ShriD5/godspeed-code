@@ -3,7 +3,7 @@
 Godspeed ports Zeron's commits instead of merging them: the rebrand touches most files, so a raw
 merge conflicts everywhere. Each ported commit carries a trailer `Upstream: zeronsh/zeron@<sha>`.
 
-Synced through: zeronsh/zeron@b2ee6d1b (2026-11-23)
+Synced through: zeronsh/zeron@fbb4083a4 (2026-11-25)
 
 Deferred, waiting on the owner's call (not ported; revisit before porting anything that builds on them):
 - cc7da5c2 "Zeron Cloud, provider switching, and the phone model picker" (#966): 369 files,
@@ -245,6 +245,20 @@ Deferred, waiting on the owner's call (not ported; revisit before porting anythi
     starts, deferred) and builds on the deferred Antigravity hardening (890c4527e). Its
     new proto field touches every engine/harness test initializer. Port with 890c4527e.
   - Skipped: version bumps (b7b1e2d3, 26000a74), 46f18fe4 (Cloud install script, edge).
+- Deferred 2026-11-25 (b2ee6d1b..fbb4083a4: 33 commits, 30 non-merge). Nothing ported.
+  - MCP servers (vault connections, engine gateway/OAuth/presets, per-agent "only Zeron's
+    MCP servers", agents asking for MCP changes): d5ff0b1ad, 2f4768659, 848750301, 0150fde8e,
+    60a7980b3, 173ae0b1c, a2fa2d757, fcaa7f04e, 1c46da29e, 38bc732b6, 20ce01edb, f4c151c84.
+    They need the VaultConnections Durable Object and `warm_start.rs`/`managed.rs`, which
+    Godspeed doesn't have. Worth a dedicated port as one feature if the owner wants MCP management.
+    3c3eed924 (switch off Codex plugins' MCP servers) hangs off that per-agent switch.
+    fbde94408 (`zeron mcp` CLI) also needs `crates/cli`.
+  - Antigravity unified CLI cbbab5067 and its Windows fix ed97f42ec: these need
+    `credentials.rs`, `agent_accounts` and `acp/ccpa_thoughts.rs` (890c4527e chain).
+  - Cloud: 8801bf815 (Providers for Cloud), c765f256c (`managed.rs` wake tools).
+  - `apps/zgx` only, deferred with zgx: a94e4e7dc, 9e9dff3b4, 0777a30a2, 39118ef52,
+    768b25a86, 53a4637a6, fbb4083a4.
+  - Skipped: version bumps e081e38e1, 296461969, 82a58c5f6, e56940314; c4b09b659 (edge).
 - Deferred 2026-11-23 (46f18fe4..b2ee6d1b: 19 commits, 17 non-merge). Ported b5cfaaccd (Pi
   set_model refusal) and the `crates/mobile` half of 8141d7d9e (image-named attachment chips).
   - e595626b0 (Antigravity disconnects in Cloud Runner): the engine half is Cloud
