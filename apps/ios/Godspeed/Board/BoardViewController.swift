@@ -121,7 +121,7 @@ final class BoardViewController: UIViewController, UICollectionViewDelegate {
     }
 
     private func reload(animated: Bool) {
-        let next = BoardModel.build(rows: app.boardRows, projects: app.projectViews, devices: app.rawDevices, attention: app.inbox.items, now: Date())
+        let next = BoardModel.build(rows: app.boardRows, projects: app.projectViews, devices: app.rawDevices, attention: app.inbox.items, now: Date(), ancestors: app.familyAncestors)
         let old = dataSource.snapshot()
         var s = NSDiffableDataSourceSnapshot<String, Item>()
         var nextCards: [String: BoardModel.Card] = [:]

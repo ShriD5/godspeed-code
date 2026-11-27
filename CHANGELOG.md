@@ -4,6 +4,19 @@ All notable changes to Godspeed are listed here. Versions follow [Semantic Versi
 
 ## Unreleased
 
+### Added
+
+- **Chats with sub-sessions read well on the iPhone.** A conductor's sub-agents, side chats and
+  chats an agent made with `create_chats` used to be unreachable on the phone. Now a chat with
+  sub-sessions shows a strip of them under the title: a status dot, the name, one line of what it's
+  doing, and a badge when it waits on you, waiting-on-you first. Tap one to open it; on a
+  sub-session the strip leads back to its parent and over to its siblings, and "All" lists every
+  one when there are more than four. The parent's transcript shows each sub-session as a card where
+  it was started (status, time, latest activity; expand for host, model, run time and its last
+  message). An approval from any sub-session shows above the composer with Approve and Decline,
+  inbox rows name the parent a sub-agent belongs to, and a parent whose sub-session waits on you
+  says "Needs you" in the sessions list and on Mission Control.
+
 ## 0.5.12 (2026-11-16)
 
 ### Added

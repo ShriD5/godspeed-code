@@ -38,6 +38,10 @@ struct SessionRowVM: Hashable {
     var limitRecovery: LimitRecoveryMode? = nil
     var lifecycle: Lifecycle = .active
     var subagents: UInt32 = 0
+    /// Sub-sessions (side chats, a conductor's sub-agents).
+    var family: Int = 0
+    /// Something below it waits on the user.
+    var familyNeedsYou = false
 
     /// Waiting on the user in any way (approval or answer).
     var needsInput: Bool { status == .awaiting || status == .approval }
@@ -106,6 +110,9 @@ final class SessionCell: UICollectionViewListCell {
     /// state; unseen-and-finished reads "Done"; otherwise the time.
     static func corner(_ vm: SessionRowVM) -> (word: String, color: UIColor, glyph: StatusGlyph.Kind)? {
         if vm.sendFailed { return ("Failed", Palette.danger, .dot(Palette.danger)) }
+        // A sub-session waits on you: the parent says so (it's only
+        // "Working" because it waits on that sub-session).
+        if vm.familyNeedsYou, !vm.needsInput { return ("Needs you", StatusTone.input, .dot(StatusTone.input)) }
         switch vm.status {
         case .working: return ("Working", StatusTone.working, .spinner)
         case .awaiting: return ("Input", StatusTone.input, .dot(StatusTone.input))
@@ -150,6 +157,16 @@ final class SessionCell: UICollectionViewListCell {
             metaText.append(NSAttributedString(attachment: attach))
             metaText.append(NSAttributedString(string: " " + b, attributes: [.font: font, .foregroundColor: Palette.subline]))
         }
+        if vm.family > 0, let icon = UIImage(systemName: "rectangle.stack")?.withTintColor(Palette.subline, renderingMode: .alwaysOriginal) {
+            // Its sub-sessions, as the desktop's lanes toggle counts them.
+            let font = Fonts.ui(.sans, TypeScale.size(12.5))
+            let side = (12 * TypeScale.factor).rounded()
+            let attach = NSTextAttachment(image: icon)
+            attach.bounds = CGRect(x: 0, y: (font.capHeight - side) / 2, width: side, height: side)
+            metaText.append(NSAttributedString(string: "   "))
+            metaText.append(NSAttributedString(attachment: attach))
+            metaText.append(NSAttributedString(string: " \(vm.family)", attributes: [.font: font, .foregroundColor: Palette.subline]))
+        }
         meta.attributedText = metaText
         if let pr = vm.pr, let n = vm.prNumber {
             prBadge.isHidden = false
@@ -171,7 +188,8 @@ final class SessionCell: UICollectionViewListCell {
             status.kind = .none
             status.isHidden = true
         }
-        accessibilityLabel = [vm.title, vm.projectName, corner?.word, prBadge.isHidden ? nil : prBadge.accessibilityLabel].compactMap { $0 }.joined(separator: ", ")
+        let family = vm.family == 0 ? nil : vm.family == 1 ? "1 sub-session" : "\(vm.family) sub-sessions"
+        accessibilityLabel = [vm.title, vm.projectName, family, corner?.word, prBadge.isHidden ? nil : prBadge.accessibilityLabel].compactMap { $0 }.joined(separator: ", ")
         accessibilityIdentifier = "session-\(vm.id)"
         setNeedsLayout()
     }

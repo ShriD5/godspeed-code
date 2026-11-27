@@ -57,6 +57,9 @@ final class AppModel {
     /// Front-page sessions that are working / waiting on the user.
     private(set) var live = LiveCounts()
     private var rows: [String: SessionRow] = [:]
+    /// Sub-sessions below every listed chat, by parent id (unarchived, most
+    /// recent first). Children never reach the lists; they live here.
+    private(set) var childRows: [String: [SessionRow]] = [:]
     private var rawProjects: [ProjectView] = []
     private var lastHosts: [HostOption] = []
     private var workspaceRevision: UInt64 = 0
@@ -402,6 +405,8 @@ final class AppModel {
             sessionObservers[chatId]?.values.forEach { $0() }
         case .attentionChanged:
             scheduleAttentionRefresh()
+            // Rows roll up what waits on you below them.
+            scheduleRefresh()
         case let .connectivityChanged(c):
             connectivity = c
             observers.values.forEach { $0() }
@@ -427,10 +432,22 @@ final class AppModel {
         guard let client else { return }
         let ws = client.workspace()
         workspaceRevision = ws.revision
+        // Registry-derived inbox rows follow the workspace (and rows roll up
+        // what waits below them, so the inbox comes first).
+        let inboxChanged = refreshAttention(notify: false)
+        let roots = ws.front.pinned + ws.front.sections.flatMap(\.sessions) + ws.front.recent + ws.projectless
+            + ws.snoozed + ws.settled + ws.projects.flatMap(\.sessions)
+        let kids = Self.childRows(of: roots, client: client)
+        let asks = inbox.items
         var all: [String: SessionRow] = [:]
+        for list in kids.values { for r in list { all[r.id] = r } }
         func vm(_ r: SessionRow) -> SessionRowVM {
             all[r.id] = r
-            return Self.vm(r)
+            var v = Self.vm(r)
+            let rollup = SessionFamily.rollup(r.id, children: { kids[$0] ?? [] }, attention: asks)
+            v.family = rollup.children
+            v.familyNeedsYou = rollup.needsYou
+            return v
         }
         var page = FrontPage()
         let pinned = ws.front.pinned.map(vm)
@@ -475,7 +492,9 @@ final class AppModel {
         let hosts = hostOptions
         let changed = page != frontPage || archivedVMs != archived || counts != live || hosts != lastHosts
             || snoozedVMs != snoozed || settledVMs != settled || visible != boardRows || ws.devices != rawDevices
+            || kids != childRows
         lastHosts = hosts
+        childRows = kids
         live = counts
         frontPage = page
         archived = archivedVMs
@@ -483,9 +502,59 @@ final class AppModel {
         settled = settledVMs
         boardRows = visible
         rawDevices = ws.devices
-        // Registry-derived inbox rows follow the workspace.
-        let inboxChanged = refreshAttention(notify: false)
         if changed || inboxChanged { observers.values.forEach { $0() } }
+    }
+
+    /// Sub-sessions below every chat in `roots`, by parent id: a bounded,
+    /// loop-safe walk of the parent links (conductors nest three deep).
+    private static func childRows(of roots: [SessionRow], client: CoreClient) -> [String: [SessionRow]] {
+        var out: [String: [SessionRow]] = [:]
+        var seen = Set(roots.map(\.id))
+        var frontier = roots.map { ($0.id, 0) }
+        while let next = frontier.popLast() {
+            let (id, depth) = next
+            guard depth < SessionFamily.maxDepth else { continue }
+            let kids = client.childSessions(parentId: id).filter { !$0.archived }
+            guard !kids.isEmpty else { continue }
+            out[id] = kids
+            for k in kids where seen.insert(k.id).inserted { frontier.append((k.id, depth + 1)) }
+        }
+        return out
+    }
+
+    /// Every listed sub-session's top-level chat, by sub-session id.
+    var familyAncestors: [String: String] {
+        var out: [String: String] = [:]
+        for top in boardRows {
+            var frontier = [top.id]
+            while let id = frontier.popLast() {
+                for k in childRows[id] ?? [] where out[k.id] == nil && k.id != top.id {
+                    out[k.id] = top.id
+                    frontier.append(k.id)
+                }
+            }
+        }
+        return out
+    }
+
+    /// A chat's sub-sessions (unarchived, most recent first).
+    func children(of id: String) -> [SessionRow] {
+        childRows[id] ?? client?.childSessions(parentId: id).filter { !$0.archived } ?? []
+    }
+
+    /// A sub-session's parent title (inbox rows say whose sub-agent asks).
+    func parentTitle(of id: String) -> String? {
+        row(id)?.parentChatId.flatMap { row($0)?.title }
+    }
+
+    /// The family around a session page (nil for a plain chat).
+    func family(for id: String) -> SessionFamily? {
+        SessionFamily.build(
+            currentId: id,
+            row: { [weak self] in self?.row($0) },
+            children: { [weak self] in self?.children(of: $0) ?? [] },
+            attention: inbox.items
+        )
     }
 
     /// Like the desktop's project grouping: checkouts of one repository

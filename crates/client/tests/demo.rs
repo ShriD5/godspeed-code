@@ -677,6 +677,19 @@ fn inbox_merges_hosts_in_risk_order_and_answers_hide_items() {
 }
 
 #[test]
+fn archived_sub_sessions_leave_their_parent() {
+    let (client, _dir) = demo(fast());
+    client.archive_session("chat-sub-docs").unwrap();
+    let ws = client.workspace();
+    assert_eq!(
+        ids(ws.children("chat-conductor")),
+        ["chat-sub-sync", "chat-sub-ui", "chat-sub-tests"]
+    );
+    // Still reachable by id (an inbox row or a notification may open it).
+    assert!(ws.session("chat-sub-docs").unwrap().archived);
+}
+
+#[test]
 fn lifecycle_moves_chats_between_the_active_list_and_the_shelves() {
     let (client, _dir) = demo(fast());
     client

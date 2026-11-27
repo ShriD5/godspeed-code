@@ -350,8 +350,22 @@ pub struct DebugEntry {
     pub streaming: bool,
 }
 
+/// A sub-session (a chat whose parent is this transcript's chat) to show as
+/// a card in the transcript. The app owns what the card says; the layout
+/// only places it and gives it `lines` lines of height.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ChildCardSlot {
+    pub chat_id: String,
+    /// When the sub-session started: the card follows the last entry written
+    /// at or before it (the desktop's conductor-card rule).
+    pub created_at_ms: i64,
+    /// Text lines the card needs (1–10); changes re-lay out the transcript.
+    pub lines: u32,
+}
+
 enum Msg {
     Input(TranscriptInput),
+    Children(Vec<ChildCardSlot>),
     Viewport { width: f32, scale: f32 },
     Math(MathSettings),
     Toggle(u64),
@@ -463,6 +477,11 @@ impl TranscriptView {
         self.send(Msg::Math(MathSettings::new(enabled, face.into(), size_percent)));
     }
 
+    /// The sub-session cards to place (replaces the previous set).
+    pub fn set_child_cards(&self, cards: Vec<ChildCardSlot>) {
+        self.send(Msg::Children(cards));
+    }
+
     /// Expand/collapse a disclosure (tool group, long user message).
     pub fn toggle(&self, key: u64) {
         self.send(Msg::Toggle(key));
@@ -549,6 +568,7 @@ pub(crate) struct Worker {
     builder: RowBuilder,
     heights: HashMap<u64, HeightMemo>,
     input: TranscriptInput,
+    children: Vec<ChildCardSlot>,
     width: f32,
     math: MathSettings,
     /// Formulas zatex rejected (bounded; see `MathFailures`).
@@ -572,6 +592,7 @@ impl Worker {
             builder: RowBuilder::default(),
             heights: HashMap::new(),
             input: TranscriptInput::default(),
+            children: Vec::new(),
             width: 0.0,
             math: MathSettings::default(),
             math_failures: MathFailures::default(),
@@ -592,6 +613,12 @@ impl Worker {
                     Msg::Input(input) => {
                         self.input = input;
                         dirty = true;
+                    }
+                    Msg::Children(children) => {
+                        if children != self.children {
+                            self.children = children;
+                            dirty = true;
+                        }
                     }
                     Msg::Viewport { width, scale } => {
                         if (scale - self.typo.scale).abs() > f32::EPSILON {
@@ -690,7 +717,7 @@ impl Worker {
                 in_table: false,
                 math_area: 0.0,
             };
-            self.builder.build(&mut ctx, &self.input)
+            self.builder.build(&mut ctx, &self.input, &self.children)
         };
         let px = Px(self.typo.scale);
         let mut rows = Vec::with_capacity(placed.len());

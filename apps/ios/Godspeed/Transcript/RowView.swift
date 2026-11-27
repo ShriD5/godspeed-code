@@ -38,6 +38,8 @@ protocol RowViewDelegate: AnyObject {
     func rowView(_ view: RowView, imageFor reference: String, into imageView: UIImageView)
     /// The live view for an agent visual (kept across row reuse).
     func rowView(_ view: RowView, visualFor id: String) -> UIView?
+    /// The native card for a sub-session (kept across row reuse).
+    func rowView(_ view: RowView, childCardFor chatId: String) -> UIView?
 }
 
 /// A reusable transcript row: canvas + horizontal scrollers + native widgets.
@@ -165,10 +167,12 @@ final class RowView: UIView {
         case .working: "row-working"
         case .visual: "row-visual"
         case .receipt: "row-receipt"
+        case .childCard: "row-child-card"
         }
         element.accessibilityTraits = .staticText
         element.accessibilityFrameInContainerSpace = bounds
-        textElement = element
+        // A sub-session card speaks for itself (its native view).
+        textElement = kind == .childCard ? nil : element
         rebuildLinkElements(d)
         // Scrollers: reuse views in order.
         while scrollers.count < d.scrollers.count {
@@ -299,6 +303,8 @@ final class RowView: UIView {
             case let .visual(id):
                 view = delegate?.rowView(self, visualFor: id) ?? UIView()
                 (view as? VisualView)?.active = !isHidden
+            case let .childCard(chatId):
+                view = delegate?.rowView(self, childCardFor: chatId) ?? UIView()
             }
             view.frame = rect
             host.addSubview(view)

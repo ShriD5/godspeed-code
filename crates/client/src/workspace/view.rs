@@ -788,7 +788,8 @@ pub(crate) fn derive(
     let mut child_chats: Vec<&Chat> = state
         .chats
         .iter()
-        .filter(|c| c.parent_chat_id.is_some())
+        // Archived children leave their parent's lanes (desktop `ChildChatRow`).
+        .filter(|c| c.parent_chat_id.is_some() && !c.archived)
         .collect();
     sort_recency(&mut child_chats);
     for chat in child_chats {

@@ -105,7 +105,8 @@ struct BoardModel: Equatable {
         devices: [DeviceView],
         attention: [AttentionItemView],
         now: Date,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        ancestors: [String: String] = [:]
     ) -> BoardModel {
         let nowMs = Int64(now.timeIntervalSince1970 * 1000)
         let recentSince = nowMs - Int64(recentHours * 3_600_000)
@@ -114,7 +115,11 @@ struct BoardModel: Equatable {
         var asking: [String: AttentionItemView] = [:]
         var approvable: [String: AttentionItemView] = [:]
         for item in attention {
-            guard let chat = item.chatId else { continue }
+            // A sub-session's question lands on its top-level chat's card
+            // (sub-sessions aren't on the board; the desktop's conductor card
+            // lights up the same way).
+            guard let own = item.chatId else { continue }
+            let chat = ancestors[own] ?? own
             if (item.kind == .approval || item.kind == .question), asking[chat] == nil { asking[chat] = item }
             if item.batchApprovable, approvable[chat] == nil { approvable[chat] = item }
         }
@@ -124,10 +129,11 @@ struct BoardModel: Equatable {
         var buckets: [String: [ProjectGroup]] = [:]
         var seen = Set<String>()
         for row in rows where !row.archived && row.parentChatId == nil && seen.insert(row.id).inserted {
-            let status = Status(row.indicator, backgroundWork: row.backgroundWork)
+            let ask = asking[row.id]
+            var status = Status(row.indicator, backgroundWork: row.backgroundWork)
+            if let ask, ask.chatId != row.id { status = .needsYou }
             let putAway = row.lifecycle != .active
             if !status.live && (putAway || row.lastActivityMs < recentSince) { continue }
-            let ask = asking[row.id]
             let card = Card(
                 id: row.id,
                 title: row.title,

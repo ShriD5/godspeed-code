@@ -20,6 +20,18 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
     private let jump = Glass.circleButton(symbol: "arrow.down", size: 40, pointSize: 15)
     private let titleView = SessionTitleView()
     private var shown = SessionChrome()
+    // Sub-sessions (docs/godspeed/MOBILE-MULTI-SESSION.md): the strip under
+    // the bar, what waits on you above the composer, cards in the transcript.
+    private let strip = FamilyStripView()
+    private let topFade = EdgeFadeOverlay()
+    private let ask = FamilyAskPanel()
+    private var family: SessionFamily?
+    private var familyToken: AnyObject?
+    private var familyClock: Timer?
+    private var cards: [String: ChildCardView] = [:]
+    private var expandedCards: Set<String> = []
+    private var cardSlots: [ChildCardSlot] = []
+    private var cardWidth: CGFloat = 0
     private let openedAt = CACurrentMediaTime()
     private var reportedOpen = false
 
@@ -74,6 +86,7 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         list.accessibilityIdentifier = "transcript"
         list.imageLoader = { [weak self] ref, iv in self?.source.loadImage(ref, into: iv) }
         list.imageFetcher = { [weak self] ref in await self?.source.image(ref) }
+        list.childCardView = { [weak self] id in self?.cardView(id) }
         // Hidden while following (the runway glide and tail spring travel).
         list.onDistanceFromBottom = { [weak self] d in
             guard let self else { return }
@@ -134,7 +147,25 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         bottom.translatesAutoresizingMaskIntoConstraints = false
         let pillRow = UIStackView(arrangedSubviews: [pill, UIView()])
         pillRow.axis = .horizontal
-        for v in [pillRow, limitBanner, queue, questions, composer] { bottom.addArrangedSubview(v) }
+        for v in [pillRow, limitBanner, ask, queue, questions, composer] { bottom.addArrangedSubview(v) }
+        ask.isHidden = true
+        ask.setGlassVisible(false, animated: false)
+        ask.onRespond = { [weak self] item, approve in
+            guard let self else { return }
+            Task { @MainActor in
+                if let error = await self.app.respond(item, approve: approve) {
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                    Toast.show(error, in: self.view.window)
+                } else {
+                    UIAccessibility.post(notification: .announcement, argument: approve ? "Approved" : "Declined")
+                }
+            }
+        }
+        ask.onOpen = { [weak self] item in
+            guard let self, let id = item.chatId else { return }
+            self.app.opened(item)
+            self.openFamily(id)
+        }
         limitBanner.isHidden = true
         limitBanner.onAction = { [weak self] action in
             guard let self else { return }
@@ -166,6 +197,29 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
             bottomFade.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
+        // The sub-session strip floats under the navigation bar over a fade, like
+        // the composer stack at the bottom.
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        strip.isHidden = true
+        strip.onSelect = { [weak self] id in self?.openFamily(id) }
+        strip.onShowAll = { [weak self] in self?.showFamilySheet() }
+        topFade.translatesAutoresizingMaskIntoConstraints = false
+        topFade.transform = CGAffineTransform(scaleX: 1, y: -1)
+        topFade.isHidden = true
+        view.addSubview(topFade)
+        view.addSubview(strip)
+        NSLayoutConstraint.activate([
+            strip.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
+            strip.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+            strip.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+            strip.heightAnchor.constraint(equalToConstant: FamilyStripView.height),
+            topFade.topAnchor.constraint(equalTo: view.topAnchor),
+            topFade.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topFade.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topFade.bottomAnchor.constraint(equalTo: strip.bottomAnchor, constant: 22),
+        ])
+        familyToken = app.observe { [weak self] in self?.syncFamily(animated: true) }
+
         jump.addAction(UIAction { [weak self] _ in self?.list.scrollToBottom(animated: true) }, for: .touchUpInside)
         jump.accessibilityIdentifier = "jump-to-latest"
         jump.accessibilityLabel = "Jump to latest"
@@ -190,6 +244,11 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
 
         source.onChange = { [weak self] in self?.render(animated: true) }
         source.attach(engine)
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-expand-card"), i + 1 < args.count { expandedCards.insert(args[i + 1]) }
+        #endif
+        syncFamily(animated: false)
         render(animated: false)
         app.markSeen(chatId)
     }
@@ -302,6 +361,22 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Times on the strip and cards ("Working · 4m") age without events.
+        familyClock?.invalidate()
+        familyClock = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.syncFamily(animated: false) }
+        #if DEBUG
+        // Demo screenshots: headless, so the states are launch arguments.
+        let args = ProcessInfo.processInfo.arguments
+        if !hasAppeared, args.contains("-scroll-top") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self else { return }
+                self.list.setContentOffset(CGPoint(x: 0, y: -self.list.adjustedContentInset.top), animated: false)
+            }
+        }
+        if !hasAppeared, args.contains("-family-sheet") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.showFamilySheet() }
+        }
+        #endif
         hasAppeared = true
         landed = true
         (splitViewController as? SplitRootController)?.sessionDidAppear(chatId)
@@ -321,6 +396,8 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        familyClock?.invalidate()
+        familyClock = nil
         // Leaving mid-edit: give the queued row back and the draft its place.
         if editingQueueId != nil { endEdit(commit: nil) }
         saveDraft()
@@ -404,6 +481,18 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // Rows start below the strip; they scroll up under it.
+        let top = strip.isHidden ? 0 : FamilyStripView.height + 14
+        if abs(list.contentInset.top - top) > 0.5 {
+            let atTop = list.contentOffset.y <= -list.adjustedContentInset.top + 1
+            list.contentInset.top = top
+            list.verticalScrollIndicatorInsets.top = top
+            if atTop, !list.following { list.contentOffset.y = -list.adjustedContentInset.top }
+        }
+        if abs(list.bounds.width - cardWidth) > 0.5 {
+            cardWidth = list.bounds.width
+            syncCards()
+        }
         let covered = view.bounds.maxY - bottom.frame.minY + 8
         let inset = max(0, covered - view.safeAreaInsets.bottom)
         if abs(list.contentInset.bottom - inset) > 0.5 {
@@ -538,6 +627,7 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
             self.bottom.layoutIfNeeded()
             self.view.layoutIfNeeded()
         }
+        if (old.questions == nil) != (c.questions == nil) { syncAsk(animated: animated) }
         let structural = (old.questions == nil) != (c.questions == nil) || old.queue.count != c.queue.count || (old.banner == .none) != (c.banner == .none)
         // Panels materialize when their content appears; a first render (the
         // session reopened with a queue or an open question) shows them at
@@ -570,6 +660,138 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         if view.window == nil || UIAccessibility.isReduceMotionEnabled { apply() } else {
             UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, options: [.beginFromCurrentState, .allowUserInteraction], animations: apply)
         }
+    }
+
+    // MARK: Sub-sessions
+
+    /// Rebuild the family from the synced rows and the inbox: strip, what
+    /// waits on you, and the cards in the transcript.
+    private func syncFamily(animated: Bool) {
+        let next = app.family(for: chatId)
+        family = next
+        if let next { strip.configure(next) }
+        let show = next != nil
+        if strip.isHidden == show {
+            strip.isHidden = !show
+            topFade.isHidden = !show
+            view.setNeedsLayout()
+        }
+        syncCards()
+        syncAsk(animated: animated)
+    }
+
+    /// The approval panel: what waits on you here or below. A question this
+    /// page already shows in its question panel isn't repeated.
+    private func syncAsk(animated: Bool) {
+        let asking = family?.waiting ?? app.inbox.items.filter { $0.chatId == chatId && ($0.kind == .approval || $0.kind == .question) }
+        let items = asking.filter { !(shown.questions != nil && $0.kind == .question && $0.chatId == chatId) }
+        var names: [String: String] = [:]
+        if let family {
+            names[family.root.id] = family.root.title
+            for m in family.members { names[m.id] = m.title }
+        }
+        if !items.isEmpty { ask.configure(items, currentId: chatId, names: names) }
+        let show = !items.isEmpty
+        guard ask.isHidden == show else { return }
+        ask.setGlassVisible(show, animated: animated && view.window != nil)
+        let apply = {
+            self.ask.isHidden = !show
+            self.bottom.layoutIfNeeded()
+            self.view.layoutIfNeeded()
+        }
+        if animated, view.window != nil, !UIAccessibility.isReduceMotionEnabled {
+            UIView.animate(withDuration: 0.38, delay: 0, usingSpringWithDamping: 0.86, initialSpringVelocity: 0, options: [.allowUserInteraction, .beginFromCurrentState], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
+    /// Cards for this page's own sub-sessions (a sub-session page lists its
+    /// siblings in the strip, not in its transcript).
+    private func syncCards() {
+        guard let family, family.rootIsCurrent, list.bounds.width > 0 else {
+            if !cardSlots.isEmpty {
+                cardSlots = []
+                engine.setChildCards(cards: [])
+            }
+            return
+        }
+        // The layout's column: the width less its margins, capped for iPad.
+        let s = ChildCardView.scale
+        let column = min(max(40, list.bounds.width - list.adjustedContentInset.left - list.adjustedContentInset.right - 36 * s), 768 * s)
+        var slots: [ChildCardSlot] = []
+        var live = Set<String>()
+        for m in family.members {
+            let open = expandedCards.contains(m.id)
+            slots.append(ChildCardSlot(chatId: m.id, createdAtMs: m.createdAtMs, lines: ChildCardView.lines(m, expanded: open, width: column)))
+            cards[m.id]?.configure(m, expanded: open)
+            live.insert(m.id)
+        }
+        for id in cards.keys where !live.contains(id) { cards[id] = nil }
+        expandedCards.formIntersection(live)
+        if slots != cardSlots {
+            cardSlots = slots
+            engine.setChildCards(cards: slots)
+        }
+    }
+
+    private func cardView(_ id: String) -> UIView? {
+        if let card = cards[id] { return card }
+        guard let m = family?.members.first(where: { $0.id == id }) else { return nil }
+        let card = ChildCardView()
+        card.configure(m, expanded: expandedCards.contains(id))
+        card.onOpen = { [weak self] id in self?.openFamily(id) }
+        card.onToggle = { [weak self] id in
+            guard let self else { return }
+            if self.expandedCards.remove(id) == nil { self.expandedCards.insert(id) }
+            self.syncCards()
+        }
+        cards[id] = card
+        return card
+    }
+
+    /// Move to another session of the family: a sub-session pushes, the
+    /// parent pops back (inserted under this page when it came from the
+    /// inbox), a sibling replaces this page so Back keeps its meaning.
+    private func openFamily(_ id: String) {
+        guard id != chatId else { return }
+        if let split = splitViewController as? SplitRootController, !split.isCollapsed, navigationController?.viewControllers.first === self {
+            return split.openSession(id)
+        }
+        guard let nav = navigationController else { return }
+        let stack = nav.viewControllers
+        if let below = stack.last(where: { ($0 as? SessionViewController)?.chatId == id }), below !== self {
+            nav.popToViewController(below, animated: true)
+            return
+        }
+        guard let next = SessionViewController(app: app, chatId: id) else {
+            Toast.show("Couldn't open session. Try again.", in: view.window)
+            return
+        }
+        if app.row(id)?.parentChatId == chatId {
+            nav.pushViewController(next, animated: true)
+            return
+        }
+        var under = Array(stack.dropLast())
+        if app.row(chatId)?.parentChatId == id {
+            under.append(next)
+            nav.setViewControllers(under + [self], animated: false)
+            nav.popViewController(animated: true)
+        } else {
+            nav.setViewControllers(under + [next], animated: true)
+        }
+    }
+
+    private func showFamilySheet() {
+        guard let family, presentedViewController == nil else { return }
+        let list = FamilySheetViewController(family: family)
+        list.onSelect = { [weak self] id in self?.openFamily(id) }
+        let sheet = UINavigationController(rootViewController: list)
+        if let s = sheet.sheetPresentationController {
+            s.detents = [.medium(), .large()]
+            s.prefersGrabberVisible = true
+        }
+        present(sheet, animated: true)
     }
 
     private func sessionMenu() -> UIMenu {

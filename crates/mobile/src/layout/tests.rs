@@ -1263,3 +1263,100 @@ fn math_tables_keep_a_bounded_canvas() {
     let small = rows_of("| a | b |\n|---|---|\n| $x^2$ | $\\frac{1}{2}$ |", 390.0).remove(0);
     assert!(!small.glyphs.is_empty(), "a small math table renders its formulas");
 }
+
+fn entry_at(id: &str, role: zeron_doc::schema::MessageRole, created_at: i64, text: &str) -> Arc<zeron_doc::schema::SessionMessageEntry> {
+    use zeron_doc::parts::{MessagePart, MessageStatus};
+    Arc::new(zeron_doc::schema::SessionMessageEntry {
+        id: id.into(),
+        role,
+        parts: vec![MessagePart::Text { id: "t0".into(), text: text.into() }],
+        created_at,
+        device_id: String::new(),
+        status: Some(MessageStatus::Complete),
+        continuation_of: None,
+        duration_ms: None,
+        turn_stats: None,
+    })
+}
+
+fn child(chat_id: &str, created_at_ms: i64, lines: u32) -> ChildCardSlot {
+    ChildCardSlot { chat_id: chat_id.into(), created_at_ms, lines }
+}
+
+fn child_ids(frame: &LayoutFrame) -> Vec<String> {
+    (0..frame.row_count())
+        .filter_map(|i| frame.display(i))
+        .flat_map(|d| d.widgets)
+        .filter_map(|w| match w.kind {
+            display::WidgetKind::ChildCard { chat_id } => Some(chat_id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn child_cards_follow_the_message_written_before_they_started() {
+    use zeron_doc::schema::MessageRole;
+    let mut w = worker(390.0);
+    w.input = TranscriptInput {
+        entries: vec![
+            entry_at("u1", MessageRole::User, 1_000, "Split it across sub-agents."),
+            entry_at("a1", MessageRole::Assistant, 2_000, "Spawning four."),
+            entry_at("a2", MessageRole::Assistant, 9_000, "Tests are green."),
+        ],
+        working: true,
+        ..Default::default()
+    };
+    // Out of order on purpose, plus one older than every entry.
+    w.children = vec![child("late", 10_000, 2), child("b", 3_000, 2), child("a", 3_000, 2), child("early", 500, 2)];
+    let frame = w.pass();
+    let kinds: Vec<RowKind> = (0..frame.row_count()).map(|i| frame.placement(i).unwrap().kind).collect();
+    // u1, early (older than all: follows the first entry), a1, a, b (same start: by id), a2, late, working.
+    assert_eq!(child_ids(&frame), ["early", "a", "b", "late"]);
+    let at = |id: &str| (0..frame.row_count()).find(|i| frame.display(*i).unwrap().widgets.iter().any(|w| matches!(&w.kind, display::WidgetKind::ChildCard { chat_id } if chat_id == id))).unwrap() as usize;
+    assert_eq!(at("early"), 1);
+    assert!(at("a") > 1 && at("b") == at("a") + 1);
+    assert_eq!(kinds.last(), Some(&RowKind::Working), "the live turn's indicator stays last");
+    assert_eq!(kinds[at("late") - 1], RowKind::Markdown);
+    assert!(kinds.iter().filter(|k| **k == RowKind::ChildCard).count() == 4);
+}
+
+#[test]
+fn child_card_height_follows_its_lines_and_only_lines_relayout() {
+    use zeron_doc::schema::MessageRole;
+    let mut w = worker(390.0);
+    w.input = TranscriptInput { entries: vec![entry_at("a1", MessageRole::Assistant, 0, "Spawned.")], ..Default::default() };
+    w.children = vec![child("c", 1, 2)];
+    let collapsed = w.pass();
+    let row = collapsed.placement(1).unwrap();
+    assert_eq!(row.kind, RowKind::ChildCard);
+    let card = collapsed.display(1).unwrap().widgets.into_iter().find(|w| matches!(w.kind, display::WidgetKind::ChildCard { .. })).unwrap();
+    assert!((card.h - (rows::geom::CHILD_PAD * 2.0 + rows::geom::CHILD_LINE * 2.0)).abs() < 0.01);
+    assert!(card.w > 300.0, "full column width: {}", card.w);
+    // Same lines: the same row (nothing to re-lay out or repaint).
+    w.children = vec![child("c", 1, 2)];
+    let same = w.pass();
+    assert_eq!(same.placement(1).unwrap().version, row.version);
+    // Expanded: taller, new version.
+    w.children = vec![child("c", 1, 6)];
+    let open = w.pass();
+    let grown = open.placement(1).unwrap();
+    assert!(grown.height > row.height + 70.0);
+    assert_ne!(grown.version, row.version);
+    // Capped, and gone when the child is.
+    w.children = vec![child("c", 1, 99)];
+    let capped = w.pass().placement(1).unwrap().height;
+    w.children = vec![child("c", 1, rows::geom::CHILD_MAX_LINES)];
+    assert!((w.pass().placement(1).unwrap().height - capped).abs() < 0.01);
+    w.children.clear();
+    assert_eq!(w.pass().row_count(), 1);
+}
+
+#[test]
+fn child_cards_show_before_the_first_message() {
+    let mut w = worker(390.0);
+    w.children = vec![child("c1", 5, 2), child("c2", 6, 2)];
+    let frame = w.pass();
+    assert_eq!(child_ids(&frame), ["c1", "c2"]);
+    assert_eq!(frame.placement(0).unwrap().kind, RowKind::ChildCard);
+}

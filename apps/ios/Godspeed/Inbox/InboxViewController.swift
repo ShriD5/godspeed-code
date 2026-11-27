@@ -41,7 +41,7 @@ final class InboxViewController: UIViewController, UICollectionViewDelegate {
 
         let cell = UICollectionView.CellRegistration<AttentionCell, String> { [weak self] cell, _, key in
             guard let self, let item = self.rows[key] else { return }
-            cell.configure(item, now: Date())
+            cell.configure(item, now: Date(), parent: item.chatId.flatMap { self.app.parentTitle(of: $0) })
             cell.accessibilityCustomActions = self.customActions(item)
         }
         let headerReg = UICollectionView.CellRegistration<InboxHeaderCell, String> { [weak self] cell, _, _ in
@@ -358,6 +358,8 @@ final class InboxHeaderView: UIView {
 /// colour.
 final class AttentionCell: UICollectionViewListCell {
     private let glyph = UIImageView()
+    /// A sub-session's parent ("Ship offline mode for iOS ›"), above its title.
+    private let crumb = UILabel()
     private let title = UILabel()
     private let age = UILabel()
     private let meta = UILabel()
@@ -423,7 +425,11 @@ final class AttentionCell: UICollectionViewListCell {
         stack.axis = .vertical
         stack.spacing = 6
         stack.alignment = .fill
-        for v in [titleRow, meta, pillRow, plate, summary] as [UIView] { stack.addArrangedSubview(v) }
+        crumb.textColor = Palette.tertiary
+        crumb.numberOfLines = 1
+        crumb.lineBreakMode = .byTruncatingMiddle
+        for v in [crumb, titleRow, meta, pillRow, plate, summary] as [UIView] { stack.addArrangedSubview(v) }
+        stack.setCustomSpacing(2, after: crumb)
         stack.setCustomSpacing(10, after: meta)
         glyph.translatesAutoresizingMaskIntoConstraints = false
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -454,8 +460,11 @@ final class AttentionCell: UICollectionViewListCell {
         backgroundConfiguration = bg
     }
 
-    func configure(_ item: AttentionItemView, now: Date) {
+    func configure(_ item: AttentionItemView, now: Date, parent: String? = nil) {
         let tint = InboxModel.tint(item)
+        crumb.font = Fonts.ui(.sansMedium, TypeScale.size(12.5))
+        crumb.text = parent.map { "\($0)  ›" }
+        crumb.isHidden = parent == nil
         glyph.image = UIImage(systemName: InboxModel.symbol(item.kind), withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
         glyph.tintColor = tint
         title.font = Fonts.ui(.sansSemibold, TypeScale.size(16))
@@ -499,7 +508,7 @@ final class AttentionCell: UICollectionViewListCell {
             summary.isHidden = item.summary.isEmpty
         }
         summary.font = Fonts.ui(.sans, TypeScale.size(14))
-        accessibilityLabel = InboxModel.accessibilityLabel(item, now: now)
+        accessibilityLabel = InboxModel.accessibilityLabel(item, now: now) + (parent.map { ", in \($0)" } ?? "")
         accessibilityHint = item.canApprove ? "Swipe right to approve, left to decline. Double-tap to open the chat." : "Double-tap to open the chat."
         accessibilityIdentifier = "inbox-\(item.id)"
         isAccessibilityElement = true
