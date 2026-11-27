@@ -21,8 +21,8 @@ left for later (see Not in this change).
 
 ## What was broken on the phone
 
-Screenshots: `docs/godspeed/media/mobile-multi-session/before-*.png` (demo mode, conductor
-`chat-conductor` with four sub-agents and a grandchild, one waiting on an approval).
+Before/after screenshots are in PR #120 (demo mode: `-demo -route chat:chat-conductor`, a
+conductor with four sub-agents and a grandchild, one waiting on an approval).
 
 1. **Children are unreachable.** The front page, project lists, search and Mission Control filter
    out every chat with a parent (`crates/client/src/workspace/view.rs`, `BoardModel.build`).
@@ -49,7 +49,8 @@ A horizontally scrolling row of glass cards pinned under the navigation bar, sho
 that has sub-sessions or a parent:
 
 - **Leading card: the parent.** On a sub-agent it reads "‹ Conductor title" (the breadcrumb back).
-  On the parent itself it reads "Main" and is selected.
+  On the parent itself it reads "Main" and is selected (a sub-session that has its own
+  sub-sessions shows "‹ its parent", then itself, then its children).
 - **Then the sub-sessions**, waiting-on-you first, then working, failed, done, idle; ties by most
   recent activity. Each card: a status dot (spinner while working), the title, one line of latest
   activity (the chat's last-message preview, or "Needs approval: Run the offline UI tests"), a
