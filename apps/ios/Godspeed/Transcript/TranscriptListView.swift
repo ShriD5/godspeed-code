@@ -121,6 +121,8 @@ final class TranscriptListView: UIScrollView, RowViewDelegate, UIScrollViewDeleg
     var onFollowChange: ((Bool) -> Void)?
     var onDistanceFromBottom: ((CGFloat) -> Void)?
     var imageLoader: ((String, UIImageView) -> Void)?
+    /// The native card for a sub-session row (`WidgetKind.childCard`).
+    var childCardView: ((String) -> UIView?)?
     /// An attachment's picture, for an image chip opened full size.
     var imageFetcher: ((String) async -> UIImage?)?
 
@@ -716,6 +718,10 @@ final class TranscriptListView: UIScrollView, RowViewDelegate, UIScrollViewDeleg
         }
         visuals[id] = live
         return live
+    }
+
+    func rowView(_ view: RowView, childCardFor chatId: String) -> UIView? {
+        childCardView?(chatId)
     }
 
     fileprivate func row(at point: CGPoint) -> RowView? {

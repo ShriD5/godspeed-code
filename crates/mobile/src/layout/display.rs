@@ -263,6 +263,9 @@ pub enum WidgetKind {
     Shimmer,
     /// An agent visual; `TranscriptView::visual(id)` is its live session.
     Visual { id: String },
+    /// A sub-session's summary card (`TranscriptView::set_child_cards`); the
+    /// app paints it natively in the rect and opens the chat on tap.
+    ChildCard { chat_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]

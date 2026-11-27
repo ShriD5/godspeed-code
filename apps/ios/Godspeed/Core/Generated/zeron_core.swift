@@ -1063,7 +1063,8 @@ public protocol CoreClientProtocol: AnyObject, Sendable {
     func attention()  -> AttentionView
     
     /**
-     * Side chats / subagent chats of `parent_id`, recency order.
+     * Side chats / sub-agent chats of `parent_id` (unarchived), most recent
+     * first.
      */
     func childSessions(parentId: String)  -> [SessionRow]
     
@@ -1469,7 +1470,8 @@ open func attention() -> AttentionView  {
 }
     
     /**
-     * Side chats / subagent chats of `parent_id`, recency order.
+     * Side chats / sub-agent chats of `parent_id` (unarchived), most recent
+     * first.
      */
 open func childSessions(parentId: String) -> [SessionRow]  {
     return try!  FfiConverterSequenceTypeSessionRow.lift(try! rustCall() {
@@ -3914,6 +3916,11 @@ public protocol TranscriptViewProtocol: AnyObject, Sendable {
     func frame()  -> LayoutFrame
     
     /**
+     * The sub-session cards to place (replaces the previous set).
+     */
+    func setChildCards(cards: [ChildCardSlot]) 
+    
+    /**
      * Feed markdown fixtures directly (demo screens, benchmarks, tests).
      */
     func setDebugEntries(entries: [DebugEntry], working: Bool) 
@@ -4047,6 +4054,18 @@ open func frame() -> LayoutFrame  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * The sub-session cards to place (replaces the previous set).
+     */
+open func setChildCards(cards: [ChildCardSlot])  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_zeron_mobile_fn_method_transcriptview_set_child_cards(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeChildCardSlot.lower(cards),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -6552,6 +6571,83 @@ public func FfiConverterTypeChatConfig_lift(_ buf: RustBuffer) throws -> ChatCon
 #endif
 public func FfiConverterTypeChatConfig_lower(_ value: ChatConfig) -> RustBuffer {
     return FfiConverterTypeChatConfig.lower(value)
+}
+
+
+/**
+ * A sub-session (a chat whose parent is this transcript's chat) to show as
+ * a card in the transcript. The app owns what the card says; the layout
+ * only places it and gives it `lines` lines of height.
+ */
+public struct ChildCardSlot: Equatable, Hashable {
+    public var chatId: String
+    /**
+     * When the sub-session started: the card follows the last entry written
+     * at or before it (the desktop's conductor-card rule).
+     */
+    public var createdAtMs: Int64
+    /**
+     * Text lines the card needs (1–10); changes re-lay out the transcript.
+     */
+    public var lines: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(chatId: String, 
+        /**
+         * When the sub-session started: the card follows the last entry written
+         * at or before it (the desktop's conductor-card rule).
+         */createdAtMs: Int64, 
+        /**
+         * Text lines the card needs (1–10); changes re-lay out the transcript.
+         */lines: UInt32) {
+        self.chatId = chatId
+        self.createdAtMs = createdAtMs
+        self.lines = lines
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ChildCardSlot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChildCardSlot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChildCardSlot {
+        return
+            try ChildCardSlot(
+                chatId: FfiConverterString.read(from: &buf), 
+                createdAtMs: FfiConverterInt64.read(from: &buf), 
+                lines: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ChildCardSlot, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.chatId, into: &buf)
+        FfiConverterInt64.write(value.createdAtMs, into: &buf)
+        FfiConverterUInt32.write(value.lines, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChildCardSlot_lift(_ buf: RustBuffer) throws -> ChildCardSlot {
+    return try FfiConverterTypeChildCardSlot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChildCardSlot_lower(_ value: ChildCardSlot) -> RustBuffer {
+    return FfiConverterTypeChildCardSlot.lower(value)
 }
 
 
@@ -15055,6 +15151,10 @@ public enum RowKind: Equatable, Hashable {
      * A finished turn's receipt line (expands into its details).
      */
     case receipt
+    /**
+     * A sub-session's summary card (the app paints it in the widget rect).
+     */
+    case childCard
 
 
 
@@ -15091,6 +15191,8 @@ public struct FfiConverterTypeRowKind: FfiConverterRustBuffer {
         case 7: return .visual
         
         case 8: return .receipt
+        
+        case 9: return .childCard
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -15130,6 +15232,10 @@ public struct FfiConverterTypeRowKind: FfiConverterRustBuffer {
         
         case .receipt:
             writeInt(&buf, Int32(8))
+        
+        
+        case .childCard:
+            writeInt(&buf, Int32(9))
         
         }
     }
@@ -16907,6 +17013,12 @@ public enum WidgetKind: Equatable, Hashable {
      */
     case visual(id: String
     )
+    /**
+     * A sub-session's summary card (`TranscriptView::set_child_cards`); the
+     * app paints it natively in the rect and opens the chat on tap.
+     */
+    case childCard(chatId: String
+    )
 
 
 
@@ -16962,6 +17074,9 @@ public struct FfiConverterTypeWidgetKind: FfiConverterRustBuffer {
         case 12: return .shimmer
         
         case 13: return .visual(id: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 14: return .childCard(chatId: try FfiConverterString.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -17041,6 +17156,11 @@ public struct FfiConverterTypeWidgetKind: FfiConverterRustBuffer {
         case let .visual(id):
             writeInt(&buf, Int32(13))
             FfiConverterString.write(id, into: &buf)
+            
+        
+        case let .childCard(chatId):
+            writeInt(&buf, Int32(14))
+            FfiConverterString.write(chatId, into: &buf)
             
         }
     }
@@ -18073,6 +18193,31 @@ fileprivate struct FfiConverterSequenceTypeCaptionSpan: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeCaptionSpan.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeChildCardSlot: FfiConverterRustBuffer {
+    typealias SwiftType = [ChildCardSlot]
+
+    public static func write(_ value: [ChildCardSlot], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeChildCardSlot.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ChildCardSlot] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ChildCardSlot]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeChildCardSlot.read(from: &buf))
         }
         return seq
     }
@@ -19472,7 +19617,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_zeron_mobile_checksum_method_coreclient_attention() != 24101) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_zeron_mobile_checksum_method_coreclient_child_sessions() != 10159) {
+    if (uniffi_zeron_mobile_checksum_method_coreclient_child_sessions() != 43736) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_coreclient_close_session() != 11270) {
@@ -19803,6 +19948,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_transcriptview_frame() != 19133) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_zeron_mobile_checksum_method_transcriptview_set_child_cards() != 2414) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_method_transcriptview_set_debug_entries() != 54762) {

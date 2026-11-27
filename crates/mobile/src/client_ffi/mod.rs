@@ -190,7 +190,8 @@ impl CoreClient {
             .map(|r| (&**r).into())
     }
 
-    /// Side chats / subagent chats of `parent_id`, recency order.
+    /// Side chats / sub-agent chats of `parent_id` (unarchived), most recent
+    /// first.
     pub fn child_sessions(&self, parent_id: String) -> Vec<SessionRow> {
         rows(self.client.workspace().children(&parent_id))
     }

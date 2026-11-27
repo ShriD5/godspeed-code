@@ -654,6 +654,90 @@ fn short(host: &str, now: i64, prompt: &str, reply: &str) -> Vec<SessionMessageE
     ]
 }
 
+fn godspeed(tool: &str, input: serde_json::Value) -> ToolCall {
+    ToolCall::Mcp {
+        server: "godspeed".into(),
+        tool: tool.into(),
+        input: Some(input),
+    }
+}
+
+/// A conductor's main chat: it fans the work out with `create_chats`, then
+/// reads its sub-agents back. Their own work lives in their chats.
+fn conductor(host: &str, now: i64) -> Vec<SessionMessageEntry> {
+    const MIN: i64 = 60_000;
+    let spawn = serde_json::json!({ "chats": [
+        { "title": "Durable outbox for offline sends", "kind": "side" },
+        { "title": "Offline banner and retry states", "kind": "side" },
+        { "title": "Airplane-mode test matrix", "kind": "side", "device": "hetzner-01" },
+        { "title": "Document offline behavior", "kind": "side" },
+    ]});
+    vec![
+        user(
+            "m1",
+            now - 27 * MIN,
+            "Ship offline mode for the iOS app. Split it across sub-agents: sync, UI, tests and docs. Ask me before anything runs the UI tests.",
+        ),
+        assistant(
+            "m2",
+            host,
+            now - 26 * MIN,
+            vec![
+                text(
+                    "t0",
+                    "Four independent tracks, so four sub-agents. The tests run on the VPS so they don't fight the UI work for the simulator.",
+                ),
+                tool(
+                    "k1",
+                    godspeed("create_chats", spawn),
+                    false,
+                    Some(
+                        r#"[{"id":"chat-sub-sync","status":"working"},{"id":"chat-sub-ui","status":"working"},{"id":"chat-sub-tests","status":"working","device":"hetzner-01"},{"id":"chat-sub-docs","status":"working"}]"#,
+                    ),
+                ),
+                text(
+                    "t1",
+                    "All four are running. I'll check in as they report back.",
+                ),
+            ],
+        ),
+        assistant(
+            "m3",
+            host,
+            now - 3 * MIN,
+            vec![
+                tool(
+                    "k2",
+                    godspeed("read_chat", serde_json::json!({ "chat": "chat-sub-tests" })),
+                    false,
+                    Some(
+                        "All 9 airplane-mode flows pass on the VPS simulator. Report: 9 passed, 0 failed, 41s.",
+                    ),
+                ),
+                tool(
+                    "k3",
+                    godspeed("read_chat", serde_json::json!({ "chat": "chat-sub-docs" })),
+                    true,
+                    Some("Harness exited with status 1: context window full"),
+                ),
+                tool(
+                    "k4",
+                    godspeed(
+                        "wait_for_turn",
+                        serde_json::json!({ "chat": "chat-sub-ui" }),
+                    ),
+                    false,
+                    None,
+                ),
+                text(
+                    "t0",
+                    "Tests are green on the VPS. Docs crashed on a full context window; I'll restart it with a tighter brief once the UI pass lands. Waiting on the UI pass.",
+                ),
+            ],
+        ),
+    ]
+}
+
 /// Fixture transcript for a demo chat (`None` = starts empty).
 pub(crate) fn fixture(chat_id: &str, host: &str, last_activity: i64) -> Vec<SessionMessageEntry> {
     let now = last_activity;
@@ -689,6 +773,37 @@ pub(crate) fn fixture(chat_id: &str, host: &str, last_activity: i64) -> Vec<Sess
             now,
             "What EMA window does the veil use?",
             "α = 0.2 over inter-append gaps, seeded from the first two chunks.",
+        ),
+        "chat-conductor" => conductor(host, now),
+        "chat-sub-ui" => short(
+            host,
+            now,
+            "Add an offline banner and retry states to the session screen. Ask before running the UI tests.",
+            "Banner and retry pill are in. Running the UI tests next: `OfflineFlowTests` covers airplane mode, a flaky edge and a host that drops mid-send.",
+        ),
+        "chat-sub-sync" => short(
+            host,
+            now,
+            "Make sends durable while offline: queue them in an outbox and replay them in order on reconnect.",
+            "The outbox persists to the session doc. Replaying 14 queued sends against the ledger; a probe checks the ordering across reconnects.",
+        ),
+        "chat-sub-probe" => short(
+            host,
+            now,
+            "Probe the ledger replay ordering across reconnects.",
+            "Order holds across 3 reconnects so far.",
+        ),
+        "chat-sub-tests" => short(
+            host,
+            now,
+            "Build an airplane-mode test matrix and run it on the VPS simulator.",
+            "All 9 airplane-mode flows pass on the VPS simulator.\n\n| Flow | Result |\n| --- | --- |\n| Send offline, reconnect | pass |\n| Queue 10, replay | pass |\n| Host drops mid-send | pass |",
+        ),
+        "chat-sub-docs" => short(
+            host,
+            now,
+            "Document how offline mode behaves for users and for the ledger.",
+            "Drafted the user-facing section; the ledger section is next.",
         ),
         "chat-oklch" => short(
             host,

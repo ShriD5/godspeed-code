@@ -35,6 +35,8 @@ pub enum RowKind {
     Visual,
     /// A finished turn's receipt line (expands into its details).
     Receipt,
+    /// A sub-session's summary card (the app paints it in the widget rect).
+    ChildCard,
 }
 
 /// A user message awaiting its host echo (client-minted id = the echo's id).
@@ -105,6 +107,8 @@ pub(crate) enum Content {
     /// An agent visual: its height comes from its worker.
     Visual(Arc<crate::visual::VisualSlot>),
     Receipt(ReceiptRow),
+    /// A sub-session's card: `lines` text lines tall, painted by the app.
+    Child { chat_id: String, lines: u32 },
 }
 
 /// A width-independent row: identity, top gap class and prepared content.
@@ -156,6 +160,11 @@ pub(crate) mod geom {
     pub const WORKING: f32 = 36.0;
     pub const RECEIPT_LINE: f32 = 28.0;
     pub const VISUAL_LOADING: f32 = 18.0;
+    /// Sub-session cards: padding above and below the text, one text line.
+    pub const CHILD_PAD: f32 = 12.0;
+    pub const CHILD_LINE: f32 = 20.0;
+    /// A card never claims more than this many lines.
+    pub const CHILD_MAX_LINES: u32 = 10;
 }
 
 impl Gap {
@@ -204,6 +213,24 @@ pub(crate) struct RowBuilder {
     pub visual_slots: HashMap<String, Arc<crate::visual::VisualSlot>>,
     /// Receipt rows by anchor entry: (turn fingerprint, expanded, row).
     receipts: HashMap<String, (u64, bool, Arc<RowCore>)>,
+    /// Sub-session card rows by chat id: (line count, row).
+    children: HashMap<String, (u32, Arc<RowCore>)>,
+}
+
+/// Where each sub-session card goes: `(entry index it follows, slot)`, in
+/// transcript order. A card follows the last entry written at or before the
+/// sub-session started (the desktop's `anchor_entry`); one older than every
+/// entry follows the first. Without entries every card follows "entry 0".
+pub(crate) fn anchor_children<'a>(entries: &[Arc<SessionMessageEntry>], slots: &'a [super::ChildCardSlot]) -> Vec<(usize, &'a super::ChildCardSlot)> {
+    let mut out: Vec<(usize, &super::ChildCardSlot)> = slots
+        .iter()
+        .map(|slot| {
+            let at = entries.iter().rposition(|e| e.created_at <= slot.created_at_ms).unwrap_or(0);
+            (at, slot)
+        })
+        .collect();
+    out.sort_by(|(a, x), (b, y)| a.cmp(b).then(x.created_at_ms.cmp(&y.created_at_ms)).then_with(|| x.chat_id.cmp(&y.chat_id)));
+    out
 }
 
 pub(crate) fn quick_hash(s: &str) -> u64 {
@@ -218,8 +245,11 @@ pub(crate) fn quick_hash(s: &str) -> u64 {
 
 impl RowBuilder {
     /// Rows for `input`, reusing every row whose source is unchanged.
-    pub fn build(&mut self, ctx: &mut Ctx, input: &TranscriptInput) -> Vec<Placed> {
-        let mut out: Vec<Placed> = Vec::with_capacity(self.entries.len() * 2 + 4);
+    pub fn build(&mut self, ctx: &mut Ctx, input: &TranscriptInput, children: &[super::ChildCardSlot]) -> Vec<Placed> {
+        let mut out: Vec<Placed> = Vec::with_capacity(self.entries.len() * 2 + children.len() + 4);
+        let anchored = anchor_children(&input.entries, children);
+        let mut next_child = 0usize;
+        let mut live_children: HashSet<String> = HashSet::new();
         let mut live_entries: HashSet<&str> = HashSet::with_capacity(input.entries.len());
         let mut live_parts: HashSet<String> = HashSet::new();
         let mut prev_role: Option<MessageRole> = None;
@@ -270,7 +300,24 @@ impl RowBuilder {
                 live_receipts.insert(entry.id.clone());
                 out.push(Placed { core, gap: Gap::Block });
             }
+            // Sub-session cards started after this entry (and before the next).
+            while let Some((at, slot)) = anchored.get(next_child).copied()
+                && at <= ix
+            {
+                next_child += 1;
+                live_children.insert(slot.chat_id.clone());
+                let core = self.child_row(slot);
+                out.push(Placed { core, gap: Gap::Block });
+            }
         }
+        // No entries yet (a fresh conductor): the cards still show.
+        for (_, slot) in &anchored[next_child..] {
+            live_children.insert(slot.chat_id.clone());
+            let core = self.child_row(slot);
+            let gap = if out.is_empty() { Gap::First } else { Gap::Block };
+            out.push(Placed { core, gap });
+        }
+        self.children.retain(|id, _| live_children.contains(id));
         self.receipts.retain(|id, _| live_receipts.contains(id));
         self.entries.retain(|id, _| live_entries.contains(id.as_str()));
         self.parts.retain(|id, _| live_parts.contains(id));
@@ -328,6 +375,28 @@ impl RowBuilder {
         self.entries.retain(|_, s| !s.rows.iter().any(|p| p.core.key == key));
         self.pending.retain(|_, (_, row)| row.key != key);
         self.receipts.retain(|_, (_, _, row)| row.key != key);
+        self.children.retain(|_, (_, row)| row.key != key);
+    }
+
+    /// A sub-session's card row, rebuilt only when its height changes (status
+    /// and text repaint natively inside the same rect).
+    fn child_row(&mut self, slot: &super::ChildCardSlot) -> Arc<RowCore> {
+        let lines = slot.lines.clamp(1, geom::CHILD_MAX_LINES);
+        if let Some((cached, row)) = self.children.get(&slot.chat_id)
+            && *cached == lines
+        {
+            return row.clone();
+        }
+        let core = Arc::new(RowCore {
+            key: row_key(&format!("child#{}", slot.chat_id)),
+            version: next_version(),
+            kind: RowKind::ChildCard,
+            entry_id: Arc::from(""),
+            content: Content::Child { chat_id: slot.chat_id.clone(), lines },
+            copy_text: String::new(),
+        });
+        self.children.insert(slot.chat_id.clone(), (lines, core.clone()));
+        core
     }
 
     /// The receipt row closing `turn`, cached by the turn's fingerprint and
@@ -903,6 +972,13 @@ pub(crate) fn place_row(
             }
             h
         }
+        Content::Child { chat_id, lines } => {
+            let h = px.v(CHILD_PAD * 2.0 + CHILD_LINE * *lines as f32);
+            if let Some(out) = out {
+                out.widget(WidgetKind::ChildCard { chat_id: chat_id.clone() }, (x, top, cw, h), None);
+            }
+            h
+        }
         Content::Working { since_ms, streaming } => {
             let h = px.v(WORKING);
             if let Some(out) = out {
@@ -1052,6 +1128,7 @@ pub(crate) fn content_heap_bytes(content: &Content) -> usize {
         Content::Chip(c) => c.text.p.heap_bytes(),
         Content::Image { reference } => reference.len(),
         Content::Working { .. } | Content::Visual(_) => 0,
+        Content::Child { chat_id, .. } => chat_id.len(),
         Content::Receipt(r) => r.summary.p.heap_bytes() + r.lines.iter().map(|(k, v)| k.p.heap_bytes() + v.p.heap_bytes()).sum::<usize>(),
     }
 }

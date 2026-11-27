@@ -62,6 +62,7 @@ fn front_page_mirrors_the_desktop_sidebar() {
     assert_eq!(
         ids(&ws.front.recent),
         [
+            "chat-conductor",
             "chat-visuals",
             "chat-cjk",
             "chat-home",
@@ -80,6 +81,27 @@ fn front_page_mirrors_the_desktop_sidebar() {
     assert_eq!(limit.window.as_deref(), Some("5-hour"));
     assert!(limit.reset_at_ms.is_some());
     assert_eq!(ids(ws.children("chat-veil")), ["chat-side"]);
+    // The conductor's sub-agents, most recent first; the grandchild hangs
+    // off its own parent.
+    assert_eq!(
+        ids(ws.children("chat-conductor")),
+        [
+            "chat-sub-sync",
+            "chat-sub-ui",
+            "chat-sub-tests",
+            "chat-sub-docs"
+        ]
+    );
+    assert_eq!(ids(ws.children("chat-sub-sync")), ["chat-sub-probe"]);
+    let indicator = |id: &str| ws.session(id).unwrap().indicator;
+    assert_eq!(indicator("chat-sub-ui"), ChatIndicator::AwaitingApproval);
+    assert_eq!(indicator("chat-sub-sync"), ChatIndicator::Working);
+    assert_eq!(indicator("chat-sub-tests"), ChatIndicator::Completed);
+    assert_eq!(indicator("chat-sub-docs"), ChatIndicator::Errored);
+    assert_eq!(
+        ws.session("chat-sub-tests").unwrap().device_name.as_deref(),
+        Some("hetzner-01")
+    );
 
     let veil = ws.session("chat-veil").unwrap();
     assert_eq!(veil.indicator, ChatIndicator::Working);
@@ -626,6 +648,8 @@ fn inbox_merges_hosts_in_risk_order_and_answers_hide_items() {
             "approval:chat-veil:r1",
             "chat:chat-picker",
             "approval:chat-ios-scroll:r2",
+            // A sub-agent's approval reaches the inbox like any other.
+            "approval:chat-sub-ui:r5",
             // Same band: oldest first.
             "approval:chat-home:r4",
             "approval:chat-tabs:r3",
@@ -649,7 +673,20 @@ fn inbox_merges_hosts_in_risk_order_and_answers_hide_items() {
     assert_eq!(client.attention().low_risk_count(), 0);
     rt.block_on(client.dismiss_attention("dev-vps", "chat:chat-errored"))
         .unwrap();
-    assert_eq!(client.attention().items.len(), 3);
+    assert_eq!(client.attention().items.len(), 4);
+}
+
+#[test]
+fn archived_sub_sessions_leave_their_parent() {
+    let (client, _dir) = demo(fast());
+    client.archive_session("chat-sub-docs").unwrap();
+    let ws = client.workspace();
+    assert_eq!(
+        ids(ws.children("chat-conductor")),
+        ["chat-sub-sync", "chat-sub-ui", "chat-sub-tests"]
+    );
+    // Still reachable by id (an inbox row or a notification may open it).
+    assert!(ws.session("chat-sub-docs").unwrap().archived);
 }
 
 #[test]
