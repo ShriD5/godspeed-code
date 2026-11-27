@@ -23,6 +23,7 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
     // Sub-sessions (docs/godspeed/MOBILE-MULTI-SESSION.md): the strip under
     // the bar, what waits on you above the composer, cards in the transcript.
     private let strip = FamilyStripView()
+    private let topPlate = UIView()
     private let topFade = EdgeFadeOverlay()
     private let ask = FamilyAskPanel()
     private var family: SessionFamily?
@@ -203,9 +204,16 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         strip.isHidden = true
         strip.onSelect = { [weak self] id in self?.openFamily(id) }
         strip.onShowAll = { [weak self] in self?.showFamilySheet() }
+        // Solid behind the bar and the strip (rows scroll away under it), then
+        // a short fade below so they don't end on a hard line.
+        topPlate.translatesAutoresizingMaskIntoConstraints = false
+        topPlate.backgroundColor = Palette.background
+        topPlate.isUserInteractionEnabled = false
+        topPlate.isHidden = true
         topFade.translatesAutoresizingMaskIntoConstraints = false
         topFade.transform = CGAffineTransform(scaleX: 1, y: -1)
         topFade.isHidden = true
+        view.addSubview(topPlate)
         view.addSubview(topFade)
         view.addSubview(strip)
         NSLayoutConstraint.activate([
@@ -213,10 +221,14 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
             strip.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
             strip.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
             strip.heightAnchor.constraint(equalToConstant: FamilyStripView.height),
-            topFade.topAnchor.constraint(equalTo: view.topAnchor),
+            topPlate.topAnchor.constraint(equalTo: view.topAnchor),
+            topPlate.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topPlate.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topPlate.bottomAnchor.constraint(equalTo: strip.bottomAnchor, constant: 4),
+            topFade.topAnchor.constraint(equalTo: topPlate.bottomAnchor, constant: -1),
             topFade.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topFade.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            topFade.bottomAnchor.constraint(equalTo: strip.bottomAnchor, constant: 22),
+            topFade.heightAnchor.constraint(equalToConstant: 40),
         ])
         familyToken = app.observe { [weak self] in self?.syncFamily(animated: true) }
 
@@ -674,6 +686,7 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         if strip.isHidden == show {
             strip.isHidden = !show
             topFade.isHidden = !show
+            topPlate.isHidden = !show
             view.setNeedsLayout()
         }
         syncCards()

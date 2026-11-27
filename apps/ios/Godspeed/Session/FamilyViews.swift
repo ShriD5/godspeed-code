@@ -42,7 +42,7 @@ final class FamilyStripView: UIView {
         var next: [String: FamilyChipView] = [:]
         for chip in entries {
             let view = chips[chip.id] ?? makeChip()
-            view.configure(chip, now: now)
+            view.configure(chip, top: family.up == nil, now: now)
             next[chip.id] = view
         }
         for (id, view) in chips where next[id] == nil { view.removeFromSuperview() }
@@ -139,11 +139,13 @@ final class FamilyChipView: UIControl {
     func preferredWidth(_ k: CGFloat) -> CGFloat {
         switch chip {
         case .all?: (84 * k).rounded()
-        default: (184 * k).rounded()
+        // Narrow enough that the next card peeks in: the strip scrolls.
+        default: (158 * k).rounded()
         }
     }
 
-    func configure(_ chip: SessionFamily.Chip, now: Date) {
+    /// `top`: the family's root has no parent of its own (it reads "Main").
+    func configure(_ chip: SessionFamily.Chip, top: Bool, now: Date) {
         self.chip = chip
         let k = TypeScale.factor
         title.font = Fonts.ui(.sansSemibold, TypeScale.size(14))
@@ -167,9 +169,10 @@ final class FamilyChipView: UIControl {
             lead.isHidden = selected
             glyph.isHidden = !selected
             glyph.kind = m.state.glyph
-            title.text = selected ? "Main" : m.title
-            sub.text = selected ? m.title : "Main · \(m.state.word)"
-            accessibilityLabel = selected ? "Main session, \(m.title), current" : "Back to main session, \(m.title), \(m.state.word)"
+            let role = top ? "Main" : "Parent"
+            title.text = selected ? (top ? "Main" : m.title) : m.title
+            sub.text = selected ? (top ? m.title : "This session · \(m.state.word)") : "\(role) · \(m.state.word)"
+            accessibilityLabel = selected ? "\(role) session, \(m.title), current" : "Back to \(role.lowercased()) session, \(m.title), \(m.state.word)"
             accessibilityIdentifier = "family-root"
             isSelected = selected
         case let .member(m, selected):
@@ -333,10 +336,14 @@ final class FamilyAskPanel: UIView {
         top.spacing = 6
         header.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         counter.setContentHuggingPriority(.required, for: .horizontal)
-        let buttons = UIStackView(arrangedSubviews: [open, UIView(), decline, approve])
-        buttons.axis = .horizontal
+        buttons.addArrangedSubview(open)
+        buttons.addArrangedSubview(spacer)
+        buttons.addArrangedSubview(decline)
+        buttons.addArrangedSubview(approve)
         buttons.spacing = 8
-        buttons.alignment = .center
+        header.numberOfLines = 2
+        layoutButtons()
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (view: FamilyAskPanel, _) in view.layoutButtons() }
         let stack = UIStackView(arrangedSubviews: [top, titleLabel, plate, buttons])
         stack.axis = .vertical
         stack.spacing = 8
@@ -361,6 +368,25 @@ final class FamilyAskPanel: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private let buttons = UIStackView()
+    private let spacer = UIView()
+
+    /// Side by side; stacked full width at accessibility sizes so "Approve"
+    /// never breaks mid-word.
+    private func layoutButtons() {
+        let stacked = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+        buttons.axis = stacked ? .vertical : .horizontal
+        buttons.alignment = stacked ? .fill : .center
+        spacer.isHidden = stacked
+        if stacked {
+            buttons.removeArrangedSubview(approve)
+            buttons.insertArrangedSubview(approve, at: 0)
+        } else {
+            buttons.removeArrangedSubview(approve)
+            buttons.addArrangedSubview(approve)
+        }
+    }
 
     private var item: AttentionItemView? { items.indices.contains(page) ? items[page] : nil }
 
