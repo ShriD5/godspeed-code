@@ -34,6 +34,8 @@ pub(crate) struct DemoChat {
     pub seen: bool,
     pub archived: bool,
     pub parent: Option<&'static str>,
+    /// AwaitingInput on a permission prompt (reads AwaitingApproval).
+    pub approval: bool,
 }
 
 const MIN: i64 = 60_000;
@@ -61,6 +63,7 @@ pub(crate) fn chats() -> Vec<DemoChat> {
         seen: true,
         archived: false,
         parent: None,
+        approval: false,
     };
     vec![
         DemoChat {
@@ -214,6 +217,90 @@ pub(crate) fn chats() -> Vec<DemoChat> {
                 MAC,
                 "Side chat: veil timing",
                 "α = 0.2 over inter-append gaps",
+            )
+        },
+        // A conductor: the main chat steering four sub-agent chats (one on
+        // another host, one waiting on an approval) and a grandchild.
+        DemoChat {
+            branch: Some("offline-mode"),
+            status: Some(SessionStatus::Working),
+            last_ago_ms: 20_000,
+            created_ago_ms: 30 * MIN,
+            ..chat(
+                "chat-conductor",
+                Some("space-godspeed"),
+                MAC,
+                "Ship offline mode for iOS",
+                "Tests are green on the VPS. Waiting on the UI pass.",
+            )
+        },
+        DemoChat {
+            parent: Some("chat-conductor"),
+            status: Some(SessionStatus::AwaitingInput),
+            approval: true,
+            last_ago_ms: 90_000,
+            created_ago_ms: 25 * MIN,
+            seen: false,
+            ..chat(
+                "chat-sub-ui",
+                Some("space-godspeed"),
+                MAC,
+                "Offline banner and retry states",
+                "Banner and retry pill are in. Running the UI tests next.",
+            )
+        },
+        DemoChat {
+            parent: Some("chat-conductor"),
+            status: Some(SessionStatus::Working),
+            last_ago_ms: 15_000,
+            created_ago_ms: 25 * MIN,
+            ..chat(
+                "chat-sub-sync",
+                Some("space-godspeed"),
+                MAC,
+                "Durable outbox for offline sends",
+                "Replaying 14 queued sends against the ledger",
+            )
+        },
+        DemoChat {
+            parent: Some("chat-sub-sync"),
+            status: Some(SessionStatus::Working),
+            last_ago_ms: 30_000,
+            created_ago_ms: 12 * MIN,
+            ..chat(
+                "chat-sub-probe",
+                Some("space-godspeed"),
+                MAC,
+                "Probe ledger replay ordering",
+                "Order holds across 3 reconnects so far",
+            )
+        },
+        DemoChat {
+            parent: Some("chat-conductor"),
+            last_ago_ms: 4 * MIN,
+            created_ago_ms: 25 * MIN,
+            seen: false,
+            model: "claude-sonnet-5",
+            ..chat(
+                "chat-sub-tests",
+                Some("space-godspeed-vps"),
+                VPS,
+                "Airplane-mode test matrix",
+                "All 9 airplane-mode flows pass on the VPS simulator.",
+            )
+        },
+        DemoChat {
+            parent: Some("chat-conductor"),
+            status: Some(SessionStatus::Errored),
+            last_ago_ms: 7 * MIN,
+            created_ago_ms: 25 * MIN,
+            seen: false,
+            ..chat(
+                "chat-sub-docs",
+                Some("space-godspeed"),
+                MAC,
+                "Document offline behavior",
+                "Harness exited with status 1: context window full",
             )
         },
         DemoChat {
@@ -456,7 +543,7 @@ pub(crate) fn seed(
                 status,
                 started_at: Some(ms(now - 95_000)),
                 updated_at: Utc::now(),
-                awaiting_approval: false,
+                awaiting_approval: demo.approval,
             })?;
         }
         if let (Some((number, state, title)), Some(source)) = (demo.pr, &source_context) {
@@ -664,7 +751,7 @@ pub(crate) fn attention(
     );
     edit.reason =
         Some("Clamp against the adjusted inset so the keyboard never strands the last row.".into());
-    let mac = vec![
+    let mut mac = vec![
         approval(
             "chat-veil",
             "r1",
@@ -725,6 +812,25 @@ pub(crate) fn attention(
             ),
         ),
     ];
+    // A sub-agent's approval: the engine stamps the conductor card it lights.
+    let mut offline_tests = approval(
+        "chat-sub-ui",
+        "r5",
+        "Offline banner and retry states",
+        "godspeed",
+        90_000,
+        ApprovalRisk::Medium,
+        command(
+            "Run the offline UI tests",
+            "xcodebuild test -scheme Godspeed -only-testing:GodspeedUITests/OfflineFlowTests",
+            "/Users/dev/godspeed",
+        ),
+    );
+    offline_tests.conductor = Some(zeron_proto::attention::ConductorLink {
+        conductor_id: "conductor-offline".into(),
+        card_chat_id: "chat-sub-ui".into(),
+    });
+    mac.push(offline_tests);
     let vps = vec![
         AttentionItem {
             actions: vec![A::Open, A::Dismiss],
