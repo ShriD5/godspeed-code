@@ -4,7 +4,7 @@ A Godspeed always-on agent ("T3 watch") reviews new T3 Code commits and releases
 (github.com/pingdotgg/t3code), decides which features are worth having in Godspeed, implements the
 best one natively per run, and opens a pull request for review. It never merges.
 
-Reviewed T3 through: pingdotgg/t3code@3e03072eb6 (2026-11-12)
+Reviewed T3 through: pingdotgg/t3code@36f4801cb3 (2026-11-28)
 
 ## Rules
 
@@ -23,6 +23,16 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
+| 2026-11-28 | Snooze a thread indefinitely: a Snooze preset that keeps it snoozed until woken by hand or new activity (`f875d2ab53`) | PR #TBD |
+| 2026-11-28 | Warn when a machine is short on memory or disk, or overloaded, per machine and per thread, and tell agents its load through MCP (`70709c4d4d`, `9f887c5a39` shows CPU/memory/disk in thread details) | queued (large: needs a host sampler in the engine, a sidebar warning and an MCP field; Theo's memory-pressure item) |
+| 2026-11-28 | A composer send right after Stop queues instead of failing to steer (`9e385083d6`); Codex and OpenCode recover prompts an early Stop dropped (`1d015a3794`, `cc61cdb1e4`); agent auto-sends steer past an explicit queue (`5fda4f7bff`) | queued (check `DocHost::steer_queued_now` and the Codex stop path) |
+| 2026-11-28 | Copy a chat table as aligned text or a PNG (`a91808a108`, `e18c8fc2e5`); preview Markdown code blocks in replies (`7cce01a1ca`) | queued (transcript tables have no copy action) |
+| 2026-11-28 | Save or download files from the Files panel and chat file links (`15c42f7a67`, `685b40de12`); draw on image attachments before sending (`ee961f64c8`); attach a folder from the attach button (`a23b8bb92c`) | queued (no Save-as in `ui/src/files`) |
+| 2026-11-28 | Login-shell re-reads no longer pile up fnm multishell folders in PATH (`0180628cf7`) | queued (check `harness/src/shell_env.rs` PATH merge) |
+| 2026-11-28 | Copy paths from the file sidebar (`65fc371bd8`) | skipped (already in `files/context_menu.rs` Copy path/Copy paths) |
+| 2026-11-28 | Claude shows Auto as unavailable where its settings turn it off (`8468c7af68`), Claude in Auto asks about tools it sends back (`923fe897d6`), forked Claude skills show work in the subagent thread (`30a7aae9a3`) | queued (check the Claude permission-mode picker) |
+| 2026-11-28 | Jira and Jira Service Management issue trackers, Simlock device pools, side-panel tab multi-select, Agent tasks section, mobile fonts and inspector, Polish locale, EPUB narration, password-protected previews, stop devices from the Device panel, rename saved environments, usage sign-in consent (`5340fcfc5f`, `dcac7cfed6`, `6e2164ac88`, `ddcc48f21e`, `95c949c963`, `c959fac84c`, `1d2248cf01`, `f22ff0003b`, `0404f700e8`, `8515b31c8d`, `8777bfbea0`, `7fd04118be`) | skipped (no issue trackers or device pools, mobile/i18n out of scope, minor) |
+| 2026-11-28 | ~950 minor fixes: file-link and citation parsing, PR panel polish, archive/RTF/EPUB previews, terminal attach history, Cursor/Antigravity/OpenCode edge cases, mobile, desktop, relay, perf benchmarks, translations, CI | skipped (internal/minor) |
 | 2026-11-12 | Regenerate a thread's title from the thread menu, now also from a bindable shortcut; the regenerate prompt reads the whole conversation and the previous title (`cfb7cae2b9`, `ThreadTitleRegenerationService`) | PR #106 |
 | 2026-11-12 | Reply to an assistant response from its hover actions, quoting it into the composer (`c0f85e7f79`); a quote in a sent message shows as an inset card (`1a8ecc64b7`) | queued (we quote a text selection with Ask; no whole-response Reply, and sent quotes render as plain blockquotes) |
 | 2026-11-12 | A steer that cuts off a streaming Claude reply marks it interrupted (`c7618f6c10`); final replies stay visible after steering (`836b86a5d6`); a model change sent with a Claude steer applies to the running turn (`5984bbb36e`) | queued (check `harness/src/claude` steer path) |

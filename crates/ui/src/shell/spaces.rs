@@ -6402,7 +6402,9 @@ impl Shell {
                     .then(|| chat.config.as_ref().map(|c| c.harness))
                     .flatten();
                 let time = match snoozed_until(&chat) {
-                    Some(until) => crate::composer::limit_banner::local_moment_label(until, now),
+                    Some(until) => {
+                        super::thread_lifecycle::snooze_end_label(until, now).unwrap_or_default()
+                    }
                     None => format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now),
                 };
                 list = list.child(

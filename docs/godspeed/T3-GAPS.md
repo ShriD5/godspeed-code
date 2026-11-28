@@ -28,6 +28,8 @@ searched for under several names; PARTIAL means Godspeed has a smaller version.
 
 | Area | Feature (what the user can do) | T3 evidence | Godspeed status | Value |
 |---|---|---|---|---|
+| Desktop | Warn when a machine is short on memory or disk, or overloaded (sidebar and per thread), and tell agents its load | `apps/web/src/components/sidebar/SidebarHostPressureWarning.tsx`; `apps/server/src/resourceTelemetry/HostResources.ts` | MISSING: no host resource sampling in `crates/engine` | high |
+| Desktop | Copy a chat table as aligned text or PNG; save files from the Files panel and chat links | `a91808a108`, `e18c8fc2e5`, `685b40de12` | MISSING: no table copy in `transcript.rs`, no Save-as in `ui/src/files` | med |
 | Desktop | Process list with resource use; stop or force-kill a process | `apps/web/src/components/settings/ProcessSignalActions.tsx`; `DiagnosticsSettings.tsx` | MISSING: no process view or signal actions in `crates/ui` | med |
 | Desktop | Diagnostics page: logs, connection diagnosis, copy trace ID | `apps/web/src/components/settings/DiagnosticsSettings.tsx` ("Copy trace ID") | MISSING: only the connection health dot (`shell.rs`); no logs view | med |
 | Desktop | Open a prompt link: new thread pre-filled with prompt, repo and model | `apps/web/src/components/CommandPalette.tsx` ("Copy prompt link", "...with repo and model"); `apps/desktop/src/app/DesktopLinuxUrlHandler.ts` | MISSING: `godspeed://open/chat/...` opens existing chats only (`crates/ui/src/links.rs`) | med |
@@ -221,6 +223,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
+| Snooze a chat indefinitely: until the user wakes it or new activity does (row menu and bulk bar) | #TBD |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |

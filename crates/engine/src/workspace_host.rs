@@ -2026,6 +2026,7 @@ fn validate_lifecycle_change(
     let refuse = |message: &str| Err(EngineError::Other(message.into()));
     match state {
         LifecycleState::Active => return Ok(()),
+        LifecycleState::Snoozed { until } if LifecycleState::is_indefinite_snooze(until) => {}
         LifecycleState::Snoozed { until } if until <= now || until > now + MAX_SNOOZE => {
             return refuse("Pick a time within the next year");
         }
