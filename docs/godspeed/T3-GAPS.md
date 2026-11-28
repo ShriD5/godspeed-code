@@ -223,7 +223,7 @@ These T3 features were checked and Godspeed has them, so they are not rows above
 
 | Feature | Godspeed PR |
 |---|---|
-| Snooze a chat indefinitely: until the user wakes it or new activity does (row menu and bulk bar) | #TBD |
+| Snooze a chat indefinitely: until the user wakes it or new activity does (row menu and bulk bar) | #121 |
 | Regenerate a chat's title from its whole conversation (chat menu and command palette) | #106 |
 | Markdown file previews hide a leading YAML frontmatter block (SKILL.md, agent files) instead of showing it as a rule and a heading; task toggles and line comments keep their offsets | #105 |
 | Claude approval, question and MCP form cards close when Claude withdraws the request (a PermissionRequest hook answered it), and the request gets no stale answer | #101 |

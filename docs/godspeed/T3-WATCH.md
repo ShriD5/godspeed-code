@@ -23,7 +23,7 @@ Newest first. Status: `PR #n`, `queued` (worth doing, not yet built), `skipped (
 
 | Date | T3 change | Status |
 |---|---|---|
-| 2026-11-28 | Snooze a thread indefinitely: a Snooze preset that keeps it snoozed until woken by hand or new activity (`f875d2ab53`) | PR #TBD |
+| 2026-11-28 | Snooze a thread indefinitely: a Snooze preset that keeps it snoozed until woken by hand or new activity (`f875d2ab53`) | PR #121 |
 | 2026-11-28 | Warn when a machine is short on memory or disk, or overloaded, per machine and per thread, and tell agents its load through MCP (`70709c4d4d`, `9f887c5a39` shows CPU/memory/disk in thread details) | queued (large: needs a host sampler in the engine, a sidebar warning and an MCP field; Theo's memory-pressure item) |
 | 2026-11-28 | A composer send right after Stop queues instead of failing to steer (`9e385083d6`); Codex and OpenCode recover prompts an early Stop dropped (`1d015a3794`, `cc61cdb1e4`); agent auto-sends steer past an explicit queue (`5fda4f7bff`) | queued (check `DocHost::steer_queued_now` and the Codex stop path) |
 | 2026-11-28 | Copy a chat table as aligned text or a PNG (`a91808a108`, `e18c8fc2e5`); preview Markdown code blocks in replies (`7cce01a1ca`) | queued (transcript tables have no copy action) |
