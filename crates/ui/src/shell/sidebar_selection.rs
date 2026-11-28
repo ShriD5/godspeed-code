@@ -13,8 +13,9 @@ use gpui::{
 use zeron_proto::{ChatIndicator, LifecycleState};
 
 use super::Shell;
-use super::thread_lifecycle::{LifecycleUndo, SnoozePreset};
-use crate::composer::limit_banner::local_moment_label;
+use super::thread_lifecycle::{
+    LifecycleUndo, SnoozePreset, snooze_end_label, snoozed_until_phrase,
+};
 use crate::icons::{self, icon};
 use crate::motion;
 use crate::popover;
@@ -376,7 +377,7 @@ impl Shell {
             BulkAction::Settle => format!("Settled {count}"),
             BulkAction::Unsettle => format!("{count} back in the list"),
             BulkAction::Snooze(until) => {
-                format!("Snoozed {count} until {}", local_moment_label(until, now))
+                format!("Snoozed {count} {}", snoozed_until_phrase(until, now, "them"))
             }
             BulkAction::MarkRead => format!("Marked {count} as read"),
             BulkAction::MarkUnread => format!("Marked {count} as unread"),
@@ -678,13 +679,13 @@ impl Shell {
                         this.apply_bulk_action(BulkAction::Snooze(until), cx)
                     }))
                     .child(div().flex_1().child(SharedString::from(preset.label())))
-                    .child(
+                    .children(snooze_end_label(until, now).map(|when| {
                         div()
                             .flex_none()
                             .text_size(crate::typography::ui_rems(11.5))
                             .text_color(theme.text_muted)
-                            .child(SharedString::from(local_moment_label(until, now))),
-                    ),
+                            .child(SharedString::from(when))
+                    })),
             );
         }
         Some(popover::menu_at(

@@ -314,6 +314,21 @@ pub enum LifecycleState {
     Snoozed { until: DateTime<Utc> },
 }
 
+/// 9999-12-31T23:59:59Z: the latest time every client can still parse.
+const INDEFINITE_SNOOZE_SECS: i64 = 253_402_300_799;
+
+impl LifecycleState {
+    /// A snooze end so far out it never comes: the chat stays snoozed until
+    /// the user wakes it or new activity does.
+    pub fn indefinite_snooze() -> DateTime<Utc> {
+        DateTime::from_timestamp(INDEFINITE_SNOOZE_SECS, 0).expect("in range")
+    }
+
+    pub fn is_indefinite_snooze(until: DateTime<Utc>) -> bool {
+        until.timestamp() >= INDEFINITE_SNOOZE_SECS
+    }
+}
+
 /// A chat's lifecycle on its registry row: one field, so concurrent settle
 /// and snooze writes resolve to one state rather than a hybrid.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

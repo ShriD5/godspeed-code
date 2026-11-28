@@ -33,15 +33,17 @@ pub(super) enum SnoozePreset {
     ThisEvening,
     Tomorrow,
     NextWeek,
+    Indefinitely,
 }
 
 impl SnoozePreset {
-    pub(super) const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 6] = [
         Self::OneHour,
         Self::ThreeHours,
         Self::ThisEvening,
         Self::Tomorrow,
         Self::NextWeek,
+        Self::Indefinitely,
     ];
 
     pub(super) fn label(self) -> &'static str {
@@ -51,12 +53,13 @@ impl SnoozePreset {
             Self::ThisEvening => "This evening",
             Self::Tomorrow => "Tomorrow",
             Self::NextWeek => "Next week",
+            Self::Indefinitely => "Indefinitely",
         }
     }
 
     /// When a snooze picked at `now` ends: this evening at 6 PM (not offered
     /// once that is under an hour away), tomorrow at 9 AM, next Monday at
-    /// 9 AM.
+    /// 9 AM. Indefinitely never ends on its own.
     pub(super) fn until<Tz: TimeZone>(self, now: &DateTime<Tz>) -> Option<DateTime<Utc>> {
         let today = now.date_naive();
         match self {
@@ -66,7 +69,21 @@ impl SnoozePreset {
                 .filter(|evening| *evening - now.to_utc() >= Duration::hours(1)),
             Self::Tomorrow => local_at(now, today.succ_opt()?, MORNING, 0),
             Self::NextWeek => local_at(now, next_weekday(today, Weekday::Mon), MORNING, 0),
+            Self::Indefinitely => Some(LifecycleState::indefinite_snooze()),
         }
+    }
+}
+
+/// When a snooze ends, as shown beside it; none for an indefinite snooze.
+pub(super) fn snooze_end_label(until: DateTime<Utc>, now: DateTime<Utc>) -> Option<String> {
+    (!LifecycleState::is_indefinite_snooze(until)).then(|| local_moment_label(until, now))
+}
+
+/// "until <when>" for a snooze notice; `whom` names what the user wakes.
+pub(super) fn snoozed_until_phrase(until: DateTime<Utc>, now: DateTime<Utc>, whom: &str) -> String {
+    match snooze_end_label(until, now) {
+        Some(when) => format!("until {when}"),
+        None => format!("until you wake {whom}"),
     }
 }
 
@@ -374,13 +391,13 @@ impl Shell {
                         this.change_lifecycle(id.clone(), LifecycleState::Snoozed { until }, cx)
                     }))
                     .child(div().flex_1().child(SharedString::from(preset.label())))
-                    .child(
+                    .children(snooze_end_label(until, now).map(|when| {
                         div()
                             .flex_none()
                             .text_size(crate::typography::ui_rems(11.5))
                             .text_color(theme.text_muted)
-                            .child(SharedString::from(local_moment_label(until, now))),
-                    ),
+                            .child(SharedString::from(when))
+                    })),
             );
         }
         card = card.child(popover::menu_separator());
@@ -507,7 +524,7 @@ impl Shell {
             LifecycleState::Active => "Back in the list".to_owned(),
             LifecycleState::Settled => "Settled".to_owned(),
             LifecycleState::Snoozed { until } => {
-                format!("Snoozed until {}", local_moment_label(until, now))
+                format!("Snoozed {}", snoozed_until_phrase(until, now, "it"))
             }
         };
         self.remember_lifecycle_undo(undo, notice, cx);
@@ -693,6 +710,13 @@ mod tests {
         assert_eq!(until(SnoozePreset::ThisEvening), Some(local(16, 18, 0)));
         assert_eq!(until(SnoozePreset::Tomorrow), Some(local(17, 9, 0)));
         assert_eq!(until(SnoozePreset::NextWeek), Some(local(19, 9, 0)));
+        let forever = until(SnoozePreset::Indefinitely).unwrap();
+        assert!(LifecycleState::is_indefinite_snooze(forever));
+        assert_eq!(snooze_end_label(forever, now.to_utc()), None);
+        assert_eq!(
+            snoozed_until_phrase(forever, now.to_utc(), "it"),
+            "until you wake it"
+        );
 
         let evening = now + Duration::hours(3);
         assert_eq!(SnoozePreset::ThisEvening.until(&evening), None);

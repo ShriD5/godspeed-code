@@ -145,6 +145,17 @@ async fn settle_snooze_and_wake_persist_and_bad_snoozes_are_refused() {
     drop(core);
     let core = world.assemble();
     assert_eq!(state(&core, "chat"), LifecycleState::Snoozed { until });
+
+    let until = LifecycleState::indefinite_snooze();
+    set_lifecycle(&core, "chat", LifecycleState::Snoozed { until })
+        .await
+        .unwrap();
+    core.chat_lifecycle.tick_at(Utc::now() + TimeDelta::days(3650));
+    assert_eq!(
+        state(&core, "chat"),
+        LifecycleState::Snoozed { until },
+        "an indefinite snooze outlasts any wake"
+    );
     set_lifecycle(&core, "chat", LifecycleState::Active)
         .await
         .unwrap();
